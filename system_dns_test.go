@@ -18,8 +18,6 @@ func TestDNSUsesTUNWithoutHostDNSListenersInBothModes(t *testing.T) {
 		t.Run(fmt.Sprintf("capture=%t", capture), func(t *testing.T) {
 			config, err := loadTestConfig(t, fmt.Sprintf(`
 state_dir: ./state
-dns:
-  listen: 127.0.0.1:15353
 tun:
   enabled: %t
 `, capture))
@@ -60,6 +58,13 @@ tun:
 				} else {
 					nativeRoutes.Inet6RouteAddress = append(nativeRoutes.Inet6RouteAddress, prefix)
 				}
+			}
+			nativeRoutes.DNSAddress = tunConfig.DNSAddress
+			peers, err := nativeRoutes.DNSServerAddress()
+			if err != nil || !slices.Equal(peers, []netip.Addr{
+				netip.MustParseAddr("172.31.255.2"), netip.MustParseAddr("fd74:6169:6c73::2"),
+			}) {
+				t.Fatalf("DNS must use the fixed TUN peers in both modes: %v, %v", peers, err)
 			}
 			ranges, err := nativeRoutes.BuildAutoRouteRanges(false)
 			if err != nil {

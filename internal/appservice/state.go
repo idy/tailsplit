@@ -125,14 +125,9 @@ func serviceConfig(config tailsplit.Config, directory string) (tailsplit.Config,
 	if err != nil {
 		return config, err
 	}
-	for _, value := range []string{config.Listen, config.DNS.Listen} {
-		if value == "" {
-			continue
-		}
-		address, _ := netip.ParseAddrPort(value)
-		if address.Port() < 1024 {
-			return config, errors.New("app proxy and legacy dns.listen ports must be 1024 or above")
-		}
+	address, _ := netip.ParseAddrPort(config.Listen)
+	if address.Port() < 1024 {
+		return config, errors.New("app proxy port must be 1024 or above")
 	}
 	return config, nil
 }

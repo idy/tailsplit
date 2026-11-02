@@ -29,8 +29,10 @@ func TestConfigDocumentSaveChecksRevisionAndRetainsLiteralYAML(t *testing.T) {
 	if err := SaveConfigDocument(path, revision, []byte(initial)); !errors.Is(err, ErrConfigChanged) {
 		t.Fatal("stale editor overwrote a new configuration:", err)
 	}
-	if err := SaveConfigDocument(path, newRevision, []byte("listen: 0.0.0.0:80\n")); err == nil {
-		t.Fatal("invalid configuration was saved")
+	for _, invalid := range []string{"listen: 0.0.0.0:80\n", "dns:\n  listen: 127.0.0.1:15353\n"} {
+		if err := SaveConfigDocument(path, newRevision, []byte(invalid)); err == nil {
+			t.Fatalf("invalid configuration was saved: %s", invalid)
+		}
 	}
 	actual, _, _ = ReadConfigDocument(path)
 	if string(actual) != string(updated) {

@@ -40,10 +40,8 @@ type TailscaleConfig struct {
 	Domains    []string `yaml:"domains"`
 }
 
+// DNSConfig configures upstream resolution. Client DNS is fixed to the TUN peer.
 type DNSConfig struct {
-	// Listen is accepted for existing YAML files, but no longer opens a host
-	// socket. Client DNS is handled exclusively by the TUN's virtual peer.
-	Listen       string   `yaml:"listen"`
 	Direct       string   `yaml:"direct"`
 	DirectIPv6   *bool    `yaml:"direct_ipv6"`
 	Proxy        string   `yaml:"proxy"`
@@ -144,14 +142,9 @@ func (c *Config) normalize(base string) error {
 	default:
 		return errors.New("log_level must be trace, debug, info, warn, error, fatal or panic")
 	}
-	for name, address := range map[string]string{"listen": c.Listen, "dns.listen": c.DNS.Listen} {
-		if name == "dns.listen" && address == "" {
-			continue
-		}
-		value, err := netip.ParseAddrPort(address)
-		if err != nil || !value.Addr().IsLoopback() || value.Port() == 0 {
-			return fmt.Errorf("%s must be a literal loopback IP and nonzero port", name)
-		}
+	value, err := netip.ParseAddrPort(c.Listen)
+	if err != nil || !value.Addr().IsLoopback() || value.Port() == 0 {
+		return errors.New("listen must be a literal loopback IP and nonzero port")
 	}
 	if c.DNS.Direct == "" {
 		c.DNS.Direct = "system"
