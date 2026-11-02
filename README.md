@@ -1,8 +1,9 @@
 # TailSplit
 
-An open-source macOS menu bar app and Windows/Linux/macOS CLI for domain and IP routing.
-TailSplit embeds sing-box, GFWList projection and userspace Tailscale. Choose
-which traffic goes direct, through a proxy exit, or to authorized Tailnet peers.
+An open-source desktop app for macOS and Windows, with a cross-platform CLI for
+domain and IP routing. TailSplit embeds sing-box, GFWList projection and userspace
+Tailscale. Choose which traffic goes direct, through a proxy exit, or to authorized
+Tailnet peers.
 
 [Project page](https://tailsplit.idy.dev) · [Releases](https://github.com/idy/tailsplit/releases) · [Source](https://github.com/idy/tailsplit)
 
@@ -10,7 +11,7 @@ which traffic goes direct, through a proxy exit, or to authorized Tailnet peers.
 
 On macOS and Linux, the shell installer selects your platform and architecture,
 downloads a public GitHub Release and checks SHA-256 before installing. Windows
-uses the native CLI ZIP described below:
+uses a native desktop Setup EXE or the standalone CLI ZIP described below:
 
 ```sh
 curl -fsSL https://tailsplit.idy.dev/install.sh | sh
@@ -27,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.5.3 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.6.0 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -39,12 +40,13 @@ network-service state live outside the app bundle and are retained.
 | --- | --- | --- |
 | macOS 14+ | amd64, arm64 | App ZIP/DMG and CLI tar.gz |
 | Linux | amd64, arm64 | CLI tar.gz and .deb |
-| Windows 10+ (x64), Windows 11 (ARM64) | amd64, arm64 | CLI ZIP |
+| Windows 10+ (x64), Windows 11 (ARM64) | amd64, arm64 | Desktop Setup EXE and CLI ZIP |
 
 ## Windows desktop
 
-Windows desktop source provides an application window, notification-area controls
-and an Inno Setup installer for native x64 and ARM64 builds. The installer puts
+Download the Windows desktop Setup EXE for x64 (`amd64`) or ARM64 from
+[GitHub Releases](https://github.com/idy/tailsplit/releases). It provides a native
+application window and notification-area controls. The installer puts
 `TailSplit.exe`, `tailsplit-core.exe` and `TailSplit.Window.dll` in protected
 `Program Files\\TailSplit` and installs an idle SYSTEM network service. The UI
 runs as a normal user; only installation and service maintenance request UAC.
@@ -65,9 +67,9 @@ and device state.
 
 The desktop uses Microsoft Edge WebView2. Setup includes and checks the matching
 runtime prerequisite. Windows executables are currently unsigned; verify the
-release checksums. Published v0.5.4 Windows downloads are CLI-only; desktop
-installers are published only after native Windows GUI, service and installation
-lifecycle checks pass on both architectures.
+release checksums. Desktop releases require native GUI, service and installation
+lifecycle checks on both architectures, including actual app screenshots, real
+connection controls, service cleanup, repair and uninstall.
 
 For source builds on the matching Windows architecture, the release builder
 collects native toolchain inputs, notices and installer payloads:
@@ -85,8 +87,8 @@ checks and the CLI's real Wintun TCP/UDP DNS fixture.
 
 Download the Windows ZIP for x64 (`amd64`) or ARM64 and extract it. The archive
 contains `tailsplit.exe`, its license, dependency notices and source metadata.
-Windows builds provide the command line interface; the menu bar app and its
-configuration panel are macOS features.
+The standalone ZIP provides the command line interface. Use the Windows desktop
+Setup EXE for the native window, tray and configuration panel.
 
 From PowerShell in the extracted directory:
 
@@ -248,6 +250,7 @@ Public releases include:
 
 - `tailsplit_X.Y.Z_{linux,darwin}_{amd64,arm64}.tar.gz`
 - `tailsplit_X.Y.Z_windows_{amd64,arm64}.zip`
+- `TailSplit_X.Y.Z_windows_{amd64,arm64}_setup.exe`
 - `tailsplit_X.Y.Z_linux_{amd64,arm64}.deb`
 - `TailSplit_X.Y.Z_darwin_{amd64,arm64}.zip` and `.dmg`
 - Per-architecture macOS signing receipts, `release-manifest.json` and `SHA256SUMS`
