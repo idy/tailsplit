@@ -91,7 +91,14 @@ func InstallWindowsService(user string) error {
 	}
 	defer manager.Disconnect()
 	service, err := manager.OpenService(windowsServiceName)
-	config := mgr.Config{DisplayName: "TailSplit Network Service", Description: "Runs the TailSplit network session requested by its registered desktop user.", StartType: mgr.StartAutomatic, DelayedAutoStart: true}
+	// CreateService supplies a default service type; UpdateConfig does not.
+	// Use the same complete SCM policy for first install and later repairs.
+	config := mgr.Config{
+		DisplayName: "TailSplit Network Service",
+		Description: "Runs the TailSplit network session requested by its registered desktop user.",
+		ServiceType: windows.SERVICE_WIN32_OWN_PROCESS, ErrorControl: mgr.ErrorNormal,
+		StartType: mgr.StartAutomatic, DelayedAutoStart: true,
+	}
 	if err == nil {
 		defer service.Close()
 		if err := stopWindowsService(service); err != nil {
@@ -99,7 +106,7 @@ func InstallWindowsService(user string) error {
 		}
 		config.BinaryPathName = windows.EscapeArg(installed) + " service"
 		if err := service.UpdateConfig(config); err != nil {
-			return err
+			return fmt.Errorf("update Windows network service configuration: %w", err)
 		}
 	} else if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		service, err = manager.CreateService(windowsServiceName, installed, config, "service")
