@@ -92,12 +92,26 @@ $className = 'TailSplit.Window.' + $accountSID
 $arguments = '--no-connect --config "' + $Config + '" --log "' + $Log + '"'
 $guiProcess = [TailSplitDesktopFixture]::LaunchStandard($credential.username,$credential.password,$Application,$arguments,$false)
 $primaryFailure = $null
+$startupClock = [Diagnostics.Stopwatch]::StartNew()
+$nativePhases = New-Object 'System.Collections.Generic.List[object]'
 $stage = 'process launched'
 try {
     $integrity = [TailSplitDesktopFixture]::Integrity($guiProcess)
     if ($integrity -ne 8192) { throw "Desktop was not medium integrity: $integrity" }
     $stage = 'medium integrity verified; waiting for native window'
-    $window = Wait-Until { $handle=[TailSplitDesktopFixture]::FindWindow($className,'TailSplit'); if ($handle -ne [IntPtr]::Zero -and [TailSplitDesktopFixture]::IsWindowVisible($handle)) {$handle} } 'TailSplit did not create a visible native window.' 60
+    # A brand-new CI profile also starts the browser processes for the first
+    # time. Give that one cold start a bounded budget and retain phase timings.
+    $window = Wait-Until {
+        $handle=[TailSplitDesktopFixture]::FindWindow($className,'TailSplit')
+        if ($handle -ne [IntPtr]::Zero) {
+            $phase = [TailSplitDesktopFixture]::GetProp($handle,'TailSplit.WebView2.StartupStage').ToInt64()
+            if (($nativePhases.Count -eq 0) -or ($nativePhases[$nativePhases.Count-1].phase -ne $phase)) {
+                $nativePhases.Add(@{ phase=$phase; elapsed_ms=$startupClock.ElapsedMilliseconds })
+            }
+            if ([TailSplitDesktopFixture]::IsWindowVisible($handle)) { $handle }
+        }
+    } 'TailSplit did not create a visible native window.' 120
+    $startupMilliseconds = $startupClock.ElapsedMilliseconds
     $stage = 'native window visible; waiting for WebView2'
     Wait-Until { [TailSplitDesktopFixture]::GetProp($window,'TailSplit.WebView2.Ready') -ne [IntPtr]::Zero } 'WebView2 did not load its local document.' | Out-Null
     $automation = [System.Windows.Automation.AutomationElement]::FromHandle($window)
@@ -137,10 +151,10 @@ try {
     $secondExit = [TailSplitDesktopFixture]::LaunchStandard($credential.username,$credential.password,$Application,'--no-connect',$true)
     if ($secondExit -ne 0) { throw 'Second launch failed.' }
     Wait-Until { [TailSplitDesktopFixture]::IsWindowVisible($window) } 'Second launch did not activate the existing window.' | Out-Null
-    @{ token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true } | ConvertTo-Json -Compress
+    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true } | ConvertTo-Json -Depth 4 -Compress
 } catch {
     $primaryFailure = $_
-    $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource }
+    $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource; elapsed_ms=$startupClock.ElapsedMilliseconds; startup_phases=$nativePhases.ToArray() }
     try {
         $instance = Get-Process -Id $guiProcess -ErrorAction SilentlyContinue
         $failure['process_running'] = $null -ne $instance
@@ -155,6 +169,10 @@ try {
                 } finally { $reader.Dispose(); $stream.Dispose() }
             } catch { $failure['log_inspection_error'] = $_.Exception.Message }
         }
+        $hiddenWindow = [TailSplitDesktopFixture]::FindWindow($className,'TailSplit')
+        $failure['native_window_handle'] = $hiddenWindow.ToInt64()
+        if ($hiddenWindow -ne [IntPtr]::Zero) { $failure['native_startup_phase'] = [TailSplitDesktopFixture]::GetProp($hiddenWindow,'TailSplit.WebView2.StartupStage').ToInt64() }
+        $failure['browser_processes'] = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Select-Object ProcessId,ParentProcessId,SessionId)
         $processCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$guiProcess)
         $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$processCondition)
         $windowEvidence = @()
