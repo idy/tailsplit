@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import queue
+import secrets
 import socket
 import struct
 import subprocess
@@ -50,6 +51,67 @@ def architecture(path, arch):
         signature, machine = struct.unpack("<4sH", stream.read(6))
     if signature != b"PE\0\0" or machine != {"amd64": 0x8664, "arm64": 0xaa64}[arch]:
         raise RuntimeError("Wrong native architecture: " + path.name)
+
+
+def create_standard_user():
+    # Disposable CI account only. The password stays in process memory/private
+    # fixture storage, never argv, evidence, environment dumps or release files.
+    class UserInfo(ctypes.Structure):
+        _fields_ = [("name", wintypes.LPWSTR), ("password", wintypes.LPWSTR),
+                    ("age", wintypes.DWORD), ("privilege", wintypes.DWORD),
+                    ("home", wintypes.LPWSTR), ("comment", wintypes.LPWSTR),
+                    ("flags", wintypes.DWORD), ("script", wintypes.LPWSTR)]
+    class Member(ctypes.Structure):
+        _fields_ = [("name", wintypes.LPWSTR)]
+    name, password = "tsgui" + secrets.token_hex(4), secrets.token_urlsafe(32) + "aA7!"
+    netapi = ctypes.WinDLL("netapi32", use_last_error=True)
+    netapi.NetUserAdd.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(UserInfo), ctypes.POINTER(wintypes.DWORD)]
+    netapi.NetUserDel.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    netapi.NetLocalGroupAddMembers.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(Member), wintypes.DWORD]
+    info = UserInfo(name, password, 0, 1, None, "Disposable TailSplit native GUI fixture", 0x10201, None)
+    parameter_error = wintypes.DWORD()
+    status = netapi.NetUserAdd(None, 1, ctypes.byref(info), ctypes.byref(parameter_error))
+    if status:
+        raise ctypes.WinError(status)
+    try:
+        group = powershell("(New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')).Translate([Security.Principal.NTAccount]).Value.Split('\\')[-1]")
+        member = Member(os.environ["COMPUTERNAME"] + "\\" + name)
+        status = netapi.NetLocalGroupAddMembers(None, group, 3, ctypes.byref(member), 1)
+        if status not in (0, 1378):
+            raise ctypes.WinError(status)
+        sid = powershell("(New-Object Security.Principal.NTAccount($env:COMPUTERNAME,'" + name + "')).Translate([Security.Principal.SecurityIdentifier]).Value")
+        return {"username": name, "password": password, "sid": sid}
+    except BaseException:
+        netapi.NetUserDel(None, name)
+        raise
+
+
+def enable_fixture_owner_assignment():
+    # Assign the fresh account's private test directory to its actual SID.
+    # SeRestorePrivilege is enabled only in this disposable fixture process.
+    class LUID(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.LONG)]
+    class Privilege(ctypes.Structure):
+        _fields_ = [("count", wintypes.DWORD), ("luid", LUID), ("attributes", wintypes.DWORD)]
+    kernel, advapi = ctypes.WinDLL("kernel32", use_last_error=True), ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.POINTER(LUID)]
+    advapi.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL, ctypes.POINTER(Privilege), wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID]
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x28, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        privilege = Privilege()
+        privilege.count, privilege.attributes = 1, 2
+        if not advapi.LookupPrivilegeValueW(None, "SeRestorePrivilege", ctypes.byref(privilege.luid)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        ctypes.set_last_error(0)
+        if not advapi.AdjustTokenPrivileges(token, False, ctypes.byref(privilege), 0, None, None) or ctypes.get_last_error():
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.CloseHandle(token)
 
 
 def private_directory(path, sid):
@@ -169,6 +231,8 @@ def main():
                       f"state_dir: {json.dumps(str(state))}\nlisten: 127.0.0.1:{free_port()}\n" +
                       "dns:\n  direct: system\n  proxy: 8.8.8.8\nrules:\n  final: direct\ntun:\n  enabled: false\n", encoding="utf-8")
     process = None
+    gui_user = None
+    credential_file = temporary / "standard-user.json"
     try:
         install(installer, sid, args.evidence / "install.log")
         for path in (core, gui, installed / "TailSplit.Window.dll"):
@@ -213,12 +277,6 @@ def main():
         if routes() != before:
             raise RuntimeError("Service disconnect/crash did not preserve default routes")
         report["checks"].update(authenticated_broker=True, legacy_lock=True, identity_import_once=True, graceful_stop=True, broker_crash_cleanup=True)
-        # This launches the real GUI as a medium-integrity user, queries its
-        # actual accessibility tree, clicks controls and captures its window.
-        ui = run("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", ROOT / "tests/packaging/windows_desktop_ui.ps1",
-                 "-Application", gui, "-Config", config, "-Log", temporary / "tailsplit.log",
-                 "-Screenshot", args.evidence / "desktop.png", timeout=180)
-        report["checks"]["native_gui"] = json.loads(ui.stdout.strip().splitlines()[-1])
         hashes = {path.name: digest(path) for path in (core, gui, installed / "TailSplit.Window.dll")}
         install(installer, sid, args.evidence / "upgrade.log")
         if {path.name: digest(path) for path in (core, gui, installed / "TailSplit.Window.dll")} != hashes:
@@ -265,6 +323,39 @@ def main():
         if registered != sid or routes() != before:
             raise RuntimeError("Uninstall lost user registration or network cleanup")
         report["checks"]["uninstall_retains_state"] = True
+
+        # The hosted runner disables UAC token splitting. A fresh non-admin
+        # account exercises a real desktop token and browser sandbox instead of
+        # manufacturing a restricted token that WebView2 cannot use.
+        gui_user = create_standard_user()
+        credential_file.write_text(json.dumps(gui_user), encoding="utf-8")
+        enable_fixture_owner_assignment()
+        gui_root = Path(os.environ["PUBLIC"]) / ("TailSplitUI-" + gui_user["username"])
+        gui_state, gui_config = gui_root / "state", gui_root / "config.yaml"
+        private_directory(gui_root, gui_user["sid"])
+        private_directory(gui_state, gui_user["sid"])
+        gui_config.write_text(config.read_text(encoding="utf-8").replace(json.dumps(str(state)), json.dumps(str(gui_state))), encoding="utf-8")
+        # The previous uninstall's retained registration was asserted above.
+        # Reset this disposable fixture only, then perform a separate fresh
+        # installer run for the standard user's account using supported /UserSID.
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\TailSplit", 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as key:
+            winreg.DeleteValue(key, "DesktopUserSID")
+        install(installer, gui_user["sid"], args.evidence / "standard-user-install.log")
+        ui = run("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", ROOT / "tests/packaging/windows_desktop_ui.ps1",
+                 "-Application", gui, "-Config", gui_config, "-Log", gui_root / "tailsplit.log",
+                 "-Credentials", credential_file, "-Screenshot", args.evidence / "desktop.png", timeout=180)
+        report["checks"]["native_gui"] = json.loads(ui.stdout.strip().splitlines()[-1])
+        uninstallers = list(installed.glob("unins*.exe"))
+        if len(uninstallers) != 1:
+            raise RuntimeError("Expected a standard-user desktop uninstaller")
+        run(uninstallers[0], "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+            "/LOG=" + str(args.evidence / "standard-user-uninstall.log"), timeout=120)
+        if core.exists() or gui.exists() or not gui_config.is_file() or routes() != before:
+            raise RuntimeError("Standard-user uninstall did not clean up and retain configuration")
+        if (runtime / "tailscale/tailscaled.state").read_bytes() != sentinel:
+            raise RuntimeError("A second desktop user's lifecycle changed the previous user's identity")
+        report["checks"]["standard_user_installer_and_uninstall"] = True
         report["status"] = "passed"
         (args.evidence / "desktop-verification.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
         print("Verified native Windows desktop, SYSTEM service, private state and installer:", args.arch)
@@ -281,6 +372,11 @@ def main():
             run(gui, "--quit", check=False, timeout=40)
         if core.exists():
             run(core, "windows-remove-service", check=False, timeout=45)
+        credential_file.unlink(missing_ok=True)
+        if gui_user is not None:
+            netapi = ctypes.WinDLL("netapi32", use_last_error=True)
+            netapi.NetUserDel.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            netapi.NetUserDel(None, gui_user["username"])
 
 
 if __name__ == "__main__":
