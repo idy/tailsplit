@@ -1,43 +1,143 @@
-# TailSplit website
+# TailSplit
 
-This repository is a **site-only scaffold** for the TailSplit product website at [tailsplit.idy.dev](https://tailsplit.idy.dev/). It does not currently contain the working TailSplit application source, build system, or application releases.
+An open-source macOS menu bar app and Linux/macOS CLI for domain and IP routing.
+TailSplit embeds sing-box, GFWList projection and userspace Tailscale. Choose
+which traffic goes direct, through a proxy exit, or to authorized Tailnet peers.
 
-TailSplit is a macOS menu bar application for domain and IP routing rules, application HTTP/SOCKS proxy use, optional system-traffic routing, and configured Tailscale destinations. Its connection modes use a privileged background network service.
+[Project page](https://tailsplit.idy.dev) · [Releases](https://github.com/idy/tailsplit/releases) · [Source](https://github.com/idy/tailsplit)
 
-The existing application remains in `idy/letsolo`:
+## Install
 
-- [Application source](https://github.com/idy/letsolo/tree/master/tailsplit)
-- [Application documentation and build instructions](https://github.com/idy/letsolo/blob/master/tailsplit/README.md)
-- [Existing downloads and release notes](https://github.com/idy/letsolo/releases)
-
-These repositories are private. Access to the website does not grant access to the source or downloads. Check a distribution's release notes for architecture and signing status; local and pull-request builds are ad-hoc development builds.
-
-## Website development
-
-The site is self-contained HTML, CSS, JavaScript, and SVG. It has no package dependencies or build step. Edit files in `site/` and preview them as static files. For an HTTP preview, Python's standard library is sufficient:
+The installer selects your platform and architecture, downloads a public GitHub
+Release and checks SHA-256 before installing:
 
 ```sh
-python3 -m http.server 8000 --directory site
+curl -fsSL https://tailsplit.idy.dev/install.sh | sh
 ```
 
-Open `http://localhost:8000/`. The route selector is an illustrative client-side demo; it does not make network connections or change network settings. The copy button uses the browser clipboard API and selects the command for manual copying when clipboard access is unavailable.
+It is also available directly from this repository:
 
-Key files:
+```sh
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh
+```
 
-- `site/index.html`: product content, accessible page structure, and routing illustration.
-- `site/styles.css`: responsive layout, typography, color, focus states, and reduced-motion support.
-- `site/script.js`: conceptual route selection and command copying.
-- `site/favicon.svg`: self-contained TailSplit icon.
-- `site/CNAME`: the intended custom domain, `tailsplit.idy.dev`.
-- `site/.nojekyll`: keeps the deployment as a plain static site.
-- `.github/workflows/pages.yml`: uploads `site/` and deploys with GitHub Pages.
+On macOS it installs the app into your Applications directory. Linux prefers a
+.deb when apt/dpkg and administrator access are available, otherwise it installs
+the CLI tarball. To select a specific CLI release and a user-local prefix:
 
-## GitHub Pages
+```sh
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.5.1 --cli --prefix "$HOME/.local" --no-sudo
+```
 
-The Pages workflow runs on `main` when the site or its workflow changes, and supports manual dispatch from `main`. It uploads the static site directly, with no secrets or generated application artifacts. All referenced Actions are pinned to commit hashes, with version comments identifying their major releases.
+`--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
+The installer never changes your routing, DNS, proxy rules or device identity.
+Quit the existing app before updating its bundle. Existing configuration and
+network-service state live outside the app bundle and are retained.
 
-The public site is intended to use `https://tailsplit.idy.dev/`; the source repository remains private. Repository Pages configuration, domain verification, DNS, and publication are separate setup steps. The `CNAME` file records the intended domain and does not configure DNS by itself.
+| Platform | Architectures | Downloads |
+| --- | --- | --- |
+| macOS 14+ | amd64, arm64 | App ZIP/DMG and CLI tar.gz |
+| Linux | amd64, arm64 | CLI tar.gz and .deb |
 
-## Companion project
+## macOS app
 
-[TailRelay](https://tailrelay.idy.dev/) provides a SOCKS5-backed Tailscale exit node. Its independent source repository is [idy/tailrelay](https://github.com/idy/tailrelay), which also requires repository access.
+Open `TailSplit.app` normally. It starts in the menu bar, disconnected. Review
+your YAML configuration and choose when to connect. The first connection opens
+the bundled installer for the privileged network service; an administrator
+approves it once. Both connection modes use that service for TUN DNS.
+
+- **Application proxy:** applications opt into local HTTP/SOCKS listeners. A
+  narrow DNS TUN route is created; the system proxy and default traffic route
+  remain unchanged.
+- **System routing:** `tun.enabled` adds system-traffic routing and DNS
+  interception. Rules apply to captured connections.
+
+Login and exit discovery do not create a TUN. Connected operation uses a DNS
+TUN in both modes. Unavailable selected exits block their traffic while that
+TUN is active; manual disconnect or app exit restores the network it managed.
+
+The app keeps `im.lbv.tailsplit` identities and existing service labels for
+upgrade compatibility. Check each release's receipt for Developer ID signing
+and notarization status. Ad-hoc developer builds are not notarized and macOS
+may require an explicit launch approval.
+
+## CLI configuration
+
+Use [config.example.yaml](config.example.yaml) as a starting point:
+
+```sh
+tailsplit init -c config.yaml
+tailsplit check -c config.yaml
+tailsplit render -c config.yaml
+tailsplit version
+```
+
+`init` creates without overwriting an existing file. `check` validates offline;
+`render` shows the embedded-core configuration. Connecting requires appropriate
+network privileges and a configured proxy or authorized Tailnet destination:
+
+```sh
+sudo tailsplit run -c config.yaml
+```
+
+Edit routing and DNS rules in the YAML. GFWList and the separately documented
+supplemental rules are bundled; rule refresh remains an explicit operation.
+Credentials and persistent device state belong in user-controlled files, not in
+this repository. Keep existing configuration/state directories during upgrades.
+
+## Build and test
+
+Go 1.26.2 or later and Python 3.11 or later are required. macOS app builds need
+Xcode Command Line Tools, Swift and the standard macOS packaging tools. Build
+commands run at this repository root; no sibling monorepo is needed:
+
+```sh
+make test check
+python3 -B -m unittest discover -s scripts -p 'test_*.py'
+python3 -B -m unittest discover -s tests/installer
+python3 -B -m unittest discover -s tests/packaging
+make app
+```
+
+The core uses the `with_gvisor` build tag; the Makefile supplies it. `make app`
+creates a local ad-hoc app, ZIP, DMG, checksums and verification receipt. Linux
+CLI Debian packages can be built on Linux with `GOARCH=amd64 make deb` or
+`GOARCH=arm64 make deb`; these require Bash, GNU coreutils and `dpkg-deb`.
+Source tests use loopback fixtures and synthetic signing inputs; they do not
+need real provider or signing credentials.
+
+## CI releases
+
+A `vX.Y.Z` tag matching root `VERSION` runs
+[the multi-platform release workflow](.github/workflows/release.yml). Linux and
+macOS amd64/arm64 jobs build natively and the publisher waits for all platforms.
+Public releases include:
+
+- `tailsplit_X.Y.Z_{linux,darwin}_{amd64,arm64}.tar.gz`
+- `tailsplit_X.Y.Z_linux_{amd64,arm64}.deb`
+- `TailSplit_X.Y.Z_darwin_{amd64,arm64}.zip` and `.dmg`
+- Per-architecture macOS signing receipts, `release-manifest.json` and `SHA256SUMS`
+
+CLI archives include source metadata, the project license and detailed
+third-party notices. CI checks asset hashes and complete platform coverage
+before publishing. Existing release assets are never silently overwritten.
+
+Developer ID signing and notarization use externally supplied encrypted inputs
+and Actions secrets; no certificate, private key, Apple API key or encrypted
+credential payload is committed here. See [signing setup](credentials/README.md).
+Without configured signing, macOS builds are explicitly recorded as ad-hoc.
+The public site is deployed independently from `site/` by its Pages workflow;
+the root installer is published as `/install.sh` alongside it.
+
+## License and source provenance
+
+TailSplit is GPL-3.0-or-later; see [LICENSE](LICENSE) and
+[third-party notices](THIRD_PARTY_NOTICES.md). The embedded GFWList snapshot
+retains its LGPL-2.1 license and source provenance under
+`internal/gfwlistdns/data/`.
+
+The initial public application tree was imported from `letsolo/tailsplit`
+without its private signing files or private credential history. The shared
+parser was copied into this project, while its original remains available to
+other monorepo components. Runtime bundle IDs, service labels and user state
+paths retain their existing values for upgrades.

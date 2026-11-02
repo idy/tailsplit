@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+if [ "${3:-/}" != "/" ]; then
+  echo "TailSplit must be removed from the running macOS system." >&2
+  exit 1
+fi
+if /bin/launchctl print system/im.lbv.tailsplit.helper >/dev/null 2>&1; then
+  /bin/launchctl bootout system/im.lbv.tailsplit.helper
+fi
+/bin/rm -f "/Library/LaunchDaemons/im.lbv.tailsplit.helper.plist"
+/bin/rm -f "/Library/PrivilegedHelperTools/im.lbv.tailsplit.helper"
+/bin/rm -f "/var/run/im.lbv.tailsplit.sock"
+/usr/sbin/pkgutil --forget im.lbv.tailsplit.helper >/dev/null 2>&1 || true
+
+# Leave both the user config and root-owned saved login/cache intact.
+# Reinstalling the service must not silently destroy device authorization.

@@ -1,0 +1,70 @@
+version: 1
+listen: 127.0.0.1:17890
+state_dir: ~/.local/share/letsolo/tailsplit
+log_level: info
+
+app:
+  # Independent of the macOS "Open at Login" switch in the menu.
+  connect_on_start: false
+
+# Optional: bind direct traffic and Tailscale transport to the physical NIC.
+# interface: en0
+
+tailscale:
+  # Empty follows this computer's hostname, e.g. tailsplit-my-macbook.
+  # Also editable from the device-name menu.
+  hostname: ""
+  # Replace this example IP with an approved exit node in your own Tailnet.
+  exit_node: 100.64.0.10
+  # Optional guard: either mode starts only after confirming this Tailnet and
+  # the selected exit. Device login and discovery never create a TUN.
+  # tailnet: tail12345.ts.net
+  domains: []
+  # Optional custom names whose DNS records already point into the Tailnet.
+  # domains: [gateway.example.com]
+  # Omit this for interactive login. Never put the actual key in this file.
+  # auth_key_env: TAILSPLIT_AUTH_KEY
+
+dns:
+  # Client DNS lives inside TUN at 172.31.255.2:53 and
+  # [fd74:6169:6c73::2]:53; no host DNS listening socket is opened.
+  # Follow the physical network's DNS for direct/domestic CDN requests.
+  # An explicit address such as 223.5.5.5 is still supported.
+  direct: system
+  # Disable AAAA answers for direct Internet names if the physical uplink
+  # has no IPv6 route. Proxy/Tailnet names retain their own IPv6 policy.
+  # direct_ipv6: false
+  proxy: 8.8.8.8
+  fake_ip: true
+  # Enable after choosing to enable MagicDNS in this Tailnet.
+  # These names retain real Tailscale IPs and bypass fake DNS.
+  magic_domains: []
+  # magic_domains: [tail12345.ts.net]
+
+rules:
+  # split: use the rules below. global: ignore every direct exception and
+  # route client traffic/DNS through the selected exit (requires TUN).
+  # The app's Global / Kill Switch menu enables TUN automatically.
+  mode: split
+  # Bundled offline snapshot; a validated refresh cache takes precedence.
+  # Also accepts a local file or HTTPS URL. URL startup requires a cache.
+  gfwlist: builtin
+  proxy_domains:
+    - github.com
+    - youtube.com
+    # This exit-IP checker is absent from the bundled GFWList.
+    - myexternalip.com
+  proxy_ips:
+    - 8.8.8.8/32
+    - 8.8.4.4/32
+    - 1.1.1.1/32
+    - 1.0.0.1/32
+  direct_domains: []
+  direct_ips: []
+  final: direct
+
+# Both modes create a DNS TUN and require the network service (or equivalent
+# CLI privileges). This switch controls system-wide traffic capture and DNS
+# publishing; false installs only narrow routes to the DNS peer.
+tun:
+  enabled: false

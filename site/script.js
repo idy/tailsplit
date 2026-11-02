@@ -34,7 +34,7 @@
         if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
         await navigator.clipboard.writeText(command.textContent.trim());
         button.textContent = 'Copied';
-        status.textContent = 'App build command copied.';
+        status.textContent = 'Command copied.';
       } catch {
         const selection = window.getSelection();
         if (selection) {

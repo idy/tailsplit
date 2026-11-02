@@ -1,0 +1,35 @@
+TailSplit
+
+Drag TailSplit.app into Applications or copy it to your own application folder.
+An Applications folder on an external disk is also supported. Eject this disk
+image after copying the app.
+
+Open TailSplit.app and use its menu bar icon. Sign in to Tailscale first, then
+select an exit node visible in the same tailnet.
+
+On the first connection, the app opens the TailSplit Network Service installer.
+macOS requests an administrator password. Once installed, the service runs
+without an open terminal. Updating the background service may require another
+administrator authorization.
+
+Both normal proxy mode and system traffic mode create a TUN interface for DNS;
+TailSplit does not bind local port 53. Normal proxy mode adds only narrow routes
+to the DNS address. Enabling tun.enabled captures system traffic and changes
+system DNS. Signing in, discovering exits, and remaining disconnected do not
+create a TUN interface.
+
+Replacing the app preserves configuration and sign-in state. Quit the old app
+before replacing it. The installer does not automatically interrupt an active
+connection.
+
+Rule routing selects an exit according to domain and IP rules.
+Global proxy mode (Kill Switch) routes traffic through the selected exit while
+the TUN is running and blocks traffic handled by TailSplit if the exit becomes
+unavailable. Quitting the app or a service crash removes the TUN. This version
+does not install an independent system firewall lock.
+
+Local package filenames containing "adhoc" are development builds that use an
+ad-hoc signature, without Apple Developer ID signing or notarization. Developer
+ID signing and Apple notarization require an operator-configured release build.
+The release receipt records signing_mode and notarized; check those fields and
+the release notes for the signing status of a particular download.

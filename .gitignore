@@ -1,1 +1,25 @@
 .DS_Store
+/bin/
+__pycache__/
+/.claude/launch.json
+/site/install.sh
+*.py[cod]
+
+# Operator credentials and private signing inputs never belong in source control.
+*.sops
+*.p12
+*.pfx
+*.p8
+*.keychain
+*.keychain-db
+*.key
+*.pem
+/credentials/*.json
+/credentials/.env
+/credentials/.env.*
+
+# Keep public setup documentation and example inputs available to contributors.
+!*.example.key
+!*.example.pem
+!/credentials/*.example.json
+!/credentials/.env.example
