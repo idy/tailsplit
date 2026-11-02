@@ -559,13 +559,13 @@ var
 begin
   if GetIniString('Transaction', 'Ready', '', JournalPath) <> '1' then
     RaiseException('An incomplete TailSplit recovery snapshot needs administrator inspection: ' + BackupDir);
-  PreviousService := GetIniInt('Transaction', 'HadService', 0, JournalPath) = 1;
-  PreviousSIDPresent := GetIniInt('Transaction', 'HadSID', 0, JournalPath) = 1;
+  PreviousService := GetIniInt('Transaction', 'HadService', 0, 0, 1, JournalPath) = 1;
+  PreviousSIDPresent := GetIniInt('Transaction', 'HadSID', 0, 0, 1, JournalPath) = 1;
   PreviousSID := GetIniString('Transaction', 'SID', '', JournalPath);
   if PreviousSIDPresent and not ValidDesktopSID(PreviousSID) then
     RaiseException('The protected TailSplit recovery journal contains an invalid desktop SID.');
   for Index := 0 to PayloadCount - 1 do begin
-    PreviousFiles[Index] := GetIniInt('Files', IntToStr(Index), 0, JournalPath) = 1;
+    PreviousFiles[Index] := GetIniInt('Files', IntToStr(Index), 0, 0, 1, JournalPath) = 1;
     if PreviousFiles[Index] and not FileExists(BackupDir + '\' + PayloadNames[Index]) then
       RaiseException('The protected TailSplit recovery snapshot is missing ' + PayloadNames[Index] + '.');
   end;

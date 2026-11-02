@@ -558,7 +558,7 @@ def build(args):
     environment["GOAMD64" if args.arch == "amd64" else "GOARM64"] = "v1" if args.arch == "amd64" else "v8.0"
     compiler, compiler_environment = msvc_toolchain(args.arch, environment)
     # Never use an archive directory as cwd or as Python's import directory.
-    with tempfile.TemporaryDirectory(prefix="tailsplit-windows-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tailsplit-windows-", ignore_cleanup_errors=True) as temporary:
         work = Path(temporary)
         sdk, license_path = prepare_sdk(work, toolchain)
         inno = prepare_inno(work, toolchain)
