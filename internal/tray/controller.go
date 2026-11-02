@@ -89,6 +89,12 @@ func (c *Controller) RecordLoginBrowserResult(err error) {
 	_, _ = io.WriteString(c.log, message)
 }
 
+// RecordDesktopEvent retains native window startup failures in the same
+// private, redacted log as engine events; a dialog alone can be inaccessible.
+func (c *Controller) RecordDesktopEvent(message string) {
+	_, _ = io.WriteString(c.log, redactLog(message)+"\n")
+}
+
 func (c *Controller) Start() error {
 	return c.start("proxy")
 }
