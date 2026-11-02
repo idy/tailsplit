@@ -35,6 +35,7 @@ public static class TailSplitDesktopFixture {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect result);
+ [DllImport("user32.dll",SetLastError=true)] public static extern bool PrintWindow(IntPtr window,IntPtr deviceContext,uint flags);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
  [DllImport("user32.dll")] public static extern IntPtr GetProp(IntPtr window,string name);
  static void Check(bool value,string operation="Win32") { if(!value) { int code=Marshal.GetLastWin32Error(); throw new System.ComponentModel.Win32Exception(code,operation+": "+new System.ComponentModel.Win32Exception(code).Message); } }
@@ -104,6 +105,7 @@ try {
     foreach ($name in @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用')) {
         if (-not (Find-Button $automation $name)) { throw "Missing actual window control: $name" }
     }
+    $stage = 'desktop controls found; capturing window'
     [TailSplitDesktopFixture]::SetForegroundWindow($window) | Out-Null
     Start-Sleep -Milliseconds 500
     $bounds = New-Object TailSplitDesktopFixture+Rect
@@ -111,15 +113,22 @@ try {
     $bitmap = New-Object Drawing.Bitmap(($bounds.right-$bounds.left),($bounds.bottom-$bounds.top))
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     try {
-        $graphics.CopyFromScreen($bounds.left,$bounds.top,0,0,$bitmap.Size)
+        # Capture the verified TailSplit HWND itself. Another account's first
+        # logon/privacy experience can obscure the shared CI desktop surface.
+        $context = $graphics.GetHdc()
+        try {
+            if (-not [TailSplitDesktopFixture]::PrintWindow($window,$context,2)) { throw 'Cannot capture the actual TailSplit window.' }
+        } finally { $graphics.ReleaseHdc($context) }
         $bitmap.Save($Screenshot,[Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
     if ((Get-Item $Screenshot).Length -lt 10000) { throw 'Native screenshot is empty or unavailable.' }
     Invoke-Button $automation '查看日志'
     Wait-Until { Find-Button $automation '刷新日志' } 'The log dialog did not open.' | Out-Null
     Invoke-Button $automation '关闭'
+    $stage = 'connecting from native window'
     Invoke-Button $automation '连接'
     Wait-Until { $button=Find-Button $automation '断开'; $button -and $button.Current.IsEnabled } 'Connect did not reach an active service session.' | Out-Null
+    $stage = 'disconnecting from native window'
     Invoke-Button $automation '断开'
     Wait-Until { $button=Find-Button $automation '连接'; $button -and $button.Current.IsEnabled } 'Disconnect did not finish.' | Out-Null
     [TailSplitDesktopFixture]::PostMessage($window,0x10,[IntPtr]::Zero,[IntPtr]::Zero) | Out-Null
@@ -137,8 +146,14 @@ try {
         $failure['process_running'] = $null -ne $instance
         if ($instance) { $failure['session'] = $instance.SessionId; $failure['main_window_handle'] = $instance.MainWindowHandle.ToInt64() }
         if (Test-Path -LiteralPath $Log) {
-            $text = [IO.File]::ReadAllText($Log)
-            $failure['application_log'] = $text.Substring([Math]::Max(0,$text.Length-8192))
+            try {
+                $stream = [IO.File]::Open($Log,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+                $reader = New-Object IO.StreamReader($stream,[Text.Encoding]::UTF8)
+                try {
+                    $text = $reader.ReadToEnd()
+                    $failure['application_log'] = $text.Substring([Math]::Max(0,$text.Length-8192))
+                } finally { $reader.Dispose(); $stream.Dispose() }
+            } catch { $failure['log_inspection_error'] = $_.Exception.Message }
         }
         $processCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$guiProcess)
         $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$processCondition)
