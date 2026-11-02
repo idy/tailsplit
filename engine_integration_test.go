@@ -140,7 +140,6 @@ log_level: error
 tailscale:
   exit_node: 100.64.0.10
 dns:
-  listen: %s
   direct: %s
   direct_ipv6: false
   proxy: %s
@@ -148,7 +147,7 @@ dns:
 rules:
   proxy_domains: [proxy.test]
   direct_domains: [safe.proxy.test]
-`, proxyAddress, dnsListen, dnsAddress, dnsAddress))
+`, proxyAddress, dnsAddress, dnsAddress))
 	if err != nil {
 		t.Fatal(err)
 	}

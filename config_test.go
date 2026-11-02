@@ -3,6 +3,7 @@ package tailsplit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,22 @@ func TestConfigRejectsSilentlyUnsafeInput(t *testing.T) {
 				t.Fatalf("accepted unsafe configuration: %s", name)
 			}
 		})
+	}
+}
+
+func TestDNSListenIsNotConfigurable(t *testing.T) {
+	for _, capture := range []bool{false, true} {
+		for _, address := range []string{
+			"127.0.0.1:15353", "127.0.0.1:53", "'[::1]:15353'", "0.0.0.0:53",
+			"172.31.255.2:53", "'[fd74:6169:6c73::2]:53'", "''", "", "null",
+		} {
+			t.Run(fmt.Sprintf("capture=%t/listen=%s", capture, address), func(t *testing.T) {
+				_, err := loadTestConfig(t, fmt.Sprintf("dns:\n  listen: %s\ntun:\n  enabled: %t\n", address, capture))
+				if err == nil || !strings.Contains(err.Error(), "field listen not found") {
+					t.Fatalf("dns.listen must be rejected as an unsupported option: %v", err)
+				}
+			})
+		}
 	}
 }
 

@@ -301,7 +301,6 @@ func TestServicePolicyCannotReadUserPathsOrBindReservedPorts(t *testing.T) {
 		"environment key": {Tailscale: &tailsplit.TailscaleConfig{
 			ExitNode: "100.64.0.1", AuthKeyEnv: "ARBITRARY_ENV"}},
 		"privileged proxy port": {Listen: "127.0.0.1:22"},
-		"privileged DNS port":   {DNS: tailsplit.DNSConfig{Listen: "127.0.0.1:80"}},
 		"chosen TUN name":       {TUN: tailsplit.TUNConfig{Enabled: true, Name: "../../tmp/arbitrary"}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -421,6 +420,8 @@ func TestServiceRequestHasStrictFieldsAndBoundedInput(t *testing.T) {
 	for _, value := range []string{
 		`{"protocol":1,"op":"start","command":"sh"}` + "\n",
 		`{"protocol":1,"op":"start","config":{"command":"sh"}}` + "\n",
+		`{"protocol":1,"op":"start","config":{"DNS":{"Listen":"127.0.0.1:15353"}}}` + "\n",
+		`{"protocol":1,"op":"start","config":{"DNS":{"Listen":""}}}` + "\n",
 		`{"protocol":1,"op":"hello"} {"second":true}` + "\n",
 		`{"protocol":2,"op":"hello"}` + "\n",
 		strings.Repeat("x", maxRequest+1),

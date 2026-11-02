@@ -27,7 +27,8 @@ tailscale:
 
 dns:
   # Client DNS lives inside TUN at 172.31.255.2:53 and
-  # [fd74:6169:6c73::2]:53; no host DNS listening socket is opened.
+  # [fd74:6169:6c73::2]:53 in both modes. These addresses are fixed;
+  # dns.listen is not supported and no host DNS listening socket is opened.
   # Follow the physical network's DNS for direct/domestic CDN requests.
   # An explicit address such as 223.5.5.5 is still supported.
   direct: system
@@ -44,8 +45,8 @@ dns:
 
 rules:
   # split: use the rules below. global: ignore every direct exception and
-  # route client traffic/DNS through the selected exit (requires TUN).
-  # The app's Global / Kill Switch menu enables TUN automatically.
+  # route client traffic/DNS through the selected exit (requires tun.enabled).
+  # The app's Global / Kill Switch menu enables traffic capture automatically.
   mode: split
   # Bundled offline snapshot; a validated refresh cache takes precedence.
   # Also accepts a local file or HTTPS URL. URL startup requires a cache.

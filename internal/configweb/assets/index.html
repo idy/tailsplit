@@ -83,7 +83,7 @@
         </section>
 
         <section class="settings-page" id="section-dns" aria-labelledby="heading-dns" hidden>
-          <div class="section-heading"><div class="section-icon"><svg class="icon" aria-hidden="true"><use href="#i-dns"/></svg></div><div><h2 id="heading-dns">DNS</h2><p>分别设置直连与代理请求的解析方式。</p></div></div>
+          <div class="section-heading"><div class="section-icon"><svg class="icon" aria-hidden="true"><use href="#i-dns"/></svg></div><div><h2 id="heading-dns">DNS</h2><p>连接时始终创建 DNS TUN；下方设置仅配置上游解析。</p></div></div>
           <div class="settings-group">
             <div class="field-row"><div class="field-label"><label for="direct-dns">直连 DNS</label><p>用于直连域名的解析。</p></div><div class="field-control"><input id="direct-dns" data-field="dns.direct" class="mono" spellcheck="false" placeholder="system"><span class="field-hint">system 跟随物理网络，也可填 IP 或 IP:端口。</span></div></div>
             <div class="field-row"><div class="field-label"><label for="proxy-dns">代理 DNS</label><p>解析请求经过所选出口。</p></div><div class="field-control"><input id="proxy-dns" data-field="dns.proxy" class="mono" spellcheck="false" placeholder="8.8.8.8"></div></div>
@@ -91,12 +91,13 @@
             <div class="field-row toggle-row"><div class="field-label"><label for="fake-ip">FakeIP</label><p>用虚拟地址保留代理域名信息。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="fake-ip" data-field="dns.fake_ip"><span class="switch-track"></span></label><span class="toggle-caption">启用映射</span></div></div>
             <div class="field-row"><div class="field-label"><label for="magic-domains">MagicDNS 域名</label><p>使用 Tailnet 内置 DNS。</p></div><div class="field-control"><textarea id="magic-domains" data-field="dns.magic_domains" data-kind="list" class="mono" rows="3" spellcheck="false" placeholder="例如 tail12345.ts.net"></textarea><span class="field-hint">每行一个后缀，需已在 Tailnet 中开启 MagicDNS。</span></div></div>
           </div>
+          <p class="section-note">DNS 固定监听 TUN 接口的 <code>172.31.255.2:53</code> 与 <code>[fd74:6169:6c73::2]:53</code>，不受整机流量接管开关影响。</p>
         </section>
 
         <section class="settings-page" id="section-routing" aria-labelledby="heading-routing" hidden>
           <div class="section-heading"><div class="section-icon"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg></div><div><h2 id="heading-routing">分流规则</h2><p>按域名与目标地址选择流量出口。</p></div></div>
           <div class="settings-group">
-            <div class="field-row"><div class="field-label"><label for="routing-mode">运行模式</label></div><div class="field-control"><select id="routing-mode" data-field="rules.mode"><option value="split">规则分流</option><option value="global">全局代理（Kill Switch）</option></select><span class="field-hint" id="global-hint" hidden>全局模式会启用 TUN，并保留但暂不使用下方分流规则。</span></div></div>
+            <div class="field-row"><div class="field-label"><label for="routing-mode">运行模式</label></div><div class="field-control"><select id="routing-mode" data-field="rules.mode"><option value="split">规则分流</option><option value="global">全局代理（Kill Switch）</option></select><span class="field-hint" id="global-hint" hidden>全局模式会启用整机流量接管，并保留但暂不使用下方分流规则。</span></div></div>
             <div class="field-row"><div class="field-label"><label for="final-route">未匹配的流量</label><p>不命中规则时的默认行为。</p></div><div class="field-control"><select id="final-route" data-field="rules.final"><option value="direct">直连</option><option value="proxy">通过代理</option></select></div></div>
             <div class="field-row"><div class="field-label"><label for="gfwlist">GFWList</label><p>代理域名规则来源。</p></div><div class="field-control"><input id="gfwlist" data-field="rules.gfwlist" class="mono" spellcheck="false" placeholder="builtin"><span class="field-hint">builtin 使用内置规则；也支持本地文件或 HTTPS 地址。</span></div></div>
           </div>
@@ -109,7 +110,7 @@
         <section class="settings-page" id="section-device" aria-labelledby="heading-device" hidden>
           <div class="section-heading"><div class="section-icon"><svg class="icon" aria-hidden="true"><use href="#i-device"/></svg></div><div><h2 id="heading-device">本机与启动</h2><p>流量接管、物理网卡与诊断选项。</p></div></div>
           <div class="settings-group">
-            <div class="field-row toggle-row"><div class="field-label"><label for="tun-enabled">TUN 接管</label><p>接管整机流量与系统 DNS。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="tun-enabled" data-field="tun.enabled"><span class="switch-track"></span></label><span class="toggle-caption">整机代理入口</span></div></div>
+            <div class="field-row toggle-row"><div class="field-label"><label for="tun-enabled">整机流量接管</label><p>连接时始终创建 DNS TUN。开启后额外接管整机流量与系统 DNS。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="tun-enabled" data-field="tun.enabled"><span class="switch-track"></span></label><span class="toggle-caption">整机代理入口</span></div></div>
             <div class="field-row"><div class="field-label"><label for="mtu">MTU</label><p>TUN 数据包的最大尺寸。</p></div><div class="field-control"><div class="input-with-unit"><input type="number" id="mtu" data-field="tun.mtu" data-kind="int" min="1280" max="9000" step="1" class="mono"><span>字节</span></div><span class="field-hint">范围 1280–9000，默认 1400。</span></div></div>
             <div class="field-row"><div class="field-label"><label for="interface">物理网卡<span class="optional">可选</span></label><p>绑定直连流量和隧道传输。</p></div><div class="field-control"><input id="interface" data-field="interface" class="mono" spellcheck="false" placeholder="留空，自动选择"></div></div>
             <div class="field-row toggle-row"><div class="field-label"><label for="connect-on-start">打开后自动连接</label><p>仅在打开 TailSplit 时自动连接。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="connect-on-start" data-field="app.connect_on_start"><span class="switch-track"></span></label><span class="toggle-caption">自动连接</span></div></div>

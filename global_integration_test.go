@@ -40,7 +40,6 @@ log_level: error
 tailscale:
   exit_node: 100.64.0.10
 dns:
-  listen: %s
   direct: %s
   proxy: %s
   direct_ipv6: false
@@ -52,7 +51,7 @@ rules:
   direct_ips: [127.0.0.0/8]
 tun:
   enabled: true
-`, proxyAddress, dnsListen, directDNS, directDNS))
+`, proxyAddress, directDNS, directDNS))
 	if err != nil {
 		t.Fatal(err)
 	}

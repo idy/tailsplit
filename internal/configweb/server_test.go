@@ -170,6 +170,7 @@ func TestInvalidEditsNeverApplyAndBrokenYAMLRemainsReadable(t *testing.T) {
 	for _, text := range []string{
 		"listen: 0.0.0.0:1234\n", "unknown_setting: true\n", "dns:\n  direct: 172.31.255.2\n", "rules:\n  direct_ips: [1.2.3.4/24]\n", "listen: [invalid\n",
 		"listen: 127.0.0.1:80\n", "dns:\n  listen: 127.0.0.1:80\n",
+		"dns:\n  listen: 127.0.0.1:15353\n", "dns:\n  listen: '[::1]:15353'\n", "dns:\n  listen: ''\n",
 		"tailscale:\n  exit_node: 100.64.0.10\n  auth_key_env: TEST_AUTH_KEY\n", "tun:\n  name: utun99\n",
 	} {
 		status, _ := request(t, server, "POST", "/api/config", map[string]string{"yaml": text, "revision": revision}, nil)
@@ -178,7 +179,7 @@ func TestInvalidEditsNeverApplyAndBrokenYAMLRemainsReadable(t *testing.T) {
 		}
 	}
 	for _, changes := range []map[string]any{
-		{"unlisted.field": "x"}, {"dns.fake_ip": "true"}, {"tun.mtu": 1400.5}, {"log_level": nil},
+		{"unlisted.field": "x"}, {"dns.listen": "127.0.0.1:15353"}, {"dns.fake_ip": "true"}, {"tun.mtu": 1400.5}, {"log_level": nil},
 	} {
 		status, _ := request(t, server, "POST", "/api/preview", map[string]any{"yaml": fixtureConfig, "changes": changes}, nil)
 		if status != 400 {

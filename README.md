@@ -137,9 +137,9 @@ settings, with a live YAML preview and a full source editor. Validate or save/ap
 changes from either view. Saving reconnects an active proxy; an idle app stays
 idle. Existing comments and unrelated settings are preserved. External edits
 cause a revision conflict, and failed edits retain the browser draft. App service
-checks run before saving: listener ports must be at least 1024, the system chooses
-the TUN name, and the app uses interactive or saved login rather than environment
-authentication keys.
+checks run before saving: the application proxy port must be at least 1024, the
+system chooses the TUN name, and the app uses interactive or saved login rather
+than environment authentication keys.
 
 The app owns the page on a random `127.0.0.1` port and closes it on exit. Its
 per-run capability travels in the URL fragment and then an Authorization header.
@@ -170,6 +170,12 @@ network privileges and a configured proxy or authorized Tailnet destination:
 ```sh
 sudo tailsplit run -c config.yaml
 ```
+
+DNS is always served inside the TUN at `172.31.255.2:53` and
+`[fd74:6169:6c73::2]:53`, including when `tun.enabled: false`. The switch only
+controls whole-system traffic capture and system DNS publishing. DNS listener
+addresses and ports are fixed. `dns.listen` is unsupported and fails validation;
+remove that field from older YAML files.
 
 Edit routing and DNS rules in the YAML. GFWList and the separately documented
 supplemental rules are bundled; rule refresh remains an explicit operation.

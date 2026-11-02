@@ -2,6 +2,13 @@
 
 ## 0.6.0
 
+- Remove the obsolete `dns.listen` option from YAML and desktop service requests.
+  Both connection modes serve DNS exclusively through the fixed TUN peers at
+  `172.31.255.2:53` and `[fd74:6169:6c73::2]:53`; `tun.enabled` only controls
+  whole-system traffic capture and system DNS publishing. Remove `dns.listen`
+  from older configuration files before upgrading.
+- Show the fixed DNS TUN addresses in the configuration panel and clarify the
+  whole-system traffic capture switch.
 - Add a Windows desktop window and native tray with connect/disconnect, external
   browser device login, logout, exit selection, configuration and private logs.
 - Keep the UI unelevated and broker bounded, validated sessions over authenticated
