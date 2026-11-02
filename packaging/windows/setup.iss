@@ -196,6 +196,9 @@ function RunPowerShell(Script: String; var ExitCode: Integer): Boolean;
 var
   Parameters: String;
 begin
+  { PowerShell 7 callers may inject a module path incompatible with 5.1.
+    Resolve verification/ACL cmdlets only from this system host's inbox modules. }
+  Script := '$env:PSModulePath=$PSHOME+''\Modules''; ' + Script;
   { No script is read from a caller-provided location or from an archive. }
   Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& { ' + Script + ' }"';
   Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),

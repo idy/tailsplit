@@ -21,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def run(*args, timeout=120, check=True):
-    result = subprocess.run(list(map(str, args)), cwd=ROOT, capture_output=True, text=True,
+    environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+    result = subprocess.run(list(map(str, args)), cwd=ROOT, env=environment, capture_output=True, text=True,
                             timeout=timeout, check=False)
     if check and result.returncode:
         # This fixture never authenticates a Tailnet. Do not copy arbitrary

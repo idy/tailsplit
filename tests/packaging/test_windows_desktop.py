@@ -216,9 +216,11 @@ class DependencyTests(unittest.TestCase):
             version.assert_not_called()
 
     def test_authenticode_checks_chain_publisher_and_version_without_logging_environment(self):
-        with patch.object(packager, "powershell", return_value=Path("powershell.exe")), \
+        with patch.dict(os.environ, {"PSModulePath": "incompatible-core-modules"}), \
+                patch.object(packager, "powershell", return_value=Path("powershell.exe")), \
                 patch.object(packager.subprocess, "run") as run:
             packager.verify_authenticode(Path("installer.exe"), "Pyrsys B.V.", "7.1.1")
+        self.assertNotIn("PSMODULEPATH", {key.upper() for key in run.call_args.kwargs["env"]})
         command = run.call_args.args[0]
         script = base64.b64decode(command[-1]).decode("utf-16-le")
         self.assertIn("$s.Status -ne 'Valid'", script)
@@ -390,7 +392,7 @@ class CommandAndResourceTests(unittest.TestCase):
 
     def test_build_child_environment_does_not_forward_signing_credentials(self):
         with patch.dict(os.environ, {"GITHUB_TOKEN": "do-not-print", "SOPS_AGE_KEY": "do-not-print",
-                                     "CL": "/wrong-target", "GOFLAGS": "-race", "PATH": "system-tools"}, clear=True):
+                                     "CL": "/wrong-target", "GOFLAGS": "-race", "PSModulePath": "PowerShell-7-only-modules", "PATH": "system-tools"}, clear=True):
             environment = packager.clean_environment()
         self.assertEqual(environment, {"PATH": "system-tools"})
 

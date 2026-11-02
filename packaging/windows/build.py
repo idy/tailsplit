@@ -263,7 +263,7 @@ def verify_authenticode(path, publisher, version=None):
                    "){throw 'Unexpected tool version'}; ")
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     subprocess.run([str(powershell()), "-NoLogo", "-NoProfile", "-NonInteractive",
-                    "-EncodedCommand", encoded], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+                    "-EncodedCommand", encoded], cwd=ROOT, env=clean_environment(), check=True, stdout=subprocess.DEVNULL)
 
 
 def prepare_sdk(work, toolchain):
@@ -327,7 +327,7 @@ def executable_version(path):
               "'{0}.{1}.{2}.{3}' -f $v.FileMajorPart,$v.FileMinorPart,$v.FileBuildPart,$v.FilePrivatePart")
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     version = subprocess.check_output([str(powershell()), "-NoLogo", "-NoProfile", "-NonInteractive",
-                                       "-EncodedCommand", encoded], cwd=ROOT, text=True).strip()
+                                       "-EncodedCommand", encoded], cwd=ROOT, env=clean_environment(), text=True).strip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", version):
         raise BuildError("Runtime installer lacks its numeric Windows file version")
     # Evergreen standalone installers carry the browser's version, not the
@@ -349,7 +349,7 @@ def prepare_runtime(work, arch, toolchain):
 def clean_environment():
     environment = {key: value for key, value in os.environ.items()
                    if not key.upper().startswith(("SOPS_AGE_", "AWS_", "AZURE_")) and
-                   key.upper() not in {"GH_TOKEN", "GITHUB_TOKEN", "CL", "_CL_", "LINK", "_LINK_", "GOFLAGS"}}
+                   key.upper() not in {"GH_TOKEN", "GITHUB_TOKEN", "CL", "_CL_", "LINK", "_LINK_", "GOFLAGS", "PSMODULEPATH"}}
     return environment
 
 
