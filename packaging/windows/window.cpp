@@ -34,6 +34,9 @@ constexpr UINT kShow = WM_APP + 0x451;
 constexpr UINT kQuit = WM_APP + 0x452;
 constexpr UINT kFinish = WM_APP + 0x453;
 constexpr wchar_t kReady[] = L"TailSplit.WebView2.Ready";
+// A numeric phase lets startup diagnostics inspect a hidden window without
+// exposing its capability URL, profile contents or browser command line.
+constexpr wchar_t kStartupStage[] = L"TailSplit.WebView2.StartupStage";
 LONG activeRun = 0;
 
 HRESULT LastErrorResult() noexcept {
@@ -234,6 +237,7 @@ public:
         if (!window_) {
             return LastErrorResult();
         }
+        StartupStage(1); // Native HWND created; its browser is not ready yet.
         const HRESULT hr = StartEnvironment();
         if (FAILED(hr)) {
             Stop(hr);
@@ -266,6 +270,12 @@ public:
     }
 
 private:
+    void StartupStage(UINT stage) noexcept {
+        if (window_) {
+            SetPropW(window_, kStartupStage, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(stage)));
+        }
+    }
+
     struct Completion {
         WindowHost* host;
         ~Completion() {
@@ -283,6 +293,7 @@ private:
         const auto handler = Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [this](HRESULT hr, ICoreWebView2Environment* environment) -> HRESULT {
                 Completion completion{this};
+                StartupStage(3); // Environment completion reached the STA.
                 environment_ = environment;
                 if (stopping_) {
                     ScheduleFinish();
@@ -295,6 +306,7 @@ private:
                 const auto controllerHandler = Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                     [this](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
                         Completion completion{this};
+                        StartupStage(5); // Controller completion reached the STA.
                         controller_ = controller;
                         if (stopping_) {
                             ScheduleFinish();
@@ -306,10 +318,12 @@ private:
                         }
                         HRESULT configured = ConfigureBrowser();
                         if (SUCCEEDED(configured)) {
+                            StartupStage(6); // Local-origin restrictions are installed.
                             configured = Resize();
                         }
                         if (SUCCEEDED(configured)) {
                             // Pass the original URL verbatim, including its capability fragment.
+                            StartupStage(7); // Waiting for the embedded document.
                             configured = webview_->Navigate(url_);
                         }
                         if (FAILED(configured)) {
@@ -322,6 +336,7 @@ private:
                     return S_OK;
                 }
                 ++pending_;
+                StartupStage(4); // Asynchronous controller creation requested.
                 const HRESULT created = environment_->CreateCoreWebView2Controller(window_, controllerHandler.Get());
                 if (FAILED(created)) {
                     --pending_;
@@ -335,6 +350,7 @@ private:
         ++pending_;
         // The installed runtime and caller's private data directory are used as
         // supplied. This host never downloads or installs a browser runtime.
+        StartupStage(2); // Asynchronous browser environment creation requested.
         const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, userData_, nullptr, handler.Get());
         if (FAILED(hr)) {
             --pending_;
@@ -504,6 +520,7 @@ private:
                         return S_OK;
                     }
                     ready_ = true;
+                    StartupStage(8); // The local document completed successfully.
                     if (wantVisible_) {
                         Show();
                     }
@@ -696,6 +713,7 @@ private:
             return 0;
         case WM_NCDESTROY:
             RemovePropW(window, kReady);
+            RemovePropW(window, kStartupStage);
             SetWindowLongPtrW(window, GWLP_USERDATA, 0);
             host->window_ = nullptr;
             // Unexpected destruction may have discarded a queued finish message.

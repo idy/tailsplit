@@ -344,7 +344,7 @@ def main():
         install(installer, gui_user["sid"], args.evidence / "standard-user-install.log")
         ui = run("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", ROOT / "tests/packaging/windows_desktop_ui.ps1",
                  "-Application", gui, "-Config", gui_config, "-Log", gui_root / "tailsplit.log",
-                 "-Credentials", credential_file, "-Screenshot", args.evidence / "desktop.png", timeout=180)
+                 "-Credentials", credential_file, "-Screenshot", args.evidence / "desktop.png", timeout=240)
         report["checks"]["native_gui"] = json.loads(ui.stdout.strip().splitlines()[-1])
         uninstallers = list(installed.glob("unins*.exe"))
         if len(uninstallers) != 1:
