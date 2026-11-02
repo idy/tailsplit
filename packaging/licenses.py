@@ -100,6 +100,8 @@ def collect(goos, goarch, output):
     if data.is_dir():
         sections += ["## Embedded GFWList", "", (data / "README.md").read_text(encoding="utf-8"),
                      "", read_notice(data / "COPYING.txt")]
+    if goos == "windows":
+        sections += ["## Bundled Wintun driver", "", read_notice(ROOT / "LICENSES/wintun.txt")]
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(sections).rstrip() + "\n", encoding="utf-8")
     print(f"Collected notices for {len(modules)} modules: {output}")
@@ -107,7 +109,7 @@ def collect(goos, goarch, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--os", choices=("linux", "darwin"), required=True)
+    parser.add_argument("--os", choices=("linux", "darwin", "windows"), required=True)
     parser.add_argument("--arch", choices=("amd64", "arm64"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

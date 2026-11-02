@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.4
+
+- Add Windows amd64 and arm64 CLI ZIP releases, with native Windows CI, archive
+  execution checks and an elevated DNS-only Wintun lifecycle fixture.
+- Create private Windows state/configuration with protected, inheritable ACLs and
+  reject public or reparse-point state. Add nonblocking Windows process locks.
+  Existing Linux/macOS filesystem checks and service identities are preserved.
+- Include the embedded Wintun driver's full redistribution notice and provenance.
+- Make project-page downloads go directly to architecture-specific GitHub assets,
+  updating from complete official release metadata with versioned HTML fallbacks.
+- Keep release publication gated on complete Linux/macOS/Windows amd64/arm64
+  coverage and byte verification before promoting Latest.
+
 ## 0.5.3
 
 - Add a local configuration panel to the macOS menu with grouped forms, live YAML

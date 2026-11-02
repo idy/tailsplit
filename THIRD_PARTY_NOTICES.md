@@ -13,6 +13,12 @@ The separately authored supplemental rules are identified in that provenance
 file. The Tailscale implementation and other Go modules retain their respective
 licenses; exact module versions and source locations are in `go.mod` and `go.sum`.
 
+Windows CLI builds include the unmodified, signed Wintun 0.14.1 DLL for the
+selected architecture, embedded by sing-tun. Those prebuilt binaries have separate
+redistribution terms from the MIT-licensed Go bindings. Their complete license,
+official source URL and archive/DLL hashes are preserved in `LICENSES/wintun.txt`
+and included in the generated Windows notices. No extra driver download is made.
+
 Release builds generate detailed dependency notices for the target platform.
 The project license, dependency notices and build metadata accompany CLI
 archives and Debian packages. The macOS app also carries the networking-core and

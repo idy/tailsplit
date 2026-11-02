@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/idy/tailsplit/internal/privatefs"
 )
 
 func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
@@ -35,9 +37,8 @@ func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stat, _ := os.Stat(cache)
-	if stat.Mode().Perm() != 0o600 {
-		t.Fatal("rule cache is not owner-only")
+	if err := privatefs.CheckFile(cache); err != nil {
+		t.Fatal("rule cache is not owner-only:", err)
 	}
 	if _, err := Compile(config); err != nil {
 		t.Fatal(err)

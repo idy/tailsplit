@@ -8,6 +8,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
@@ -26,10 +27,11 @@ class ReleaseTests(unittest.TestCase):
 
     def inventory(self):
         for goos, arch in release.PLATFORMS:
-            names = {f"tailsplit_0.5.1_{goos}_{arch}.tar.gz"}
+            extension = "zip" if goos == "windows" else "tar.gz"
+            names = {f"tailsplit_0.5.1_{goos}_{arch}.{extension}"}
             if goos == "linux":
                 names.add(f"tailsplit_0.5.1_linux_{arch}.deb")
-            else:
+            elif goos == "darwin":
                 names.update(f"TailSplit_0.5.1_darwin_{arch}.{suffix}"
                              for suffix in ("zip", "dmg", "receipt.json"))
             assets = {}
@@ -49,7 +51,7 @@ class ReleaseTests(unittest.TestCase):
         manifest = self.finalize()
         self.assertEqual(set(manifest["assets"]), release.expected_assets("tailsplit", "0.5.1"))
         lines = (self.folder / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(lines), 13)
+        self.assertEqual(len(lines), 15)
         for line in lines:
             checksum, name = line.split("  ")
             self.assertEqual(checksum, hashlib.sha256((self.folder / name).read_bytes()).hexdigest())
@@ -118,6 +120,39 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "replace"):
             release.archive(one, files, 123)
 
+    def test_windows_zip_contents_timestamps_and_reproducibility(self):
+        binary, license_file = self.folder / "binary.exe", self.folder / "license"
+        binary.write_bytes(b"MZtest")
+        license_file.write_text("license")
+        one, two = self.folder / "one.zip", self.folder / "two.zip"
+        files = {"tailsplit.exe": binary, "LICENSE": license_file}
+        release.archive(one, files, 123)
+        release.archive(two, files, 123)
+        self.assertEqual(one.read_bytes(), two.read_bytes())
+        with zipfile.ZipFile(one) as bundle:
+            self.assertEqual(bundle.namelist(), ["tailsplit.exe", "LICENSE"])
+            self.assertEqual(bundle.read("tailsplit.exe"), b"MZtest")
+            self.assertEqual(bundle.getinfo("tailsplit.exe").external_attr >> 16, 0o100755)
+            self.assertEqual(bundle.getinfo("LICENSE").external_attr >> 16, 0o100644)
+            self.assertTrue(all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in bundle.infolist()))
+        with self.assertRaisesRegex(ValueError, "replace"):
+            release.archive(one, files, 123)
+
+    def test_missing_windows_platform_refuses_publication(self):
+        self.inventory()
+        (self.folder / "release-metadata-windows-arm64.json").unlink()
+        with self.assertRaisesRegex(ValueError, "complete"):
+            self.finalize()
+
+    def test_windows_asset_is_required_in_complete_inventory(self):
+        self.inventory()
+        fragment = self.folder / "release-metadata-windows-amd64.json"
+        data = json.loads(fragment.read_text())
+        data["assets"].clear()
+        fragment.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            self.finalize()
+
     def test_published_release_is_never_filled(self):
         manifest = dict(self.identity, assets={})
         published = dict(tag_name="v0.5.1", draft=False, body="<!-- tailsplit-release commit=" + "a" * 40 + " -->",
@@ -154,6 +189,11 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Commit release inputs"):
                 release.metadata("v0.5.1")
             self.assertTrue(release.metadata("v0.5.1", allow_dirty=True)["dirty"])
+            git("add", "new-source")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "next commit")
+            self.assertEqual(release.metadata()["commit"], git("rev-parse", "HEAD"))
+            with self.assertRaisesRegex(ValueError, "selected tag"):
+                release.metadata("v0.5.1")
 
 
 if __name__ == "__main__":

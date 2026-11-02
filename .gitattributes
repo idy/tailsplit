@@ -1,0 +1,3 @@
+# Preserve upstream notices and embedded snapshot checksums on every host.
+LICENSES/* -text -whitespace
+internal/gfwlistdns/data/* -text -whitespace

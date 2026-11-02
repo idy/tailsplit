@@ -14,10 +14,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from urllib.parse import quote, urlparse
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PLATFORMS = {(osname, arch) for osname in ("linux", "darwin") for arch in ("amd64", "arm64")}
+PLATFORMS = {(osname, arch) for osname in ("linux", "darwin", "windows") for arch in ("amd64", "arm64")}
 
 
 def run(*args, env=None):
@@ -56,7 +58,8 @@ def metadata(tag=None, allow_dirty=False):
 
 
 def expected_assets(project, version):
-    names = {f"{project}_{version}_{goos}_{arch}.tar.gz" for goos, arch in PLATFORMS}
+    names = {f"{project}_{version}_{goos}_{arch}.{'zip' if goos == 'windows' else 'tar.gz'}"
+             for goos, arch in PLATFORMS}
     names |= {f"{project}_{version}_linux_{arch}.deb" for arch in ("amd64", "arm64")}
     if project == "tailsplit":
         names |= {f"TailSplit_{version}_darwin_{arch}.{suffix}"
@@ -67,6 +70,16 @@ def expected_assets(project, version):
 def archive(path, files, epoch):
     if path.exists():
         raise ValueError("Refusing to replace an existing release archive")
+    if path.suffix == ".zip":
+        timestamp = time.gmtime(max(epoch, 315532800))[:6]
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+            for name, source in files.items():
+                info = zipfile.ZipInfo(name, timestamp)
+                info.create_system = 3
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = (0o100755 if name.endswith(".exe") else 0o100644) << 16
+                bundle.writestr(info, source.read_bytes())
+        return
     with path.open("wb") as output, gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=epoch) as zipped:
         with tarfile.open(fileobj=zipped, mode="w") as bundle:
             for name, source in files.items():
@@ -99,7 +112,8 @@ def build(args):
     subprocess.run([sys.executable, "-I", "-B", str(ROOT / "packaging/licenses.py"),
                     "--os", args.os, "--arch", args.arch, "--output", str(notices)],
                    cwd=ROOT, env=environment, check=True)
-    binary = work / project
+    binary_name = project + (".exe" if args.os == "windows" else "")
+    binary = work / binary_name
     flags = f"-s -w -X main.version={version} -X main.commit={identity['commit']}"
     subprocess.run([environment.get("GO", "go"), "build", "-mod=readonly", "-tags", "with_gvisor",
                     "-trimpath", "-buildvcs=false", "-ldflags", flags, "-o", str(binary), "./cmd/" + project],
@@ -107,11 +121,12 @@ def build(args):
     detail = dict(identity, os=args.os, arch=args.arch)
     build_info = work / "build.json"
     build_info.write_text(json.dumps(detail, indent=2, sort_keys=True) + "\n")
-    tarball = output / f"{project}_{version}_{args.os}_{args.arch}.tar.gz"
-    archive(tarball, {project: binary, "LICENSE": ROOT / "LICENSE",
-                     "THIRD_PARTY_NOTICES.md": notices, "build.json": build_info},
+    extension = "zip" if args.os == "windows" else "tar.gz"
+    package = output / f"{project}_{version}_{args.os}_{args.arch}.{extension}"
+    archive(package, {binary_name: binary, "LICENSE": ROOT / "LICENSE",
+                      "THIRD_PARTY_NOTICES.md": notices, "build.json": build_info},
             int(run("git", "show", "-s", "--format=%ct", "HEAD")))
-    files = [tarball]
+    files = [package]
     if args.os == "linux":
         subprocess.run(["make", "deb", "GO=" + environment.get("GO", "go"), "PYTHON=" + sys.executable],
                        cwd=ROOT, env=environment, check=True)
@@ -180,7 +195,7 @@ def finalize(directory, tag):
     identity = metadata(tag)
     fragments = [json.loads(path.read_text()) for path in sorted(directory.glob("release-metadata-*.json"))]
     if {(item["os"], item["arch"]) for item in fragments} != PLATFORMS or len(fragments) != len(PLATFORMS):
-        raise ValueError("A complete Linux/macOS amd64/arm64 build is required")
+        raise ValueError("A complete Linux/macOS/Windows amd64/arm64 build is required")
     assets = {}
     for item in fragments:
         if any(item.get(key) != value for key, value in identity.items()):
@@ -237,7 +252,7 @@ def publish(directory, tag):
     release = find_release(repository, tag)
     if release is None:
         body = (f"Multi-platform {manifest['project']} {manifest['version']} from `{commit}`.\n\n"
-                "Linux and macOS CLI archives support amd64 and arm64. Linux Debian packages are included.\n"
+                "Linux, macOS and Windows CLI archives support amd64 and arm64. Linux Debian packages are included.\n"
                 "Verify SHA256SUMS before installation. Each archive includes its license and dependency notices.\n")
         if manifest["project"] == "tailsplit":
             body += "\nmacOS app ZIP/DMG signing and notarization status is recorded in each receipt JSON.\n"
@@ -279,13 +294,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     builder = commands.add_parser("build")
-    builder.add_argument("--os", choices=("linux", "darwin"), required=True)
+    builder.add_argument("--os", choices=("linux", "darwin", "windows"), required=True)
     builder.add_argument("--arch", choices=("amd64", "arm64"), required=True)
     builder.add_argument("--allow-dirty", action="store_true")
     for name in ("build", "finalize", "publish"):
         target = builder if name == "build" else commands.add_parser(name)
         target.add_argument("--directory", type=Path, default=ROOT / "bin/release/assets")
-        target.add_argument("--tag", required=True)
+        target.add_argument("--tag", required=name != "build")
     args = parser.parse_args()
     if args.command == "build":
         build(args)

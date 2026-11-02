@@ -14,6 +14,7 @@ import (
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/appservice"
+	"github.com/idy/tailsplit/internal/privatefs"
 )
 
 var (
@@ -77,7 +78,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return errors.New("--parent-pid must identify the current parent of a run command")
 	}
 	if command == "init" {
-		file, err := os.OpenFile(*path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err := privatefs.CreateFile(*path)
 		if err != nil {
 			return fmt.Errorf("create config without overwriting existing files: %w", err)
 		}

@@ -27,6 +27,7 @@ class LicenseCollectionTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.write("THIRD_PARTY_NOTICES.md", "Project attribution\n")
         self.fallback = self.write("LICENSES/go.txt", GO_LICENSE.read_text(encoding="utf-8"))
+        self.wintun = self.write("LICENSES/wintun.txt", "Wintun prebuilt redistribution license\n")
         self.goroot = self.root / "toolchain/libexec"
         self.installed = self.write("toolchain/libexec/LICENSE", "Installed Go license\n")
         self.output = self.root / "artifacts/notices.txt"
@@ -203,7 +204,7 @@ class LicenseCollectionTests(unittest.TestCase):
         self.assertNotIn("## example.org/project", text)
 
     def test_go_command_targets_release_packages_and_platform(self):
-        for goos, goarch, cgo in (("linux", "amd64", "0"), ("darwin", "arm64", "1")):
+        for goos, goarch, cgo in (("linux", "amd64", "0"), ("darwin", "arm64", "1"), ("windows", "arm64", "0")):
             with self.subTest(goos=goos):
                 self.commands.clear()
                 self.collect(goos, goarch)
@@ -217,6 +218,19 @@ class LicenseCollectionTests(unittest.TestCase):
                     self.assertEqual(env["GOOS"], goos)
                     self.assertEqual(env["GOARCH"], goarch)
                     self.assertEqual(env["CGO_ENABLED"], cgo)
+
+    def test_windows_includes_separate_wintun_binary_license(self):
+        text = self.collect("windows", "amd64")
+        self.assertIn("## Bundled Wintun driver", text)
+        self.assertIn(self.wintun.read_text(encoding="utf-8"), text)
+        self.assertNotIn("Bundled Wintun driver", self.collect("linux", "amd64"))
+
+    def test_windows_missing_wintun_license_preserves_existing_output(self):
+        self.wintun.unlink()
+        self.existing_output()
+        with self.assertRaises(FileNotFoundError):
+            self.collect("windows", "arm64")
+        self.assertEqual(self.output.read_text(encoding="utf-8"), "Previous complete notices\n")
 
     def test_go_list_failure_does_not_write_partial_notices(self):
         self.existing_output()

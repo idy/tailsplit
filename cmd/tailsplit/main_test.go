@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/idy/tailsplit/internal/privatefs"
 )
 
 func TestInitDoesNotOverwriteAndUsesPrivatePermissions(t *testing.T) {
@@ -17,9 +19,8 @@ func TestInitDoesNotOverwriteAndUsesPrivatePermissions(t *testing.T) {
 	if err := execute([]string{"init", "-c", path}, &out, &diagnostic); err != nil {
 		t.Fatal(err)
 	}
-	stat, _ := os.Stat(path)
-	if stat.Mode().Perm() != 0o600 {
-		t.Fatal("init created a public config")
+	if err := privatefs.CheckFile(path); err != nil {
+		t.Fatal("init created a public config:", err)
 	}
 	if err := execute([]string{"init", "-c", path}, &out, &diagnostic); err == nil {
 		t.Fatal("init overwrote the existing config")

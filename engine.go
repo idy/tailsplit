@@ -11,6 +11,8 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/idy/tailsplit/internal/privatefs"
+
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/certificate"
@@ -334,18 +336,5 @@ func Run(ctx context.Context, config Config, compiled Compiled) error {
 }
 
 func privateState(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("state_dir must be a directory, not a symlink")
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return errors.New("state_dir must have owner-only permissions (chmod 700)")
-	}
-	return nil
+	return privatefs.EnsureDir(path)
 }

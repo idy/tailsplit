@@ -1,6 +1,6 @@
 # TailSplit
 
-An open-source macOS menu bar app and Linux/macOS CLI for domain and IP routing.
+An open-source macOS menu bar app and Windows/Linux/macOS CLI for domain and IP routing.
 TailSplit embeds sing-box, GFWList projection and userspace Tailscale. Choose
 which traffic goes direct, through a proxy exit, or to authorized Tailnet peers.
 
@@ -8,8 +8,9 @@ which traffic goes direct, through a proxy exit, or to authorized Tailnet peers.
 
 ## Install
 
-The installer selects your platform and architecture, downloads a public GitHub
-Release and checks SHA-256 before installing:
+On macOS and Linux, the shell installer selects your platform and architecture,
+downloads a public GitHub Release and checks SHA-256 before installing. Windows
+uses the native CLI ZIP described below:
 
 ```sh
 curl -fsSL https://tailsplit.idy.dev/install.sh | sh
@@ -38,6 +39,33 @@ network-service state live outside the app bundle and are retained.
 | --- | --- | --- |
 | macOS 14+ | amd64, arm64 | App ZIP/DMG and CLI tar.gz |
 | Linux | amd64, arm64 | CLI tar.gz and .deb |
+| Windows 10+ (x64), Windows 11 (ARM64) | amd64, arm64 | CLI ZIP |
+
+## Windows CLI
+
+Download the Windows ZIP for x64 (`amd64`) or ARM64 and extract it. The archive
+contains `tailsplit.exe`, its license, dependency notices and source metadata.
+Windows builds provide the command line interface; the menu bar app and its
+configuration panel are macOS features.
+
+From PowerShell in the extracted directory:
+
+```powershell
+.\tailsplit.exe version
+.\tailsplit.exe init -c .\config.yaml
+.\tailsplit.exe check -c .\config.yaml
+```
+
+These commands work without starting a network connection. Configure your proxy
+or authorized Tailnet destination, then use an **Administrator** terminal for
+`tailsplit.exe run -c .\config.yaml`. Both connection modes create a DNS TUN;
+Windows adapter, route and DNS changes require elevation. Ctrl+C stops the
+foreground session and removes its managed networking. Keep the existing user
+state directory when upgrading; its Windows ACL is restricted to the current
+user, SYSTEM and administrators, with a process lock preventing concurrent use.
+The Wintun driver is bundled, with its redistribution terms in the notices;
+no additional driver download is required. The CLI executable is not
+Authenticode-signed; verify the release's `SHA256SUMS` before running it.
 
 ## macOS app
 
@@ -140,6 +168,19 @@ need real provider or signing credentials. When Node.js 18 or later is available
 `make test` also runs deterministic editor state regression tests; no npm packages
 are required.
 
+For a native Windows CLI source build, use Go directly. The supported Windows
+CLI test packages include state ACL and cross-process lock checks:
+
+```powershell
+go test -mod=readonly -tags with_gvisor . ./cmd/tailsplit ./internal/privatefs ./internal/gfwlistdns
+go build -mod=readonly -tags with_gvisor -o tailsplit.exe ./cmd/tailsplit
+```
+
+The privileged Windows TUN fixture is opt-in and restricted to disposable,
+elevated GitHub runners. Normal local tests do not create adapters or change
+network routes. The macOS service and configuration-panel integration tests are
+covered by their macOS/Linux CI jobs.
+
 To preview the configuration panel without starting a proxy:
 
 ```sh
@@ -154,11 +195,13 @@ network service is started. The page assets are embedded and need no npm or CDN.
 ## CI releases
 
 A `vX.Y.Z` tag matching root `VERSION` runs
-[the multi-platform release workflow](.github/workflows/release.yml). Linux and
-macOS amd64/arm64 jobs build natively and the publisher waits for all platforms.
+[the multi-platform release workflow](.github/workflows/release.yml). Linux,
+macOS and Windows amd64/arm64 jobs build natively and the publisher waits for all
+six platform/architecture builds.
 Public releases include:
 
 - `tailsplit_X.Y.Z_{linux,darwin}_{amd64,arm64}.tar.gz`
+- `tailsplit_X.Y.Z_windows_{amd64,arm64}.zip`
 - `tailsplit_X.Y.Z_linux_{amd64,arm64}.deb`
 - `TailSplit_X.Y.Z_darwin_{amd64,arm64}.zip` and `.dmg`
 - Per-architecture macOS signing receipts, `release-manifest.json` and `SHA256SUMS`
