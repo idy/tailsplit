@@ -19,6 +19,8 @@ import (
 	"github.com/idy/tailsplit"
 	"github.com/tailscale/go-winio"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 const windowsServiceName = "TailSplitNetworkService"
@@ -61,12 +63,81 @@ func processIdentity(pid uint32) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	image, err := processImage(process)
+	if err != nil {
+		return "", "", err
+	}
+	return user.User.Sid.String(), image, nil
+}
+
+func processImage(process windows.Handle) (string, error) {
 	name := make([]uint16, 32768)
 	length := uint32(len(name))
 	if err := windows.QueryFullProcessImageName(process, 0, &name[0], &length); err != nil {
-		return "", "", err
+		return "", err
 	}
-	return user.User.Sid.String(), windows.UTF16ToString(name[:length]), nil
+	return windows.UTF16ToString(name[:length]), nil
+}
+
+// Ordinary users cannot reliably query a SYSTEM token. SCM independently
+// binds the actual pipe PID to our running LocalSystem service and fixed image.
+// These handles request only connect/query rights, never service administration.
+func installedServiceProcess(pid uint32, installed string) (string, error) {
+	manager, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return "", fmt.Errorf("read the local service manager: %w", err)
+	}
+	defer windows.CloseServiceHandle(manager)
+	name, _ := windows.UTF16PtrFromString(windowsServiceName)
+	handle, err := windows.OpenService(manager, name, windows.SERVICE_QUERY_STATUS|windows.SERVICE_QUERY_CONFIG)
+	if err != nil {
+		return "", fmt.Errorf("read the installed network service: %w", err)
+	}
+	service := &mgr.Service{Name: windowsServiceName, Handle: handle}
+	defer service.Close()
+	config, err := service.Config()
+	if err != nil {
+		return "", fmt.Errorf("read the network service identity: %w", err)
+	}
+	status, err := service.Query()
+	if err != nil {
+		return "", fmt.Errorf("read the network service process: %w", err)
+	}
+	if err := verifyServiceProcess(pid, installed, config, status); err != nil {
+		return "", err
+	}
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return "", fmt.Errorf("read the network service image: %w", err)
+	}
+	defer windows.CloseHandle(process)
+	image, err := processImage(process)
+	if err != nil {
+		return "", fmt.Errorf("identify the network service image: %w", err)
+	}
+	// Reject a service restart while reading its image, rather than trusting a
+	// stale status record or any PID/path claimed by the pipe peer itself.
+	status, err = service.Query()
+	if err != nil {
+		return "", fmt.Errorf("confirm the network service process: %w", err)
+	}
+	if err := verifyServiceProcess(pid, installed, config, status); err != nil {
+		return "", err
+	}
+	return image, nil
+}
+
+func verifyServiceProcess(pid uint32, installed string, config mgr.Config, status svc.Status) error {
+	if pid == 0 || status.State != svc.Running || status.ProcessId != pid {
+		return errors.New("the pipe endpoint is not the running TailSplit network service")
+	}
+	if config.ServiceType != windows.SERVICE_WIN32_OWN_PROCESS || !strings.EqualFold(config.ServiceStartName, "LocalSystem") {
+		return errors.New("the installed network service does not have the required SYSTEM identity")
+	}
+	if !strings.EqualFold(config.BinaryPathName, windows.EscapeArg(installed)+" service") {
+		return errors.New("the installed network service has an unexpected image or arguments")
+	}
+	return nil
 }
 
 // Authenticate the actual pipe endpoint, including its protected image path.
@@ -86,12 +157,27 @@ func requireUser(connection net.Conn, expected string) error {
 	if err != nil {
 		return errors.New("could not identify the local network service peer")
 	}
-	sid, image, err := processIdentity(pid)
-	if err != nil || sid != expected {
-		return errors.New("the network service channel has an unexpected Windows user")
-	}
 	installed, err := windowsCorePath()
-	if err != nil || !strings.EqualFold(filepath.Clean(image), installed) {
+	if err != nil {
+		return err
+	}
+	var image string
+	if expected == systemSID {
+		image, err = installedServiceProcess(pid, installed)
+		if err != nil {
+			return err
+		}
+	} else {
+		var sid string
+		sid, image, err = processIdentity(pid)
+		if err != nil {
+			return fmt.Errorf("read the desktop channel identity: %w", err)
+		}
+		if sid != expected {
+			return errors.New("the network service channel has an unexpected Windows user")
+		}
+	}
+	if !strings.EqualFold(filepath.Clean(image), installed) {
 		return errors.New("the network service peer is not the installed TailSplit core")
 	}
 	if err := protectedWindowsImage(installed); err != nil {
