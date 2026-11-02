@@ -36,17 +36,19 @@ public static class TailSplitDesktopFixture {
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect result);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
  [DllImport("user32.dll")] public static extern IntPtr GetProp(IntPtr window,string name);
- static void Check(bool value) { if(!value) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()); }
+ static void Check(bool value,string operation="Win32") { if(!value) { int code=Marshal.GetLastWin32Error(); throw new System.ComponentModel.Win32Exception(code,operation+": "+new System.ComponentModel.Win32Exception(code).Message); } }
  public static int LaunchMedium(string app,string arguments) {
   IntPtr original=IntPtr.Zero,restricted=IntPtr.Zero,sid=IntPtr.Zero;
   try {
-   Check(OpenProcessToken(GetCurrentProcess(),0x000B,out original));
-   Check(CreateRestrictedToken(original,5,0,IntPtr.Zero,0,IntPtr.Zero,0,IntPtr.Zero,out restricted));
-   Check(ConvertStringSidToSid("S-1-16-8192",out sid));
+   // CreateRestrictedToken preserves handle access. Integrity assignment also
+   // needs TOKEN_ADJUST_DEFAULT (0x80), in addition to query/duplicate/assign.
+   Check(OpenProcessToken(GetCurrentProcess(),0x008B,out original),"OpenProcessToken");
+   Check(CreateRestrictedToken(original,5,0,IntPtr.Zero,0,IntPtr.Zero,0,IntPtr.Zero,out restricted),"CreateRestrictedToken");
+   Check(ConvertStringSidToSid("S-1-16-8192",out sid),"ConvertStringSidToSid");
    Label label=new Label{sid=sid,attributes=0x20};
-   Check(SetTokenInformation(restricted,25,ref label,Marshal.SizeOf(typeof(Label))+GetLengthSid(sid)));
+   Check(SetTokenInformation(restricted,25,ref label,Marshal.SizeOf(typeof(Label))+GetLengthSid(sid)),"SetTokenInformation(medium integrity)");
    Startup startup=new Startup{cb=Marshal.SizeOf(typeof(Startup))}; ProcessInfo info;
-   Check(CreateProcessAsUser(restricted,app,"\""+app+"\" "+arguments,IntPtr.Zero,IntPtr.Zero,false,0x400,IntPtr.Zero,System.IO.Path.GetDirectoryName(app),ref startup,out info));
+   Check(CreateProcessAsUser(restricted,app,"\""+app+"\" "+arguments,IntPtr.Zero,IntPtr.Zero,false,0x400,IntPtr.Zero,System.IO.Path.GetDirectoryName(app),ref startup,out info),"CreateProcessAsUser");
    CloseHandle(info.thread);CloseHandle(info.process);return info.pid;
   } finally { if(sid!=IntPtr.Zero)LocalFree(sid);if(restricted!=IntPtr.Zero)CloseHandle(restricted);if(original!=IntPtr.Zero)CloseHandle(original); }
  }
