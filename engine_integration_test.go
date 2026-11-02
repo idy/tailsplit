@@ -268,13 +268,25 @@ func getFixture(t *testing.T, client *http.Client, address string) {
 
 func unusedTCPAddress(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	// The fixture's mixed/direct inbounds also bind UDP. Windows can reserve
+	// different ranges per protocol, so a TCP-only probe is insufficient.
+	var lastErr error
+	for attempt := 0; attempt < 100; attempt++ {
+		packets, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := packets.LocalAddr().String()
+		listener, err := net.Listen("tcp4", address)
+		_ = packets.Close()
+		if err == nil {
+			_ = listener.Close()
+			return address
+		}
+		lastErr = err
 	}
-	address := listener.Addr().String()
-	listener.Close()
-	return address
+	t.Fatalf("could not allocate a TCP/UDP fixture port: %v", lastErr)
+	return ""
 }
 
 func dnsFixtureInbound(listen string) object {

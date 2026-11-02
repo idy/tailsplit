@@ -321,29 +321,22 @@ def prepare_inno(work, toolchain):
     return compiler
 
 
-def executable_version(path):
-    script = ("$ErrorActionPreference='Stop'; $v=[Diagnostics.FileVersionInfo]::GetVersionInfo(" +
-              ps_literal(Path(path).resolve()) + "); "
-              "'{0}.{1}.{2}.{3}' -f $v.FileMajorPart,$v.FileMinorPart,$v.FileBuildPart,$v.FilePrivatePart")
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    version = subprocess.check_output([str(powershell()), "-NoLogo", "-NoProfile", "-NonInteractive",
-                                       "-EncodedCommand", encoded], cwd=ROOT, env=clean_environment(), text=True).strip()
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", version):
-        raise BuildError("Runtime installer lacks its numeric Windows file version")
-    # Evergreen standalone installers carry the browser's version, not the
-    # Evergreen updater's 1.x version. Reject a bootstrapper or wrong product.
-    if int(version.split(".")[0]) < 120:
-        raise BuildError("Expected a current Evergreen standalone runtime installer")
-    return version
-
-
 def prepare_runtime(work, arch, toolchain):
+    config = toolchain["webview2_runtime"]
+    minimum = config["minimum_version"]
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", minimum) or int(minimum.split(".")[0]) < 120:
+        raise BuildError("A supported WebView2 browser minimum is required")
     directory = Path(work) / "webview2-runtime"
     directory.mkdir()
     filename = "MicrosoftEdgeWebView2RuntimeInstaller" + {"amd64": "X64", "arm64": "ARM64"}[arch] + ".exe"
-    runtime = fetch(toolchain["webview2_runtime"][arch], directory / filename)
-    verify_authenticode(runtime, toolchain["webview2_runtime"]["publisher"])
-    return runtime, executable_version(runtime)
+    runtime = fetch(config[arch], directory / filename)
+    verify_authenticode(runtime, config["publisher"])
+    # Microsoft's full offline installer uses an updater wrapper with a 1.x
+    # file version too. That is not the installed browser's version. Reject a
+    # small bootstrapper and let Setup inspect the native installed browser.
+    if runtime.stat().st_size < 10 * 1024 * 1024:
+        raise BuildError("Expected the full Evergreen offline runtime, not a bootstrapper")
+    return runtime, minimum
 
 
 def clean_environment():
@@ -569,7 +562,7 @@ def build(args):
         work = Path(temporary)
         sdk, license_path = prepare_sdk(work, toolchain)
         inno = prepare_inno(work, toolchain)
-        runtime, runtime_version = prepare_runtime(work, args.arch, toolchain)
+        runtime, runtime_minimum = prepare_runtime(work, args.arch, toolchain)
         stage = work / "payload"
         stage.mkdir()
         stage_metadata(stage, core, notices, license_path, info, toolchain["webview2_sdk"]["version"])
@@ -592,7 +585,7 @@ def build(args):
         definitions = {"AppVersion": info["version"], "AppFileVersion": info["version"] + "." + str(args.build_number),
                        "TargetArch": args.arch, "StageDir": str(stage), "OutputDir": str(built),
                        "OutputBaseName": artifact.stem, "IconFile": str(icon), "RuntimeFile": str(runtime),
-                       "RuntimeSHA256": sha256(runtime), "RuntimeVersion": runtime_version}
+                       "RuntimeSHA256": sha256(runtime), "RuntimeVersion": runtime_minimum}
         command = [str(inno), "/Qp"] + ["/D" + key + "=" + value for key, value in definitions.items()] + [str(HERE / "setup.iss")]
         subprocess.run(command, cwd=ROOT, env=environment, check=True)
         installer = built / artifact.name

@@ -191,29 +191,35 @@ class DependencyTests(unittest.TestCase):
             self.assertEqual(compiler, Path(temporary) / "inno/portable/ISCC.exe")
             self.assertEqual(events, ["verify", "invoke"])
 
-    def test_runtime_rejects_bootstrapper_version_metadata(self):
-        with patch.object(packager, "powershell", return_value=Path("powershell.exe")), \
-                patch.object(packager.subprocess, "check_output", return_value="1.3.250.0\n"):
-            with self.assertRaisesRegex(packager.BuildError, "standalone"):
-                packager.executable_version("runtime.exe")
-        with patch.object(packager, "powershell", return_value=Path("powershell.exe")), \
-                patch.object(packager.subprocess, "check_output", return_value="156.0.4314.50\n"):
-            self.assertEqual(packager.executable_version("runtime.exe"), "156.0.4314.50")
+    def test_runtime_uses_browser_minimum_instead_of_updater_wrapper_version(self):
+        config = json.loads((ROOT / "packaging/windows/toolchain.json").read_text())
+        for size in (1024, 12 * 1024 * 1024):
+            def download(_url, path):
+                with path.open("wb") as output:
+                    output.truncate(size)
+                return path
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(packager, "fetch", side_effect=download), \
+                    patch.object(packager, "verify_authenticode") as verify:
+                if size < 10 * 1024 * 1024:
+                    with self.assertRaisesRegex(packager.BuildError, "bootstrapper"):
+                        packager.prepare_runtime(Path(temporary), "amd64", config)
+                else:
+                    path, minimum = packager.prepare_runtime(Path(temporary), "amd64", config)
+                    self.assertEqual(minimum, config["webview2_runtime"]["minimum_version"])
+                    self.assertEqual(path.stat().st_size, size)
+                verify.assert_called_once()
 
     def test_runtime_picks_matching_official_url_and_checks_signature(self):
-        config = {"webview2_runtime": {"amd64": "https://go.microsoft.com/fwlink/?linkid=2124701",
-                                      "arm64": "https://go.microsoft.com/fwlink/?linkid=2099616",
-                                      "publisher": "Microsoft Corporation"}}
+        config = json.loads((ROOT / "packaging/windows/toolchain.json").read_text())
         with tempfile.TemporaryDirectory() as temporary, patch.object(packager, "fetch") as fetch, \
-                patch.object(packager, "verify_authenticode", side_effect=packager.BuildError("unsigned")) as verify, \
-                patch.object(packager, "executable_version") as version:
+                patch.object(packager, "verify_authenticode", side_effect=packager.BuildError("unsigned")) as verify:
             fetch.side_effect = lambda url, path: path
             with self.assertRaisesRegex(packager.BuildError, "unsigned"):
                 packager.prepare_runtime(Path(temporary), "arm64", config)
             self.assertEqual(fetch.call_args.args[0], config["webview2_runtime"]["arm64"])
             self.assertTrue(fetch.call_args.args[1].name.endswith("ARM64.exe"))
             self.assertEqual(verify.call_args.args[1], "Microsoft Corporation")
-            version.assert_not_called()
 
     def test_authenticode_checks_chain_publisher_and_version_without_logging_environment(self):
         with patch.dict(os.environ, {"PSModulePath": "incompatible-core-modules"}), \

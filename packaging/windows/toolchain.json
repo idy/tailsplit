@@ -17,6 +17,8 @@
     "source": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4314.35"
   },
   "webview2_runtime": {
+    "minimum_version": "120.0.0.0",
+    "api_source": "https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_18",
     "amd64": "https://go.microsoft.com/fwlink/?linkid=2124701",
     "arm64": "https://go.microsoft.com/fwlink/?linkid=2099616",
     "publisher": "Microsoft Corporation",
