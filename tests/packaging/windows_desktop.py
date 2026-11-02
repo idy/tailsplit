@@ -265,9 +265,13 @@ def main():
         if registered != sid or routes() != before:
             raise RuntimeError("Uninstall lost user registration or network cleanup")
         report["checks"]["uninstall_retains_state"] = True
+        report["status"] = "passed"
         (args.evidence / "desktop-verification.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
         print("Verified native Windows desktop, SYSTEM service, private state and installer:", args.arch)
     finally:
+        if report.get("status") != "passed":
+            report["status"] = "failed"
+            (args.evidence / "desktop-verification.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
         if process is not None:
             process.kill()
             process.wait(timeout=15)
