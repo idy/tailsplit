@@ -13,17 +13,20 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 
-def run(*arguments, **kwargs):
-    # hdiutil starts a diskimages helper which can inherit stdout after the
-    # attach command exits. A pipe would wait for that helper's EOF indefinitely.
-    with tempfile.TemporaryFile() as output:
-        result = subprocess.run(arguments, stdout=output, stderr=subprocess.STDOUT, **kwargs)
+def run(*arguments, merge_stderr=True, **kwargs):
+    # hdiutil helpers can inherit the streams after attach exits. Files avoid
+    # waiting for their EOF; separate stderr keeps warnings out of plist output.
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        result = subprocess.run(arguments, stdout=output,
+                                stderr=subprocess.STDOUT if merge_stderr else errors, **kwargs)
         output.seek(0)
         captured = output.read()
+        errors.seek(0)
+        diagnostics = errors.read()
     if result.returncode:
         # These commands only inspect release artifacts, never credentials.
-        print(captured.decode(errors="replace"))
-        raise subprocess.CalledProcessError(result.returncode, arguments, captured)
+        print((captured + diagnostics).decode(errors="replace"))
+        raise subprocess.CalledProcessError(result.returncode, arguments, captured, diagnostics)
     return captured
 
 
@@ -122,7 +125,7 @@ def main():
         # random mount beneath the normal /Volumes root instead.
         attached = plistlib.loads(run(
             "hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
-            "-plist", "-mountrandom", "/Volumes", str(args.dmg),
+            "-plist", "-mountrandom", "/Volumes", str(args.dmg), merge_stderr=False,
         ))
         entities = attached["system-entities"]
         device = next(entity["dev-entry"] for entity in entities if "dev-entry" in entity)
