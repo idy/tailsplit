@@ -100,8 +100,11 @@ h2 { font-size: clamp(32px, 3vw, 43px); line-height: 1.16; letter-spacing: -0.04
 .install-section { --muted: #54657f; padding-block: 69px 54px; background: #eceaf5; border-block: 1px solid #d7d3e7; }
 .install-heading { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 110px; align-items: start; }
 .download-intro > p { max-width: 57ch; color: var(--muted); font-size: 14px; }
-.download-intro .button { margin-top: 21px; }
+.download-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 21px; }
+.button-secondary { color: var(--accent); border-color: var(--accent); background: transparent; }
+.button-secondary:hover { background: var(--accent-soft); }
 .download-intro > .access-note { margin-top: 14px; font-size: 11px; }
+.download-intro > .download-other { margin-top: 12px; font-size: 12px; }
 .install-steps { counter-reset: install; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 54px; margin: 45px 0 0; padding: 28px 0 0; border-top: 1px solid #d0cbe1; list-style: none; }
 .install-steps li { counter-increment: install; }
 .install-steps li::before { content: counter(install, decimal-leading-zero); display: block; margin-bottom: 15px; color: var(--accent); font-size: 14px; font-weight: 600; }
@@ -214,6 +217,7 @@ h2 { font-size: clamp(32px, 3vw, 43px); line-height: 1.16; letter-spacing: -0.04
   .install-heading { gap: 22px; }
   .download-intro > p { font-size: 13px; }
   .download-intro > .access-note { font-size: 11px; }
+  .download-actions .button { width: 100%; }
   .install-steps { grid-template-columns: 1fr; gap: 25px; margin-top: 31px; padding-top: 24px; }
   .install-steps li { position: relative; padding-left: 35px; }
   .install-steps li::before { position: absolute; top: 2px; left: 0; margin: 0; font-size: 12px; }
