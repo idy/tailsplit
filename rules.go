@@ -81,16 +81,12 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (gfwl
 	if err := file.Close(); err != nil {
 		return gfwlistdns.RulesInfo{}, err
 	}
-	if err := os.Rename(file.Name(), filepath.Join(config.StateDir, "gfwlist.txt")); err != nil {
-		return gfwlistdns.RulesInfo{}, err
-	}
-	dir, err := os.Open(config.StateDir)
+	installed, err := commitRuleCache(file.Name(), filepath.Join(config.StateDir, "gfwlist.txt"))
 	if err != nil {
-		return projection.Info, errors.New("rules installed but directory durability could not be confirmed")
-	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil {
-		return projection.Info, errors.New("rules installed but directory durability could not be confirmed")
+		if installed {
+			return projection.Info, errors.New("rules installed but directory durability could not be confirmed")
+		}
+		return gfwlistdns.RulesInfo{}, err
 	}
 	return projection.Info, nil
 }

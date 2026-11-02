@@ -7,6 +7,8 @@
 - Create private Windows state/configuration with protected, inheritable ACLs and
   reject public or reparse-point state. Add nonblocking Windows process locks.
   Existing Linux/macOS filesystem checks and service identities are preserved.
+- Use Windows write-through atomic rule-cache replacement while preserving the
+  last good cache on failed updates and keeping Unix directory-sync behavior.
 - Include the embedded Wintun driver's full redistribution notice and provenance.
 - Make project-page downloads go directly to architecture-specific GitHub assets,
   updating from complete official release metadata with versioned HTML fallbacks.

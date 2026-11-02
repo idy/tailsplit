@@ -109,7 +109,7 @@ func windowsDefaultRoutes(t *testing.T) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "pwsh", "-NoProfile", "-NonInteractive", "-Command",
-		"$ErrorActionPreference='Stop'; @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' | Sort-Object InterfaceIndex,NextHop,RouteMetric | Select-Object InterfaceIndex,NextHop,RouteMetric) | ConvertTo-Json -Compress")
+		"$ErrorActionPreference='Stop'; @(Get-NetRoute | Where-Object { @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1') -contains $_.DestinationPrefix } | Sort-Object AddressFamily,InterfaceIndex,DestinationPrefix,NextHop,RouteMetric | Select-Object AddressFamily,InterfaceIndex,DestinationPrefix,NextHop,RouteMetric) | ConvertTo-Json -Compress")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("read Windows default routes: %v: %s", err, output)
