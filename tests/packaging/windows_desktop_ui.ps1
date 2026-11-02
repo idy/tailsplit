@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$Application,
     [Parameter(Mandatory=$true)][string]$Config,
     [Parameter(Mandatory=$true)][string]$Log,
@@ -136,7 +136,10 @@ try {
         $instance = Get-Process -Id $guiProcess -ErrorAction SilentlyContinue
         $failure['process_running'] = $null -ne $instance
         if ($instance) { $failure['session'] = $instance.SessionId; $failure['main_window_handle'] = $instance.MainWindowHandle.ToInt64() }
-        if (Test-Path -LiteralPath $Log) { $failure['application_log'] = Get-Content -LiteralPath $Log -Tail 40 }
+        if (Test-Path -LiteralPath $Log) {
+            $text = [IO.File]::ReadAllText($Log)
+            $failure['application_log'] = $text.Substring([Math]::Max(0,$text.Length-8192))
+        }
         $processCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$guiProcess)
         $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$processCondition)
         $windowEvidence = @()
