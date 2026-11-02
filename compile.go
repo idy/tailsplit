@@ -225,6 +225,13 @@ func compile(config Config) (Compiled, error) {
 			"store_fakeip": true,
 		}},
 	}
+	if !global && config.DNS.DirectIPv6 != nil && !*config.DNS.DirectIPv6 {
+		// Recover cached/app-resolved IPv6 only after the original destination
+		// has selected direct routing, preserving domain and CIDR precedence.
+		direct := native["outbounds"].([]object)[0]
+		direct["type"] = directIPv4Type
+		direct["domain_resolver"] = object{"server": "dns-direct", "strategy": "ipv4_only"}
+	}
 	if global {
 		// There is no client-selectable direct outbound or DNS fallback in
 		// global mode. dns-direct exists solely for Tailnet bootstrap.

@@ -26,7 +26,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.5.2 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.5.3 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -61,6 +61,26 @@ upgrade compatibility. Check each release's receipt for Developer ID signing
 and notarization status. Ad-hoc developer builds are not notarized and macOS
 may require an explicit launch approval.
 
+### Configuration panel and logging
+
+Choose **Settings and Tools → Configuration Panel…** (`设置与工具 → 配置面板…`)
+from the menu bar app. The page groups connection, DNS, routing and startup
+settings, with a live YAML preview and a full source editor. Validate or save/apply
+changes from either view. Saving reconnects an active proxy; an idle app stays
+idle. Existing comments and unrelated settings are preserved. External edits
+cause a revision conflict, and failed edits retain the browser draft.
+
+The app owns the page on a random `127.0.0.1` port and closes it on exit. Its
+per-run capability travels in the URL fragment and then an Authorization header.
+Host/Origin checks and embedded assets keep the panel local; it does not expose
+Tailnet login links or device credential state. Reopen it from the menu after
+restarting the app.
+
+**Detailed Logging (Debug)** (`详细日志（Debug）`) in the same menu saves
+`log_level: debug` and reconnects an active proxy. Disable it to restore
+`log_level: info`. Use **View Logs…** (`查看日志…`) to inspect DNS, routing and
+connection diagnostics.
+
 ## CLI configuration
 
 Use [config.example.yaml](config.example.yaml) as a starting point:
@@ -85,6 +105,15 @@ supplemental rules are bundled; rule refresh remains an explicit operation.
 Credentials and persistent device state belong in user-controlled files, not in
 this repository. Keep existing configuration/state directories during upgrades.
 
+If the physical uplink has no IPv6 route, set `dns.direct_ipv6: false`. In split
+mode, direct Internet DNS and hostname dialing then use IPv4. For public IPv6
+addresses cached or resolved by an application, the direct outbound can recover
+the TLS/QUIC hostname and resolve it through the physical IPv4 DNS path after
+routing has selected direct. Domain/CIDR priority, local IPv6 and global proxy
+behavior are preserved. Recovery fails explicitly when the hostname or IPv4
+answer is unavailable; it never falls back to a proxy exit. Encrypted or absent
+hostnames cannot be recovered this way.
+
 ## Build and test
 
 Go 1.26.2 or later and Python 3.11 or later are required. macOS app builds need
@@ -105,6 +134,17 @@ CLI Debian packages can be built on Linux with `GOARCH=amd64 make deb` or
 `GOARCH=arm64 make deb`; these require Bash, GNU coreutils and `dpkg-deb`.
 Source tests use loopback fixtures and synthetic signing inputs; they do not
 need real provider or signing credentials.
+
+To preview the configuration panel without starting a proxy:
+
+```sh
+sh scripts/preview-config-web.sh
+```
+
+This command creates a private copy of `config.example.yaml` under
+`bin/config-web-preview/` if needed and prints a capability URL for
+`127.0.0.1:19790`. Saves affect only that preview file; no TUN, login or installed
+network service is started. The page assets are embedded and need no npm or CDN.
 
 ## CI releases
 

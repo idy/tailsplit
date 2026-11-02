@@ -31,8 +31,9 @@ dns:
   # Follow the physical network's DNS for direct/domestic CDN requests.
   # An explicit address such as 223.5.5.5 is still supported.
   direct: system
-  # Disable AAAA answers for direct Internet names if the physical uplink
-  # has no IPv6 route. Proxy/Tailnet names retain their own IPv6 policy.
+  # Use IPv4 for direct Internet names if the physical uplink has no IPv6
+  # route, including cached TLS/QUIC IPv6 targets with a recoverable hostname.
+  # Proxy/Tailnet names retain their own IPv6 policy.
   # direct_ipv6: false
   proxy: 8.8.8.8
   fake_ip: true

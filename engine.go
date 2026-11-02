@@ -54,6 +54,7 @@ func engineContext(ctx context.Context) context.Context {
 	tun.RegisterInbound(in)
 	out := outbound.NewRegistry()
 	direct.RegisterOutbound(out)
+	registerIPv4DirectOutbound(out)
 	endpoints := endpoint.NewRegistry()
 	transports := dns.NewTransportRegistry()
 	transport.RegisterUDP(transports)

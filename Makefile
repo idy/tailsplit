@@ -12,7 +12,7 @@ build:
 	$(GO) build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o "$(OUT)/tailsplit" ./cmd/tailsplit
 
 build-tray:
-	$(GO) build -trimpath -o "$(OUT)/tailsplit-tray" ./cmd/tailsplit-tray
+	$(GO) build -tags $(TAGS) -trimpath -o "$(OUT)/tailsplit-tray" ./cmd/tailsplit-tray
 
 app:
 	GO="$(GO)" PYTHON="$(PYTHON)" sh scripts/package-macos.sh "$(OUT)"

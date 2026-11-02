@@ -18,11 +18,18 @@ import (
 	"time"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/tray"
 
 	"github.com/getlantern/systray"
 	"gopkg.in/yaml.v3"
 )
+
+type configurationApply struct {
+	ctx    context.Context
+	update func() error
+	done   chan error
+}
 
 func main() {
 	executable, err := os.Executable()
@@ -53,6 +60,24 @@ func main() {
 		showError("无法打开日志文件")
 		return
 	}
+	configurationRequests := make(chan configurationApply)
+	configurationPage, configurationErr := configweb.Start(configweb.Options{
+		ConfigPath: *config, Snapshot: controller.Snapshot,
+		Apply: func(ctx context.Context, update func() error) error {
+			request := configurationApply{ctx: ctx, update: update, done: make(chan error, 1)}
+			select {
+			case configurationRequests <- request:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			select {
+			case err := <-request.done:
+				return err
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
 	systray.Run(func() {
 		icon := trayIcon()
 		systray.SetTemplateIcon(icon, icon)
@@ -86,6 +111,11 @@ func main() {
 		loginItemSettings := startup.AddSubMenuItem("系统登录项设置…", "")
 		tools := systray.AddMenuItem("设置与工具", "")
 		restart := tools.AddSubMenuItem("重新连接", "停止后使用当前配置重新连接")
+		configuration := tools.AddSubMenuItem("配置面板…", "在本机网页中查看、编辑和校验配置")
+		if configurationErr != nil {
+			configuration.Disable()
+			configuration.SetTooltip("无法启动本地配置页面，仍可使用“编辑配置…”")
+		}
 		dnsMenu := tools.AddSubMenuItem("直连 DNS", "")
 		systemDNS := dnsMenu.AddSubMenuItemCheckbox("跟随当前网络", "使用物理网卡的系统 DNS；代理域名仍使用出口侧 DNS", preferences.DirectDNS == "system")
 		dnsInfo := dnsMenu.AddSubMenuItem("当前上游", "")
@@ -95,6 +125,7 @@ func main() {
 		reveal := tools.AddSubMenuItem("显示配置位置", "")
 		copyAddress := tools.AddSubMenuItem("复制本机 SOCKS 地址", "")
 		logs := tools.AddSubMenuItem("查看日志…", "")
+		debugLogging := tools.AddSubMenuItemCheckbox("详细日志（Debug）", "记录 DNS、分流规则和连接诊断；切换后自动重连，关闭后恢复普通日志", preferences.DebugLogging)
 		service := tools.AddSubMenuItem("后台网络服务", "")
 		installService := service.AddSubMenuItem("更新或修复…", "打开系统安装器")
 		removeService := service.AddSubMenuItem("卸载后台服务…", "停止代理并打开卸载包；保留登录和配置")
@@ -282,6 +313,23 @@ func main() {
 							showError("无法刷新出口列表，请检查网络和后台服务")
 						}
 					}
+				case request := <-configurationRequests:
+					if editing || loggingOut || flow.Opening() || controller.Snapshot().State == "authorizing" {
+						request.done <- configweb.ErrBusy
+						continue
+					}
+					if err := request.ctx.Err(); err != nil {
+						request.done <- err
+						continue
+					}
+					editing = true
+					flow.Cancel()
+					go func() {
+						err := controller.Reconfigure(request.update)
+						// The browser reports errors without a second native alert.
+						settingsDone <- nil
+						request.done <- err
+					}()
 				case err := <-settingsDone:
 					editing = false
 					if updated, readErr := tray.ReadPreferences(*config); readErr == nil {
@@ -313,12 +361,21 @@ func main() {
 					}
 				case <-loginItemSettings.ClickedCh:
 					tray.OpenLoginItemSettings()
+				case <-configuration.ClickedCh:
+					if configurationPage != nil {
+						openPath(configurationPage.URL())
+					}
 				case <-edit.ClickedCh:
 					openPath("-t", *config)
 				case <-reveal.ClickedCh:
 					openPath("-R", *config)
 				case <-logs.ClickedCh:
 					openPath("-t", *logPath)
+				case <-debugLogging.ClickedCh:
+					if !editing && !loggingOut && !flow.Opening() {
+						enabled := !preferences.DebugLogging
+						reconfigure(func() error { return tray.SetDebugLogging(*config, enabled) })
+					}
 				case <-about.ClickedCh:
 					tray.ShowAbout()
 				case <-installService.ClickedCh:
@@ -377,6 +434,7 @@ func main() {
 						routing.SetTitle("模式：规则分流")
 					}
 					setChecked(systemDNS, preferences.DirectDNS == "system")
+					setChecked(debugLogging, preferences.DebugLogging)
 					if preferences.DirectDNS == "system" {
 						dnsMenu.SetTitle("直连 DNS：跟随系统")
 						dnsInfo.SetTitle("物理网卡的原始 DNS")
@@ -418,6 +476,7 @@ func main() {
 					setEnabled(routing, !busy && !flow.Opening())
 					setEnabled(connectOnStart, !editing)
 					setEnabled(systemDNS, !busy && !flow.Opening())
+					setEnabled(debugLogging, !busy && !flow.Opening())
 					setEnabled(refreshExits, !busy && !flow.Opening())
 					setEnabled(installService, !busy && snapshot.State != "authorizing")
 					setEnabled(removeService, !busy && snapshot.State != "authorizing")
@@ -425,7 +484,12 @@ func main() {
 				}
 			}
 		}()
-	}, func() { _ = controller.Close() })
+	}, func() {
+		if configurationPage != nil {
+			_ = configurationPage.Close()
+		}
+		_ = controller.Close()
+	})
 }
 
 func openPath(arguments ...string) {
