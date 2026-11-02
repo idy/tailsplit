@@ -1,6 +1,18 @@
 # Changelog
 
+## 0.6.1
+
+- Authenticate Windows service endpoints through read-only SCM process and
+  configuration queries instead of requiring ordinary clients to inspect a
+  SYSTEM process token. Require the running LocalSystem service's exact PID,
+  protected image and fixed arguments, and retain registered-client SID checks.
+- Include the Windows desktop and fixed-TUN DNS changes prepared for 0.6.0. The
+  earlier source tag is retained for an unpublished release attempt.
+
 ## 0.6.0
+
+Unpublished initial tag, superseded after release verification found the Windows
+standard-user service authentication failure.
 
 - Remove the obsolete `dns.listen` option from YAML and desktop service requests.
   Both connection modes serve DNS exclusively through the fixed TUN peers at
