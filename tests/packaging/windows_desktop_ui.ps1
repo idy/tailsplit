@@ -91,10 +91,14 @@ $accountSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $className = 'TailSplit.Window.' + $accountSID
 $arguments = '--no-connect --config "' + $Config + '" --log "' + $Log + '"'
 $guiProcess = [TailSplitDesktopFixture]::LaunchMedium($Application,$arguments)
+$primaryFailure = $null
+$stage = 'process launched'
 try {
     $integrity = [TailSplitDesktopFixture]::Integrity($guiProcess)
     if ($integrity -ne 8192) { throw "Desktop was not medium integrity: $integrity" }
+    $stage = 'medium integrity verified; waiting for native window'
     $window = Wait-Until { $handle=[TailSplitDesktopFixture]::FindWindow($className,'TailSplit'); if ($handle -ne [IntPtr]::Zero -and [TailSplitDesktopFixture]::IsWindowVisible($handle)) {$handle} } 'TailSplit did not create a visible native window.' 60
+    $stage = 'native window visible; waiting for WebView2'
     Wait-Until { [TailSplitDesktopFixture]::GetProp($window,'TailSplit.WebView2.Ready') -ne [IntPtr]::Zero } 'WebView2 did not load its local document.' | Out-Null
     $automation = [System.Windows.Automation.AutomationElement]::FromHandle($window)
     Wait-Until { Find-Button $automation '连接' } 'The native window has no desktop controls.' | Out-Null
@@ -126,8 +130,32 @@ try {
     if ($second.ExitCode -ne 0) { throw 'Second launch failed.' }
     Wait-Until { [TailSplitDesktopFixture]::IsWindowVisible($window) } 'Second launch did not activate the existing window.' | Out-Null
     @{ medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true } | ConvertTo-Json -Compress
+} catch {
+    $primaryFailure = $_
+    $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity }
+    try {
+        $processCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$guiProcess)
+        $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$processCondition)
+        $windowEvidence = @()
+        foreach ($item in $windows) {
+            $labels = @()
+            $children = $item.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            for ($index=0; $index -lt [Math]::Min($children.Count,60); $index++) { $labels += $children[$index].Current.Name }
+            $windowEvidence += @{ name=$item.Current.Name; class=$item.Current.ClassName; labels=$labels }
+        }
+        $failure['windows'] = $windowEvidence
+    } catch { $failure['inspection_error'] = $_.Exception.Message }
+    $failure | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $Screenshot) 'ui-failure.json') -Encoding UTF8
+    throw
 } finally {
-    $closing = Start-Process -FilePath $Application -ArgumentList '--quit' -Wait -PassThru
-    if (Get-Process -Id $guiProcess -ErrorAction SilentlyContinue) { throw 'The native GUI did not exit cleanly.' }
-    if ($closing.ExitCode -ne 0) { throw 'The GUI quit acknowledgement failed.' }
+    try {
+        $closing = Start-Process -FilePath $Application -ArgumentList '--quit' -Wait -PassThru
+        if (Get-Process -Id $guiProcess -ErrorAction SilentlyContinue) { throw 'The native GUI did not exit cleanly.' }
+        if ($closing.ExitCode -ne 0) { throw 'The GUI quit acknowledgement failed.' }
+    } catch {
+        if ($null -eq $primaryFailure) { throw }
+        Write-Warning ('GUI cleanup after the original failure: ' + $_.Exception.Message)
+        # This fixture owns only this newly launched PID in a disposable CI VM.
+        Stop-Process -Id $guiProcess -Force -ErrorAction SilentlyContinue
+    }
 }

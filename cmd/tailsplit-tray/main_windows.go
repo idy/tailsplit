@@ -54,6 +54,12 @@ type windowsApp struct {
 	quit        sync.Once
 }
 
+func desktopPipeDescriptor(sid string) string {
+	// The GUI owns this listener and needs create-instance access for Accept.
+	// Administrator maintenance only needs the fixed show/quit client protocol.
+	return "O:" + sid + "D:P(A;;GA;;;SY)(A;;0x12019b;;;BA)(A;;GA;;;" + sid + ")"
+}
+
 func main() {
 	if err := runWindowsDesktop(); err != nil {
 		maintenance := false
@@ -136,7 +142,7 @@ func runWindowsDesktop() error {
 	if windows.GetCurrentProcessToken().IsElevated() {
 		return errors.New("Open TailSplit normally from the Start menu, without Run as administrator.")
 	}
-	listener, err := winio.ListenPipe(pipeName, &winio.PipeConfig{SecurityDescriptor: "O:" + sid + "D:P(A;;GA;;;SY)(A;;0x12019b;;;BA)(A;;0x12019b;;;" + sid + ")"})
+	listener, err := winio.ListenPipe(pipeName, &winio.PipeConfig{SecurityDescriptor: desktopPipeDescriptor(sid)})
 	if err != nil {
 		return errors.New("another TailSplit desktop app is starting; open it from the notification area")
 	}
