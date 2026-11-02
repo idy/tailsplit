@@ -7,6 +7,8 @@
 - Create private Windows state/configuration with protected, inheritable ACLs and
   reject public or reparse-point state. Add nonblocking Windows process locks.
   Existing Linux/macOS filesystem checks and service identities are preserved.
+- Use the gVisor TCP/UDP stack on Windows for synthetic DNS peers, preserving
+  the existing mixed-stack selection on macOS/Linux.
 - Use Windows write-through atomic rule-cache replacement while preserving the
   last good cache on failed updates and keeping Unix directory-sync behavior.
 - Include the embedded Wintun driver's full redistribution notice and provenance.

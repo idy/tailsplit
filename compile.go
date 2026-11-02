@@ -276,6 +276,11 @@ func compile(config Config) (Compiled, error) {
 		"mtu": config.TUN.MTU, "stack": "mixed",
 		"auto_route": true, "strict_route": config.TUN.Enabled, "dns_mode": "hijack",
 	}
+	if runtime.GOOS == "windows" {
+		// Handle synthetic DNS-peer TCP in userspace instead of reinjecting
+		// the connection through a native Windows listener.
+		tun["stack"] = "gvisor"
+	}
 	if !config.TUN.Enabled {
 		// Keep only the DNS host routes. Do not install Internet routes or
 		// publish this resolver through the platform's native DNS settings.
