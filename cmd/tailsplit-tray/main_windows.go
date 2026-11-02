@@ -77,7 +77,7 @@ func main() {
 	}
 }
 
-func runWindowsDesktop() error {
+func runWindowsDesktop() (runErr error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -163,6 +163,12 @@ func runWindowsDesktop() error {
 		return err
 	}
 	defer controller.Close()
+	controller.RecordDesktopEvent("Desktop controller opened; preparing the local window.")
+	defer func() {
+		if runErr != nil {
+			controller.RecordDesktopEvent("Desktop startup failed: " + runErr.Error())
+		}
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, operations: make(chan windowsOperation), browserDone: make(chan error, 1)}
@@ -184,11 +190,15 @@ func runWindowsDesktop() error {
 		return err
 	}
 	windowDone := make(chan error, 1)
-	go func() { windowDone <- app.window.Run() }()
+	go func() {
+		controller.RecordDesktopEvent("Native window host loaded; starting WebView2.")
+		windowDone <- app.window.Run()
+	}()
 	go func() {
 		select {
 		case err := <-windowDone:
 			if err != nil {
+				controller.RecordDesktopEvent("Native window initialization failed: " + err.Error())
 				windowsError("Could not open the TailSplit window. Repair TailSplit and its Microsoft Edge WebView2 runtime.\n\n" + err.Error())
 			}
 			app.shutdown()

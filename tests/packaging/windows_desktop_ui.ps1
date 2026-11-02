@@ -39,7 +39,7 @@ public static class TailSplitDesktopFixture {
  [DllImport("user32.dll")] public static extern IntPtr GetProp(IntPtr window,string name);
  static void Check(bool value,string operation="Win32") { if(!value) { int code=Marshal.GetLastWin32Error(); throw new System.ComponentModel.Win32Exception(code,operation+": "+new System.ComponentModel.Win32Exception(code).Message); } }
  public static int LaunchStandard(string user,string password,string app,string arguments,bool wait) {
-  Startup startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop="winsta0\\default"}; ProcessInfo info;
+  Startup startup=new Startup{cb=Marshal.SizeOf(typeof(Startup))}; ProcessInfo info;
   // LOGON_WITH_PROFILE and a null environment create this account's normal
   // profile/environment, including HKCU and AppData used by WebView2.
   Check(CreateProcessWithLogonW(user,".",password,1,app,"\""+app+"\" "+arguments,0x400,IntPtr.Zero,System.IO.Path.GetDirectoryName(app),ref startup,out info),"CreateProcessWithLogonW(standard account)");
@@ -133,6 +133,10 @@ try {
     $primaryFailure = $_
     $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource }
     try {
+        $instance = Get-Process -Id $guiProcess -ErrorAction SilentlyContinue
+        $failure['process_running'] = $null -ne $instance
+        if ($instance) { $failure['session'] = $instance.SessionId; $failure['main_window_handle'] = $instance.MainWindowHandle.ToInt64() }
+        if (Test-Path -LiteralPath $Log) { $failure['application_log'] = Get-Content -LiteralPath $Log -Tail 40 }
         $processCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$guiProcess)
         $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$processCondition)
         $windowEvidence = @()
