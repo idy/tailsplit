@@ -19,6 +19,8 @@ public static class TailSplitDesktopFixture {
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left,top,right,bottom; }
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool CreateRestrictedToken(IntPtr existing,uint flags,int n1,IntPtr a1,int n2,IntPtr a2,int n3,IntPtr a3,out IntPtr token);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool DuplicateTokenEx(IntPtr source,uint access,IntPtr attributes,int level,int type,out IntPtr token);
+ public static string TokenSource = "unknown";
  [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool ConvertStringSidToSid(string sid,out IntPtr result);
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool SetTokenInformation(IntPtr token,int type,ref Label label,int size);
  [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr token,string app,string command,IntPtr processAttributes,IntPtr threadAttributes,bool inherit,uint flags,IntPtr environment,string directory,ref Startup startup,out ProcessInfo result);
@@ -38,19 +40,27 @@ public static class TailSplitDesktopFixture {
  [DllImport("user32.dll")] public static extern IntPtr GetProp(IntPtr window,string name);
  static void Check(bool value,string operation="Win32") { if(!value) { int code=Marshal.GetLastWin32Error(); throw new System.ComponentModel.Win32Exception(code,operation+": "+new System.ComponentModel.Win32Exception(code).Message); } }
  public static int LaunchMedium(string app,string arguments) {
-  IntPtr original=IntPtr.Zero,restricted=IntPtr.Zero,sid=IntPtr.Zero;
+  IntPtr original=IntPtr.Zero,restricted=IntPtr.Zero,sid=IntPtr.Zero,linked=IntPtr.Zero,buffer=IntPtr.Zero;
   try {
-   // CreateRestrictedToken preserves handle access. Integrity assignment also
-   // needs TOKEN_ADJUST_DEFAULT (0x80), in addition to query/duplicate/assign.
    Check(OpenProcessToken(GetCurrentProcess(),0x008B,out original),"OpenProcessToken");
-   Check(CreateRestrictedToken(original,5,0,IntPtr.Zero,0,IntPtr.Zero,0,IntPtr.Zero,out restricted),"CreateRestrictedToken");
-   Check(ConvertStringSidToSid("S-1-16-8192",out sid),"ConvertStringSidToSid");
-   Label label=new Label{sid=sid,attributes=0x20};
-   Check(SetTokenInformation(restricted,25,ref label,Marshal.SizeOf(typeof(Label))+GetLengthSid(sid)),"SetTokenInformation(medium integrity)");
+   buffer=Marshal.AllocHGlobal(IntPtr.Size);int needed;
+   if(GetTokenInformation(original,19,buffer,IntPtr.Size,out needed)) {
+    linked=Marshal.ReadIntPtr(buffer);
+    Check(DuplicateTokenEx(linked,0x008B,IntPtr.Zero,2,1,out restricted),"DuplicateTokenEx(linked desktop token)");
+    TokenSource="UAC linked desktop token";
+   } else {
+    // Some runner images disable UAC splitting. Keep that fallback explicit
+    // in evidence, since a synthetic token is not the normal desktop token.
+    Check(CreateRestrictedToken(original,5,0,IntPtr.Zero,0,IntPtr.Zero,0,IntPtr.Zero,out restricted),"CreateRestrictedToken");
+    Check(ConvertStringSidToSid("S-1-16-8192",out sid),"ConvertStringSidToSid");
+    Label label=new Label{sid=sid,attributes=0x20};
+    Check(SetTokenInformation(restricted,25,ref label,Marshal.SizeOf(typeof(Label))+GetLengthSid(sid)),"SetTokenInformation(medium integrity)");
+    TokenSource="synthetic restricted token";
+   }
    Startup startup=new Startup{cb=Marshal.SizeOf(typeof(Startup))}; ProcessInfo info;
    Check(CreateProcessAsUser(restricted,app,"\""+app+"\" "+arguments,IntPtr.Zero,IntPtr.Zero,false,0x400,IntPtr.Zero,System.IO.Path.GetDirectoryName(app),ref startup,out info),"CreateProcessAsUser");
    CloseHandle(info.thread);CloseHandle(info.process);return info.pid;
-  } finally { if(sid!=IntPtr.Zero)LocalFree(sid);if(restricted!=IntPtr.Zero)CloseHandle(restricted);if(original!=IntPtr.Zero)CloseHandle(original); }
+  } finally { if(buffer!=IntPtr.Zero)Marshal.FreeHGlobal(buffer);if(linked!=IntPtr.Zero)CloseHandle(linked);if(sid!=IntPtr.Zero)LocalFree(sid);if(restricted!=IntPtr.Zero)CloseHandle(restricted);if(original!=IntPtr.Zero)CloseHandle(original); }
  }
  public static int Integrity(int pid) {
   IntPtr process=OpenProcess(0x1000,false,pid),token=IntPtr.Zero,buffer=IntPtr.Zero;
@@ -129,10 +139,10 @@ try {
     $second = Start-Process -FilePath $Application -ArgumentList '--no-connect' -Wait -PassThru
     if ($second.ExitCode -ne 0) { throw 'Second launch failed.' }
     Wait-Until { [TailSplitDesktopFixture]::IsWindowVisible($window) } 'Second launch did not activate the existing window.' | Out-Null
-    @{ medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true } | ConvertTo-Json -Compress
+    @{ token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true } | ConvertTo-Json -Compress
 } catch {
     $primaryFailure = $_
-    $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity }
+    $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource }
     try {
         $processCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$guiProcess)
         $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$processCondition)
