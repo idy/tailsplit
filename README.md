@@ -40,4 +40,4 @@ The public site is intended to use `https://tailsplit.idy.dev/`; the source repo
 
 ## Companion project
 
-[TailRelay](https://tailrelay.idy.dev/) provides a SOCKS5-backed Tailscale exit node. Its independent source repository is [idy/tunrelay](https://github.com/idy/tunrelay), which also requires repository access.
+[TailRelay](https://tailrelay.idy.dev/) provides a SOCKS5-backed Tailscale exit node. Its independent source repository is [idy/tailrelay](https://github.com/idy/tailrelay), which also requires repository access.
