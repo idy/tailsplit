@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Application,
     [Parameter(Mandatory=$true)][string]$Config,
     [Parameter(Mandatory=$true)][string]$Log,
-    [Parameter(Mandatory=$true)][string]$Screenshot
+    [Parameter(Mandatory=$true)][string]$Screenshot,
+    [Parameter(Mandatory=$true)][string]$Credentials
 )
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Desktop integration runs only in disposable Windows CI.' }
@@ -18,12 +19,10 @@ public static class TailSplitDesktopFixture {
  [StructLayout(LayoutKind.Sequential)] public struct Label { public IntPtr sid; public int attributes; }
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left,top,right,bottom; }
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
- [DllImport("advapi32.dll",SetLastError=true)] static extern bool CreateRestrictedToken(IntPtr existing,uint flags,int n1,IntPtr a1,int n2,IntPtr a2,int n3,IntPtr a3,out IntPtr token);
- [DllImport("advapi32.dll",SetLastError=true)] static extern bool DuplicateTokenEx(IntPtr source,uint access,IntPtr attributes,int level,int type,out IntPtr token);
- public static string TokenSource = "unknown";
- [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool ConvertStringSidToSid(string sid,out IntPtr result);
- [DllImport("advapi32.dll",SetLastError=true)] static extern bool SetTokenInformation(IntPtr token,int type,ref Label label,int size);
- [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr token,string app,string command,IntPtr processAttributes,IntPtr threadAttributes,bool inherit,uint flags,IntPtr environment,string directory,ref Startup startup,out ProcessInfo result);
+ public static string TokenSource = "fresh standard Windows account";
+ [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateProcessWithLogonW(string user,string domain,string password,uint logonFlags,string app,string command,uint flags,IntPtr environment,string directory,ref Startup startup,out ProcessInfo result);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr handle,out uint code);
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int type,IntPtr buffer,int size,out int needed);
  [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
  [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
@@ -39,28 +38,17 @@ public static class TailSplitDesktopFixture {
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
  [DllImport("user32.dll")] public static extern IntPtr GetProp(IntPtr window,string name);
  static void Check(bool value,string operation="Win32") { if(!value) { int code=Marshal.GetLastWin32Error(); throw new System.ComponentModel.Win32Exception(code,operation+": "+new System.ComponentModel.Win32Exception(code).Message); } }
- public static int LaunchMedium(string app,string arguments) {
-  IntPtr original=IntPtr.Zero,restricted=IntPtr.Zero,sid=IntPtr.Zero,linked=IntPtr.Zero,buffer=IntPtr.Zero;
+ public static int LaunchStandard(string user,string password,string app,string arguments,bool wait) {
+  Startup startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop="winsta0\\default"}; ProcessInfo info;
+  // LOGON_WITH_PROFILE and a null environment create this account's normal
+  // profile/environment, including HKCU and AppData used by WebView2.
+  Check(CreateProcessWithLogonW(user,".",password,1,app,"\""+app+"\" "+arguments,0x400,IntPtr.Zero,System.IO.Path.GetDirectoryName(app),ref startup,out info),"CreateProcessWithLogonW(standard account)");
+  CloseHandle(info.thread);
   try {
-   Check(OpenProcessToken(GetCurrentProcess(),0x008B,out original),"OpenProcessToken");
-   buffer=Marshal.AllocHGlobal(IntPtr.Size);int needed;
-   if(GetTokenInformation(original,19,buffer,IntPtr.Size,out needed)) {
-    linked=Marshal.ReadIntPtr(buffer);
-    Check(DuplicateTokenEx(linked,0x008B,IntPtr.Zero,2,1,out restricted),"DuplicateTokenEx(linked desktop token)");
-    TokenSource="UAC linked desktop token";
-   } else {
-    // Some runner images disable UAC splitting. Keep that fallback explicit
-    // in evidence, since a synthetic token is not the normal desktop token.
-    Check(CreateRestrictedToken(original,5,0,IntPtr.Zero,0,IntPtr.Zero,0,IntPtr.Zero,out restricted),"CreateRestrictedToken");
-    Check(ConvertStringSidToSid("S-1-16-8192",out sid),"ConvertStringSidToSid");
-    Label label=new Label{sid=sid,attributes=0x20};
-    Check(SetTokenInformation(restricted,25,ref label,Marshal.SizeOf(typeof(Label))+GetLengthSid(sid)),"SetTokenInformation(medium integrity)");
-    TokenSource="synthetic restricted token";
-   }
-   Startup startup=new Startup{cb=Marshal.SizeOf(typeof(Startup))}; ProcessInfo info;
-   Check(CreateProcessAsUser(restricted,app,"\""+app+"\" "+arguments,IntPtr.Zero,IntPtr.Zero,false,0x400,IntPtr.Zero,System.IO.Path.GetDirectoryName(app),ref startup,out info),"CreateProcessAsUser");
-   CloseHandle(info.thread);CloseHandle(info.process);return info.pid;
-  } finally { if(buffer!=IntPtr.Zero)Marshal.FreeHGlobal(buffer);if(linked!=IntPtr.Zero)CloseHandle(linked);if(sid!=IntPtr.Zero)LocalFree(sid);if(restricted!=IntPtr.Zero)CloseHandle(restricted);if(original!=IntPtr.Zero)CloseHandle(original); }
+   if(!wait)return info.pid;
+   Check(WaitForSingleObject(info.process,30000)==0,"Wait for second instance");
+   uint code;Check(GetExitCodeProcess(info.process,out code),"Get second instance exit code");return (int)code;
+  } finally {CloseHandle(info.process);}
  }
  public static int Integrity(int pid) {
   IntPtr process=OpenProcess(0x1000,false,pid),token=IntPtr.Zero,buffer=IntPtr.Zero;
@@ -97,10 +85,11 @@ function Invoke-Button([System.Windows.Automation.AutomationElement]$Root, [stri
     $pattern.Invoke()
 }
 
-$accountSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$credential = Get-Content -LiteralPath $Credentials -Raw | ConvertFrom-Json
+$accountSID = $credential.sid
 $className = 'TailSplit.Window.' + $accountSID
 $arguments = '--no-connect --config "' + $Config + '" --log "' + $Log + '"'
-$guiProcess = [TailSplitDesktopFixture]::LaunchMedium($Application,$arguments)
+$guiProcess = [TailSplitDesktopFixture]::LaunchStandard($credential.username,$credential.password,$Application,$arguments,$false)
 $primaryFailure = $null
 $stage = 'process launched'
 try {
@@ -136,8 +125,8 @@ try {
     [TailSplitDesktopFixture]::PostMessage($window,0x10,[IntPtr]::Zero,[IntPtr]::Zero) | Out-Null
     Wait-Until { -not [TailSplitDesktopFixture]::IsWindowVisible($window) } 'Window close did not hide to tray.' | Out-Null
     if (-not (Get-Process -Id $guiProcess -ErrorAction SilentlyContinue)) { throw 'Closing the window terminated the tray app.' }
-    $second = Start-Process -FilePath $Application -ArgumentList '--no-connect' -Wait -PassThru
-    if ($second.ExitCode -ne 0) { throw 'Second launch failed.' }
+    $secondExit = [TailSplitDesktopFixture]::LaunchStandard($credential.username,$credential.password,$Application,'--no-connect',$true)
+    if ($secondExit -ne 0) { throw 'Second launch failed.' }
     Wait-Until { [TailSplitDesktopFixture]::IsWindowVisible($window) } 'Second launch did not activate the existing window.' | Out-Null
     @{ token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true } | ConvertTo-Json -Compress
 } catch {
