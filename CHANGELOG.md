@@ -13,6 +13,12 @@
   `dns.direct_ipv6: false` and the hostname is recoverable. Preserve routing-rule
   precedence, local IPv6 and global proxy behavior; failed recovery never falls
   back to a proxy exit.
+- Preserve drafts across delayed or rejected previews and background reloads,
+  validate the app service policy before applying edits, and show blocked or
+  unavailable exits without a connected indicator. Malformed form values remain
+  repairable in the source editor.
+- Cover cached IPv6 recovery through HTTP CONNECT and SOCKS, including ordinary
+  and connected UDP, in addition to system-routing traffic.
 - Add an isolated configuration-page preview command for development and ensure
   tray builds include the embedded core's build tags.
 

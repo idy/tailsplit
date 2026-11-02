@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/appservice"
 	"github.com/idy/tailsplit/internal/tray"
 
 	"gopkg.in/yaml.v3"
@@ -139,11 +140,23 @@ func (s *Server) handler() http.Handler {
 func (s *Server) describe(data []byte) document {
 	doc := document{YAML: string(data), Values: map[string]any{}}
 	if err := yaml.Unmarshal(data, &doc.Values); err != nil {
+		doc.Values = map[string]any{}
 		doc.Error = err.Error()
 		return doc
 	}
+	if _, err := json.Marshal(doc.Values); err != nil {
+		// YAML permits non-finite numbers and keys the form cannot represent.
+		// Keep the original source readable instead of emitting an empty JSON body.
+		doc.Values = map[string]any{}
+		doc.Error = "请在 YAML 原文中修正无法用于表单的值：" + err.Error()
+		return doc
+	}
 	doc.Parsed = true
-	if _, err := tray.ValidateConfigDocument(s.options.ConfigPath, data); err != nil {
+	config, err := tray.ValidateConfigDocument(s.options.ConfigPath, data)
+	if err == nil {
+		err = appservice.ValidateAppConfig(config)
+	}
+	if err != nil {
 		doc.Error = err.Error()
 		return doc
 	}
@@ -265,6 +278,9 @@ func (s *Server) validateRuntime(data []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := appservice.ValidateAppConfig(config); err != nil {
+		return err
+	}
 	// An unregistered device can still save its setup before selecting an exit.
 	if config.Tailscale != nil && config.Tailscale.ExitNode == "" {
 		return nil
@@ -333,9 +349,14 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		status = http.StatusInternalServerError
+		data = []byte(`{"code":"encoding","error":"无法生成配置响应。"}`)
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(append(data, '\n'))
 }
 
 func fail(w http.ResponseWriter, status int, code, message string) {

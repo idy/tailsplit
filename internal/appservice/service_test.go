@@ -308,7 +308,17 @@ func TestServicePolicyCannotReadUserPathsOrBindReservedPorts(t *testing.T) {
 			if _, err := serviceConfig(config, t.TempDir()); err == nil {
 				t.Fatal("unsafe service policy was accepted")
 			}
+			if name != "local rules" && ValidateAppConfig(config) == nil {
+				t.Fatal("app validator accepted a policy the service would reject")
+			}
 		})
+	}
+	local := tailsplit.Config{
+		StateDir: t.TempDir(), Tailscale: &tailsplit.TailscaleConfig{ExitNode: "100.64.0.1"},
+		Rules: tailsplit.RulesConfig{GFWList: "/not-opened/by-validation"},
+	}
+	if err := ValidateAppConfig(local); err != nil || local.Rules.GFWList != "/not-opened/by-validation" {
+		t.Fatal("app validation rejected or rewrote rules transferred as contents:", err)
 	}
 	config, err := serviceConfig(tailsplit.Config{StateDir: "/etc"}, t.TempDir())
 	if err != nil || config.StateDir == "/etc" {

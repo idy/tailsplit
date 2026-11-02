@@ -81,15 +81,45 @@ func TestDirectIPv4RecoveryPreservesRoutingPriority(t *testing.T) {
 	}
 }
 
+func TestDirectIPv4RecoveryThroughApplicationProxy(t *testing.T) {
+	peer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "fixture-only")
+	}))
+	defer peer.Close()
+	proxyAddress, _, proxied := startDirectIPv4InboundFixture(t, peer.Listener.Addr().String(), "proxy-in", nil)
+	proxyURL, _ := url.Parse("http://" + proxyAddress)
+	_, port, _ := net.SplitHostPort(peer.Listener.Addr().String())
+	for _, scheme := range []string{"http", "socks5"} {
+		t.Run(scheme, func(t *testing.T) {
+			proxyURL.Scheme = scheme
+			transport := &http.Transport{
+				Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true,
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "voice.test"},
+			}
+			defer transport.CloseIdleConnections()
+			getFixture(t, &http.Client{Transport: transport, Timeout: 3 * time.Second},
+				"https://"+net.JoinHostPort("2001:db8::10", port)+"/")
+			select {
+			case target := <-proxied:
+				t.Fatalf("application proxy recovery used the exit: %s", target)
+			default:
+			}
+		})
+	}
+}
+
 func TestDirectIPv4QUICRecoveryPreservesReplyAddress(t *testing.T) {
-	for _, connected := range []bool{false, true} {
-		t.Run(fmt.Sprintf("connected=%v", connected), func(t *testing.T) {
+	for _, test := range []struct {
+		inbound   string
+		connected bool
+	}{{"tun-in", false}, {"tun-in", true}, {"proxy-in", false}, {"proxy-in", true}} {
+		t.Run(fmt.Sprintf("%s/connected=%v", test.inbound, test.connected), func(t *testing.T) {
 			peer := startIPv4EchoPackets(t)
-			proxyAddress, _, proxied := startDirectIPv4Fixture(t, peer.LocalAddr().String(), func(native object) {
-				if connected {
+			proxyAddress, _, proxied := startDirectIPv4InboundFixture(t, peer.LocalAddr().String(), test.inbound, func(native object) {
+				if test.connected {
 					route := native["route"].(map[string]any)
 					route["rules"] = append([]any{object{
-						"inbound": []string{"tun-in"}, "network": "udp",
+						"inbound": []string{test.inbound}, "network": "udp",
 						"action": "route-options", "udp_connect": true,
 					}}, route["rules"].([]any)...)
 				}
@@ -134,6 +164,11 @@ func TestDirectIPv4QUICRecoveryPreservesReplyAddress(t *testing.T) {
 
 func startDirectIPv4Fixture(t *testing.T, target string, edit func(object)) (string, *box.Box, <-chan string) {
 	t.Helper()
+	return startDirectIPv4InboundFixture(t, target, "tun-in", edit)
+}
+
+func startDirectIPv4InboundFixture(t *testing.T, target, inbound string, edit func(object)) (string, *box.Box, <-chan string) {
+	t.Helper()
 	hosts, stop, socksAddress := startSOCKSPeer(t, target)
 	t.Cleanup(stop)
 	dnsAddress := startDNSPeer(t)
@@ -158,6 +193,7 @@ tun:
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.TUN.Enabled = inbound == "tun-in"
 	compiled, err := Compile(config)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +204,7 @@ tun:
 	}
 	// Keep the real TUN routing policy, but use only unprivileged loopback
 	// listeners and a SOCKS fixture instead of changing the host network.
-	native["inbounds"] = []object{listener("mixed", "tun-in", proxyAddress)}
+	native["inbounds"] = []object{listener("mixed", inbound, proxyAddress)}
 	delete(native, "endpoints")
 	host, portText, _ := net.SplitHostPort(socksAddress)
 	port, _ := strconv.Atoi(portText)

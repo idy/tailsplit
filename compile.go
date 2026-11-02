@@ -166,6 +166,14 @@ func compile(config Config) (Compiled, error) {
 		// an accidental alternate route for non-DNS application traffic.
 		routes = append(routes, object{"inbound": []string{"tun-in"}, "action": "reject"})
 	}
+	if !global && config.DNS.DirectIPv6 != nil && !*config.DNS.DirectIPv6 {
+		// Explicit application proxies can also receive cached IPv6 literals.
+		// Recover their TLS/QUIC hostname before selecting the outbound.
+		routes = append(routes, object{
+			"inbound": []string{"proxy-in"}, "action": "sniff",
+			"sniffer": []string{"http", "tls", "quic"}, "timeout": "300ms",
+		})
+	}
 	// Peer and Service VIP routing must precede generic private-IP bypass.
 	// Resolve magic/custom Tailnet hostnames to their real addresses before
 	// they enter the endpoint; a direct DNS resolver must never see MagicDNS.

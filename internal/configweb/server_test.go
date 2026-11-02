@@ -169,6 +169,8 @@ func TestInvalidEditsNeverApplyAndBrokenYAMLRemainsReadable(t *testing.T) {
 	}
 	for _, text := range []string{
 		"listen: 0.0.0.0:1234\n", "unknown_setting: true\n", "dns:\n  direct: 172.31.255.2\n", "rules:\n  direct_ips: [1.2.3.4/24]\n", "listen: [invalid\n",
+		"listen: 127.0.0.1:80\n", "dns:\n  listen: 127.0.0.1:80\n",
+		"tailscale:\n  exit_node: 100.64.0.10\n  auth_key_env: TEST_AUTH_KEY\n", "tun:\n  name: utun99\n",
 	} {
 		status, _ := request(t, server, "POST", "/api/config", map[string]string{"yaml": text, "revision": revision}, nil)
 		if status != 422 {
@@ -194,6 +196,30 @@ func TestInvalidEditsNeverApplyAndBrokenYAMLRemainsReadable(t *testing.T) {
 	var doc document
 	if err := json.Unmarshal(body, &doc); err != nil || status != 200 || doc.Valid || doc.YAML != "dns: [broken" {
 		t.Fatal("broken configuration cannot be repaired in the source editor:", string(body), err)
+	}
+}
+
+func TestUnsupportedYAMLValuesRemainReadableInSourceEditor(t *testing.T) {
+	server, path, _ := testServer(t)
+	for _, text := range []string{
+		"tun:\n  mtu: .nan\n", "tun:\n  mtu: .inf\n", "dns:\n  direct: -.inf\n",
+		"rules:\n  invalid: {true: value}\n",
+	} {
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, method := range []string{"GET", "POST"} {
+			endpoint := "/api/config"
+			var edit any
+			if method == "POST" {
+				endpoint, edit = "/api/preview", map[string]string{"yaml": text}
+			}
+			status, body := request(t, server, method, endpoint, edit, nil)
+			var doc document
+			if err := json.Unmarshal(body, &doc); err != nil || status != 200 || doc.Valid || doc.Parsed || doc.YAML != text {
+				t.Fatalf("unsupported YAML source became unreadable: status=%d body=%s err=%v", status, body, err)
+			}
+		}
 	}
 }
 

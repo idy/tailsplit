@@ -38,7 +38,19 @@ func TestDirectIPv4RecoveryIsExplicitAndDoesNotChangeRoutes(t *testing.T) {
 			if err := json.Unmarshal(compiled.JSON, &native); err != nil {
 				t.Fatal(err)
 			}
-			routes, _ := json.Marshal(native["route"])
+			route := native["route"].(map[string]any)
+			if policy == "false" {
+				rules := route["rules"].([]any)
+				expected := object{
+					"inbound": []any{"proxy-in"}, "action": "sniff",
+					"sniffer": []any{"http", "tls", "quic"}, "timeout": "300ms",
+				}
+				if len(rules) < 3 || !reflect.DeepEqual(rules[2], expected) {
+					t.Fatal("IPv4 recovery did not add hostname sniffing before route selection")
+				}
+				route["rules"] = append(rules[:2:2], rules[3:]...)
+			}
+			routes, _ := json.Marshal(route)
 			if originalRoutes == nil {
 				originalRoutes = routes
 			} else if !bytes.Equal(routes, originalRoutes) {

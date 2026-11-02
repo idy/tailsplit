@@ -68,7 +68,10 @@ from the menu bar app. The page groups connection, DNS, routing and startup
 settings, with a live YAML preview and a full source editor. Validate or save/apply
 changes from either view. Saving reconnects an active proxy; an idle app stays
 idle. Existing comments and unrelated settings are preserved. External edits
-cause a revision conflict, and failed edits retain the browser draft.
+cause a revision conflict, and failed edits retain the browser draft. App service
+checks run before saving: listener ports must be at least 1024, the system chooses
+the TUN name, and the app uses interactive or saved login rather than environment
+authentication keys.
 
 The app owns the page on a random `127.0.0.1` port and closes it on exit. Its
 per-run capability travels in the URL fragment and then an Authorization header.
@@ -133,7 +136,9 @@ creates a local ad-hoc app, ZIP, DMG, checksums and verification receipt. Linux
 CLI Debian packages can be built on Linux with `GOARCH=amd64 make deb` or
 `GOARCH=arm64 make deb`; these require Bash, GNU coreutils and `dpkg-deb`.
 Source tests use loopback fixtures and synthetic signing inputs; they do not
-need real provider or signing credentials.
+need real provider or signing credentials. When Node.js 18 or later is available,
+`make test` also runs deterministic editor state regression tests; no npm packages
+are required.
 
 To preview the configuration panel without starting a proxy:
 

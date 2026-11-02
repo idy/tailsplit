@@ -15,9 +15,11 @@
   const state = {
     saved: '', base: '', draft: '', revision: '', changes: Object.create(null),
     mode: 'form', valid: false, parsed: false, values: {}, loaded: false,
-    dirty: false, busy: false, previewing: false, external: false,
-    generation: 0, pending: null, timer: null, toastTimer: null,
+    dirty: false, busy: false, loading: false, switching: false, validating: false,
+    previewing: false, external: false,
+    generation: 0, previewed: 0, pending: null, timer: null, toastTimer: null,
   };
+  const isLocked = () => state.busy || state.loading || state.switching;
 
   const fragment = new URLSearchParams(location.hash.slice(1));
   let token = fragment.get('token');
@@ -88,14 +90,15 @@
   function updateGlobalMode() {
     const global = $('#routing-mode').value === 'global';
     $('#global-hint').hidden = !global;
-    $('#tun-enabled').disabled = global || state.busy;
+    $('#tun-enabled').disabled = global || isLocked();
   }
 
   function updateActions() {
-    $('#save').disabled = !state.loaded || !state.dirty || !state.valid || state.busy || state.previewing || state.external;
-    $('#discard').disabled = !state.dirty || state.busy;
-    $('#validate').disabled = !state.loaded || state.busy || state.previewing;
-    $('#reload').disabled = state.busy;
+    const locked = isLocked();
+    $('#save').disabled = !state.loaded || !state.dirty || !state.valid || locked || state.previewing || state.external;
+    $('#discard').disabled = !state.dirty || locked;
+    $('#validate').disabled = !state.loaded || locked || state.validating || state.previewing;
+    $('#reload').disabled = locked;
     $('#save').textContent = state.busy ? '正在应用…' : '保存并应用';
     $('#save-state').classList.toggle('dirty', state.dirty);
     $('#save-state').classList.toggle('invalid', !state.valid && state.loaded && !state.previewing);
@@ -104,8 +107,9 @@
       state.dirty ? '有未保存的更改' : '所有更改已保存';
     $('#preview-draft').textContent = state.dirty ? '草稿' : '已保存';
     $('#preview-draft').classList.toggle('dirty', state.dirty);
-    for (const control of controls) control.disabled = state.busy;
-    $('#raw-yaml').disabled = state.busy;
+    for (const control of controls) control.disabled = locked;
+    $('#raw-yaml').disabled = locked;
+    for (const button of document.querySelectorAll('.editor-tabs button, [data-section]')) button.disabled = locked;
     updateGlobalMode();
   }
 
@@ -135,6 +139,7 @@
 
   function useDocument(doc) {
     clearTimeout(state.timer); state.timer = null; state.generation++;
+    state.previewed = state.generation; state.pending = null;
     state.saved = state.base = state.draft = doc.yaml;
     state.revision = doc.revision;
     state.values = doc.values || {};
@@ -154,13 +159,14 @@
   }
 
   async function load() {
+    state.loading = true; updateActions();
     try {
       useDocument(await api('config'));
-      await refreshState();
     } catch (error) {
       $('#loading').hidden = true;
       notice('无法读取本机配置', error.message || '请从 TailSplit 菜单重新打开页面。');
-    }
+    } finally { state.loading = false; updateActions(); }
+    await refreshState();
   }
 
   function showMode(mode) {
@@ -185,6 +191,7 @@
       const doc = await promise;
       if (generation !== state.generation) return;
       state.draft = doc.yaml; state.values = doc.values || {};
+      state.previewed = generation;
       state.valid = doc.valid; state.parsed = doc.parsed;
       state.dirty = state.draft !== state.saved;
       paintPreview();
@@ -211,16 +218,24 @@
   }
 
   async function flushPreview() {
-    if (state.timer) {
-      clearTimeout(state.timer); state.timer = null;
-      await runPreview();
-    } else if (state.pending) {
-      try { await state.pending.promise; } catch (_) { /* runPreview reports it. */ }
+    while (state.previewed !== state.generation) {
+      const generation = state.generation;
+      if (state.timer) {
+        clearTimeout(state.timer); state.timer = null;
+        await runPreview();
+      } else if (state.pending?.generation === generation) {
+        try { await state.pending.promise; } catch (_) { /* runPreview reports it. */ }
+      } else {
+        await runPreview();
+      }
+      if (generation === state.generation) return state.previewed === generation;
     }
+    return true;
   }
 
   for (const control of controls) {
     control.addEventListener('input', () => {
+      if (isLocked()) return;
       let value;
       if (control.type === 'checkbox') value = control.checked;
       else if (control.dataset.kind === 'list') value = control.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -234,7 +249,10 @@
       updateGlobalMode(); schedulePreview();
     });
   }
-  $('#raw-yaml').addEventListener('input', (event) => { state.draft = event.target.value; schedulePreview(); });
+  $('#raw-yaml').addEventListener('input', (event) => {
+    if (isLocked()) return;
+    state.draft = event.target.value; schedulePreview();
+  });
   $('#raw-yaml').addEventListener('keydown', (event) => {
     if (event.key !== 'Tab') return;
     event.preventDefault();
@@ -244,16 +262,23 @@
   });
 
   async function switchMode(mode) {
-    if (state.busy || mode === state.mode) return true;
-    await flushPreview();
-    if (mode === 'form' && !state.parsed) {
-      notice('暂时无法切换到表单', '请先修正 YAML 语法，原文草稿会保留。');
-      return false;
-    }
-    state.base = state.draft; state.changes = Object.create(null);
-    if (mode === 'yaml') $('#raw-yaml').value = state.draft;
-    else fillFields(state.values);
-    showMode(mode); return true;
+    if (isLocked()) return false;
+    if (mode === state.mode) return true;
+    state.switching = true; updateActions();
+    try {
+      if (!(await flushPreview())) {
+        notice('暂时无法切换编辑方式', '请先修正表单输入或重试，当前草稿会保留。');
+        return false;
+      }
+      if (mode === 'form' && !state.parsed) {
+        notice('暂时无法切换到表单', '请先修正 YAML 语法，原文草稿会保留。');
+        return false;
+      }
+      state.base = state.draft; state.changes = Object.create(null);
+      if (mode === 'yaml') $('#raw-yaml').value = state.draft;
+      else fillFields(state.values);
+      showMode(mode); return true;
+    } finally { state.switching = false; updateActions(); }
   }
   $('#form-tab').addEventListener('click', () => switchMode('form'));
   $('#yaml-tab').addEventListener('click', () => switchMode('yaml'));
@@ -276,36 +301,38 @@
   }
 
   async function reload() {
-    if (state.busy) return;
+    if (isLocked()) return;
     if (state.dirty) {
       const dialog = $('#discard-dialog');
       dialog.returnValue = 'cancel'; dialog.showModal();
       const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
       if (answer !== 'discard') return;
     }
-    await load();
+    if (!isLocked()) await load();
   }
   $('#reload').addEventListener('click', reload);
   $('#discard').addEventListener('click', reload);
   $('#notice-reload').addEventListener('click', reload);
 
   $('#validate').addEventListener('click', async () => {
-    await flushPreview();
-    $('#validate').disabled = true;
+    if (isLocked() || state.validating || !(await flushPreview())) return;
+    const generation = state.generation;
+    state.validating = true; updateActions();
     try {
       await api('validate', { yaml: state.draft });
+      if (generation !== state.generation) return;
       state.valid = true; clearNotice(); toast('配置校验通过');
     } catch (error) {
+      if (generation !== state.generation) return;
       state.valid = false; notice('配置未通过校验', error.message);
-    } finally { updateActions(); }
+    } finally { state.validating = false; updateActions(); }
   });
 
   $('#save').addEventListener('click', async () => {
-    if (state.busy) return;
-    await flushPreview();
-    if (!state.valid || state.external) return;
+    if (isLocked()) return;
     state.busy = true; updateActions();
     try {
+      if (!(await flushPreview()) || !state.valid || state.external) return;
       const doc = await api('config', { yaml: state.draft, revision: state.revision });
       useDocument(doc);
       toast('配置已保存并应用');
@@ -317,7 +344,7 @@
   });
 
   async function copy() {
-    await flushPreview();
+    if (isLocked() || !(await flushPreview())) return;
     try { await navigator.clipboard.writeText(state.draft); toast('YAML 已复制'); }
     catch (_) { toast('无法访问剪贴板，请在 YAML 原文中选择并复制。'); }
   }
@@ -328,8 +355,14 @@
     if (!state.loaded || document.hidden) return;
     try {
       const live = await api('state');
-      const labels = { starting: live.mode === 'discovery' ? '正在读取设备' : '正在连接', stopping: '正在断开', failed: '连接异常', authorizing: '等待授权', authenticated: '已登录' };
-      const connected = live.active && ['tun', 'proxy'].includes(live.mode) && !['failed', 'starting', 'stopping', 'authorizing'].includes(live.state);
+      const labels = {
+        starting: live.mode === 'discovery' ? '正在读取设备' : '正在连接', connecting: '正在连接',
+        stopping: '正在断开', failed: '连接异常', authorizing: '等待授权', authenticated: '已登录',
+        blocked: '出口不可用 · 已阻断', 'checking-exit': '正在检查出口', 'waiting-exit': '等待出口上线',
+        'missing-exit': '请重新选择出口', login: '等待 Tailscale 登录', authenticating: '正在登录',
+        discovering: '正在读取出口', 'logging-out': '正在退出登录',
+      };
+      const connected = live.active && ['tun', 'proxy'].includes(live.mode) && live.state === 'running';
       $('#connection-status').classList.toggle('connected', connected);
       $('#connection-status span').textContent = live.preview ? '预览环境' : connected ? '已连接' : labels[live.state] || '未连接';
       $('#exit-label').textContent = live.exit || (live.preview ? '更改仅保存到预览副本' : '本机配置');
@@ -340,9 +373,17 @@
         option.label = node.name || node.Name || option.value;
         return option;
       }));
-      if (live.revision && live.revision !== state.revision && !state.busy) {
-        if (!state.dirty) useDocument(await api('config'));
-        else { state.external = true; clearNotice(); updateActions(); }
+      if (live.revision && live.revision !== state.revision && !isLocked()) {
+        const generation = state.generation;
+        if (!state.dirty) {
+          const doc = await api('config');
+          if (generation === state.generation && !state.dirty && !isLocked()) {
+            useDocument(doc);
+            return;
+          }
+          if (doc.revision === state.revision) return;
+        }
+        state.external = true; clearNotice(); updateActions();
       }
     } catch (_) {
       $('#connection-status').classList.remove('connected');

@@ -98,6 +98,19 @@ func replacePrivate(path string, data []byte) (err error) {
 	return os.Rename(file.Name(), path)
 }
 
+// ValidateAppConfig checks the service policy without contacting the service or
+// opening saved login state. Local rules are transferred as contents by the app.
+func ValidateAppConfig(config tailsplit.Config) error {
+	if config.Rules.Mode == tailsplit.RoutingGlobal {
+		config.Rules.GFWList = ""
+	} else if config.Rules.GFWList != "" && config.Rules.GFWList != "builtin" &&
+		!strings.HasPrefix(config.Rules.GFWList, "https://") {
+		config.Rules.GFWList = "builtin"
+	}
+	_, err := serviceConfig(config, config.StateDir)
+	return err
+}
+
 func serviceConfig(config tailsplit.Config, directory string) (tailsplit.Config, error) {
 	// All on-disk engine paths come from this root-owned directory. Config
 	// contains no raw sing-box options, hooks, executable paths or plugins.
