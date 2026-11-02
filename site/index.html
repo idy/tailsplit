@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="TailSplit is a macOS menu bar app for domain and IP routing rules: direct connections, a selected proxy exit, and configured Tailnet destinations.">
+  <meta name="theme-color" content="#f3f7fc">
+  <meta property="og:title" content="TailSplit — your Mac, your routing rules">
+  <meta property="og:description" content="Keep local traffic direct. Send selected connections through your chosen exit. Manage routing from the macOS menu bar.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://tailsplit.idy.dev/">
+  <link rel="canonical" href="https://tailsplit.idy.dev/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="script.js" defer></script>
+  <title>TailSplit — your Mac, your routing rules</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="brand" href="#" aria-label="TailSplit home">
+      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 16h8c7 0 5-9 12-9M13 16c7 0 5 9 12 9"/><circle cx="5" cy="16" r="3"/><circle cx="25" cy="7" r="3"/><circle cx="25" cy="25" r="3"/></svg>
+      <span>TailSplit</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="#routing">Routing</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/idy/letsolo/tree/master/tailsplit">App source <span class="access-label">(private)</span></a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-heading">
+        <h1 id="hero-title">Your Mac.<br>Your routing rules.</h1>
+        <div class="hero-intro">
+          <p>A macOS menu bar app for domain and IP rules. Keep direct traffic on your network, send selected connections through a proxy exit, and reach your Tailnet when configured.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#install">Get TailSplit</a>
+            <a class="text-link" href="https://github.com/idy/letsolo/blob/master/tailsplit/README.md">Read the docs <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
+          </div>
+        </div>
+      </div>
+
+      <figure class="route-concept" id="split-concept" data-route="proxy">
+        <figcaption>Routing concept <span>One connection, one matching route.</span></figcaption>
+        <div class="concept-layout">
+          <svg class="split-map" viewBox="0 0 560 300" role="img" aria-labelledby="split-map-title split-map-description">
+            <title id="split-map-title">Rules choose the route</title>
+            <desc id="split-map-description">A connection from your Mac reaches TailSplit rules. It can go directly over the current network, through the selected proxy exit, or to a configured and authorized Tailnet destination.</desc>
+            <path class="route-base" d="M62 150H220M220 150H272Q298 150 298 124V88Q298 62 324 62H382M220 150H382M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
+            <path class="entry-path" d="M62 150H220"/>
+            <path class="route-branch direct-branch" d="M220 150H272Q298 150 298 124V88Q298 62 324 62H382"/>
+            <path class="route-branch proxy-branch" d="M220 150H382"/>
+            <path class="route-branch tailnet-branch" d="M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
+            <circle class="mac-node" cx="62" cy="150" r="29"/>
+            <g class="mac-icon" aria-hidden="true"><rect x="48" y="139" width="28" height="18" rx="2"/><path d="M43 162h38"/></g>
+            <text class="map-label" x="62" y="207" text-anchor="middle">Your Mac</text>
+            <circle class="rules-halo" cx="220" cy="150" r="52"/>
+            <circle class="rules-node" cx="220" cy="150" r="37"/>
+            <g class="rules-icon" aria-hidden="true"><path d="M201 150h10c10 0 7-12 19-12M211 150c10 0 7 12 19 12"/><circle cx="201" cy="150" r="3"/><circle cx="230" cy="138" r="3"/><circle cx="230" cy="162" r="3"/></g>
+            <text class="map-label map-label-strong" x="220" y="231" text-anchor="middle">Your rules</text>
+            <g class="destination direct-destination"><circle cx="382" cy="62" r="14"/><path d="M376 62h12m-4-4 4 4-4 4"/></g>
+            <text class="map-label" x="412" y="58">Direct</text>
+            <text class="map-detail" x="412" y="80">Current network</text>
+            <g class="destination proxy-destination"><circle cx="382" cy="150" r="14"/><path d="m376 150 4 4 8-8"/></g>
+            <text class="map-label" x="412" y="146">Proxy</text>
+            <text class="map-detail" x="412" y="168">Selected exit</text>
+            <g class="destination tailnet-destination"><circle cx="382" cy="238" r="14"/><path d="M378 234h8v8h-8z"/></g>
+            <text class="map-label" x="412" y="234">Tailnet</text>
+            <text class="map-detail" x="412" y="256">Authorized peers</text>
+          </svg>
+          <div class="concept-interaction">
+            <div class="concept-controls" data-demo-controls hidden role="group" aria-label="Choose a conceptual routing rule">
+              <button type="button" data-split-route="direct" aria-pressed="false"><span class="rule-indicator" aria-hidden="true"></span>Direct rule</button>
+              <button type="button" data-split-route="proxy" aria-pressed="true"><span class="rule-indicator" aria-hidden="true"></span>Proxy rule</button>
+              <button type="button" data-split-route="tailnet" aria-pressed="false"><span class="rule-indicator" aria-hidden="true"></span>Tailnet rule</button>
+            </div>
+            <p class="concept-result" id="split-result" role="status" aria-live="polite" aria-atomic="true">A domain on your proxy list uses the selected exit. The rule’s DNS follows that exit too.</p>
+            <p class="concept-disclaimer">Illustration only. No connection is made and no network settings change.</p>
+          </div>
+        </div>
+      </figure>
+      <p class="hero-note">Starts in your menu bar, disconnected. You decide when to connect.</p>
+    </section>
+
+    <section class="routing-section wrap" id="routing" aria-labelledby="routing-title">
+      <div class="routing-intro">
+        <h2 id="routing-title">Keep the route<br>in your hands.</h2>
+        <p>Domain lists, IP ranges, and GFWList rules live in a YAML configuration you can open from the menu bar.</p>
+        <p>Use an application’s HTTP/SOCKS proxy settings, or enable TUN routing for captured system traffic. Both modes use the same routing rules.</p>
+      </div>
+      <div class="rule-ledger">
+        <p class="ledger-intro">In rule mode, connections are matched in this order:</p>
+        <ol class="rule-order">
+          <li><div><h3>Configured Tailnet destinations</h3><p>MagicDNS names, configured Tailnet domains, and Tailnet addresses use the embedded Tailscale connection.</p></div></li>
+          <li><div><h3>Your direct exceptions</h3><p>Direct domains, GFWList exceptions, and direct IP ranges stay on your network.</p></div></li>
+          <li><div><h3>Your proxy rules</h3><p>Proxy IP ranges, proxy domains, and GFWList proxy matches use the selected exit.</p></div></li>
+          <li><div><h3>The remaining traffic</h3><p>Other private destinations go direct. Everything else follows your configured default.</p></div></li>
+        </ol>
+        <p class="dns-note">DNS is part of the route. Proxy-domain lookups use the proxy exit; Tailnet names use the appropriate Tailnet resolver.</p>
+      </div>
+    </section>
+
+    <section class="install-section" id="install" aria-labelledby="install-title">
+      <div class="wrap">
+        <div class="install-heading">
+          <h2 id="install-title">From download<br>to menu bar.</h2>
+          <div class="download-intro">
+            <p>The app source and downloads are currently maintained in <a href="https://github.com/idy/letsolo/tree/master/tailsplit">idy/letsolo</a>. This website’s repository, <code>idy/tunsplit</code>, contains the site only.</p>
+            <a class="button button-primary" href="https://github.com/idy/letsolo/releases">Find TailSplit downloads <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+            <p class="access-note">GitHub repository access is required. Check the release notes for architecture and signing status.</p>
+          </div>
+        </div>
+        <ol class="install-steps">
+          <li>
+            <h3>Open TailSplit.</h3>
+            <p>Install the macOS app from its distribution package and open it normally. It appears in the menu bar without connecting automatically.</p>
+          </li>
+          <li>
+            <h3>Allow the network service.</h3>
+            <p>The first connection opens the bundled macOS package installer. An administrator authorizes the privileged background service, which handles the TUN and DNS in both connection modes.</p>
+          </li>
+          <li>
+            <h3>Review your rules. Connect.</h3>
+            <p>Open the YAML from the menu, set your Tailnet and exit, and review the routing rules. Authorize your device when needed, then start the proxy connection.</p>
+          </li>
+        </ol>
+        <div class="mode-comparison" aria-label="Connection modes">
+          <div><h3>Application proxy</h3><p>Opt individual apps into the local HTTP/SOCKS proxy. A narrow DNS TUN route is created; the system proxy, default traffic route, and system DNS stay as they are.</p></div>
+          <div><h3>System routing</h3><p>Enable <code>tun.enabled</code> in YAML to add system-traffic routing and DNS interception. Rules apply to connections captured by the TUN.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="details-section wrap" aria-labelledby="details-title">
+      <div>
+        <h2 id="details-title">A little context<br>before connecting.</h2>
+        <div class="build-note">
+          <h3>Building the macOS app?</h3>
+          <p>With Go 1.26 or later, run this from an <a href="https://github.com/idy/letsolo/tree/master/tailsplit">idy/letsolo checkout</a>:</p>
+          <div class="command-line">
+            <code id="split-build-command">make -C tailsplit app</code>
+            <button class="copy-button" type="button" data-copy-target="split-build-command" aria-label="Copy TailSplit app build command" hidden>Copy</button>
+          </div>
+          <p class="copy-status" role="status" aria-live="polite" data-copy-status></p>
+          <p class="build-caveat">This creates an ad-hoc development build. Developer ID signing and notarization use the separate <a href="https://github.com/idy/letsolo/blob/master/tailsplit/README.md">documented release process</a>.</p>
+        </div>
+      </div>
+      <div class="questions">
+        <details open>
+          <summary>What happens when an exit is unavailable?</summary>
+          <p>Global mode sends captured traffic through the selected exit and keeps the running TUN in place if that exit goes offline. It blocks those connections until the exit recovers.</p>
+          <p>This protection depends on TailSplit and its TUN remaining active. Disconnecting, quitting, or a background-service crash removes the TUN and temporary DNS, restoring system networking. It is not a persistent system-wide firewall kill switch.</p>
+        </details>
+        <details>
+          <summary>Why does application proxy mode need permission?</summary>
+          <p>Both connection modes create a TUN for the app’s DNS service. Application proxy mode adds only its narrow DNS route; enabling system routing adds the broader traffic routes. The privileged service performs this work, and the macOS installer handles the administrator password.</p>
+        </details>
+        <details>
+          <summary>Does signing in start the proxy?</summary>
+          <p>No. Signing in authorizes the embedded Tailscale device. Starting the proxy is a separate action. Opening the app and automatic connection are also separate preferences; automatic connection is off by default.</p>
+        </details>
+        <details>
+          <summary>Can I choose another exit?</summary>
+          <p>The exit menu lists devices your Tailnet makes available as exits. Offline or expired devices cannot be selected. Switching exits saves the choice and reconnects a running proxy while preserving your device login and routing rules. TailSplit does not silently choose another exit for you.</p>
+        </details>
+      </div>
+    </section>
+
+    <div class="companion wrap">
+      <p>Need to provide a SOCKS5-backed Tailnet exit?</p>
+      <a href="https://tailrelay.idy.dev/">Meet TailRelay <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
+    </div>
+  </main>
+
+  <footer class="site-footer wrap">
+    <a class="footer-brand" href="#">TailSplit</a>
+    <p>An independent project built with Tailscale and sing-box.</p>
+    <div class="footer-links"><a href="https://github.com/idy/letsolo/tree/master/tailsplit">App source <span class="access-label">(private)</span></a><a href="https://github.com/idy/tunsplit">Website repo <span class="access-label">(private)</span></a></div>
+  </footer>
+</body>
+</html>
