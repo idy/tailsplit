@@ -171,7 +171,9 @@ func runWindowsDesktop() (runErr error) {
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, operations: make(chan windowsOperation), browserDone: make(chan error, 1)}
+	// Keep one bounded pending request while the dispatcher handles its status
+	// tick. An unbuffered nonblocking send can reject a click while idle.
+	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
 	go app.operate()
 	page, err := configweb.Start(configweb.Options{
 		ConfigPath: *config, Snapshot: controller.Snapshot,
