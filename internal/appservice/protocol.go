@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/idy/tailsplit"
-
-	"github.com/tailscale/peercred"
 )
 
 const (
@@ -69,18 +67,6 @@ func executableID(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func requireUser(connection net.Conn, expected string) error {
-	credentials, err := peercred.Get(connection)
-	if err != nil {
-		return errors.New("could not authenticate the local network service")
-	}
-	uid, ok := credentials.UserID()
-	if !ok || uid != expected {
-		return errors.New("the network service channel has an unexpected user")
-	}
-	return nil
 }
 
 // Read exactly one bounded line, keeping any following stop/EOF in reader.

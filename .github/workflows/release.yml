@@ -112,6 +112,20 @@ jobs:
         env:
           PYTHONUTF8: '1'
         run: python -I -B tests/packaging/windows.py --arch '${{ matrix.arch }}' --directory bin/release/assets
+      - name: Verify native Windows desktop, SYSTEM service and installation lifecycle
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: python -I -B tests/packaging/windows_desktop.py --arch '${{ matrix.arch }}' --directory bin/release/assets
+      - name: Preserve Windows desktop verification evidence
+        if: always() && matrix.goos == 'windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-evidence-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: bin/windows-desktop-evidence/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Verify native Windows DNS-only TUN lifecycle
         if: matrix.goos == 'windows'
         shell: pwsh

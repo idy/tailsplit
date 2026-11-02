@@ -36,6 +36,9 @@ type Options struct {
 	Preview    bool
 	Snapshot   func() tray.Snapshot
 	Apply      func(context.Context, func() error) error
+	Action     func(context.Context, string) error
+	Logs       func() (string, error)
+	Startup    func() bool
 }
 
 type Server struct {
@@ -86,7 +89,7 @@ func Start(options Options) (*Server, error) {
 	s := &Server{options: options, address: listener.Addr().String(), token: hex.EncodeToString(secret[:])}
 	s.server = &http.Server{
 		Handler: s.handler(), ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second,
+		ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192,
 	}
 	go func() { _ = s.server.Serve(listener) }()
@@ -107,12 +110,16 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/preview", s.preview)
 	mux.HandleFunc("POST /api/validate", s.validate)
 	mux.HandleFunc("POST /api/config", s.save)
+	mux.HandleFunc("POST /api/action", s.desktopAction)
+	mux.HandleFunc("GET /api/logs", s.desktopLogs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
-		if r.Host != s.address || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+s.address) {
+		_, port, _ := net.SplitHostPort(s.address)
+		hostOK := r.Host == s.address || s.options.Preview && r.Host == "localhost:"+port
+		if !hostOK || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+r.Host) {
 			fail(w, http.StatusForbidden, "origin", "请从 TailSplit 菜单打开本机配置页面。")
 			return
 		}
@@ -186,7 +193,8 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		"state": snapshot.State, "active": snapshot.Active, "mode": snapshot.Mode,
 		"exit": snapshot.ExitNode, "network": snapshot.NetworkName,
 		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
-		"exit_nodes": snapshot.ExitNodes,
+		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
+		"startup": s.options.Startup != nil && s.options.Startup(),
 	})
 }
 

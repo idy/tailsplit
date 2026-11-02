@@ -52,6 +52,13 @@ h1 { font-size: 27px; font-weight: 620; letter-spacing: -.7px; line-height: 1.35
 .status-pill.connected i { background: #2b8a71; }
 .status-pill.connected { color: #226d5b; }
 .exit-label { font-family: var(--mono); font-size: 12px; color: #77879b; }
+.desktop-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 0 0 22px; margin-bottom: 22px; border-bottom: 1px solid var(--line); }
+.desktop-actions { display: flex; flex-wrap: wrap; gap: 8px; flex: 1 1 520px; }
+.desktop-startup { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.desktop-startup input { accent-color: var(--accent); }
+.desktop-hint { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+.desktop-log-dialog { width: min(920px, 90vw); max-height: 85vh; }
+.desktop-log-dialog pre { overflow: auto; max-height: 55vh; margin: 18px 0; padding: 14px; background: var(--canvas); color: var(--code); font: 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-bottom: 20px; }
 .editor-tabs { display: flex; padding: 4px; gap: 3px; border: 1px solid #dfe6ef; border-radius: 9px; background: #eaf0f5; }
 .editor-tabs button { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 15px; border: 0; border-radius: 6px; font-size: 12px; font-weight: 500; background: transparent; color: var(--muted); }

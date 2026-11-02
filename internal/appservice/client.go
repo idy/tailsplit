@@ -21,7 +21,7 @@ var ErrNotInstalled = errors.New("the TailSplit network service is not installed
 
 // Launch brokers the app's network session without elevating the GUI.
 func Launch(ctx context.Context, executable string, config tailsplit.Config, output io.Writer) error {
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		return errors.New("app-run is for the macOS app; use run on other platforms")
 	}
 	connection, err := OpenSession(ctx, executable, "start", config, output)
@@ -114,6 +114,9 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 // OpenSession transfers policy and, only during the first migration, a bounded
 // copy of the user's saved login/FakeIP cache. It never transfers path authority.
 func OpenSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer) (net.Conn, error) {
+	if runtime.GOOS == "windows" {
+		return openWindowsSession(ctx, executable, operation, config)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

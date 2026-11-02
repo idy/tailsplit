@@ -53,7 +53,7 @@ jobs:
         run: sh scripts/test-tun-dns.sh
 
   windows:
-    name: Windows CLI (${{ matrix.arch }})
+    name: Windows desktop (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +65,7 @@ jobs:
             arch: arm64
             python_arch: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 75
     env:
       GOMAXPROCS: '2'
       GOWORK: 'off'
@@ -99,6 +99,13 @@ jobs:
         env:
           TAILSPLIT_WINDOWS_TUN_TEST: '1'
         run: go test -mod=readonly -tags with_gvisor -run '^TestWindowsTUNDNSLifecycle$' -timeout 2m -v .
+      - name: Validate desktop capability, pipe identity and native Go UI entry point
+        shell: pwsh
+        run: |
+          go test -mod=readonly -tags with_gvisor -run '^(TestDesktop|TestWindows)' -timeout 3m ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./cmd/tailsplit-tray
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet -mod=readonly -tags with_gvisor ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./cmd/tailsplit-tray
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and execute native Windows archive
         shell: pwsh
         run: |
@@ -106,3 +113,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -I -B tests/packaging/windows.py --arch '${{ matrix.arch }}' --directory bin/ci-windows/assets
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native desktop window, SYSTEM service and installer lifecycle
+        shell: pwsh
+        run: python -I -B tests/packaging/windows_desktop.py --arch '${{ matrix.arch }}' --directory bin/ci-windows/assets
+      - name: Preserve native desktop verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-evidence-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: bin/windows-desktop-evidence/
+          if-no-files-found: ignore
+          retention-days: 14

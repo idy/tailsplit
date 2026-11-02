@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/privatefs"
 
 	"gopkg.in/yaml.v3"
 )
@@ -175,5 +176,5 @@ func SaveConfigDocument(path, revision string, data []byte) error {
 	if !bytes.Equal(original, current) {
 		return ErrConfigChanged
 	}
-	return os.Rename(candidate, path)
+	return privatefs.Replace(candidate, path)
 }

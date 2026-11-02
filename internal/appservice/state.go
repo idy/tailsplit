@@ -10,25 +10,37 @@ import (
 	"strings"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/privatefs"
 )
 
 func runtimeDirectory(base string, uid int) string {
-	return filepath.Join(base, "users", fmt.Sprint(uid))
+	return runtimeUserDirectory(base, fmt.Sprint(uid))
 }
 
-func initialized(base string, uid int) bool {
-	info, err := os.Lstat(filepath.Join(runtimeDirectory(base, uid), ".initialized"))
+func runtimeUserDirectory(base, user string) string { return filepath.Join(base, "users", user) }
+
+func initialized(base string, uid int) bool { return runtimeInitialized(runtimeDirectory(base, uid)) }
+
+func runtimeInitialized(directory string) bool {
+	info, err := os.Lstat(filepath.Join(directory, ".initialized"))
 	return err == nil && info.Mode().IsRegular()
 }
 
 func prepareRuntime(base string, uid int, files Files) (string, error) {
-	for _, directory := range []string{base, filepath.Join(base, "users"), runtimeDirectory(base, uid)} {
-		if err := privateDirectory(directory); err != nil {
+	return prepareRuntimeUser(base, fmt.Sprint(uid), files)
+}
+
+func prepareRuntimeUser(base, user string, files Files) (string, error) {
+	if user == "" || user == "." || user == ".." || strings.ContainsAny(user, `/\\:`) {
+		return "", errors.New("invalid registered service user")
+	}
+	directory := runtimeUserDirectory(base, user)
+	for _, path := range []string{base, filepath.Join(base, "users"), directory} {
+		if err := privateDirectory(path); err != nil {
 			return "", err
 		}
 	}
-	directory := runtimeDirectory(base, uid)
-	if !initialized(base, uid) {
+	if !runtimeInitialized(directory) {
 		if len(files.TailscaleState) > 0 {
 			if err := privateDirectory(filepath.Join(directory, "tailscale")); err != nil {
 				return "", err
@@ -72,10 +84,13 @@ func replacePrivate(path string, data []byte) (err error) {
 	if _, err = file.Write(data); err != nil {
 		return err
 	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
 	if err = file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(file.Name(), path)
+	return privatefs.Replace(file.Name(), path)
 }
 
 // ValidateAppConfig checks the service policy without contacting the service or
@@ -103,7 +118,7 @@ func serviceConfig(config tailsplit.Config, directory string) (tailsplit.Config,
 		return config, errors.New("the service accepts rule contents, not a local rules pathname")
 	}
 	if config.TUN.Name != "" {
-		return config, errors.New("the macOS app lets the system choose its TUN interface name")
+		return config, errors.New("the desktop app lets the system choose its TUN interface name")
 	}
 	var err error
 	config, err = tailsplit.Normalize(config, directory)

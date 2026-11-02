@@ -2,8 +2,8 @@
 
 package appservice
 
-import "errors"
+import "github.com/idy/tailsplit/internal/privatefs"
 
-func privateDirectory(string) error {
-	return errors.New("the installed app service is available only on macOS")
-}
+// The SCM service runs as SYSTEM: only SYSTEM and administrators can modify
+// these directories. The desktop user receives data over the pipe, never paths.
+func privateDirectory(path string) error { return privatefs.EnsureDir(path) }

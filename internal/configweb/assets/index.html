@@ -45,6 +45,19 @@
       <div class="connection-status"><span class="status-pill" id="connection-status"><i></i><span>正在读取</span></span><span class="exit-label" id="exit-label"></span></div>
     </header>
 
+    <section class="desktop-controls" id="desktop-controls" aria-label="连接与设备操作" hidden>
+      <div class="desktop-actions">
+        <button class="button primary" data-desktop-action="connect" id="desktop-connect">连接</button>
+        <button class="button" data-desktop-action="disconnect" id="desktop-disconnect">断开</button>
+        <button class="button" data-desktop-action="login">登录 Tailnet…</button>
+        <button class="button subtle" data-desktop-action="logout">退出设备登录</button>
+        <button class="button subtle" data-desktop-action="refresh-exits">刷新出口</button>
+        <button class="button subtle" id="desktop-logs">查看日志</button>
+      </div>
+      <label class="desktop-startup"><input type="checkbox" id="desktop-startup">登录 Windows 后启动</label>
+      <p class="desktop-hint" id="desktop-hint" role="status">连接和设备登录分别控制；关闭窗口后仍保留在托盘。</p>
+    </section>
+
     <div class="toolbar">
       <div class="editor-tabs" role="tablist" aria-label="编辑方式">
         <button id="form-tab" role="tab" aria-selected="true" aria-controls="form-editor" class="selected">表单编辑</button>
@@ -126,6 +139,7 @@
   </main>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
+<dialog class="desktop-log-dialog" id="desktop-log-dialog"><h2>诊断日志</h2><p>最近的本机日志；设备授权链接和认证密钥会被隐藏。</p><pre id="desktop-log-text" tabindex="0"></pre><form method="dialog"><div class="dialog-actions"><button type="button" class="button" id="desktop-log-refresh">刷新日志</button><button class="button primary" value="close">关闭</button></div></form></dialog>
 <dialog id="discard-dialog"><form method="dialog"><h2>放弃未保存的更改？</h2><p>重新读取磁盘中的配置，当前草稿将被替换。</p><div class="dialog-actions"><button class="button" value="cancel">继续编辑</button><button class="button primary" value="discard">放弃并重新读取</button></div></form></dialog>
 </body>
 </html>

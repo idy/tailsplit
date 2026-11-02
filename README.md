@@ -41,6 +41,46 @@ network-service state live outside the app bundle and are retained.
 | Linux | amd64, arm64 | CLI tar.gz and .deb |
 | Windows 10+ (x64), Windows 11 (ARM64) | amd64, arm64 | CLI ZIP |
 
+## Windows desktop
+
+Windows desktop source provides an application window, notification-area controls
+and an Inno Setup installer for native x64 and ARM64 builds. The installer puts
+`TailSplit.exe`, `tailsplit-core.exe` and `TailSplit.Window.dll` in protected
+`Program Files\\TailSplit` and installs an idle SYSTEM network service. The UI
+runs as a normal user; only installation and service maintenance request UAC.
+
+The window contains connection, Tailnet login/logout, exit selection, configuration
+and bounded diagnostic logs. Settings stay in the window; device authorization
+opens the default browser. Closing the window hides it to the tray. Quit first
+disconnects and waits for the network service to clean up. Windows login startup
+is optional and separate from automatic connection.
+
+Configuration remains in the user's `TailSplit` configuration directory. The
+service stores per-SID runtime state in protected `ProgramData\\TailSplit` and
+imports existing private CLI state once as bounded contents. It retains its
+initialization marker through logout, upgrade and uninstall. A live desktop
+session holds the legacy state lock, so the CLI cannot use that identity at the
+same time. Upgrades and default uninstall retain user configuration, registration
+and device state.
+
+The desktop uses Microsoft Edge WebView2. Setup includes and checks the matching
+runtime prerequisite. Windows executables are currently unsigned; verify the
+release checksums. Published v0.5.4 Windows downloads are CLI-only; desktop
+installers are published only after native Windows GUI, service and installation
+lifecycle checks pass on both architectures.
+
+For source builds on the matching Windows architecture, the release builder
+collects native toolchain inputs, notices and installer payloads:
+
+```sh
+python -I -B packaging/release.py build --os windows --arch amd64 --directory bin/release/assets
+```
+
+Use `arm64` on Windows on Arm. Windows CI is configured to execute the installed UI at medium
+integrity, captures its native window, exercises real service sessions and tests
+repair, failed-upgrade recovery and uninstall. This is separate from cross-build
+checks and the CLI's real Wintun TCP/UDP DNS fixture.
+
 ## Windows CLI
 
 Download the Windows ZIP for x64 (`amd64`) or ARM64 and extract it. The archive

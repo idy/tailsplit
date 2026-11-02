@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/idy/tailsplit"
@@ -51,6 +50,7 @@ type Controller struct {
 	options    Options
 	snapshot   Snapshot
 	command    *exec.Cmd
+	input      io.WriteCloser
 	done       chan struct{}
 	stopping   bool
 	loggingOut bool
@@ -151,7 +151,7 @@ func (c *Controller) start(mode string) error {
 		runCommand = "discover"
 	}
 	if len(c.options.HelperArgs) == 0 {
-		if runtime.GOOS == "darwin" {
+		if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 			runCommand = "app-run"
 			if mode == "login" {
 				runCommand = "app-login"
@@ -188,7 +188,14 @@ func (c *Controller) start(mode string) error {
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
 	command.Stderr = c.log
 	command.Stdout = &eventWriter{callback: c.onEvent}
+	input, err := prepareProcess(command, true)
+	if err != nil {
+		return err
+	}
 	if err := command.Start(); err != nil {
+		if input != nil {
+			_ = input.Close()
+		}
 		c.snapshot = Snapshot{State: "failed", Error: "启动失败，请查看日志"}
 		_, _ = io.WriteString(c.log, "Could not launch the bundled helper.\n")
 		return err
@@ -196,15 +203,18 @@ func (c *Controller) start(mode string) error {
 	c.snapshot.State, c.snapshot.Mode = "starting", mode
 	c.snapshot.RoutingMode = routingMode
 	c.snapshot.Error, c.snapshot.LoginURL = "", ""
-	c.command = command
+	c.command, c.input = command, input
 	c.stopping = false
 	c.done = make(chan struct{})
 	done := c.done
 	go func() {
 		err := command.Wait()
+		if input != nil {
+			_ = input.Close()
+		}
 		c.mu.Lock()
 		if c.command == command {
-			c.command = nil
+			c.command, c.input = nil, nil
 			if !c.stopping && c.snapshot.State == "failed" {
 				// Preserve an actionable error delivered by the elevated core.
 			} else if !c.stopping && err == nil && (c.snapshot.State == "authenticated" ||
@@ -227,7 +237,7 @@ func (c *Controller) start(mode string) error {
 
 func (c *Controller) Stop() error {
 	c.mu.Lock()
-	command, done := c.command, c.done
+	command, done, input := c.command, c.done, c.input
 	if command == nil {
 		c.mu.Unlock()
 		return nil
@@ -235,7 +245,7 @@ func (c *Controller) Stop() error {
 	c.stopping = true
 	c.snapshot.State = "stopping"
 	c.mu.Unlock()
-	if err := command.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := requestProcessStop(command, input); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	select {
@@ -276,13 +286,16 @@ func (c *Controller) Logout() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	logoutCommand := "logout"
-	if len(c.options.HelperArgs) == 0 && runtime.GOOS == "darwin" {
+	if len(c.options.HelperArgs) == 0 && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
 		logoutCommand = "app-logout"
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), logoutCommand, "-c", c.options.ConfigPath)
 	command := exec.CommandContext(ctx, c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
+	if _, err := prepareProcess(command, false); err != nil {
+		return err
+	}
 	data, err := command.CombinedOutput()
 	_, _ = io.WriteString(c.log, redactLog(string(data)))
 	c.mu.Lock()

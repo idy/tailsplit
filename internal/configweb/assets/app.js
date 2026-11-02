@@ -351,10 +351,44 @@
   $('#copy-preview').addEventListener('click', copy);
   $('#copy-raw').addEventListener('click', copy);
 
+  let desktopBusy = false;
+  let desktopLive = null;
+  function updateDesktop(live) {
+    desktopLive = live;
+    $('#desktop-controls').hidden = !live.desktop;
+    if (!live.desktop) return;
+    $('.page-header h1').textContent = 'TailSplit';
+    $('.page-header p').textContent = '连接 Tailnet、选择出口，按你的规则分流。';
+    document.querySelectorAll('[data-desktop-action]').forEach((button) => { button.disabled = desktopBusy; });
+    $('#desktop-connect').disabled = desktopBusy || live.active || state.dirty;
+    $('#desktop-disconnect').disabled = desktopBusy || !live.active;
+    $('#desktop-startup').disabled = desktopBusy;
+    $('#desktop-startup').checked = live.startup === true;
+    $('#desktop-hint').textContent = live.preview ? '界面预览：操作仅模拟界面状态，不会创建网络连接。' : live.error || (state.dirty ? '请先保存配置，再连接。' : '连接和设备登录分别控制；关闭窗口后仍保留在托盘。');
+  }
+  async function desktopAction(action) {
+    if (desktopBusy) return;
+    desktopBusy = true;
+    if (desktopLive) updateDesktop(desktopLive);
+    $('#desktop-hint').textContent = '正在处理…';
+    try { await api('action', { action }); }
+    catch (error) { notice('操作未完成', error.message); }
+    finally { desktopBusy = false; await refreshState(); }
+  }
+  document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
+  $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
+  async function refreshDesktopLogs() {
+    try { $('#desktop-log-text').textContent = (await api('logs')).text || '暂无日志。'; }
+    catch (error) { $('#desktop-log-text').textContent = error.message; }
+  }
+  $('#desktop-logs').addEventListener('click', async () => { $('#desktop-log-dialog').showModal(); await refreshDesktopLogs(); });
+  $('#desktop-log-refresh').addEventListener('click', refreshDesktopLogs);
+
   async function refreshState() {
     if (!state.loaded || document.hidden) return;
     try {
       const live = await api('state');
+      updateDesktop(live);
       const labels = {
         starting: live.mode === 'discovery' ? '正在读取设备' : '正在连接', connecting: '正在连接',
         stopping: '正在断开', failed: '连接异常', authorizing: '等待授权', authenticated: '已登录',
@@ -399,7 +433,7 @@
     $('#loading').hidden = true;
     notice('从 TailSplit 打开配置页面', '请点击菜单栏中的 TailSplit，再选择“设置与工具 → 配置面板…”。');
   } else {
-    load();
+    load().then(refreshState);
     setInterval(refreshState, 4000);
   }
 })();

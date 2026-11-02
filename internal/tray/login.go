@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"runtime"
 )
 
 // LoginFlow is owned by the UI event loop. A click can precede the new auth
@@ -81,6 +82,9 @@ func (f *LoginFlow) Message() string {
 // URL to an arbitrary existing Chrome instance can route it into a headless
 // automation profile instead of opening the user's normal browser window.
 func OpenLoginPage(ctx context.Context, value string) error {
+	if runtime.GOOS == "windows" {
+		return openWindowsLogin(ctx, value)
+	}
 	return openLoginPage(ctx, value, defaultBrowserID(), func(ctx context.Context, name string, args ...string) error {
 		// Do not copy command output or URL arguments into logs: the link
 		// contains transient authentication material.

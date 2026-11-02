@@ -34,6 +34,8 @@ class ReleaseTests(unittest.TestCase):
             elif goos == "darwin":
                 names.update(f"TailSplit_0.5.1_darwin_{arch}.{suffix}"
                              for suffix in ("zip", "dmg", "receipt.json"))
+            if goos == "windows":
+                names.add(f"TailSplit_0.5.1_windows_{arch}_setup.exe")
             assets = {}
             for name in names:
                 path = self.folder / name
@@ -51,7 +53,7 @@ class ReleaseTests(unittest.TestCase):
         manifest = self.finalize()
         self.assertEqual(set(manifest["assets"]), release.expected_assets("tailsplit", "0.5.1"))
         lines = (self.folder / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(lines), 15)
+        self.assertEqual(len(lines), 17)
         for line in lines:
             checksum, name = line.split("  ")
             self.assertEqual(checksum, hashlib.sha256((self.folder / name).read_bytes()).hexdigest())

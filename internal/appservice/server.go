@@ -18,6 +18,7 @@ type Runner func(context.Context, tailsplit.Config, io.Writer) error
 
 type Server struct {
 	UID      int
+	UserID   string // Windows SID registered by the administrator, never supplied in a request.
 	Base     string
 	BuildID  string
 	Run      Runner
@@ -32,7 +33,7 @@ type Server struct {
 // permissions and peer credentials are independent checks. Only one network
 // engine can run; losing its app channel cancels it and waits for cleanup.
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
-	if s.UID <= 0 || s.Base == "" || s.BuildID == "" || s.Run == nil || s.Logout == nil {
+	if !validServiceUser(s.UID, s.UserID) || s.Base == "" || s.BuildID == "" || s.Run == nil || s.Logout == nil {
 		return errors.New("invalid network service setup")
 	}
 	done := make(chan struct{})
@@ -62,8 +63,15 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	}
 }
 
+func (s *Server) userKey() string {
+	if s.UserID != "" {
+		return s.UserID
+	}
+	return strconv.Itoa(s.UID)
+}
+
 func (s *Server) handle(ctx context.Context, connection net.Conn) {
-	if requireUser(connection, strconv.Itoa(s.UID)) != nil {
+	if requireUser(connection, s.userKey()) != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -82,7 +90,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 	_ = connection.SetReadDeadline(time.Time{})
 	if request.Op == "hello" {
 		_ = stream.send(Info{Event: "service", Protocol: Protocol, Version: Version,
-			BuildID: s.BuildID, Initialized: initialized(s.Base, s.UID)})
+			BuildID: s.BuildID, Initialized: runtimeInitialized(runtimeUserDirectory(s.Base, s.userKey()))})
 		return
 	}
 	if request.Op != "start" && request.Op != "login" && request.Op != "logout" && request.Op != "discover" || request.Config == nil {
@@ -94,7 +102,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		return
 	}
 	defer s.active.Unlock()
-	config, err := serviceConfig(*request.Config, runtimeDirectory(s.Base, s.UID))
+	config, err := serviceConfig(*request.Config, runtimeUserDirectory(s.Base, s.userKey()))
 	if err != nil {
 		fail(err.Error())
 		return
@@ -102,7 +110,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 	if request.Op == "login" || request.Op == "discover" {
 		config.TUN.Enabled = false
 	}
-	if _, err = prepareRuntime(s.Base, s.UID, request.Files); err != nil {
+	if _, err = prepareRuntimeUser(s.Base, s.userKey(), request.Files); err != nil {
 		fail("could not prepare private network service state")
 		return
 	}

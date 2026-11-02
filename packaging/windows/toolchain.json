@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "inno": {
+    "version": "7.1.1",
+    "tag": "is-7_1_1",
+    "asset": "innosetup-7.1.1-x64.exe",
+    "release_api": "https://api.github.com/repos/jrsoftware/issrc/releases/tags/is-7_1_1",
+    "publisher": "Pyrsys B.V.",
+    "source": "https://jrsoftware.org/isdl-verify.php",
+    "license": "https://jrsoftware.org/isorder.php"
+  },
+  "webview2_sdk": {
+    "version": "1.0.4314.35",
+    "package": "Microsoft.Web.WebView2",
+    "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4314.35/microsoft.web.webview2.1.0.4314.35.nupkg",
+    "registration_url": "https://api.nuget.org/v3/registration5-gz-semver2/microsoft.web.webview2/1.0.4314.35.json",
+    "source": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4314.35"
+  },
+  "webview2_runtime": {
+    "amd64": "https://go.microsoft.com/fwlink/?linkid=2124701",
+    "arm64": "https://go.microsoft.com/fwlink/?linkid=2099616",
+    "publisher": "Microsoft Corporation",
+    "source": "https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution"
+  }
+}

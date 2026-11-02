@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -30,6 +31,9 @@ func main() {
 }
 
 func execute(args []string, out, diagnostic io.Writer) error {
+	if handled, err := platformCommand(args, out, diagnostic); handled {
+		return err
+	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprintln(out, "Usage: tailsplit <init|check|render|run|logout|rules refresh|version> [-c config.yaml]")
 		return nil
@@ -96,7 +100,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *parentPID != 0 {
-		go watchParent(ctx, *parentPID, os.Getppid, stop)
+		go watchAppParent(ctx, *parentPID, stop)
 	}
 	if command == "discover" {
 		return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: *events})
@@ -116,7 +120,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 			defer connection.Close()
 			return appservice.Forward(ctx, connection, out)
 		}
-		if !errors.Is(err, appservice.ErrNotInstalled) {
+		if !errors.Is(err, appservice.ErrNotInstalled) || runtime.GOOS == "windows" {
 			_ = json.NewEncoder(out).Encode(map[string]string{"event": "error", "message": err.Error()})
 			return err
 		}
@@ -152,7 +156,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 				fmt.Fprintln(out, "Signed out the embedded TailSplit service device.")
 				return nil
 			}
-			if !errors.Is(err, appservice.ErrNotInstalled) {
+			if !errors.Is(err, appservice.ErrNotInstalled) || runtime.GOOS == "windows" {
 				return err
 			}
 		}
@@ -196,6 +200,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 }
 
 func installedService(args []string, diagnostic io.Writer) error {
+	if handled, err := platformInstalledService(args); handled {
+		return err
+	}
 	flags := flag.NewFlagSet("service", flag.ContinueOnError)
 	flags.SetOutput(diagnostic)
 	uid := flags.Int("uid", 0, "desktop user registered by the installer")

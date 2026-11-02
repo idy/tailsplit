@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+- Add a Windows desktop window and native tray with connect/disconnect, external
+  browser device login, logout, exit selection, configuration and private logs.
+- Keep the UI unelevated and broker bounded, validated sessions over authenticated
+  local named pipes to an installed SYSTEM network service. Stop/EOF leases wait
+  for engine cleanup rather than relying on Unix signals or parent-PID changes.
+- Scope service state by the administrator-registered desktop SID, migrate saved
+  identity once, and retain configuration, registration and runtime state through
+  upgrades and default uninstall. Serialize shared configuration edits and hold
+  the legacy CLI state lock during service sessions.
+- Add architecture-matched Inno Setup EXE installers with verified WebView2
+  prerequisites, protected Program Files payloads and explicit service/file
+  recovery after failed upgrades. Preserve the standalone CLI ZIP downloads.
+- Gate desktop publication on native Windows x64/ARM64 installation, actual
+  medium-integrity GUI automation and screenshots, service cleanup, repair,
+  failed-upgrade recovery and uninstall checks.
+
 ## 0.5.4
 
 - Add Windows amd64 and arm64 CLI ZIP releases, with native Windows CI, archive

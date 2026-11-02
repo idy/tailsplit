@@ -64,6 +64,7 @@ def expected_assets(project, version):
     if project == "tailsplit":
         names |= {f"TailSplit_{version}_darwin_{arch}.{suffix}"
                   for arch in ("amd64", "arm64") for suffix in ("zip", "dmg", "receipt.json")}
+        names |= {f"TailSplit_{version}_windows_{arch}_setup.exe" for arch in ("amd64", "arm64")}
     return names
 
 
@@ -184,6 +185,19 @@ def build(args):
                                              artifacts=app_assets),
                                          indent=2, sort_keys=True) + "\n")
         files.append(normalized)
+    if project == "tailsplit" and args.os == "windows":
+        native = {"amd64": "amd64", "x86_64": "amd64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine().lower())
+        if sys.platform != "win32" or native != args.arch:
+            raise ValueError("Windows desktop packaging requires a matching native runner")
+        subprocess.run([sys.executable, "-I", "-B", str(ROOT / "packaging/windows/build.py"),
+                        "--arch", args.arch, "--version", version, "--commit", identity["commit"],
+                        "--core", str(binary), "--notices", str(notices), "--directory", str(output),
+                        "--build-number", (ROOT / "BUILD_NUMBER").read_text().strip()],
+                       cwd=ROOT, env=environment, check=True)
+        desktop = output / f"TailSplit_{version}_windows_{args.arch}_setup.exe"
+        if desktop.is_symlink() or not desktop.is_file():
+            raise ValueError("Expected the verified Windows desktop setup executable")
+        files.append(desktop)
     fragment = dict(detail, assets={path.name: {"sha256": digest(path), "size": path.stat().st_size}
                                    for path in files})
     (output / f"release-metadata-{args.os}-{args.arch}.json").write_text(
