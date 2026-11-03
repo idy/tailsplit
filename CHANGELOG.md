@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2
+
+- Prevent the network service from panicking while logging IPv6-to-IPv4 direct
+  destination recovery. Format resolved address slices before passing them to
+  the core logger, including the app's platform-log channel at Info level.
+- Cover recovery with the real production logger and app log filtering at both
+  Info and Debug levels, preserving the original routing and DNS behavior.
+
 ## 0.6.1
 
 - Authenticate Windows service endpoints through read-only SCM process and

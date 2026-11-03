@@ -93,7 +93,7 @@ func (o *ipv4DirectOutbound) recoverDestination(ctx context.Context, destination
 	if len(addresses) == 0 {
 		return destination, nil, fmt.Errorf("direct DNS returned no IPv4 address for %s", domain)
 	}
-	o.logger.DebugContext(ctx, "recover direct IPv6 destination ", destination, " via ", domain, ": ", addresses)
+	o.logger.DebugContext(ctx, "recover direct IPv6 destination ", destination, " via ", domain, ": ", fmt.Sprint(addresses))
 	// The manager still owns the original destination for routing and UDP NAT.
 	// Pass a new value to the direct dialer without mutating context metadata.
 	return M.Socksaddr{Fqdn: domain, Port: destination.Port}, addresses, nil

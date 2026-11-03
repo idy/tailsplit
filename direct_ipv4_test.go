@@ -9,11 +9,13 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing-box/option"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -150,6 +152,52 @@ func TestDirectIPv4RecoveryPreservesMetadataAndCancellation(t *testing.T) {
 	cancel()
 	if _, _, err := out.recoverDestination(ctx, target, nil); !errors.Is(err, context.Canceled) {
 		t.Fatal("cancellation was ignored:", err)
+	}
+}
+
+type ipv4RecoveryLogCapture struct{ bytes.Buffer }
+
+func (w *ipv4RecoveryLogCapture) WriteMessage(_ log.Level, message string) {
+	_, _ = w.WriteString(message + "\n")
+}
+
+func TestDirectIPv4RecoveryAppLogging(t *testing.T) {
+	for _, level := range []string{"info", "debug"} {
+		t.Run(level, func(t *testing.T) {
+			var captured ipv4RecoveryLogCapture
+			threshold, err := log.ParseLevel(level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			factory, err := log.New(log.Options{Context: context.Background(),
+				Options: option.LogOptions{Level: level}, DefaultWriter: io.Discard,
+				PlatformWriter: filteredLogWriter{writer: &captured, level: threshold}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := factory.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = factory.Close() })
+			target := M.ParseSocksaddr("[2001:db8::10]:443")
+			metadata := adapter.InboundContext{Domain: "voice.test", Destination: target}
+			answers := []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("192.0.2.11")}
+			out := &ipv4DirectOutbound{logger: factory.NewLogger("direct"),
+				lookupIPv4: func(context.Context, string) ([]netip.Addr, error) { return answers, nil }}
+			got, resolved, err := out.recoverDestination(adapter.WithContext(context.Background(), &metadata), target, nil)
+			if err != nil || got.Fqdn != "voice.test" || !reflect.DeepEqual(resolved, answers) || metadata.Destination != target {
+				t.Fatalf("app logging changed destination recovery: %v %v %v", got, resolved, err)
+			}
+			if level == "debug" {
+				for _, text := range []string{"recover direct IPv6 destination", "voice.test", "192.0.2.10", "192.0.2.11"} {
+					if !strings.Contains(captured.String(), text) {
+						t.Fatalf("missing recovery diagnostic %q", text)
+					}
+				}
+			} else if captured.Len() != 0 {
+				t.Fatal("info logging exposed filtered debug messages")
+			}
+		})
 	}
 }
 
