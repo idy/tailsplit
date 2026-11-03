@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="TailSplit is a macOS menu bar app for domain and IP routing rules: direct connections, a selected proxy exit, and configured Tailnet destinations.">
+  <meta name="description" content="TailSplit is a desktop app for Windows and macOS with domain and IP routing rules: direct connections, a selected proxy exit, and configured Tailnet destinations.">
   <meta name="theme-color" content="#f3f7fc">
-  <meta property="og:title" content="TailSplit — your Mac, your routing rules">
-  <meta property="og:description" content="Keep local traffic direct. Send selected connections through your chosen exit. Manage routing from the macOS menu bar.">
+  <meta property="og:title" content="TailSplit — your device, your routing rules">
+  <meta property="og:description" content="Keep local traffic direct. Send selected connections through your chosen exit. Manage routing from a desktop window, the macOS menu bar or the Windows tray.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://tailsplit.idy.dev/">
   <link rel="canonical" href="https://tailsplit.idy.dev/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css">
-  <script src="script.js" defer></script>
-  <title>TailSplit — your Mac, your routing rules</title>
+  <link rel="stylesheet" href="styles.css?v=0.6.2-desktop">
+  <script src="script.js?v=0.6.2-desktop" defer></script>
+  <title>TailSplit — your device, your routing rules</title>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -33,9 +33,9 @@
   <main id="main">
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-heading">
-        <h1 id="hero-title">Your Mac.<br>Your routing rules.</h1>
+        <h1 id="hero-title">Your device.<br>Your routing rules.</h1>
         <div class="hero-intro">
-          <p>A macOS menu bar app for domain and IP rules. Keep direct traffic on your network, send selected connections through a proxy exit, and reach your Tailnet when configured.</p>
+          <p>A desktop app for Windows and macOS with domain and IP rules. Keep direct traffic on your network, send selected connections through a proxy exit, and reach your Tailnet when configured.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="#install">Get TailSplit</a>
             <a class="text-link" href="https://github.com/idy/tailsplit#readme">Read the docs <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
@@ -48,7 +48,7 @@
         <div class="concept-layout">
           <svg class="split-map" viewBox="0 0 560 300" role="img" aria-labelledby="split-map-title split-map-description">
             <title id="split-map-title">Rules choose the route</title>
-            <desc id="split-map-description">A connection from your Mac reaches TailSplit rules. It can go directly over the current network, through the selected proxy exit, or to a configured and authorized Tailnet destination.</desc>
+            <desc id="split-map-description">A connection from your device reaches TailSplit rules. It can go directly over the current network, through the selected proxy exit, or to a configured and authorized Tailnet destination.</desc>
             <path class="route-base" d="M62 150H220M220 150H272Q298 150 298 124V88Q298 62 324 62H382M220 150H382M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
             <path class="entry-path" d="M62 150H220"/>
             <path class="route-branch direct-branch" d="M220 150H272Q298 150 298 124V88Q298 62 324 62H382"/>
@@ -56,7 +56,7 @@
             <path class="route-branch tailnet-branch" d="M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
             <circle class="mac-node" cx="62" cy="150" r="29"/>
             <g class="mac-icon" aria-hidden="true"><rect x="48" y="139" width="28" height="18" rx="2"/><path d="M43 162h38"/></g>
-            <text class="map-label" x="62" y="207" text-anchor="middle">Your Mac</text>
+            <text class="map-label" x="62" y="207" text-anchor="middle">Your device</text>
             <circle class="rules-halo" cx="220" cy="150" r="52"/>
             <circle class="rules-node" cx="220" cy="150" r="37"/>
             <g class="rules-icon" aria-hidden="true"><path d="M201 150h10c10 0 7-12 19-12M211 150c10 0 7 12 19 12"/><circle cx="201" cy="150" r="3"/><circle cx="230" cy="138" r="3"/><circle cx="230" cy="162" r="3"/></g>
@@ -82,13 +82,13 @@
           </div>
         </div>
       </figure>
-      <p class="hero-note">Starts in your menu bar, disconnected. You decide when to connect.</p>
+      <p class="hero-note">Starts disconnected in your menu bar or Windows tray. You decide when to connect.</p>
     </section>
 
     <section class="routing-section wrap" id="routing" aria-labelledby="routing-title">
       <div class="routing-intro">
-        <h2 id="routing-title">Keep the route<br>in your hands.</h2>
-        <p>Domain lists, IP ranges, and GFWList rules live in a YAML configuration you can open from the menu bar.</p>
+        <h2 id="routing-title">Keep the route<br> in your hands.</h2>
+        <p>Manage domain lists, IP ranges, and GFWList rules in the configuration panel or YAML editor.</p>
         <p>Use an application’s HTTP/SOCKS proxy settings, or enable TUN routing for captured system traffic. Both modes use the same routing rules.</p>
       </div>
       <div class="rule-ledger">
@@ -106,16 +106,23 @@
     <section class="install-section" id="install" aria-labelledby="install-title">
       <div class="wrap">
         <div class="install-heading">
-          <h2 id="install-title">From download<br>to menu bar.</h2>
+          <h2 id="install-title">From download<br> to connection.</h2>
           <div class="download-intro">
-            <p>Open-source on <a href="https://github.com/idy/tailsplit">GitHub</a>. Download the macOS app, or use the CLI on Windows, Linux and macOS. Native releases support both amd64 and arm64.</p>
-            <div class="download-actions" role="group" aria-label="Download the macOS app">
-              <a class="button button-primary" data-download="darwin-arm64" href="https://github.com/idy/tailsplit/releases/download/v0.5.4/TailSplit_0.5.4_darwin_arm64.dmg">Apple Silicon (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
-              <a class="button button-secondary" data-download="darwin-amd64" href="https://github.com/idy/tailsplit/releases/download/v0.5.4/TailSplit_0.5.4_darwin_amd64.dmg">Intel Mac (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+            <p>Open-source on <a href="https://github.com/idy/tailsplit">GitHub</a>. Desktop apps for Windows and macOS, with a CLI for Linux, Windows and macOS. Native builds support x64 and ARM64.</p>
+            <p class="download-platform">Windows desktop</p>
+            <div class="download-actions" role="group" aria-label="Download the Windows desktop installer">
+              <a class="button button-primary" data-download="windows-amd64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/TailSplit_0.6.2_windows_amd64_setup.exe">Windows x64 (.exe) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+              <a class="button button-secondary" data-download="windows-arm64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/TailSplit_0.6.2_windows_arm64_setup.exe">Windows ARM64 (.exe) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
             </div>
-            <p class="access-note">The macOS app requires macOS 14 or later. Release <span data-release-version>v0.5.4</span> includes checksums and signing receipts.</p>
-            <p class="download-other">Windows CLI: <a data-download="windows-amd64" href="https://github.com/idy/tailsplit/releases/download/v0.5.4/tailsplit_0.5.4_windows_amd64.zip">x64 .zip</a> or <a data-download="windows-arm64" href="https://github.com/idy/tailsplit/releases/download/v0.5.4/tailsplit_0.5.4_windows_arm64.zip">ARM64 .zip</a>.</p>
-            <p class="download-other">Linux CLI: <a data-download="linux-amd64" href="https://github.com/idy/tailsplit/releases/download/v0.5.4/tailsplit_0.5.4_linux_amd64.deb">amd64 .deb</a> or <a data-download="linux-arm64" href="https://github.com/idy/tailsplit/releases/download/v0.5.4/tailsplit_0.5.4_linux_arm64.deb">arm64 .deb</a>.</p>
+            <p class="access-note">Windows 10+ on x64; Windows 11 on ARM64. Setup installs the window, tray and network service. Windows executables are unsigned; verify the <a data-download="checksums" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/SHA256SUMS">release checksums</a>.</p>
+            <p class="download-platform">macOS app</p>
+            <div class="download-actions" role="group" aria-label="Download the macOS app">
+              <a class="button button-primary" data-download="darwin-arm64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/TailSplit_0.6.2_darwin_arm64.dmg">Apple Silicon (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+              <a class="button button-secondary" data-download="darwin-amd64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/TailSplit_0.6.2_darwin_amd64.dmg">Intel Mac (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+            </div>
+            <p class="access-note">macOS 14 or later. Both Mac apps are Developer ID signed and Apple notarized. Release <span data-release-version>v0.6.2</span> includes signing receipts.</p>
+            <p class="download-other">Windows CLI: <a data-download="windows-cli-amd64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/tailsplit_0.6.2_windows_amd64.zip">x64 .zip</a> or <a data-download="windows-cli-arm64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/tailsplit_0.6.2_windows_arm64.zip">ARM64 .zip</a>.</p>
+            <p class="download-other">Linux CLI: <a data-download="linux-amd64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/tailsplit_0.6.2_linux_amd64.deb">amd64 .deb</a> or <a data-download="linux-arm64" href="https://github.com/idy/tailsplit/releases/download/v0.6.2/tailsplit_0.6.2_linux_arm64.deb">arm64 .deb</a>.</p>
             <p class="download-other"><a href="https://github.com/idy/tailsplit/releases/latest">Release notes and all downloads</a></p>
           </div>
         </div>
@@ -132,17 +139,18 @@
         <ol class="install-steps">
           <li>
             <h3>Open TailSplit.</h3>
-            <p>Install the macOS app from its distribution package and open it normally. It appears in the menu bar without connecting automatically.</p>
+            <p>Run the Windows EXE installer, or install the macOS app from its DMG. Open TailSplit normally; a new installation starts disconnected in the tray or menu bar.</p>
           </li>
           <li>
             <h3>Allow the network service.</h3>
-            <p>The first connection opens the bundled macOS package installer. An administrator authorizes the privileged background service, which handles the TUN and DNS in both connection modes.</p>
+            <p>Windows Setup installs the network service. On macOS, the first connection opens its bundled package installer. An administrator approves the service; the app itself runs normally.</p>
           </li>
           <li>
             <h3>Review your rules. Connect.</h3>
-            <p>Open the YAML from the menu, set your Tailnet and exit, and review the routing rules. Authorize your device when needed, then start the proxy connection.</p>
+            <p>Sign in to your Tailnet, choose an exit and review the routing rules in the window or configuration panel. Device authorization opens your default browser; connecting is a separate action.</p>
           </li>
         </ol>
+        <p class="upgrade-note">Upgrading an older YAML? Remove the obsolete <code>dns.listen</code> field before connecting. Keep your other configuration and device state.</p>
         <div class="mode-comparison" aria-label="Connection modes">
           <div><h3>Application proxy</h3><p>Opt individual apps into the local HTTP/SOCKS proxy. A narrow DNS TUN route is created; the system proxy, default traffic route, and system DNS stay as they are.</p></div>
           <div><h3>System routing</h3><p>Enable <code>tun.enabled</code> in YAML to add system-traffic routing and DNS interception. Rules apply to connections captured by the TUN.</p></div>
@@ -172,7 +180,7 @@
         </details>
         <details>
           <summary>Why does application proxy mode need permission?</summary>
-          <p>Both connection modes create a TUN for the app’s DNS service. Application proxy mode adds only its narrow DNS route; enabling system routing adds the broader traffic routes. The privileged service performs this work, and the macOS installer handles the administrator password.</p>
+          <p>Both connection modes create a TUN for DNS. Application proxy mode adds only its narrow DNS route; system routing adds the broader traffic routes. The network service performs this work, and the Windows or macOS installer handles administrator approval.</p>
         </details>
         <details>
           <summary>Does signing in start the proxy?</summary>

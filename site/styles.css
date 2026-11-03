@@ -101,6 +101,9 @@ h2 { font-size: clamp(32px, 3vw, 43px); line-height: 1.16; letter-spacing: -0.04
 .install-heading { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 110px; align-items: start; }
 .download-intro > p { max-width: 57ch; color: var(--muted); font-size: 14px; }
 .download-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 21px; }
+.download-intro > .download-platform { margin-top: 22px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.download-platform + .download-actions { margin-top: 10px; }
+.upgrade-note { margin-top: 25px; color: var(--muted); font-size: 12px; line-height: 1.8; }
 .button-secondary { color: var(--accent); border-color: var(--accent); background: transparent; }
 .button-secondary:hover { background: var(--accent-soft); }
 .download-intro > .access-note { margin-top: 14px; font-size: 11px; }

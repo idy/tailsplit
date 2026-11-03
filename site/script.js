@@ -64,8 +64,11 @@
         'darwin-amd64': `TailSplit_${version}_darwin_amd64.dmg`,
         'linux-amd64': `tailsplit_${version}_linux_amd64.deb`,
         'linux-arm64': `tailsplit_${version}_linux_arm64.deb`,
-        'windows-amd64': `tailsplit_${version}_windows_amd64.zip`,
-        'windows-arm64': `tailsplit_${version}_windows_arm64.zip`
+        'windows-amd64': `TailSplit_${version}_windows_amd64_setup.exe`,
+        'windows-arm64': `TailSplit_${version}_windows_arm64_setup.exe`,
+        'windows-cli-amd64': `tailsplit_${version}_windows_amd64.zip`,
+        'windows-cli-arm64': `tailsplit_${version}_windows_arm64.zip`,
+        'checksums': 'SHA256SUMS'
       };
       const urls = downloads.map((link) => {
         const name = names[link.dataset.download];
