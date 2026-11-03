@@ -52,6 +52,29 @@ void tailsplit_login_item_settings(void) {
     });
 }
 
+char *tailsplit_app_version(void) {
+    @autoreleasepool {
+        NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+        return strdup(version ? [version UTF8String] : "dev");
+    }
+}
+
+int tailsplit_confirm_update(const char *version) {
+    __block int confirmed = 0;
+    tailsplit_on_main(^{
+        @autoreleasepool {
+            NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+            alert.messageText = [NSString stringWithFormat:@"升级到 TailSplit %@？", [NSString stringWithUTF8String:version]];
+            alert.informativeText = @"将下载并校验新版 App，然后断开当前连接并重启。配置和设备登录会保留；下次连接时可能需要批准更新后台网络服务。";
+            [alert addButtonWithTitle:@"升级并重启"];
+            [alert addButtonWithTitle:@"取消"];
+            [NSApp activateIgnoringOtherApps:YES];
+            confirmed = [alert runModal] == NSAlertFirstButtonReturn;
+        }
+    });
+    return confirmed;
+}
+
 void tailsplit_show_about(void) {
     tailsplit_on_main(^{
         @autoreleasepool {

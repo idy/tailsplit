@@ -20,6 +20,7 @@ import (
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/appservice"
+	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/tray"
 
 	"gopkg.in/yaml.v3"
@@ -31,14 +32,16 @@ var assets embed.FS
 var ErrBusy = errors.New("another app operation is in progress")
 
 type Options struct {
-	ConfigPath string
-	Listen     string
-	Preview    bool
-	Snapshot   func() tray.Snapshot
-	Apply      func(context.Context, func() error) error
-	Action     func(context.Context, string) error
-	Logs       func() (string, error)
-	Startup    func() bool
+	ConfigPath   string
+	Listen       string
+	Preview      bool
+	Snapshot     func() tray.Snapshot
+	Apply        func(context.Context, func() error) error
+	Action       func(context.Context, string) error
+	Logs         func() (string, error)
+	Startup      func() bool
+	UpdateState  func() appupdate.State
+	UpdateAction func(context.Context, string) error
 }
 
 type Server struct {
@@ -111,6 +114,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/validate", s.validate)
 	mux.HandleFunc("POST /api/config", s.save)
 	mux.HandleFunc("POST /api/action", s.desktopAction)
+	mux.HandleFunc("POST /api/update-action", s.updateAction)
 	mux.HandleFunc("GET /api/logs", s.desktopLogs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -189,13 +193,17 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 	}
 	_, revision, _ := tray.ReadConfigDocument(s.options.ConfigPath)
 	// LoginURL and other authentication state never enter the browser API.
-	writeJSON(w, http.StatusOK, map[string]any{
+	state := map[string]any{
 		"state": snapshot.State, "active": snapshot.Active, "mode": snapshot.Mode,
 		"exit": snapshot.ExitNode, "network": snapshot.NetworkName,
 		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
 		"startup": s.options.Startup != nil && s.options.Startup(),
-	})
+	}
+	if s.options.UpdateState != nil {
+		state["updates"] = s.options.UpdateState()
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func decodeEdit(w http.ResponseWriter, r *http.Request) (editRequest, bool) {

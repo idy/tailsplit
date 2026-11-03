@@ -384,11 +384,84 @@
   $('#desktop-logs').addEventListener('click', async () => { $('#desktop-log-dialog').showModal(); await refreshDesktopLogs(); });
   $('#desktop-log-refresh').addEventListener('click', refreshDesktopLogs);
 
+  let updateLive = null;
+  let updatePending = '';
+  let updateError = '';
+  let updateGeneration = 0;
+  const updatesBusy = () => updatePending || updateLive?.updates?.checking || updateLive?.updates?.downloading || updateLive?.updates?.installing;
+
+  function updateBytes(bytes) {
+    if (bytes < 1024) return `${Math.floor(bytes)} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+
+  function updateAppUpdates(live) {
+    updateLive = live;
+    const updates = live?.updates;
+    $('#app-updates').hidden = !updates;
+    if (!updates) return;
+    const busy = Boolean(updatesBusy());
+    $('#update-current').textContent = `当前版本 ${updates.current_version || '未知'}`;
+    $('#update-latest').textContent = `最新版本 ${updates.latest_version || '尚未检查'}`;
+    $('#update-automatic').checked = updatePending === 'automatic-on' || updatePending !== 'automatic-off' && updates.automatic === true;
+    $('#update-automatic').disabled = busy;
+    $('#update-check').disabled = busy;
+    $('#update-check').textContent = updates.checking ? '正在检查…' : '检查更新';
+    $('#update-install').hidden = !updates.available;
+    $('#update-install').disabled = busy;
+    $('#update-install').textContent = live.preview ? '模拟安装' : updates.downloading ? '正在下载…' : updates.installing ? '正在安装…' : '下载并安装';
+    $('#update-install-hint').hidden = !updates.available || live.preview;
+    $('#update-preview').hidden = !live.preview;
+    const checked = new Date(updates.last_checked);
+    const hasChecked = checked.getTime() > 0;
+    $('#update-last-checked').textContent = `上次检查：${hasChecked ? checked.toLocaleString('zh-CN') : '尚未检查'}`;
+    const downloaded = Math.max(0, Number(updates.downloaded_bytes) || 0);
+    const total = Math.max(0, Number(updates.total_bytes) || 0);
+    const progress = $('#update-progress');
+    progress.hidden = !updates.downloading;
+    if (total > 0) progress.value = Math.min(1, downloaded / total);
+    else progress.removeAttribute('value');
+    const pendingLabels = { check: '正在请求检查…', install: '正在请求安装…', 'automatic-on': '正在保存更新偏好…', 'automatic-off': '正在保存更新偏好…' };
+    $('#update-status').textContent = updates.downloading ?
+      `正在下载更新：${updateBytes(downloaded)}${total > 0 ? ` / ${updateBytes(total)}（${Math.min(100, Math.floor(downloaded / total * 100))}%）` : '，总大小待确定'}。` :
+      updates.installing ? '正在准备安装更新，请完成系统确认或安装向导。' : updates.checking ? '正在检查更新…' : updatePending ? pendingLabels[updatePending] :
+      updates.available ? `发现新版本 ${updates.latest_version || ''}。` : updates.error ? '暂时无法确认最新版本。' :
+      hasChecked && updates.latest_version ? '当前已是最新版本。' : '尚未检查更新。';
+    $('#update-error').textContent = updateError || updates.error || '';
+    $('#update-error').hidden = !$('#update-error').textContent;
+    const notes = String(updates.release_notes || '');
+    $('#update-notes').hidden = !notes;
+    $('#update-release-notes').textContent = notes.length > 12000 ? `${notes.slice(0, 12000)}…` : notes;
+  }
+
+  async function appUpdateAction(action) {
+    if (!updateLive?.updates || updatesBusy() || action === 'install' && !updateLive.updates.available) return;
+    updateGeneration++;
+    updatePending = action; updateError = '';
+    updateAppUpdates(updateLive);
+    try {
+      await api('update-action', { action });
+    } catch (error) {
+      updateError = error.message;
+    } finally {
+      updateGeneration++;
+      await refreshState();
+      updatePending = '';
+      updateAppUpdates(updateLive);
+    }
+  }
+  $('#update-check').addEventListener('click', () => appUpdateAction('check'));
+  $('#update-install').addEventListener('click', () => appUpdateAction('install'));
+  $('#update-automatic').addEventListener('change', (event) => appUpdateAction(event.target.checked ? 'automatic-on' : 'automatic-off'));
+
   async function refreshState() {
     if (!state.loaded || document.hidden) return;
+    const generation = updateGeneration;
     try {
       const live = await api('state');
       updateDesktop(live);
+      if (generation === updateGeneration) updateAppUpdates(live);
       const labels = {
         starting: live.mode === 'discovery' ? '正在读取设备' : '正在连接', connecting: '正在连接',
         stopping: '正在断开', failed: '连接异常', authorizing: '等待授权', authenticated: '已登录',

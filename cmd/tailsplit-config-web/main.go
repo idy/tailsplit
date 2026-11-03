@@ -10,7 +10,9 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/tray"
 )
@@ -39,6 +41,34 @@ func main() {
 	if *desktop {
 		snapshot := tray.Snapshot{State: "stopped"}
 		startup := false
+		updates := appupdate.State{CurrentVersion: "0.6.1", Automatic: true}
+		options.UpdateState = func() appupdate.State { mutex.Lock(); defer mutex.Unlock(); return updates }
+		options.UpdateAction = func(ctx context.Context, action string) error {
+			mutex.Lock()
+			defer mutex.Unlock()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			switch action {
+			case "check":
+				updates.LatestVersion = "0.6.2"
+				updates.Available = updates.CurrentVersion != updates.LatestVersion
+				updates.LastChecked = time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+				updates.ReleaseURL = "https://github.com/idy/tailsplit/releases/tag/v0.6.2"
+				updates.ReleaseNotes = "TailSplit 0.6.2\n\n预览版本说明：改进应用更新体验。\n安装操作仅模拟版本切换，不会下载或运行安装程序。"
+			case "install":
+				if !updates.Available {
+					return fmt.Errorf("请先检查可用更新。")
+				}
+				updates.CurrentVersion = updates.LatestVersion
+				updates.Available = false
+			case "automatic-on":
+				updates.Automatic = true
+			case "automatic-off":
+				updates.Automatic = false
+			}
+			return nil
+		}
 		options.Snapshot = func() tray.Snapshot { mutex.Lock(); defer mutex.Unlock(); return snapshot }
 		options.Startup = func() bool { mutex.Lock(); defer mutex.Unlock(); return startup }
 		options.Logs = func() (string, error) {
