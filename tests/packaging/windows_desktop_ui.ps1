@@ -82,6 +82,12 @@ function Find-Button([System.Windows.Automation.AutomationElement]$Root, [string
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$Name)))
     return $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
 }
+function Wait-Connected([System.Windows.Automation.AutomationElement]$Root, [string]$Failure) {
+    # Disconnect is enabled as soon as a session starts; only the page's
+    # running state proves the SYSTEM service accepted this user's session.
+    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'已连接')
+    Wait-Until { $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition) } $Failure 60 | Out-Null
+}
 function Invoke-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
     $button = Wait-Until { $found=Find-Button $Root $Name; if ($found -and $found.Current.IsEnabled) {$found} } "Missing or disabled button: $Name"
     $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
@@ -143,7 +149,7 @@ try {
     Invoke-Button $automation '关闭'
     $stage = 'connecting from native window'
     Invoke-Button $automation '连接'
-    Wait-Until { $button=Find-Button $automation '断开'; $button -and $button.Current.IsEnabled } 'Connect did not reach an active service session.' | Out-Null
+    Wait-Connected $automation 'Connect did not reach a running service session.'
     $stage = 'disconnecting from native window'
     Invoke-Button $automation '断开'
     Wait-Until { $button=Find-Button $automation '连接'; $button -and $button.Current.IsEnabled } 'Disconnect did not finish.' | Out-Null
@@ -157,7 +163,7 @@ try {
         # Users usually update while connected; Setup must end this session.
         $stage = 'reconnecting before the caller upgrades the running app'
         Invoke-Button $automation '连接'
-        Wait-Until { $button=Find-Button $automation '断开'; $button -and $button.Current.IsEnabled } 'Reconnect before upgrade did not reach an active service session.' | Out-Null
+        Wait-Connected $automation 'Reconnect before upgrade did not reach a running service session.'
     }
     @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
 } catch {
