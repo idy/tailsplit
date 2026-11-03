@@ -148,8 +148,11 @@ func runWindowsDesktop() (runErr error) {
 		return errors.New("another TailSplit desktop app is starting; open it from the notification area")
 	}
 	defer listener.Close()
-	for _, directory := range []string{root, filepath.Dir(*config), filepath.Dir(*logPath), filepath.Join(root, "browser")} {
-		if err := privatefs.EnsureDir(directory); err != nil {
+	browser := filepath.Join(root, "browser")
+	for _, directory := range []string{root, filepath.Dir(*config), filepath.Dir(*logPath), browser} {
+		// WebView2 grants its sandbox access inside its own user data folder,
+		// so a later launch must not reject those ACLs as unsafe app state.
+		if err := privatefs.EnsureDir(directory, browser); err != nil {
 			return err
 		}
 	}
@@ -200,7 +203,7 @@ func runWindowsDesktop() (runErr error) {
 		return err
 	}
 	defer page.Close()
-	app.window, err = winui.New(filepath.Join(filepath.Dir(executable), "TailSplit.Window.dll"), page.URL(), filepath.Join(root, "browser"), "TailSplit.Window."+sid)
+	app.window, err = winui.New(filepath.Join(filepath.Dir(executable), "TailSplit.Window.dll"), page.URL(), browser, "TailSplit.Window."+sid)
 	if err != nil {
 		return err
 	}

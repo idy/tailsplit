@@ -8,7 +8,9 @@ import (
 	"os"
 )
 
-func EnsureDir(path string) error {
+// EnsureDir checks only path itself here. Windows also walks the contents,
+// except those of foreign directories that other software manages.
+func EnsureDir(path string, foreign ...string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
 	}
