@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.0
+
+- Check for stable desktop releases on GitHub ten seconds after the app starts
+  and every six hours, offering only strictly newer stable versions. Downloads
+  must match their release size and `SHA256SUMS`, and installation always asks
+  first. Windows runs the verified Setup; macOS checks the bundle's version,
+  signature and Gatekeeper acceptance, then replaces and relaunches the app,
+  restoring the previous bundle on failure. `app.check_for_updates` defaults to
+  on and changes without reconnecting.
+- Let standard Windows accounts connect to the network service. Since 0.6.1 the
+  desktop authenticated the service by opening its SYSTEM process, which only
+  administrators may do; the service now grants its registered desktop user a
+  limited process query.
+- Start the Windows desktop again after WebView2's first run. Startup no longer
+  rejects the sandbox permissions WebView2 sets on its own browser cache.
+- Restyle the configuration panel and Windows window in a compact dark layout
+  with a dark title bar, and give the app, installer, tray and menu bar one
+  consistent TailSplit icon.
+- Upgrade a running, connected Windows desktop to a newer Setup in CI, and run
+  the updater and its installer handoff natively on Windows.
+
 ## 0.6.2
 
 - Prevent the network service from panicking while logging IPv6-to-IPv4 direct
