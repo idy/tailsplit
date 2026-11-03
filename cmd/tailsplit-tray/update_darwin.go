@@ -47,6 +47,19 @@ func plistValue(ctx context.Context, app, key string) (string, error) {
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 
+// verifyDarwinSignature checks a bundle against a code requirement and
+// Gatekeeper. codesign reads -R as a requirement file path unless the argument
+// starts with "=", so the requirement text is always passed in that form.
+func verifyDarwinSignature(ctx context.Context, app, requirement string) error {
+	if err := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", "="+requirement, app).Run(); err != nil {
+		return errors.New("新版 App 的签名校验失败")
+	}
+	if err := exec.CommandContext(ctx, "/usr/sbin/spctl", "--assess", "--type", "execute", app).Run(); err != nil {
+		return errors.New("新版 App 未通过 macOS Gatekeeper 校验")
+	}
+	return nil
+}
+
 func installDarwinUpdate(ctx context.Context, update appupdate.Package, executable, config, log string, shutdown func(func() error) error) error {
 	target, err := installedDarwinApp(executable)
 	if err != nil {
@@ -90,11 +103,8 @@ func installDarwinUpdate(ctx context.Context, update appupdate.Package, executab
 			}
 		}
 	}
-	if err := exec.CommandContext(prepareCtx, "/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", requirement, app).Run(); err != nil {
-		return errors.New("新版 App 的签名校验失败")
-	}
-	if err := exec.CommandContext(prepareCtx, "/usr/sbin/spctl", "--assess", "--type", "execute", app).Run(); err != nil {
-		return errors.New("新版 App 未通过 macOS Gatekeeper 校验")
+	if err := verifyDarwinSignature(prepareCtx, app, requirement); err != nil {
+		return err
 	}
 	args := []string{update.Directory, target, strconv.Itoa(os.Getpid()), strconv.Itoa(os.Getuid()), config, log, requirement, update.Version}
 	command := exec.Command("/bin/sh", append([]string{"-c", darwinUpdateScript, "tailsplit-updater"}, args...)...)

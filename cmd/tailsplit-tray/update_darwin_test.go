@@ -47,10 +47,17 @@ func TestDarwinUpdateWorkerActivationAndRollback(t *testing.T) {
 			if err := os.WriteFile(launcher, []byte(launchScript), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			script := strings.NewReplacer("/usr/bin/codesign", "/usr/bin/true", "/usr/sbin/spctl", "/usr/bin/true", "/usr/bin/open", shellQuote(launcher), "$(/usr/bin/id -u)", "501", "/bin/sleep 1", "/bin/sleep 0.01").Replace(darwinUpdateScript)
+			// Like codesign, the fake takes -R only as requirement text starting
+			// with "="; a bare argument would name a requirement file.
+			codesign := filepath.Join(root, "codesign")
+			codesignScript := "#!/bin/sh\nwhile [ $# -gt 1 ]; do\n  if [ \"$1\" = -R ]; then case \"$2\" in =*) exit 0;; esac; fi\n  shift\ndone\nexit 1\n"
 			if scenario == "signature fails" {
-				script = strings.ReplaceAll(script, "/usr/bin/true --verify", "/usr/bin/false --verify")
+				codesignScript = "#!/bin/sh\nexit 3\n"
 			}
+			if err := os.WriteFile(codesign, []byte(codesignScript), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			script := strings.NewReplacer("/usr/bin/codesign", shellQuote(codesign), "/usr/sbin/spctl", "/usr/bin/true", "/usr/bin/open", shellQuote(launcher), "$(/usr/bin/id -u)", "501", "/bin/sleep 1", "/bin/sleep 0.01").Replace(darwinUpdateScript)
 			if scenario == "activation fails" {
 				mover := filepath.Join(root, "move-app")
 				moveScript := "#!/bin/sh\ncase \"$1\" in */.tailsplit-update.*/TailSplit.app) exit 1;; esac\nexec /bin/mv \"$@\"\n"
@@ -125,6 +132,18 @@ func TestDarwinUpdateWorkerActivationAndRollback(t *testing.T) {
 				t.Fatal("old app did not receive failure notification")
 			}
 		})
+	}
+}
+
+func TestDarwinSignatureCheckPassesRequirementText(t *testing.T) {
+	// The real codesign reads a bare -R argument as a requirement file. With
+	// the text form, Apple's own app meets an Apple anchor but not our identity.
+	const app = "/System/Applications/Calculator.app"
+	if err := verifyDarwinSignature(context.Background(), app, "anchor apple"); err != nil {
+		t.Fatal("Apple's app failed its own anchor requirement:", err)
+	}
+	if verifyDarwinSignature(context.Background(), app, `anchor apple generic and identifier "im.lbv.tailsplit"`) == nil {
+		t.Fatal("accepted another app's identifier")
 	}
 }
 
