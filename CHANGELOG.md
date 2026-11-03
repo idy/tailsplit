@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+- Install desktop updates on macOS. The app passed its code-signing requirement
+  to `codesign -R` as a file path instead of as text, so every in-app update
+  stopped at the signature check and kept the running app. The macOS 0.7.0 app
+  cannot install updates itself: install 0.7.1 once from the release page or
+  with the shell installer. Windows updates were not affected.
+- Check the requirement with the real `codesign`, and run the replacement worker
+  against a `codesign` stand-in that rejects requirement file paths.
+
 ## 0.7.0
 
 - Check for stable desktop releases on GitHub ten seconds after the app starts
