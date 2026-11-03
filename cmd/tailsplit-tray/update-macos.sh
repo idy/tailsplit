@@ -48,7 +48,8 @@ stage=$(/usr/bin/mktemp -d "$(/usr/bin/dirname "$target")/.tailsplit-update.XXXX
 /usr/bin/ditto "$work/extracted/TailSplit.app" "$stage/TailSplit.app"
 [ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$stage/TailSplit.app/Contents/Info.plist")" = "$expected_version" ]
 # Reverify after copying into protected staging, including when authorized as root.
-/usr/bin/codesign --verify --deep --strict -R "$requirement" "$stage/TailSplit.app"
+# A leading "=" makes codesign read the requirement as text, not a file path.
+/usr/bin/codesign --verify --deep --strict -R "=$requirement" "$stage/TailSplit.app"
 /usr/sbin/spctl --assess --type execute "$stage/TailSplit.app"
 : > "$work/ready"
 
