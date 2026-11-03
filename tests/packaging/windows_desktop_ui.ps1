@@ -3,7 +3,9 @@
     [Parameter(Mandatory=$true)][string]$Config,
     [Parameter(Mandatory=$true)][string]$Log,
     [Parameter(Mandatory=$true)][string]$Screenshot,
-    [Parameter(Mandatory=$true)][string]$Credentials
+    [Parameter(Mandatory=$true)][string]$Credentials,
+    # Leave the verified GUI running with an active session for an upgrade check.
+    [switch]$KeepRunning
 )
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Desktop integration runs only in disposable Windows CI.' }
@@ -151,7 +153,13 @@ try {
     $secondExit = [TailSplitDesktopFixture]::LaunchStandard($credential.username,$credential.password,$Application,'--no-connect',$true)
     if ($secondExit -ne 0) { throw 'Second launch failed.' }
     Wait-Until { [TailSplitDesktopFixture]::IsWindowVisible($window) } 'Second launch did not activate the existing window.' | Out-Null
-    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true } | ConvertTo-Json -Depth 4 -Compress
+    if ($KeepRunning) {
+        # Users usually update while connected; Setup must end this session.
+        $stage = 'reconnecting before the caller upgrades the running app'
+        Invoke-Button $automation '连接'
+        Wait-Until { $button=Find-Button $automation '断开'; $button -and $button.Current.IsEnabled } 'Reconnect before upgrade did not reach an active service session.' | Out-Null
+    }
+    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
 } catch {
     $primaryFailure = $_
     $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource; elapsed_ms=$startupClock.ElapsedMilliseconds; startup_phases=$nativePhases.ToArray() }
@@ -187,14 +195,17 @@ try {
     $failure | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $Screenshot) 'ui-failure.json') -Encoding UTF8
     throw
 } finally {
-    try {
-        $closing = Start-Process -FilePath $Application -ArgumentList '--quit' -Wait -PassThru
-        if (Get-Process -Id $guiProcess -ErrorAction SilentlyContinue) { throw 'The native GUI did not exit cleanly.' }
-        if ($closing.ExitCode -ne 0) { throw 'The GUI quit acknowledgement failed.' }
-    } catch {
-        if ($null -eq $primaryFailure) { throw }
-        Write-Warning ('GUI cleanup after the original failure: ' + $_.Exception.Message)
-        # This fixture owns only this newly launched PID in a disposable CI VM.
-        Stop-Process -Id $guiProcess -Force -ErrorAction SilentlyContinue
+    # A kept GUI is closed by the caller's upgrade or its own final cleanup.
+    if (-not $KeepRunning -or $null -ne $primaryFailure) {
+        try {
+            $closing = Start-Process -FilePath $Application -ArgumentList '--quit' -Wait -PassThru
+            if (Get-Process -Id $guiProcess -ErrorAction SilentlyContinue) { throw 'The native GUI did not exit cleanly.' }
+            if ($closing.ExitCode -ne 0) { throw 'The GUI quit acknowledgement failed.' }
+        } catch {
+            if ($null -eq $primaryFailure) { throw }
+            Write-Warning ('GUI cleanup after the original failure: ' + $_.Exception.Message)
+            # This fixture owns only this newly launched PID in a disposable CI VM.
+            Stop-Process -Id $guiProcess -Force -ErrorAction SilentlyContinue
+        }
     }
 }

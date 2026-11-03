@@ -59,7 +59,10 @@ architecture's desktop package and must match the release's `SHA256SUMS` and siz
 Network failures or failed verification leave the existing app running.
 
 On Windows, the verified Setup EXE requests UAC and uses its existing graceful
-shutdown, service upgrade and rollback flow. On macOS, the updater verifies the
+shutdown, service upgrade and rollback flow. Windows CI runs the updater's
+installer handoff natively and silently upgrades a running, connected desktop.
+Hosted runners cannot approve UAC or click through the Setup wizard; check those
+steps manually on Windows. On macOS, the updater verifies the
 bundle version, Developer ID signature and Gatekeeper acceptance, stages a whole
 bundle on the destination filesystem, then disconnects, replaces and relaunches
 the app. A signed installation requires the same signing team. Non-writable app
@@ -106,7 +109,8 @@ python -I -B packaging/release.py build --os windows --arch amd64 --directory bi
 
 Use `arm64` on Windows on Arm. Windows CI is configured to execute the installed UI at medium
 integrity, captures its native window, exercises real service sessions and tests
-repair, failed-upgrade recovery and uninstall. This is separate from cross-build
+repair, failed-upgrade recovery, upgrading a running and connected desktop with a
+newer installer, and uninstall. This is separate from cross-build
 checks and the CLI's real Wintun TCP/UDP DNS fixture.
 
 ## Windows CLI
