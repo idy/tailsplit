@@ -16,6 +16,7 @@ static NSURL *panelURL;
 static int panelPort;
 static BOOL panelLoaded;
 static BOOL panelFailed;
+static WKNavigation *panelNavigation; // The app's own load of panelURL.
 
 static NSString *const panelFrameName = @"TailSplitConfigurationWindow";
 
@@ -39,8 +40,16 @@ static BOOL tailsplit_panel_allows(NSURL *url) {
 }
 
 static void tailsplit_panel_load(void) {
+    panelLoaded = NO;
     panelFailed = NO;
-    [panelView loadRequest:[NSURLRequest requestWithURL:panelURL]];
+    [panelNavigation release];
+    panelNavigation = [[panelView loadRequest:[NSURLRequest requestWithURL:panelURL]] retain];
+}
+
+// Showing the window again retries only the app's own load, and only until a
+// page has loaded; other refused or replaced navigations must keep the draft.
+static void tailsplit_panel_failed(WKNavigation *navigation) {
+    if (!panelLoaded && navigation && navigation == panelNavigation) panelFailed = YES;
 }
 
 @implementation TailSplitPanelDelegate
@@ -61,20 +70,23 @@ static void tailsplit_panel_load(void) {
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     panelLoaded = YES;
+    panelFailed = NO;
     webView.hidden = NO;
 }
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation
     withError:(NSError *)error {
-    if (!panelLoaded) panelFailed = YES;
+    tailsplit_panel_failed(navigation);
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
-    if (!panelLoaded) panelFailed = YES;
+    tailsplit_panel_failed(navigation);
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
-    // The page removes its capability from the address after loading.
+    // The page removes its capability from the address after loading, so load
+    // the original URL again behind the dark canvas.
+    webView.hidden = YES;
     tailsplit_panel_load();
 }
 
