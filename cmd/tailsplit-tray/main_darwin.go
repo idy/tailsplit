@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"image"
 	"image/color"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/tray"
 
@@ -28,6 +30,7 @@ import (
 type configurationApply struct {
 	ctx    context.Context
 	update func() error
+	direct bool
 	done   chan error
 }
 
@@ -49,34 +52,84 @@ func main() {
 	logPath := flag.String("log", filepath.Join(configRoot, "TailSplit", "logs", "tailsplit.log"), "private log file")
 	startImmediately := flag.Bool("start", false, "start the proxy explicitly after opening the app")
 	loginImmediately := flag.Bool("login", false, "start and open the current device login page when ready")
+	noConnect := flag.Bool("no-connect", false, "start disconnected after an update")
+	updateFailed := flag.Bool("update-failed", false, "report a failed update and retained app")
 	flag.Parse()
+	if *updateFailed {
+		showError("App 更新失败，已保留原版本。请重新检查更新，或从 GitHub Release 安装。")
+	}
 	if err := initializeConfig(*config, *template); err != nil {
 		showError("无法准备配置文件")
 		return
 	}
-	preferences, _ := tray.ReadPreferences(*config)
+	preferences, err := tray.ReadPreferences(*config)
+	if err != nil {
+		// Keep the documented default; the panel reports the configuration error.
+		preferences.CheckForUpdates = true
+	}
 	controller, err := tray.New(tray.Options{Helper: *helper, ConfigPath: *config, LogPath: *logPath})
 	if err != nil {
 		showError("无法打开日志文件")
 		return
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	configurationRequests := make(chan configurationApply)
+	apply := func(requestCtx context.Context, update func() error, direct bool) error {
+		request := configurationApply{ctx: requestCtx, update: update, direct: direct, done: make(chan error, 1)}
+		select {
+		case configurationRequests <- request:
+		case <-requestCtx.Done():
+			return requestCtx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		select {
+		case err := <-request.done:
+			return err
+		case <-requestCtx.Done():
+			return requestCtx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	updates := newDesktopUpdates(ctx, tray.AppVersion(), preferences.CheckForUpdates,
+		func(ctx context.Context, enabled bool) error {
+			return apply(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) }, true)
+		},
+		func(update appupdate.Package) error {
+			return installDarwinUpdate(ctx, update, executable, *config, *logPath, func(commit func() error) error {
+				// A settings save, login or logout is brief: wait for it rather than
+				// abort a confirmed update. The worker waits 90 seconds for this exit.
+				deadline := time.Now().Add(60 * time.Second)
+				for {
+					err := apply(ctx, func() error {
+						if err := controller.Close(); err != nil {
+							return err
+						}
+						return commit()
+					}, true)
+					if errors.Is(err, configweb.ErrBusy) && time.Now().Before(deadline) {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-time.After(500 * time.Millisecond):
+						}
+						continue
+					}
+					// Finish the successful handoff before Quit cancels the app
+					// context; cancellation must not delete the worker's package.
+					if err == nil {
+						systray.Quit()
+					}
+					return err
+				}
+			})
+		})
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		ConfigPath: *config, Snapshot: controller.Snapshot,
-		Apply: func(ctx context.Context, update func() error) error {
-			request := configurationApply{ctx: ctx, update: update, done: make(chan error, 1)}
-			select {
-			case configurationRequests <- request:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			select {
-			case err := <-request.done:
-				return err
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		},
+		Apply:       func(ctx context.Context, update func() error) error { return apply(ctx, update, false) },
+		UpdateState: updates.snapshot, UpdateAction: updates.action,
 	})
 	systray.Run(func() {
 		icon := trayIcon()
@@ -129,13 +182,15 @@ func main() {
 		service := tools.AddSubMenuItem("后台网络服务", "")
 		installService := service.AddSubMenuItem("更新或修复…", "打开系统安装器")
 		removeService := service.AddSubMenuItem("卸载后台服务…", "停止代理并打开卸载包；保留登录和配置")
+		checkUpdate := tools.AddSubMenuItem("检查更新…", "检查 GitHub 正式版；安装前会确认")
+		autoUpdates := tools.AddSubMenuItemCheckbox("自动检查更新", "启动后和每六小时检查；安装始终由你确认", preferences.CheckForUpdates)
 		about := tools.AddSubMenuItem("关于 TailSplit…", "查看当前 App 的版本号和构建号")
 		restart.Disable()
 		systray.AddSeparator()
 		quit := systray.AddMenuItem("退出 TailSplit", "同时停止此 App 启动的代理")
 		if *loginImmediately {
 			_ = controller.StartLogin()
-		} else if *startImmediately || preferences.ConnectOnStart {
+		} else if !*noConnect && (*startImmediately || preferences.ConnectOnStart) {
 			_ = controller.Start()
 		} else {
 			_ = controller.RefreshExitNodes()
@@ -325,7 +380,12 @@ func main() {
 					editing = true
 					flow.Cancel()
 					go func() {
-						err := controller.Reconfigure(request.update)
+						var err error
+						if request.direct {
+							err = request.update()
+						} else {
+							err = controller.Reconfigure(request.update)
+						}
 						// The browser reports errors without a second native alert.
 						settingsDone <- nil
 						request.done <- err
@@ -334,6 +394,7 @@ func main() {
 					editing = false
 					if updated, readErr := tray.ReadPreferences(*config); readErr == nil {
 						preferences = updated
+						updates.updater.SetAutomatic(updated.CheckForUpdates)
 					}
 					previous = tray.Snapshot{}
 					if err != nil {
@@ -376,6 +437,18 @@ func main() {
 						enabled := !preferences.DebugLogging
 						reconfigure(func() error { return tray.SetDebugLogging(*config, enabled) })
 					}
+				case <-checkUpdate.ClickedCh:
+					action := "check"
+					if updates.snapshot().Available {
+						action = "install"
+					}
+					go func() { _ = updates.action(ctx, action) }()
+				case <-autoUpdates.ClickedCh:
+					action := "automatic-on"
+					if updates.snapshot().Automatic {
+						action = "automatic-off"
+					}
+					go func() { _ = updates.action(ctx, action) }()
 				case <-about.ClickedCh:
 					tray.ShowAbout()
 				case <-installService.ClickedCh:
@@ -401,6 +474,16 @@ func main() {
 					systray.Quit()
 					return
 				case <-ticker.C:
+					updateState := updates.snapshot()
+					checkUpdate.SetTitle(updateMenuTitle(updateState))
+					checkUpdate.SetTooltip(updateState.Error)
+					setEnabled(checkUpdate, !updateState.Checking && !updateState.Downloading && !updateState.Installing && !editing && !loggingOut)
+					setChecked(autoUpdates, updateState.Automatic)
+					if updateState.Available {
+						tools.SetTitle("设置与工具 · 有更新")
+					} else {
+						tools.SetTitle("设置与工具")
+					}
 					ticks++
 					if ticks%10 == 0 {
 						refreshLoginItem()
@@ -485,6 +568,7 @@ func main() {
 			}
 		}()
 	}, func() {
+		cancel()
 		if configurationPage != nil {
 			_ = configurationPage.Close()
 		}

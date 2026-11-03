@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/idy/tailsplit/internal/appupdate"
 )
 
 // Desktop controls use the same capability and origin policy as configuration
@@ -33,6 +35,39 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 	if err := s.options.Action(r.Context(), request.Action); err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, ErrBusy) {
+			status = http.StatusConflict
+		}
+		fail(w, status, "action", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// App updates are available independently of desktop connection controls.
+func (s *Server) updateAction(w http.ResponseWriter, r *http.Request) {
+	if s.options.UpdateAction == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var request struct {
+		Action string `json:"action"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	var extra any
+	if decoder.Decode(&request) != nil || decoder.Decode(&extra) != io.EOF {
+		fail(w, http.StatusBadRequest, "request", "无法读取操作请求。")
+		return
+	}
+	switch request.Action {
+	case "check", "install", "automatic-on", "automatic-off":
+	default:
+		fail(w, http.StatusBadRequest, "action", "未知操作。")
+		return
+	}
+	if err := s.options.UpdateAction(r.Context(), request.Action); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, ErrBusy) || errors.Is(err, appupdate.ErrBusy) {
 			status = http.StatusConflict
 		}
 		fail(w, status, "action", err.Error())

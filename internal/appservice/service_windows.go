@@ -236,12 +236,53 @@ func RunWindowsInstalled(run, login, logout, discover Runner) error {
 	return svc.Run(windowsServiceName, &windowsService{server: server})
 }
 
+// A SYSTEM process normally lets only SYSTEM and administrators open it, yet
+// clients authenticate the pipe's server PID by reading its image. Grant the
+// registered desktop user only PROCESS_QUERY_LIMITED_INFORMATION: no memory,
+// handle, termination or control rights, and the SYSTEM token's own DACL
+// still refuses that user.
+func allowIdentityQuery(process windows.Handle, user string) error {
+	sid, err := windows.StringToSid(user)
+	if err != nil {
+		return err
+	}
+	descriptor, err := windows.GetSecurityInfo(process, windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	current, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return errors.New("the network service process must not have a null DACL")
+	}
+	dacl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		AccessMode:        windows.GRANT_ACCESS,
+		Inheritance:       windows.NO_INHERITANCE,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_USER,
+			TrusteeValue: windows.TrusteeValueFromSID(sid),
+		},
+	}}, current)
+	if err != nil {
+		return err
+	}
+	return windows.SetSecurityInfo(process, windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+
 type windowsService struct{ server *Server }
 
 func (s *windowsService) Execute(_ []string, requests <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
 	status <- svc.Status{State: svc.StartPending, WaitHint: 10000}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// The pipe's only client must be able to verify this process first.
+	if err := allowIdentityQuery(windows.CurrentProcess(), s.server.UserID); err != nil {
+		return true, 4
+	}
 	// go-winio rejects remote clients and creates the first pipe instance
 	// exclusively, so another process cannot become a competing server.
 	listener, err := winio.ListenPipe(windowsPipe, &winio.PipeConfig{SecurityDescriptor: "O:SYD:P(A;;GA;;;SY)(A;;0x12019b;;;" + s.server.UserID + ")", InputBufferSize: 65536, OutputBufferSize: 65536})

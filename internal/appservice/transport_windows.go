@@ -82,6 +82,7 @@ func processImage(process windows.Handle) (string, error) {
 // Ordinary users cannot reliably query a SYSTEM token. SCM independently
 // binds the actual pipe PID to our running LocalSystem service and fixed image.
 // These handles request only connect/query rights, never service administration.
+// The service grants its registered user the limited process query used here.
 func installedServiceProcess(pid uint32, installed string) (string, error) {
 	manager, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
 	if err != nil {

@@ -29,7 +29,12 @@ type Config struct {
 }
 
 type AppConfig struct {
-	ConnectOnStart bool `yaml:"connect_on_start"`
+	ConnectOnStart  bool  `yaml:"connect_on_start"`
+	CheckForUpdates *bool `yaml:"check_for_updates"`
+}
+
+func (c AppConfig) UpdatesEnabled() bool {
+	return c.CheckForUpdates == nil || *c.CheckForUpdates
 }
 
 type TailscaleConfig struct {

@@ -9,6 +9,8 @@ int tailsplit_login_item_status(void);
 char *tailsplit_set_login_item(int enabled);
 void tailsplit_login_item_settings(void);
 void tailsplit_show_about(void);
+char *tailsplit_app_version(void);
+int tailsplit_confirm_update(const char *version);
 char *tailsplit_edit_device_name(const char *current, const char *suggested, int *saved);
 */
 import "C"
@@ -36,6 +38,18 @@ func SetLoginItem(enabled bool) error {
 func OpenLoginItemSettings() { C.tailsplit_login_item_settings() }
 
 func ShowAbout() { C.tailsplit_show_about() }
+
+func AppVersion() string {
+	value := C.tailsplit_app_version()
+	defer C.free(unsafe.Pointer(value))
+	return C.GoString(value)
+}
+
+func ConfirmUpdate(version string) bool {
+	value := C.CString(version)
+	defer C.free(unsafe.Pointer(value))
+	return C.tailsplit_confirm_update(value) != 0
+}
 
 func EditDeviceName(current string) (string, bool) {
 	suggested, _ := DeviceName("")

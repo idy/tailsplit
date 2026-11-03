@@ -115,6 +115,21 @@
             <div class="field-row"><div class="field-label"><label for="interface">物理网卡<span class="optional">可选</span></label><p>绑定直连流量和隧道传输。</p></div><div class="field-control"><input id="interface" data-field="interface" class="mono" spellcheck="false" placeholder="留空，自动选择"></div></div>
             <div class="field-row toggle-row"><div class="field-label"><label for="connect-on-start">打开后自动连接</label><p>仅在打开 TailSplit 时自动连接。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="connect-on-start" data-field="app.connect_on_start"><span class="switch-track"></span></label><span class="toggle-caption">自动连接</span></div></div>
             <div class="field-row"><div class="field-label"><label for="log-level">日志级别</label><p>控制诊断日志的详细程度。</p></div><div class="field-control"><select id="log-level" data-field="log_level"><option value="info">普通（Info）</option><option value="debug">详细（Debug）</option><option value="trace">完整跟踪（Trace）</option><option value="warn">仅警告（Warn）</option><option value="error">仅错误（Error）</option><option value="fatal">严重错误（Fatal）</option><option value="panic">致命错误（Panic）</option></select><span class="field-hint">排查 DNS、分流和连接问题时使用详细日志。</span></div></div>
+            <div class="field-row" id="app-updates" role="region" aria-labelledby="heading-updates" hidden>
+              <div class="field-label"><h3 id="heading-updates">应用更新</h3><p>更新偏好立即保存。</p></div>
+              <div class="field-control">
+                <div class="update-versions"><span id="update-current"></span><span id="update-latest"></span></div>
+                <label class="desktop-startup update-automatic"><input type="checkbox" id="update-automatic">后台自动检查更新</label>
+                <div class="update-actions"><button class="button small" id="update-check">检查更新</button><button class="button primary small" id="update-install" hidden>下载并安装</button></div>
+                <p class="field-hint" id="update-install-hint">安装前会请求确认；当前连接将结束，TailSplit 随后重新启动。</p>
+                <p class="field-hint" id="update-preview" hidden>界面预览：检查与安装仅模拟状态，不会联网下载或运行安装程序。</p>
+                <p class="field-hint" id="update-status" role="status"></p>
+                <progress id="update-progress" max="1" aria-label="更新下载进度" hidden></progress>
+                <p class="field-hint update-error" id="update-error" role="status" hidden></p>
+                <p class="field-hint" id="update-last-checked"></p>
+                <details class="update-notes" id="update-notes" hidden><summary>版本说明</summary><pre id="update-release-notes"></pre></details>
+              </div>
+            </div>
           </div>
         </section>
       </div>

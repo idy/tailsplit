@@ -33,14 +33,44 @@ curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh 
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
 The installer never changes your routing, DNS, proxy rules or device identity.
-Quit the existing app before updating its bundle. Existing configuration and
-network-service state live outside the app bundle and are retained.
+Quit the existing app before updating its bundle with the shell installer.
+Desktop apps also offer the confirmed update flow described below. Existing
+configuration and network-service state live outside the app bundle and are retained.
 
 | Platform | Architectures | Downloads |
 | --- | --- | --- |
 | macOS 14+ | amd64, arm64 | App ZIP/DMG and CLI tar.gz |
 | Linux | amd64, arm64 | CLI tar.gz and .deb |
 | Windows 10+ (x64), Windows 11 (ARM64) | amd64, arm64 | Desktop Setup EXE and CLI ZIP |
+
+## Desktop updates
+
+Packaged macOS and Windows apps check the stable GitHub Release ten seconds after
+startup and every six hours while running. Choose **Check for updates…** in the
+tray menu (under **Settings and Tools** on macOS), or open **Device and Startup →
+App Updates** in the configuration panel. The panel shows the installed version,
+release notes, last check, download progress and errors. Development builds skip
+automatic checks; prereleases and older versions are never offered.
+
+`app.check_for_updates` defaults to `true` when omitted. The menu and panel can
+change it immediately without reconnecting the proxy. Checks only discover new
+versions: installation always asks for confirmation. Downloads use the matching
+architecture's desktop package and must match the release's `SHA256SUMS` and size.
+Network failures or failed verification leave the existing app running.
+
+On Windows, the verified Setup EXE requests UAC and uses its existing graceful
+shutdown, service upgrade and rollback flow; the next app launch removes the
+downloaded Setup. Windows CI runs the updater's
+installer handoff natively and silently upgrades a running, connected desktop.
+Hosted runners cannot approve UAC or click through the Setup wizard; check those
+steps manually on Windows. On macOS, the updater verifies the
+bundle version, Developer ID signature and Gatekeeper acceptance, stages a whole
+bundle on the destination filesystem, then disconnects, replaces and relaunches
+the app. A signed installation requires the same signing team. Non-writable app
+directories request administrator authorization before shutdown. Failed activation
+or launch handoff restores the previous bundle. Configuration and saved device
+identity are retained; the restarted app stays disconnected. The next macOS
+connection may ask to install the bundled matching network service.
 
 ## Windows desktop
 
@@ -80,7 +110,8 @@ python -I -B packaging/release.py build --os windows --arch amd64 --directory bi
 
 Use `arm64` on Windows on Arm. Windows CI is configured to execute the installed UI at medium
 integrity, captures its native window, exercises real service sessions and tests
-repair, failed-upgrade recovery and uninstall. This is separate from cross-build
+repair, failed-upgrade recovery, upgrading a running and connected desktop with a
+newer installer, and uninstall. This is separate from cross-build
 checks and the CLI's real Wintun TCP/UDP DNS fixture.
 
 ## Windows CLI

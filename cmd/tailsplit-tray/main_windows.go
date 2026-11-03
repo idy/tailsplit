@@ -52,6 +52,7 @@ type windowsApp struct {
 	login       tray.LoginFlow
 	browserDone chan error
 	quit        sync.Once
+	updates     *desktopUpdates
 }
 
 func desktopPipeDescriptor(sid string) string {
@@ -147,8 +148,11 @@ func runWindowsDesktop() (runErr error) {
 		return errors.New("another TailSplit desktop app is starting; open it from the notification area")
 	}
 	defer listener.Close()
-	for _, directory := range []string{root, filepath.Dir(*config), filepath.Dir(*logPath), filepath.Join(root, "browser")} {
-		if err := privatefs.EnsureDir(directory); err != nil {
+	browser := filepath.Join(root, "browser")
+	for _, directory := range []string{root, filepath.Dir(*config), filepath.Dir(*logPath), browser} {
+		// WebView2 grants its sandbox access inside its own user data folder,
+		// so a later launch must not reject those ACLs as unsafe app state.
+		if err := privatefs.EnsureDir(directory, browser); err != nil {
 			return err
 		}
 	}
@@ -175,11 +179,27 @@ func runWindowsDesktop() (runErr error) {
 	// tick. An unbuffered nonblocking send can reject a click while idle.
 	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
 	go app.operate()
+	preferences, err := tray.ReadPreferences(*config)
+	if err != nil {
+		// Keep the documented default; the window reports the configuration error.
+		preferences.CheckForUpdates = true
+	}
+	app.updates = newDesktopUpdates(ctx, version, preferences.CheckForUpdates,
+		func(ctx context.Context, enabled bool) error {
+			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
+		}, launchWindowsUpdate)
 	page, err := configweb.Start(configweb.Options{
 		ConfigPath: *config, Snapshot: controller.Snapshot,
 		Apply: func(ctx context.Context, update func() error) error {
-			return app.do(ctx, func() error { return controller.Reconfigure(update) })
+			return app.do(ctx, func() error {
+				err := controller.Reconfigure(update)
+				if preferences, readErr := tray.ReadPreferences(*config); readErr == nil {
+					app.updates.updater.SetAutomatic(preferences.CheckForUpdates)
+				}
+				return err
+			})
 		},
+		UpdateState: app.updates.snapshot, UpdateAction: app.updates.action,
 		Action: app.action, Logs: func() (string, error) { return desktopLogTail(*logPath) },
 		Startup: func() bool { return tray.LoginItem() == tray.LoginItemEnabled },
 	})
@@ -187,7 +207,7 @@ func runWindowsDesktop() (runErr error) {
 		return err
 	}
 	defer page.Close()
-	app.window, err = winui.New(filepath.Join(filepath.Dir(executable), "TailSplit.Window.dll"), page.URL(), filepath.Join(root, "browser"), "TailSplit.Window."+sid)
+	app.window, err = winui.New(filepath.Join(filepath.Dir(executable), "TailSplit.Window.dll"), page.URL(), browser, "TailSplit.Window."+sid)
 	if err != nil {
 		return err
 	}
@@ -221,6 +241,8 @@ func runWindowsDesktop() (runErr error) {
 		refresh := systray.AddMenuItem("刷新出口节点", "只读取设备，不创建 TUN")
 		startup := systray.AddMenuItemCheckbox("登录 Windows 后启动", "只启动界面；自动连接另行设置", tray.LoginItem() == tray.LoginItemEnabled)
 		systray.AddSeparator()
+		checkUpdate := systray.AddMenuItem("检查更新…", "检查 GitHub 正式版；安装前会确认")
+		autoUpdates := systray.AddMenuItemCheckbox("自动检查更新", "启动后和每六小时检查", preferences.CheckForUpdates)
 		about := systray.AddMenuItem("关于 TailSplit", "版本与源代码信息")
 		exit := systray.AddMenuItem("退出 TailSplit", "先断开网络，再退出")
 		ticker := time.NewTicker(time.Second)
@@ -254,12 +276,45 @@ func runWindowsDesktop() (runErr error) {
 					action = "startup-off"
 				}
 				go app.menuAction(action)
+			case <-checkUpdate.ClickedCh:
+				action := "check"
+				if app.updates.snapshot().Available {
+					action = "install"
+				}
+				go func() {
+					if err := app.updates.action(ctx, action); err != nil {
+						windowsError(err.Error())
+					}
+				}()
+			case <-autoUpdates.ClickedCh:
+				action := "automatic-on"
+				if app.updates.snapshot().Automatic {
+					action = "automatic-off"
+				}
+				go func() {
+					if err := app.updates.action(ctx, action); err != nil {
+						windowsError(err.Error())
+					}
+				}()
 			case <-about.ClickedCh:
 				windowsError(fmt.Sprintf("TailSplit %s\nSource: %s\nhttps://github.com/idy/tailsplit", version, commit))
 			case <-exit.ClickedCh:
 				app.shutdown()
 				return
 			case <-ticker.C:
+				updateState := app.updates.snapshot()
+				checkUpdate.SetTitle(updateMenuTitle(updateState))
+				checkUpdate.SetTooltip(updateState.Error)
+				if updateState.Checking || updateState.Downloading || updateState.Installing {
+					checkUpdate.Disable()
+				} else {
+					checkUpdate.Enable()
+				}
+				if updateState.Automatic {
+					autoUpdates.Check()
+				} else {
+					autoUpdates.Uncheck()
+				}
 				snapshot := controller.Snapshot()
 				status.SetTitle("TailSplit · " + snapshot.State)
 				if tray.LoginItem() == tray.LoginItemEnabled {

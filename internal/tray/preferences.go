@@ -11,12 +11,13 @@ import (
 )
 
 type Preferences struct {
-	DeviceName     string
-	ExitNode       string
-	ConnectOnStart bool
-	DirectDNS      string
-	RoutingMode    string
-	DebugLogging   bool
+	DeviceName      string
+	ExitNode        string
+	ConnectOnStart  bool
+	CheckForUpdates bool
+	DirectDNS       string
+	RoutingMode     string
+	DebugLogging    bool
 }
 
 func ReadPreferences(path string) (Preferences, error) {
@@ -39,7 +40,8 @@ func ReadPreferences(path string) (Preferences, error) {
 		return Preferences{}, err
 	}
 	p := Preferences{
-		ConnectOnStart: raw.App.ConnectOnStart, DirectDNS: config.DNS.Direct,
+		ConnectOnStart: raw.App.ConnectOnStart, CheckForUpdates: config.App.UpdatesEnabled(),
+		DirectDNS:    config.DNS.Direct,
 		RoutingMode:  config.Rules.Mode,
 		DebugLogging: config.LogLevel == "debug" || config.LogLevel == "trace",
 	}
@@ -68,6 +70,10 @@ func SetExitNode(path, value string) error {
 
 func SetConnectOnStart(path string, enabled bool) error {
 	return updatePreference(path, "app", "connect_on_start", enabled)
+}
+
+func SetCheckForUpdates(path string, enabled bool) error {
+	return updatePreference(path, "app", "check_for_updates", enabled)
 }
 
 func SetDebugLogging(path string, enabled bool) error {

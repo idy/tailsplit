@@ -99,12 +99,14 @@ jobs:
         env:
           TAILSPLIT_WINDOWS_TUN_TEST: '1'
         run: go test -mod=readonly -tags with_gvisor -run '^TestWindowsTUNDNSLifecycle$' -timeout 2m -v .
-      - name: Validate desktop capability, pipe identity and native Go UI entry point
+      - name: Validate desktop capability, pipe identity, updater and native Go UI entry point
         shell: pwsh
         run: |
           go test -mod=readonly -tags with_gvisor -run '^(TestDesktop|TestWindows)' -timeout 3m ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./cmd/tailsplit-tray
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet -mod=readonly -tags with_gvisor ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./cmd/tailsplit-tray
+          go test -mod=readonly -tags with_gvisor -timeout 3m ./internal/appupdate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet -mod=readonly -tags with_gvisor ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./internal/appupdate ./cmd/tailsplit-tray
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and execute native Windows archive
         shell: pwsh

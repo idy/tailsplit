@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -36,7 +37,11 @@ func privateDescriptor(user *windows.SID, directory bool) (*windows.SECURITY_DES
 		"(A;" + inherit + ";FA;;;SY)(A;" + inherit + ";FA;;;BA)")
 }
 
-func EnsureDir(path string) error {
+// EnsureDir creates private storage at path and checks it and everything below
+// it. Each foreign directory belongs to other software, such as the WebView2
+// user data folder whose sandbox ACLs are its own: the directory itself must
+// be private, but its contents are not checked.
+func EnsureDir(path string, foreign ...string) error {
 	path = filepath.Clean(path)
 	user, err := currentUserSID()
 	if err != nil {
@@ -68,11 +73,15 @@ func EnsureDir(path string) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if child == path {
-			return nil
+		if child != path {
+			if err := checkPath(child, user, entry.IsDir(), false); err != nil {
+				return fmt.Errorf("state_dir contains an unsafe entry %q: %w", child, err)
+			}
 		}
-		if err := checkPath(child, user, entry.IsDir(), false); err != nil {
-			return fmt.Errorf("state_dir contains an unsafe entry %q: %w", child, err)
+		for _, directory := range foreign {
+			if entry.IsDir() && strings.EqualFold(child, filepath.Clean(directory)) {
+				return fs.SkipDir
+			}
 		}
 		return nil
 	})

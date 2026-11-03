@@ -76,6 +76,31 @@ tun:
 	}
 }
 
+func TestUpdatePreferenceDefaultsAndPreservesPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	original := "# Keep my policy\napp:\n  connect_on_start: true\nrules:\n  direct_domains: [example.com] # Local rule\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preferences, err := ReadPreferences(path)
+	if err != nil || !preferences.CheckForUpdates {
+		t.Fatal("update checks should default on:", preferences, err)
+	}
+	for _, enabled := range []bool{false, true} {
+		if err := SetCheckForUpdates(path, enabled); err != nil {
+			t.Fatal(err)
+		}
+		preferences, err = ReadPreferences(path)
+		if err != nil || preferences.CheckForUpdates != enabled || !preferences.ConnectOnStart {
+			t.Fatal("update preference did not round-trip:", preferences, err)
+		}
+		data, _ := os.ReadFile(path)
+		if !bytes.Contains(data, []byte("# Keep my policy")) || !bytes.Contains(data, []byte("[example.com] # Local rule")) {
+			t.Fatal("update preference changed routing policy or comments")
+		}
+	}
+}
+
 func TestPreferencesDoNotReplaceMalformedPolicyOrFollowSymlinks(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.yaml")

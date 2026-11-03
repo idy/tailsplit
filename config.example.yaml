@@ -6,6 +6,9 @@ log_level: info
 app:
   # Independent of the macOS "Open at Login" switch in the menu.
   connect_on_start: false
+  # Check stable GitHub Releases after startup and every six hours.
+  # Installation always requires confirmation; this does not auto-connect.
+  check_for_updates: true
 
 # Optional: bind direct traffic and Tailscale transport to the physical NIC.
 # interface: en0

@@ -42,6 +42,39 @@ func TestWindowsPrivateStateProtectsInheritedFiles(t *testing.T) {
 	}
 }
 
+func TestWindowsPrivateStateLeavesForeignContents(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "TailSplit")
+	browser := filepath.Join(root, "browser")
+	for _, directory := range []string{root, browser} {
+		if err := EnsureDir(directory, browser); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// WebView2 grants its AppContainer sandbox access to its cache directory.
+	cache := filepath.Join(browser, "EBWebView", "Default", "Cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	user, err := currentUserSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTestDACL(t, cache, "D:P(A;OICI;FA;;;"+user.String()+")(A;OICI;FA;;;S-1-15-2-1)")
+	if err := EnsureDir(root); err == nil {
+		t.Fatal("accepted a sandbox grant inside private state")
+	}
+	for _, directory := range []string{root, browser} {
+		if err := EnsureDir(directory, browser); err != nil {
+			t.Fatal("rejected the contents of a foreign directory on a later launch:", err)
+		}
+	}
+	// Only its contents are foreign; the directory itself must stay private.
+	setTestDACL(t, browser, "D:P(A;OICI;FA;;;"+user.String()+")(A;OICI;FR;;;WD)")
+	if err := EnsureDir(root, browser); err == nil {
+		t.Fatal("accepted a public foreign directory")
+	}
+}
+
 func TestWindowsPrivateStateRejectsPublicDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state")
 	if err := EnsureDir(path); err != nil {

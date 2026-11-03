@@ -21,8 +21,9 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def run(*args, timeout=120, check=True):
+def run(*args, timeout=120, check=True, extra=None):
     environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+    environment.update(extra or {})
     result = subprocess.run(list(map(str, args)), cwd=ROOT, env=environment, capture_output=True, text=True,
                             timeout=timeout, check=False)
     if check and result.returncode:
@@ -196,6 +197,31 @@ def install(installer, sid, log):
                "/UserSID=" + sid, "/LOG=" + str(log), timeout=300)
 
 
+def system_service_running():
+    service = json.loads(powershell("Get-CimInstance Win32_Service -Filter \"Name='TailSplitNetworkService'\" | Select-Object Name,State,StartName,PathName | ConvertTo-Json -Compress"))
+    return service["State"] == "Running" and service["StartName"].lower() == "localsystem"
+
+
+def fixture_installer(name, arch, version, commit, core, notices):
+    # CI-only installers from this source; never published or uploaded.
+    assets = ROOT / "bin" / name / "assets"
+    run(sys.executable, "-I", "-B", ROOT / "packaging/windows/build.py", "--arch", arch,
+        "--version", version, "--commit", commit, "--core", core, "--notices", notices,
+        "--directory", assets, "--build-number", (ROOT / "BUILD_NUMBER").read_text().strip(), timeout=600)
+    return assets / f"TailSplit_{version}_windows_{arch}_setup.exe"
+
+
+def desktop_ui(gui, config, root, credentials, screenshot, keep_running=False):
+    command = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", ROOT / "tests/packaging/windows_desktop_ui.ps1",
+               "-Application", gui, "-Config", config, "-Log", root / "tailsplit.log",
+               "-Credentials", credentials, "-Screenshot", screenshot] + (["-KeepRunning"] if keep_running else [])
+    return json.loads(run(*command, timeout=240).stdout.strip().splitlines()[-1])
+
+
+def process_running(pid):
+    return powershell(f"[bool](Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue)") == "True"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--arch", choices=("amd64", "arm64"), required=True)
@@ -227,7 +253,9 @@ def main():
     sentinel = b"isolated-ci-migration-sentinel-not-a-real-device-credential\n"
     (state / "tailscale/tailscaled.state").write_bytes(sentinel)
     config = temporary / "config.yaml"
+    # The installed GUIs run during this fixture; keep them off GitHub's API.
     config.write_text("# Native desktop fixture: no Tailnet/cloud authorization.\n" +
+                      "app:\n  check_for_updates: false\n" +
                       f"state_dir: {json.dumps(str(state))}\nlisten: 127.0.0.1:{free_port()}\n" +
                       "dns:\n  direct: system\n  proxy: 8.8.8.8\nrules:\n  final: direct\ntun:\n  enabled: false\n", encoding="utf-8")
     process = None
@@ -242,8 +270,7 @@ def main():
             raise RuntimeError("Installed desktop source metadata differs")
         if build.get("dirty") is not False:
             raise RuntimeError("Desktop was built from dirty inputs")
-        service = json.loads(powershell("Get-CimInstance Win32_Service -Filter \"Name='TailSplitNetworkService'\" | Select-Object Name,State,StartName,PathName | ConvertTo-Json -Compress"))
-        if service["State"] != "Running" or service["StartName"].lower() != "localsystem":
+        if not system_service_running():
             raise RuntimeError("Installed service is not an idle SYSTEM service")
         if routes() != before:
             raise RuntimeError("Installing the desktop changed default routes")
@@ -292,13 +319,17 @@ def main():
         stub.write_text('package main\nimport "os"\nfunc main() { os.Exit(77) }\n', encoding="utf-8")
         fake_core = failed / "tailsplit-core.exe"
         run("go", "build", "-o", fake_core, stub, timeout=180)
-        failed_version = version.rsplit(".", 1)[0] + "." + str(int(version.rsplit(".", 1)[1]) + 1)
-        failed_assets = failed / "assets"
-        run(sys.executable, "-I", "-B", ROOT / "packaging/windows/build.py", "--arch", args.arch,
-            "--version", failed_version, "--commit", expected_commit, "--core", fake_core,
-            "--notices", installed / "THIRD_PARTY_NOTICES.md", "--directory", failed_assets,
-            "--build-number", (ROOT / "BUILD_NUMBER").read_text().strip(), timeout=600)
-        failed_installer = failed_assets / f"TailSplit_{failed_version}_windows_{args.arch}_setup.exe"
+        newer_version = version.rsplit(".", 1)[0] + "." + str(int(version.rsplit(".", 1)[1]) + 1)
+        notices = installed / "THIRD_PARTY_NOTICES.md"
+        failed_installer = fixture_installer("desktop-failure-fixture", args.arch, newer_version, expected_commit, fake_core, notices)
+        # The successful upgrade uses a real core built the way release.py builds
+        # it, with the newer version, so the upgraded SYSTEM service runs new bytes.
+        upgrade_core = ROOT / "bin/desktop-upgrade-fixture/tailsplit-core.exe"
+        upgrade_core.parent.mkdir(parents=True, exist_ok=True)
+        run("go", "build", "-mod=readonly", "-tags", "with_gvisor", "-trimpath", "-buildvcs=false",
+            "-ldflags", f"-s -w -X main.version={newer_version} -X main.commit={expected_commit}",
+            "-o", upgrade_core, "./cmd/tailsplit", timeout=600, extra={"CGO_ENABLED": "0", "GOWORK": "off"})
+        upgrade_installer = fixture_installer("desktop-upgrade-fixture", args.arch, newer_version, expected_commit, upgrade_core, notices)
         rejected = run(failed_installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
                        "/UserSID="+sid, "/LOG="+str(args.evidence / "failed-upgrade.log"), check=False, timeout=180)
         if rejected.returncode == 0:
@@ -342,10 +373,26 @@ def main():
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\TailSplit", 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as key:
             winreg.DeleteValue(key, "DesktopUserSID")
         install(installer, gui_user["sid"], args.evidence / "standard-user-install.log")
-        ui = run("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", ROOT / "tests/packaging/windows_desktop_ui.ps1",
-                 "-Application", gui, "-Config", gui_config, "-Log", gui_root / "tailsplit.log",
-                 "-Credentials", credential_file, "-Screenshot", args.evidence / "desktop.png", timeout=240)
-        report["checks"]["native_gui"] = json.loads(ui.stdout.strip().splitlines()[-1])
+        ui_fixture = (gui, gui_config, gui_root, credential_file)
+        report["checks"]["native_gui"] = desktop_ui(*ui_fixture, args.evidence / "desktop.png", keep_running=True)
+        # The in-app updater hands a verified Setup to Windows. CI cannot approve
+        # UAC or click the wizard, so the newer Setup runs silently for the
+        # registered user while that user's connected desktop is still running.
+        previous_gui, configuration = digest(gui), gui_config.read_text(encoding="utf-8")
+        install(upgrade_installer, gui_user["sid"], args.evidence / "standard-user-upgrade.log")
+        if process_running(report["checks"]["native_gui"]["process"]):
+            raise RuntimeError("Upgrade replaced files without closing the running desktop")
+        build = json.loads((installed / "build.json").read_text(encoding="utf-8"))
+        if build.get("version") != newer_version or digest(core) != digest(upgrade_core) or digest(gui) == previous_gui:
+            raise RuntimeError("Upgrade did not install the newer desktop and core")
+        if not system_service_running():
+            raise RuntimeError("Upgrade did not restart the SYSTEM service")
+        if gui_config.read_text(encoding="utf-8") != configuration or routes() != before:
+            raise RuntimeError("Upgrade changed configuration or left managed routes")
+        # A new connection proves the upgraded GUI and SYSTEM service match.
+        report["checks"]["running_desktop_upgrade"] = {
+            "from": version, "to": newer_version,
+            "native_gui": desktop_ui(*ui_fixture, args.evidence / "desktop-upgraded.png")}
         uninstallers = list(installed.glob("unins*.exe"))
         if len(uninstallers) != 1:
             raise RuntimeError("Expected a standard-user desktop uninstaller")
