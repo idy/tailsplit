@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.1 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.2 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -44,6 +44,12 @@ configuration and network-service state live outside the app bundle and are reta
 | Windows 10+ (x64), Windows 11 (ARM64) | amd64, arm64 | Desktop Setup EXE and CLI ZIP |
 
 ## Desktop updates
+
+**macOS 0.7.0 needs one manual update.** Its updater fails at the code-signature
+check before replacing the app. Quit TailSplit, then install the latest macOS app
+from [GitHub Releases](https://github.com/idy/tailsplit/releases/latest) or use the
+shell installer above. Configuration and device login are retained. In-app updates
+work from 0.7.1 onward; Windows 0.7.0 is unaffected.
 
 Packaged macOS and Windows apps check the stable GitHub Release ten seconds after
 startup and every six hours while running. Choose **Check for updates…** in the
