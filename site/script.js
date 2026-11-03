@@ -78,8 +78,9 @@
       if (urls.some((url) => !url)) return;
       downloads.forEach((link, index) => { link.href = urls[index]; });
       document.querySelectorAll('[data-release-version]').forEach((label) => { label.textContent = release.tag_name; });
+      document.querySelectorAll('[data-release-label]').forEach((label) => { label.hidden = false; });
     }).catch(() => {
-      // The versioned HTML links still download directly if metadata is unavailable.
+      // Without release metadata, the links open the latest release page instead.
     });
   }
 })();
