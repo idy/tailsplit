@@ -104,7 +104,9 @@ func installDarwinUpdate(ctx context.Context, update appupdate.Package, executab
 		for i := range values {
 			values[i] = shellQuote(values[i])
 		}
-		command = exec.Command("/usr/bin/osascript", "-e", "on run argv\n do shell script (item 1 of argv) with administrator privileges\nend run", strings.Join(values, " "))
+		// AppleScript's default two-minute event timeout could expire while the
+		// password prompt is open; authorizationCtx bounds the wait instead.
+		command = exec.Command("/usr/bin/osascript", "-e", "on run argv\n with timeout of 3600 seconds\n  do shell script (item 1 of argv) with administrator privileges\n end timeout\nend run", strings.Join(values, " "))
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	var output bytes.Buffer

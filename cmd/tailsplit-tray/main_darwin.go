@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"image"
 	"image/color"
@@ -61,7 +62,11 @@ func main() {
 		showError("无法准备配置文件")
 		return
 	}
-	preferences, _ := tray.ReadPreferences(*config)
+	preferences, err := tray.ReadPreferences(*config)
+	if err != nil {
+		// Keep the documented default; the panel reports the configuration error.
+		preferences.CheckForUpdates = true
+	}
 	controller, err := tray.New(tray.Options{Helper: *helper, ConfigPath: *config, LogPath: *logPath})
 	if err != nil {
 		showError("无法打开日志文件")
@@ -94,18 +99,31 @@ func main() {
 		},
 		func(update appupdate.Package) error {
 			return installDarwinUpdate(ctx, update, executable, *config, *logPath, func(commit func() error) error {
-				err := apply(ctx, func() error {
-					if err := controller.Close(); err != nil {
-						return err
+				// A settings save, login or logout is brief: wait for it rather than
+				// abort a confirmed update. The worker waits 90 seconds for this exit.
+				deadline := time.Now().Add(60 * time.Second)
+				for {
+					err := apply(ctx, func() error {
+						if err := controller.Close(); err != nil {
+							return err
+						}
+						return commit()
+					}, true)
+					if errors.Is(err, configweb.ErrBusy) && time.Now().Before(deadline) {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-time.After(500 * time.Millisecond):
+						}
+						continue
 					}
-					return commit()
-				}, true)
-				// Finish the successful handoff before Quit cancels the app
-				// context; cancellation must not delete the worker's package.
-				if err == nil {
-					systray.Quit()
+					// Finish the successful handoff before Quit cancels the app
+					// context; cancellation must not delete the worker's package.
+					if err == nil {
+						systray.Quit()
+					}
+					return err
 				}
-				return err
 			})
 		})
 	configurationPage, configurationErr := configweb.Start(configweb.Options{

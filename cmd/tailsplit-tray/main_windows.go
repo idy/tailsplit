@@ -179,7 +179,11 @@ func runWindowsDesktop() (runErr error) {
 	// tick. An unbuffered nonblocking send can reject a click while idle.
 	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
 	go app.operate()
-	preferences, _ := tray.ReadPreferences(*config)
+	preferences, err := tray.ReadPreferences(*config)
+	if err != nil {
+		// Keep the documented default; the window reports the configuration error.
+		preferences.CheckForUpdates = true
+	}
 	app.updates = newDesktopUpdates(ctx, version, preferences.CheckForUpdates,
 		func(ctx context.Context, enabled bool) error {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
