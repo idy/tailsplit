@@ -190,6 +190,11 @@
           <summary>Can I choose another exit?</summary>
           <p>The exit menu lists devices your Tailnet makes available as exits. Offline or expired devices cannot be selected. Switching exits saves the choice and reconnects a running proxy while preserving your device login and routing rules. TailSplit does not silently choose another exit for you.</p>
         </details>
+        <details>
+          <summary>How does TailSplit stay up to date?</summary>
+          <p>The desktop app checks GitHub Releases shortly after it starts and every six hours, and offers only newer stable versions. Nothing is downloaded or installed until you confirm, and each download must match the release checksums. Windows runs the verified Setup, which asks for administrator approval; on macOS, TailSplit checks the new app’s signature, then replaces and reopens it. Your configuration and device login are kept.</p>
+          <p>Check manually or turn off automatic checks from the tray, the menu bar or the configuration panel. Windows versions before 0.7.0 and macOS versions before 0.7.1 need one manual update from this page.</p>
+        </details>
       </div>
     </section>
 
