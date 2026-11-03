@@ -253,7 +253,9 @@ def main():
     sentinel = b"isolated-ci-migration-sentinel-not-a-real-device-credential\n"
     (state / "tailscale/tailscaled.state").write_bytes(sentinel)
     config = temporary / "config.yaml"
+    # The installed GUIs run during this fixture; keep them off GitHub's API.
     config.write_text("# Native desktop fixture: no Tailnet/cloud authorization.\n" +
+                      "app:\n  check_for_updates: false\n" +
                       f"state_dir: {json.dumps(str(state))}\nlisten: 127.0.0.1:{free_port()}\n" +
                       "dns:\n  direct: system\n  proxy: 8.8.8.8\nrules:\n  final: direct\ntun:\n  enabled: false\n", encoding="utf-8")
     process = None

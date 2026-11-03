@@ -163,9 +163,42 @@ func (u *Updater) createTempDir() (string, error) {
 		if err := privatefs.EnsureDir(directory); err != nil {
 			return "", err
 		}
+		u.mu.Lock()
+		if u.issued == nil {
+			u.issued = make(map[string]bool)
+		}
+		u.issued[directory] = true
+		u.mu.Unlock()
 		return directory, nil
 	}
 	return "", errors.New("could not allocate a unique private update directory")
+}
+
+// removeStaleDownloads deletes private update directories left by an earlier
+// process, such as the Setup EXE that Windows ran after quitting the app.
+// Packages this Updater issued, including one still being installed, stay.
+func (u *Updater) removeStaleDownloads() {
+	root, err := filepath.Abs(u.tempRoot)
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		token, ok := strings.CutPrefix(entry.Name(), "tailsplit-update-")
+		if !ok || !entry.IsDir() || len(token) != 32 || strings.Trim(token, "0123456789abcdef") != "" {
+			continue
+		}
+		directory := filepath.Join(root, entry.Name())
+		u.mu.Lock()
+		issued := u.issued[directory]
+		u.mu.Unlock()
+		if !issued {
+			_ = os.RemoveAll(directory)
+		}
+	}
 }
 
 func randomToken() (string, error) {

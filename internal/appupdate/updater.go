@@ -34,6 +34,9 @@ type Updater struct {
 	state   State
 	offer   *offeredRelease
 	running bool
+	// issued holds the private directories this Updater created. The startup
+	// sweep removes only older ones, never a package still being installed.
+	issued map[string]bool
 
 	current         string
 	goos            string
@@ -120,6 +123,7 @@ func (u *Updater) SetAutomatic(automatic bool) {
 // six-hour intervals. Disabled and development builds skip timed checks. The
 // preference does not reset that cadence. Only one Run loop can be active.
 // Automatic checks only discover updates; they never download or install them.
+// After the startup delay, Run also removes downloads left by earlier processes.
 func (u *Updater) Run(ctx context.Context) {
 	u.mu.Lock()
 	if u.running {
@@ -135,7 +139,7 @@ func (u *Updater) Run(ctx context.Context) {
 	}()
 
 	delay := u.startupDelay
-	for {
+	for first := true; ; first = false {
 		if ctx.Err() != nil {
 			return
 		}
@@ -143,6 +147,9 @@ func (u *Updater) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-u.after(delay):
+		}
+		if first {
+			u.removeStaleDownloads()
 		}
 		u.mu.Lock()
 		enabled := u.state.Automatic && u.current != ""

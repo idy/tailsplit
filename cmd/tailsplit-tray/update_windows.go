@@ -3,14 +3,8 @@
 package main
 
 import (
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
-	"os/exec"
-	"strconv"
-	"strings"
 	"syscall"
-	"unicode/utf16"
 	"unsafe"
 
 	"github.com/idy/tailsplit/internal/appupdate"
@@ -65,12 +59,9 @@ func launchWindowsUpdate(update appupdate.Package) error {
 		return fmt.Errorf("the update installer did not return a process handle")
 	}
 	defer windows.CloseHandle(info.Process)
+	// Setup quits this app before replacing it, so this only runs when Setup
+	// fails or is cancelled. The next launch removes a download Setup used.
 	defer update.Cleanup()
-	// Setup exits this app before replacing it. A detached ordinary-user cleanup
-	// process survives that exit and removes the private download after Setup.
-	if pid, err := windows.GetProcessId(info.Process); err == nil {
-		startWindowsUpdateCleanup(pid, update.Directory)
-	}
 	_, err = windows.WaitForSingleObject(info.Process, windows.INFINITE)
 	if err != nil {
 		return err
@@ -83,23 +74,4 @@ func launchWindowsUpdate(update appupdate.Package) error {
 		return fmt.Errorf("update installer exited with code %d; check the installer message before retrying", code)
 	}
 	return nil
-}
-
-func startWindowsUpdateCleanup(pid uint32, directory string) {
-	system, err := windows.GetSystemDirectory()
-	if err != nil {
-		return
-	}
-	literal := "'" + strings.ReplaceAll(directory, "'", "''") + "'"
-	script := "$p=Get-Process -Id " + strconv.FormatUint(uint64(pid), 10) + " -ErrorAction SilentlyContinue; if($p){try{$p.WaitForExit()}catch{exit 1}}; Remove-Item -LiteralPath " + literal + " -Recurse -Force -ErrorAction SilentlyContinue"
-	units := utf16.Encode([]rune(script))
-	encoded := make([]byte, 2*len(units))
-	for i, unit := range units {
-		binary.LittleEndian.PutUint16(encoded[2*i:], unit)
-	}
-	command := exec.Command(system+`\WindowsPowerShell\v1.0\powershell.exe`, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded))
-	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP}
-	if command.Start() == nil {
-		_ = command.Process.Release()
-	}
 }

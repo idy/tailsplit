@@ -59,7 +59,8 @@ architecture's desktop package and must match the release's `SHA256SUMS` and siz
 Network failures or failed verification leave the existing app running.
 
 On Windows, the verified Setup EXE requests UAC and uses its existing graceful
-shutdown, service upgrade and rollback flow. Windows CI runs the updater's
+shutdown, service upgrade and rollback flow; the next app launch removes the
+downloaded Setup. Windows CI runs the updater's
 installer handoff natively and silently upgrades a running, connected desktop.
 Hosted runners cannot approve UAC or click through the Setup wizard; check those
 steps manually on Windows. On macOS, the updater verifies the

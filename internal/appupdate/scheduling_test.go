@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -212,6 +214,50 @@ func TestRunChecksAfterStartupAndSkipsDevelopment(t *testing.T) {
 			waitSignal(t, finished)
 		})
 	}
+}
+
+func TestRunRemovesStaleDownloadsAfterStartup(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	u, _ := testUpdater(t, f.serve)
+	u.SetAutomatic(false)
+	// A package this process is still installing must survive the sweep.
+	requireCheck(t, u)
+	current, err := u.Download(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Cleanup()
+	stale := filepath.Join(u.tempRoot, "tailsplit-update-"+strings.Repeat("ab", 16))
+	unrelated := []string{filepath.Join(u.tempRoot, "tailsplit-update-not-a-token"), filepath.Join(u.tempRoot, "other-app")}
+	for _, directory := range append([]string{stale}, unrelated...) {
+		if err := os.MkdirAll(filepath.Join(directory, "nested"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	timers := fakeTimers(u)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	go func() { u.Run(ctx); close(finished) }()
+	startup := nextTimer(t, timers, 10*time.Second)
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatal("stale download was removed before the startup delay:", err)
+	}
+	startup.tick <- time.Now()
+	nextTimer(t, timers, 6*time.Hour)
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("download left by an earlier process remained:", err)
+	}
+	if _, err := os.Stat(current.Path); err != nil {
+		t.Fatal("sweep removed a package this process issued:", err)
+	}
+	for _, directory := range unrelated {
+		if _, err := os.Stat(directory); err != nil {
+			t.Fatal("sweep removed an unrelated directory:", err)
+		}
+	}
+	cancel()
+	waitSignal(t, finished)
 }
 
 func TestOnlyOneRunLoopAndCanceledLifecycle(t *testing.T) {
