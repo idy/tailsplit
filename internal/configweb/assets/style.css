@@ -41,8 +41,8 @@ code { padding: 1px 5px; border-radius: 4px; background: #ffffff0d; color: #d1d1
 .app-shell { display: grid; grid-template-columns: 200px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 14px 10px 12px; border-right: 1px solid var(--line); background: var(--sidebar); }
 .brand { display: flex; align-items: center; gap: 8px; width: fit-content; padding: 4px 8px; text-decoration: none; }
-.brand-mark { display: grid; place-items: center; color: var(--ink); }
-.brand-mark svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.brand-mark { display: grid; place-items: center; }
+.brand-mark svg { display: block; width: 22px; height: 22px; }
 .brand-name { font-size: 15px; font-weight: 650; letter-spacing: -.2px; }
 .section-nav { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
 .nav-group { margin: 12px 10px 4px; color: var(--muted); font-size: 11.5px; }

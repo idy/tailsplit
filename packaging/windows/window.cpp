@@ -116,6 +116,14 @@ void UseDarkFrame(HWND window) noexcept {
     FreeLibrary(dwm);
 }
 
+// TailSplit.exe carries the packager's icon group as resource 1. This DLL runs
+// inside it, so the null module handle names that executable.
+HICON ApplicationIcon(int width, int height) noexcept {
+    const auto icon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                                    GetSystemMetrics(width), GetSystemMetrics(height), LR_SHARED));
+    return icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+}
+
 UINT WindowDPI(HWND window) noexcept {
     using GetWindowDPI = UINT(WINAPI*)(HWND);
     using GetSystemDPI = UINT(WINAPI*)();
@@ -225,8 +233,8 @@ public:
         klass.lpfnWndProc = WindowProc;
         klass.hInstance = instance_;
         klass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        klass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-        klass.hIconSm = klass.hIcon;
+        klass.hIcon = ApplicationIcon(SM_CXICON, SM_CYICON);
+        klass.hIconSm = ApplicationIcon(SM_CXSMICON, SM_CYSMICON);
         klass.hbrBackground = CreateSolidBrush(RGB(28, 28, 30)); // The panel's canvas.
         klass.lpszClassName = className_;
         if (!RegisterClassExW(&klass)) {

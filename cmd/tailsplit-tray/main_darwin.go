@@ -7,8 +7,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"image"
-	"image/color"
 	"image/png"
 	"net/netip"
 	"os"
@@ -649,33 +647,8 @@ func showError(message string) {
 }
 
 func trayIcon() []byte {
-	canvas := image.NewNRGBA(image.Rect(0, 0, 24, 24))
-	line := func(x0, y0, x1, y1 int) {
-		steps := max(abs(x1-x0), abs(y1-y0))
-		for step := 0; step <= steps; step++ {
-			x, y := x0+(x1-x0)*step/steps, y0+(y1-y0)*step/steps
-			for dx := 0; dx < 2; dx++ {
-				for dy := 0; dy < 2; dy++ {
-					canvas.SetNRGBA(x+dx, y+dy, color.NRGBA{A: 255})
-				}
-			}
-		}
-	}
-	line(11, 20, 11, 13)
-	line(11, 13, 4, 6)
-	line(11, 13, 18, 6)
-	line(4, 6, 4, 11)
-	line(4, 6, 9, 6)
-	line(18, 6, 13, 6)
-	line(18, 6, 18, 11)
+	// systray shows a 16-point template image; 32 pixels keep Retina sharp.
 	var buffer bytes.Buffer
-	_ = png.Encode(&buffer, canvas)
+	_ = png.Encode(&buffer, markImage(32, false))
 	return buffer.Bytes()
-}
-
-func abs(value int) int {
-	if value < 0 {
-		return -value
-	}
-	return value
 }
