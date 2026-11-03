@@ -288,17 +288,21 @@
     const mode = event.key === 'Home' ? 'form' : event.key === 'End' ? 'yaml' : state.mode === 'form' ? 'yaml' : 'form';
     if (await switchMode(mode)) $(`#${mode}-tab`).focus();
   });
-  for (const nav of document.querySelectorAll('[data-section]')) {
-    nav.addEventListener('click', async () => {
-      if (!(await switchMode('form'))) return;
-      for (const item of document.querySelectorAll('[data-section]')) {
-        item.classList.toggle('active', item === nav);
-        if (item === nav) item.setAttribute('aria-current', 'page');
-        else item.removeAttribute('aria-current');
-      }
-      for (const page of document.querySelectorAll('.settings-page')) page.hidden = page.id !== `section-${nav.dataset.section}`;
-    });
+  async function showSection(nav) {
+    if (!(await switchMode('form'))) return false;
+    for (const item of document.querySelectorAll('[data-section]')) {
+      item.classList.toggle('active', item === nav);
+      if (item === nav) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    }
+    for (const page of document.querySelectorAll('.settings-page')) page.hidden = page.id !== `section-${nav.dataset.section}`;
+    $('#crumb-section').textContent = nav.textContent.trim();
+    return true;
   }
+  for (const nav of document.querySelectorAll('[data-section]')) nav.addEventListener('click', () => showSection(nav));
+  $('#update-pill').addEventListener('click', async () => {
+    if (await showSection(document.querySelector('[data-section="device"]'))) $('#app-updates').scrollIntoView({ block: 'center' });
+  });
 
   async function reload() {
     if (isLocked()) return;
@@ -358,7 +362,6 @@
     $('#desktop-controls').hidden = !live.desktop;
     if (!live.desktop) return;
     $('.page-header h1').textContent = 'TailSplit';
-    $('.page-header p').textContent = '连接 Tailnet、选择出口，按你的规则分流。';
     document.querySelectorAll('[data-desktop-action]').forEach((button) => { button.disabled = desktopBusy; });
     $('#desktop-connect').disabled = desktopBusy || live.active || state.dirty;
     $('#desktop-disconnect').disabled = desktopBusy || !live.active;
@@ -400,7 +403,9 @@
     updateLive = live;
     const updates = live?.updates;
     $('#app-updates').hidden = !updates;
+    $('#update-pill').hidden = !updates?.available;
     if (!updates) return;
+    $('#update-pill-version').textContent = `更新 ${updates.latest_version || ''}`.trim();
     const busy = Boolean(updatesBusy());
     $('#update-current').textContent = `当前版本 ${updates.current_version || '未知'}`;
     $('#update-latest').textContent = `最新版本 ${updates.latest_version || '尚未检查'}`;
