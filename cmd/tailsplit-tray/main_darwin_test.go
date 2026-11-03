@@ -63,7 +63,7 @@ func TestLegacySharedDeviceNameMigratesWithoutChangingChosenNames(t *testing.T) 
 
 func TestTemplateIconIsValid(t *testing.T) {
 	icon, err := png.Decode(bytes.NewReader(trayIcon()))
-	if err != nil || icon.Bounds().Dx() != 24 {
+	if err != nil || icon.Bounds().Dx() != 32 {
 		t.Fatal("invalid tray icon")
 	}
 }

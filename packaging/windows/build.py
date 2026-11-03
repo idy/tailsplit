@@ -464,33 +464,80 @@ def version_resource(info, build_number):
     return block("VS_VERSION_INFO", fixed, children([string_info, var_info]))
 
 
+# TailSplit's split-route mark on a 64-unit grid: a source whose route splits
+# toward two destinations. The tray icons (cmd/tailsplit-tray/icon.go) and the
+# macOS app icon (scripts/make-icons.swift) draw the same geometry.
+ICON_DOTS = ((15, 32), (49, 17), (49, 47))
+ICON_ROUTES = (((15, 32), (26, 32)),
+               ((26, 32), (36, 32), (37, 17), (49, 17)),
+               ((26, 32), (36, 32), (37, 47), (49, 47)))
+ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 256)
+
+
+def _coverage(distance):
+    return max(0., min(1., .5 - distance))
+
+
+def _segment_distance(px, py, x0, y0, x1, y1):
+    dx, dy = x1 - x0, y1 - y0
+    t = max(0., min(1., ((px - x0) * dx + (py - y0) * dy) / (dx * dx + dy * dy)))
+    return math.hypot(px - x0 - t * dx, py - y0 - t * dy)
+
+
+def icon_image(size):
+    """Draw the white mark on a blue rounded tile as an antialiased BGRA DIB."""
+    margin = max(.5, size * .03)
+    side = size - 2 * margin
+    scale, half, radius = side / 64, side / 2, side * .22
+    # Small sizes keep a legible minimum dot and line width.
+    dot, stroke = max(5.25 * scale, 1.75), max(2.25 * scale, .8)
+    steps = 24 if size > 64 else 10
+    segments = []
+    for route in ICON_ROUTES:
+        points = route
+        if len(route) == 4:
+            points = [tuple((1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t * t * c + t ** 3 * d
+                            for a, b, c, d in zip(*route)) for t in (step / steps for step in range(steps + 1))]
+        segments += [tuple(margin + value * scale for value in (*start, *end))
+                     for start, end in zip(points, points[1:])]
+    dots = [(margin + x * scale, margin + y * scale) for x, y in ICON_DOTS]
+    # Only pixels near the mark need distance tests.
+    left, right = min(x for x, _ in dots) - dot - 1, max(x for x, _ in dots) + dot + 1
+    top, bottom = min(y for _, y in dots) - dot - 1, max(y for _, y in dots) + dot + 1
+    pixels = bytearray()
+    for y in reversed(range(size)):  # DIB rows are stored bottom-up.
+        py = y + .5
+        for x in range(size):
+            px = x + .5
+            qx, qy = abs(px - margin - half) - half + radius, abs(py - margin - half) - half + radius
+            edge = _coverage(math.hypot(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - radius)
+            if not edge:
+                pixels.extend((0, 0, 0, 0))
+                continue
+            mark = 0.
+            if left <= px <= right and top <= py <= bottom:
+                distance = min(math.hypot(px - cx, py - cy) - dot for cx, cy in dots)
+                for segment in segments:
+                    distance = min(distance, _segment_distance(px, py, *segment) - stroke)
+                mark = _coverage(distance)
+            # A diagonal blue-to-indigo gradient behind the white mark.
+            t = max(0., min(1., (px + py - 2 * margin) / (2 * side)))
+            red, green, blue = (round(start + (end - start) * t + (255 - start - (end - start) * t) * mark)
+                                for start, end in ((91, 53), (141, 84), (255, 230)))
+            pixels.extend((blue, green, red, round(edge * 255)))
+    mask_stride = ((size + 31) // 32) * 4
+    mask = bytearray(mask_stride * size)
+    for row in range(size):
+        for column in range(size):
+            if not pixels[(row * size + column) * 4 + 3]:
+                mask[row * mask_stride + column // 8] |= 0x80 >> (column % 8)
+    dib = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, len(pixels), 0, 0, 0, 0)
+    return dib + pixels + mask
+
+
 def icon_images():
-    """Dependency-free multiresolution icon: TailSplit's diverging route mark."""
-    images = []
-    for size in (16, 32, 48, 256):
-        pixels = bytearray()
-        for y in reversed(range(size)):
-            for x in range(size):
-                px, py = (x + .5) / size, (y + .5) / size
-                inside = .05 < px < .95 and .05 < py < .95 and (
-                    .2 <= px <= .8 or .2 <= py <= .8 or
-                    math.hypot(px - (.2 if px < .5 else .8), py - (.2 if py < .5 else .8)) <= .15)
-                # A trunk splitting toward two peers, rendered at each native size.
-                trunk = abs(px - .5) < .065 and .44 <= py <= .8
-                arms = .23 <= py <= .54 and (abs(px - (.5 - (.54 - py) * .8)) < .065 or
-                                              abs(px - (.5 + (.54 - py) * .8)) < .065)
-                red, green, blue, alpha = ((246, 250, 255, 255) if inside and (trunk or arms)
-                                           else (30, 85, 142, 255) if inside else (0, 0, 0, 0))
-                pixels.extend((blue, green, red, alpha))
-        mask_stride = ((size + 31) // 32) * 4
-        mask = bytearray(mask_stride * size)
-        for row in range(size):
-            for column in range(size):
-                if not pixels[(row * size + column) * 4 + 3]:
-                    mask[row * mask_stride + column // 8] |= 0x80 >> (column % 8)
-        dib = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, len(pixels), 0, 0, 0, 0)
-        images.append((size, dib + pixels + mask))
-    return images
+    """Dependency-free multiresolution icon for each Windows icon metric."""
+    return [(size, icon_image(size)) for size in ICON_SIZES]
 
 
 def write_resources(executable, icon_path, info, build_number):

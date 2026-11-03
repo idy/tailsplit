@@ -101,6 +101,29 @@ Function User32Function(const char* name) noexcept {
     return reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"user32.dll"), name));
 }
 
+// The embedded panel is dark. DWMWA_USE_IMMERSIVE_DARK_MODE (20) darkens the
+// native title bar on Windows 10 20H1 and later; older systems keep their own.
+void UseDarkFrame(HWND window) noexcept {
+    const HMODULE dwm = LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!dwm) {
+        return;
+    }
+    using SetAttribute = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    if (const auto setAttribute = reinterpret_cast<SetAttribute>(GetProcAddress(dwm, "DwmSetWindowAttribute"))) {
+        const BOOL dark = TRUE;
+        setAttribute(window, 20, &dark, sizeof(dark));
+    }
+    FreeLibrary(dwm);
+}
+
+// TailSplit.exe carries the packager's icon group as resource 1. This DLL runs
+// inside it, so the null module handle names that executable.
+HICON ApplicationIcon(int width, int height) noexcept {
+    const auto icon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                                    GetSystemMetrics(width), GetSystemMetrics(height), LR_SHARED));
+    return icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+}
+
 UINT WindowDPI(HWND window) noexcept {
     using GetWindowDPI = UINT(WINAPI*)(HWND);
     using GetSystemDPI = UINT(WINAPI*)();
@@ -210,9 +233,9 @@ public:
         klass.lpfnWndProc = WindowProc;
         klass.hInstance = instance_;
         klass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        klass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-        klass.hIconSm = klass.hIcon;
-        klass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        klass.hIcon = ApplicationIcon(SM_CXICON, SM_CYICON);
+        klass.hIconSm = ApplicationIcon(SM_CXSMICON, SM_CYSMICON);
+        klass.hbrBackground = CreateSolidBrush(RGB(28, 28, 30)); // The panel's canvas.
         klass.lpszClassName = className_;
         if (!RegisterClassExW(&klass)) {
             return LastErrorResult();
@@ -237,6 +260,7 @@ public:
         if (!window_) {
             return LastErrorResult();
         }
+        UseDarkFrame(window_);
         StartupStage(1); // Native HWND created; its browser is not ready yet.
         const HRESULT hr = StartEnvironment();
         if (FAILED(hr)) {
@@ -362,6 +386,11 @@ private:
         HRESULT hr = controller_->get_CoreWebView2(&webview_);
         if (FAILED(hr)) {
             return hr;
+        }
+        // Paint the panel's dark canvas while its local document loads.
+        ComPtr<ICoreWebView2Controller2> background;
+        if (SUCCEEDED(controller_.As(&background))) {
+            background->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{255, 28, 28, 30});
         }
         ComPtr<ICoreWebView2Settings> settings;
         if (FAILED(hr = webview_->get_Settings(&settings))) {

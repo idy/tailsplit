@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.6.1 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.0 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -166,7 +166,8 @@ may require an explicit launch approval.
 
 Choose **Settings and Tools → Configuration Panel…** (`设置与工具 → 配置面板…`)
 from the menu bar app. The page groups connection, DNS, routing and startup
-settings, with a live YAML preview and a full source editor. Validate or save/apply
+settings in a compact dark layout. Wide windows add a live YAML preview, and a
+full source editor is always available. Validate or save/apply
 changes from either view. Saving reconnects an active proxy; an idle app stays
 idle. Existing comments and unrelated settings are preserved. External edits
 cause a revision conflict, and failed edits retain the browser draft. App service

@@ -10,8 +10,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"image"
-	"image/color"
 	"image/png"
 	"io"
 	"net"
@@ -579,25 +577,28 @@ func windowsError(message string) {
 	windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
 }
 
+// windowsTrayIconSizes cover the system icon metric from 100% to 200% scaling;
+// LoadImage picks the closest one instead of scaling a single image.
+var windowsTrayIconSizes = []int{16, 20, 24, 32, 40, 48, 64}
+
 func windowsTrayIcon() []byte {
-	bitmap := image.NewRGBA(image.Rect(0, 0, 32, 32))
-	for y := 0; y < 32; y++ {
-		for x := 0; x < 32; x++ {
-			if (x-16)*(x-16)+(y-16)*(y-16) < 240 {
-				bitmap.SetRGBA(x, y, color.RGBA{20, 122, 118, 255})
-			}
-			if x >= 6 && x <= 16 && y >= 15 && y <= 17 || x >= 15 && x <= 26 && (y-x+9 >= -1 && y-x+9 <= 1 || y+x-41 >= -1 && y+x-41 <= 1) {
-				bitmap.SetRGBA(x, y, color.RGBA{255, 255, 255, 255})
-			}
-		}
+	pictures := make([][]byte, len(windowsTrayIconSizes))
+	for i, size := range windowsTrayIconSizes {
+		var picture bytes.Buffer
+		_ = png.Encode(&picture, markImage(size, true))
+		pictures[i] = picture.Bytes()
 	}
-	var picture bytes.Buffer
-	_ = png.Encode(&picture, bitmap)
 	var icon bytes.Buffer
-	_ = binary.Write(&icon, binary.LittleEndian, [3]uint16{0, 1, 1})
-	icon.Write([]byte{32, 32, 0, 0})
-	_ = binary.Write(&icon, binary.LittleEndian, [2]uint16{1, 32})
-	_ = binary.Write(&icon, binary.LittleEndian, [2]uint32{uint32(picture.Len()), 22})
-	icon.Write(picture.Bytes())
+	_ = binary.Write(&icon, binary.LittleEndian, [3]uint16{0, 1, uint16(len(pictures))})
+	offset := 6 + 16*len(pictures)
+	for i, size := range windowsTrayIconSizes {
+		icon.Write([]byte{byte(size), byte(size), 0, 0})
+		_ = binary.Write(&icon, binary.LittleEndian, [2]uint16{1, 32})
+		_ = binary.Write(&icon, binary.LittleEndian, [2]uint32{uint32(len(pictures[i])), uint32(offset)})
+		offset += len(pictures[i])
+	}
+	for _, picture := range pictures {
+		icon.Write(picture)
+	}
 	return icon.Bytes()
 }

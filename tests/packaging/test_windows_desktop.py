@@ -391,10 +391,14 @@ class CommandAndResourceTests(unittest.TestCase):
 
     def test_icon_includes_native_small_and_large_images(self):
         images = packager.icon_images()
-        self.assertEqual([size for size, _ in images], [16, 32, 48, 256])
+        self.assertEqual([size for size, _ in images], [16, 20, 24, 32, 40, 48, 64, 256])
         for size, data in images:
             self.assertEqual(struct.unpack_from("<IiiHH", data), (40, size, size * 2, 1, 32))
             self.assertGreater(len(data), size * size * 4)
+            # Transparent corners and antialiased edges at every native size.
+            alpha = data[40:40 + size * size * 4][3::4]
+            self.assertEqual(alpha[0], 0)
+            self.assertTrue(any(0 < value < 255 for value in alpha))
 
     def test_build_child_environment_does_not_forward_signing_credentials(self):
         with patch.dict(os.environ, {"GITHUB_TOKEN": "do-not-print", "SOPS_AGE_KEY": "do-not-print",
