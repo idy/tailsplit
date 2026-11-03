@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+- Let the configuration panel use the full window width. Remove the 1240px
+  content cap that left a large empty area on wide screens, and let the YAML
+  preview grow with the form. Narrower windows keep the single-column layout.
+- Document the one-time manual installation needed by macOS 0.7.0 users before
+  they can use the fixed in-app updater included since 0.7.1.
+
 ## 0.7.1
 
 - Install desktop updates on macOS. The app passed its code-signing requirement
