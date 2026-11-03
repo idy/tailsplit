@@ -165,21 +165,33 @@ may require an explicit launch approval.
 ### Configuration panel and logging
 
 Choose **Settings and Tools → Configuration Panel…** (`设置与工具 → 配置面板…`)
-from the menu bar app. The page groups connection, DNS, routing and startup
+from the menu bar app. The panel opens in TailSplit's own window, which uses the
+system web view (WKWebView). It groups connection, DNS, routing and startup
 settings in a compact dark layout. Wide windows add a live YAML preview, and a
 full source editor is always available. Validate or save/apply
 changes from either view. Saving reconnects an active proxy; an idle app stays
 idle. Existing comments and unrelated settings are preserved. External edits
-cause a revision conflict, and failed edits retain the browser draft. App service
+cause a revision conflict, and failed edits retain the unsaved draft. App service
 checks run before saving: the application proxy port must be at least 1024, the
 system chooses the TUN name, and the app uses interactive or saved login rather
 than environment authentication keys.
 
+While the window is open, TailSplit also appears in the Dock and Command-Tab,
+and the menu bar shows its TailSplit, Edit and Window menus, so the standard
+copy, cut, paste, select-all, undo and redo shortcuts work in the form and the
+YAML editor. Closing the window hides it and returns TailSplit to the menu bar;
+the menu item shows the same window again, with any unsaved draft. The window
+remembers its size and position. Command-Q quits like **Quit TailSplit**
+(`退出 TailSplit`) and stops a proxy the app started.
+
 The app owns the page on a random `127.0.0.1` port and closes it on exit. Its
 per-run capability travels in the URL fragment and then an Authorization header.
 Host/Origin checks and embedded assets keep the panel local; it does not expose
-Tailnet login links or device credential state. Reopen it from the menu after
-restarting the app.
+Tailnet login links or device credential state. The window keeps the capability
+and other web data in memory only. It loads only that page's own
+`http://127.0.0.1:<port>` origin and has no new windows, downloads, context menu
+or web inspector. If the window cannot be created, the menu opens the page in the
+default browser instead. Reopen the panel from the menu after restarting the app.
 
 **Detailed Logging (Debug)** (`详细日志（Debug）`) in the same menu saves
 `log_level: debug` and reconnects an active proxy. Disable it to restore
