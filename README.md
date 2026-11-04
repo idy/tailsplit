@@ -327,6 +327,8 @@ review publishes the `OpenAI PR Review`, `OpenAI Issue Review` and
 `OpenAI Code Review` checks on the reviewed head with one combined review report.
 The reviewer checks out only the trusted base and reads the PR diff as data; it
 never runs PR code. Actions reruns are rejected; post a new request instead.
+A request comment can name a focus on the same line, for example
+`@codex review for DNS restoration`.
 
 The workflow takes effect from the default branch and needs the `OPENAI_API_KEY`
 Actions secret. Because this repository is public, pull requests from forks are
