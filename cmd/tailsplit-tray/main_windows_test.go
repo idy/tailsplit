@@ -58,22 +58,24 @@ func TestWindowsDesktopPipeOwnerCanAcceptClients(t *testing.T) {
 }
 
 func TestWindowsTrayIconIncludesEachSystemSize(t *testing.T) {
-	data := windowsTrayIcon()
-	var header [3]uint16
-	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &header); err != nil || header[0] != 0 || header[1] != 1 {
-		t.Fatal("invalid icon header:", header, err)
-	}
-	var sizes []int
-	for i := 0; i < int(header[2]); i++ {
-		entry := data[6+16*i : 6+16*(i+1)]
-		length, offset := binary.LittleEndian.Uint32(entry[8:12]), binary.LittleEndian.Uint32(entry[12:16])
-		picture, err := png.Decode(bytes.NewReader(data[offset : offset+length]))
-		if err != nil || picture.Bounds().Dx() != int(entry[0]) || picture.Bounds().Dy() != int(entry[1]) {
-			t.Fatalf("icon image %d does not match its directory entry: %v", i, err)
+	for _, connected := range []bool{false, true} {
+		data := windowsTrayIcon(connected)
+		var header [3]uint16
+		if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &header); err != nil || header[0] != 0 || header[1] != 1 {
+			t.Fatal("invalid icon header:", header, err)
 		}
-		sizes = append(sizes, int(entry[0]))
-	}
-	if !slices.Equal(sizes, windowsTrayIconSizes) {
-		t.Fatal("unexpected tray icon sizes:", sizes)
+		var sizes []int
+		for i := 0; i < int(header[2]); i++ {
+			entry := data[6+16*i : 6+16*(i+1)]
+			length, offset := binary.LittleEndian.Uint32(entry[8:12]), binary.LittleEndian.Uint32(entry[12:16])
+			picture, err := png.Decode(bytes.NewReader(data[offset : offset+length]))
+			if err != nil || picture.Bounds().Dx() != int(entry[0]) || picture.Bounds().Dy() != int(entry[1]) {
+				t.Fatalf("icon image %d does not match its directory entry: %v", i, err)
+			}
+			sizes = append(sizes, int(entry[0]))
+		}
+		if !slices.Equal(sizes, windowsTrayIconSizes) {
+			t.Fatal("unexpected tray icon sizes:", sizes)
+		}
 	}
 }

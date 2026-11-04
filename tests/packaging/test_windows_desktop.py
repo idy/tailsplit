@@ -399,6 +399,21 @@ class CommandAndResourceTests(unittest.TestCase):
             alpha = data[40:40 + size * size * 4][3::4]
             self.assertEqual(alpha[0], 0)
             self.assertTrue(any(0 < value < 255 for value in alpha))
+        # Both tail prongs are white on the one-color tile, which shows through the
+        # fork between them and through the eye. DIB rows are bottom-up and pixels
+        # are BGRA.
+        def pixel(size, data, column, row):
+            offset = 40 + ((size - 1 - row) * size + column) * 4
+            return tuple(data[offset:offset + 4])
+        size, data = images[-1]
+        scale = (size - 2 * size * .03) / 64
+        def grid(x, y):
+            return pixel(size, data, int(size / 2 + (x - 32) * scale), int(size / 2 + (y - 32) * scale))
+        white, background = (255, 255, 255, 255), (30, 28, 28, 255)
+        self.assertEqual((grid(22, 44.8), grid(22, 52.6)), (white, white))
+        self.assertEqual((grid(16, 48), grid(*packager.ICON_EYE[:2]), grid(32, 4)), (background,) * 3)
+        # Smaller icons keep the head solid because the eye's hole would only blur.
+        self.assertEqual(pixel(*images[2], 18, 6), white)
 
     def test_build_child_environment_does_not_forward_signing_credentials(self):
         with patch.dict(os.environ, {"GITHUB_TOKEN": "do-not-print", "SOPS_AGE_KEY": "do-not-print",
