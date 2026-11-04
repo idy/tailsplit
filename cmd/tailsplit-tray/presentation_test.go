@@ -34,6 +34,29 @@ func TestPrimaryMenuActionMatchesTheActualSession(t *testing.T) {
 	}
 }
 
+func TestOnlyALiveSessionCountsAsConnected(t *testing.T) {
+	for _, test := range []struct {
+		snapshot  tray.Snapshot
+		connected bool
+	}{
+		{tray.Snapshot{State: "running", Active: true, Mode: "tun"}, true},
+		{tray.Snapshot{State: "running", Active: true, Mode: "proxy"}, true},
+		{tray.Snapshot{State: "running", Active: true, Mode: "tun", RoutingMode: "global"}, true},
+		{tray.Snapshot{State: "connecting", Active: true, Mode: "tun"}, false},
+		{tray.Snapshot{State: "waiting-exit", Active: true, Mode: "proxy"}, false},
+		{tray.Snapshot{State: "blocked", Active: true, Mode: "tun", RoutingMode: "global"}, false},
+		{tray.Snapshot{State: "stopping", Active: true, Mode: "tun"}, false},
+		{tray.Snapshot{State: "running", Active: true, Mode: "discovery"}, false},
+		{tray.Snapshot{State: "stopped"}, false},
+		// A finished session's cached state is not a connection.
+		{tray.Snapshot{State: "running", Mode: "tun"}, false},
+	} {
+		if actual := isConnected(test.snapshot); actual != test.connected {
+			t.Fatalf("connected=%v for %+v; want %v", actual, test.snapshot, test.connected)
+		}
+	}
+}
+
 func TestReconnectRemainsAvailableAfterFailure(t *testing.T) {
 	for _, test := range []struct {
 		snapshot tray.Snapshot

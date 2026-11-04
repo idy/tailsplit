@@ -227,7 +227,7 @@ func runWindowsDesktop() (runErr error) {
 	}()
 	go app.serveDesktop(listener)
 	systray.Run(func() {
-		systray.SetIcon(windowsTrayIcon())
+		systray.SetIcon(windowsTrayIcon(false))
 		systray.SetTooltip("TailSplit")
 		open := systray.AddMenuItem("打开 TailSplit", "连接、账号、分流与日志")
 		status := systray.AddMenuItem("未连接", "")
@@ -245,6 +245,7 @@ func runWindowsDesktop() (runErr error) {
 		exit := systray.AddMenuItem("退出 TailSplit", "先断开网络，再退出")
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
+		var connected bool
 		if *background {
 			go hideInitialWindowsWindow("TailSplit.Window."+sid, ctx)
 		}
@@ -315,6 +316,10 @@ func runWindowsDesktop() (runErr error) {
 				}
 				snapshot := controller.Snapshot()
 				status.SetTitle("TailSplit · " + snapshot.State)
+				if now := isConnected(snapshot); now != connected {
+					connected = now
+					systray.SetIcon(windowsTrayIcon(connected))
+				}
 				if tray.LoginItem() == tray.LoginItemEnabled {
 					startup.Check()
 				} else {
@@ -581,11 +586,11 @@ func windowsError(message string) {
 // LoadImage picks the closest one instead of scaling a single image.
 var windowsTrayIconSizes = []int{16, 20, 24, 32, 40, 48, 64}
 
-func windowsTrayIcon() []byte {
+func windowsTrayIcon(connected bool) []byte {
 	pictures := make([][]byte, len(windowsTrayIconSizes))
 	for i, size := range windowsTrayIconSizes {
 		var picture bytes.Buffer
-		_ = png.Encode(&picture, markImage(size, true))
+		_ = png.Encode(&picture, markImage(size, true, connected))
 		pictures[i] = picture.Bytes()
 	}
 	var icon bytes.Buffer

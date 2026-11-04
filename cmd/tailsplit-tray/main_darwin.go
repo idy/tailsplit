@@ -130,8 +130,7 @@ func main() {
 		UpdateState: updates.snapshot, UpdateAction: updates.action,
 	})
 	systray.Run(func() {
-		icon := trayIcon()
-		systray.SetTemplateIcon(icon, icon)
+		setTrayIcon(false)
 		systray.SetTooltip("TailSplit")
 		status := systray.AddMenuItem("TailSplit · 未连接", "")
 		status.Disable()
@@ -199,6 +198,7 @@ func main() {
 			defer ticker.Stop()
 			var previous tray.Snapshot
 			var previousLoginMessage string
+			var connected bool
 			var flow tray.LoginFlow
 			if *loginImmediately {
 				flow.Request()
@@ -503,6 +503,10 @@ func main() {
 					} else {
 						loginStatus.Hide()
 					}
+					if now := isConnected(snapshot); now != connected {
+						connected = now
+						setTrayIcon(connected)
+					}
 					presentation := connectionPresentation(snapshot)
 					status.SetTitle("TailSplit · " + presentation.Summary)
 					connect.SetTitle(presentation.Action)
@@ -649,9 +653,20 @@ func showError(message string) {
 		`display alert "TailSplit" message "`+message+`" as critical`).Run()
 }
 
-func trayIcon() []byte {
-	// systray shows a 16-point template image; 32 pixels keep Retina sharp.
+// setTrayIcon shows a template image that macOS tints to suit the menu bar or,
+// while connected, the green image as it is.
+func setTrayIcon(connected bool) {
+	icon := trayIcon(connected)
+	if connected {
+		systray.SetIcon(icon)
+	} else {
+		systray.SetTemplateIcon(icon, icon)
+	}
+}
+
+func trayIcon(connected bool) []byte {
+	// systray shows a 16-point image; 32 pixels keep Retina sharp.
 	var buffer bytes.Buffer
-	_ = png.Encode(&buffer, markImage(32, false))
+	_ = png.Encode(&buffer, markImage(32, false, connected))
 	return buffer.Bytes()
 }

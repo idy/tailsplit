@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.3 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.4 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -89,7 +89,8 @@ runs as a normal user; only installation and service maintenance request UAC.
 
 The window contains connection, Tailnet login/logout, exit selection, configuration
 and bounded diagnostic logs. Settings stay in the window; device authorization
-opens the default browser. Closing the window hides it to the tray. Quit first
+opens the default browser. Closing the window hides it to the tray, whose icon
+turns green while connected. Quit first
 disconnects and waits for the network service to clean up. Windows login startup
 is optional and separate from automatic connection.
 
@@ -148,7 +149,8 @@ Authenticode-signed; verify the release's `SHA256SUMS` before running it.
 
 ## macOS app
 
-Open `TailSplit.app` normally. It starts in the menu bar, disconnected. Review
+Open `TailSplit.app` normally. It starts in the menu bar, disconnected, and its
+icon turns green while connected. Review
 your YAML configuration and choose when to connect. The first connection opens
 the bundled installer for the privileged network service; an administrator
 approves it once. Both connection modes use that service for TUN DNS.

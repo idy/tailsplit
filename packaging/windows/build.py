@@ -464,13 +464,38 @@ def version_resource(info, build_number):
     return block("VS_VERSION_INFO", fixed, children([string_info, var_info]))
 
 
-# TailSplit's split-route mark on a 64-unit grid: a source whose route splits
-# toward two destinations. The tray icons (cmd/tailsplit-tray/icon.go) and the
-# macOS app icon (scripts/make-icons.swift) draw the same geometry.
-ICON_DOTS = ((15, 32), (49, 17), (49, 47))
-ICON_ROUTES = (((15, 32), (26, 32)),
-               ((26, 32), (36, 32), (37, 17), (49, 17)),
-               ((26, 32), (36, 32), (37, 47), (49, 47)))
+# TailSplit's snake on a 64-unit grid: its body is the S and its forked tail the
+# route splitting in two. The outline starts at the nose and each curve is a
+# cubic Bézier from the previous point; the eye is a round hole. The tray icons
+# (cmd/tailsplit-tray/icon.go) and the macOS app icon (scripts/make-icons.swift)
+# draw the same geometry.
+ICON_START = (53.4, 21.68)
+ICON_CURVES = (((52.9, 22.65), (51.94, 23.25), (50.89, 23.49)),
+               ((46.01, 24.6), (43.48, 20.21), (39.58, 18.56)),
+               ((36.94, 17.45), (34.01, 17.28), (31.18, 17.37)),
+               ((28.78, 17.45), (26.27, 18.1), (24.6, 19.93)),
+               ((19.47, 25.57), (30.86, 27.54), (34.03, 28.41)),
+               ((39.04, 29.8), (45.05, 32.06), (47.15, 37.29)),
+               ((48.15, 39.81), (47.99, 42.69), (47.04, 45.2)),
+               ((45.28, 49.83), (40.8, 52.56), (36.03, 53.12)),
+               ((34.32, 53.32), (32.58, 53.24), (30.87, 53.33)),
+               ((28.75, 53.44), (26.64, 53.64), (24.54, 53.9)),
+               ((19.38, 54.53), (14.28, 55.52), (9.22, 56.66)),
+               ((15.21, 53.26), (21.56, 51.11), (28.22, 49.44)),
+               ((21.03, 46.73), (14.91, 42.28), (9.22, 37.19)),
+               ((14.49, 39.48), (19.52, 42.29), (24.98, 44.12)),
+               ((28.28, 45.23), (32.2, 46.35), (35.7, 45.67)),
+               ((37.15, 45.38), (38.65, 44.68), (39.42, 43.36)),
+               ((44.7, 34.38), (14.31, 38.99), (15.03, 22.36)),
+               ((15.19, 18.56), (17.15, 15.03), (20.16, 12.74)),
+               ((25.74, 8.52), (33.87, 9.15), (40.21, 11.26)),
+               ((41.74, 11.77), (43.13, 12.62), (44.64, 13.13)),
+               ((46.06, 13.61), (47.58, 13.49), (49, 13.95)),
+               ((51.97, 14.92), (55.06, 18.45), (53.4, 21.68)))
+ICON_EYE = (48.7, 16.7, 1.9)  # Center and radius.
+ICON_EYE_SIZE = 32  # The smallest image with an eye; below it the hole only blurs.
+ICON_ROUND = .5  # Softens the outline's tips, growing it by this many grid units.
+ICON_TILE = (28, 28, 30)  # The tile's single color, the configuration panel's canvas.
 ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 256)
 
 
@@ -485,28 +510,30 @@ def _segment_distance(px, py, x0, y0, x1, y1):
 
 
 def icon_image(size):
-    """Draw the white mark on a blue rounded tile as an antialiased BGRA DIB."""
+    """Draw the white mark on a dark rounded tile as an antialiased BGRA DIB."""
     margin = max(.5, size * .03)
     side = size - 2 * margin
-    scale, half, radius = side / 64, side / 2, side * .22
-    # Small sizes keep a legible minimum dot and line width.
-    dot, stroke = max(5.25 * scale, 1.75), max(2.25 * scale, .8)
-    steps = 24 if size > 64 else 10
-    segments = []
-    for route in ICON_ROUTES:
-        points = route
-        if len(route) == 4:
-            points = [tuple((1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t * t * c + t ** 3 * d
-                            for a, b, c, d in zip(*route)) for t in (step / steps for step in range(steps + 1))]
-        segments += [tuple(margin + value * scale for value in (*start, *end))
-                     for start, end in zip(points, points[1:])]
-    dots = [(margin + x * scale, margin + y * scale) for x, y in ICON_DOTS]
-    # Only pixels near the mark need distance tests.
-    left, right = min(x for x, _ in dots) - dot - 1, max(x for x, _ in dots) + dot + 1
-    top, bottom = min(y for _, y in dots) - dot - 1, max(y for _, y in dots) + dot + 1
+    half, radius = side / 2, side * .22
+    # Small sizes enlarge the mark and keep a legible minimum tail width.
+    scale = side / 64 * (1.1 if size <= 24 else 1)
+    grow = max(ICON_ROUND * scale, .35)
+    # Growing the outline closes the eye's hole by the same amount.
+    eye_x, eye_y = (size / 2 + (value - 32) * scale for value in ICON_EYE[:2])
+    eye_radius = ICON_EYE[2] * scale - grow
+    steps = 12
+    points, start = [], ICON_START
+    for curve in ICON_CURVES:
+        points += [tuple(size / 2 + ((1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t * t * c + t ** 3 * d - 32) * scale
+                         for a, b, c, d in zip(start, *curve)) for t in (step / steps for step in range(1, steps + 1))]
+        start = curve[2]
+    segments = [(*start, *end) for start, end in zip(points[-1:] + points, points)]
+    # Only segments near a row can change its edge pixels.
+    reach = grow + 1
     pixels = bytearray()
     for y in reversed(range(size)):  # DIB rows are stored bottom-up.
         py = y + .5
+        crossings = [x0 + (py - y0) * (x1 - x0) / (y1 - y0) for x0, y0, x1, y1 in segments if (y0 <= py) != (y1 <= py)]
+        near = [segment for segment in segments if min(segment[1::2]) - reach <= py <= max(segment[1::2]) + reach]
         for x in range(size):
             px = x + .5
             qx, qy = abs(px - margin - half) - half + radius, abs(py - margin - half) - half + radius
@@ -514,16 +541,13 @@ def icon_image(size):
             if not edge:
                 pixels.extend((0, 0, 0, 0))
                 continue
-            mark = 0.
-            if left <= px <= right and top <= py <= bottom:
-                distance = min(math.hypot(px - cx, py - cy) - dot for cx, cy in dots)
-                for segment in segments:
-                    distance = min(distance, _segment_distance(px, py, *segment) - stroke)
-                mark = _coverage(distance)
-            # A diagonal blue-to-indigo gradient behind the white mark.
-            t = max(0., min(1., (px + py - 2 * margin) / (2 * side)))
-            red, green, blue = (round(start + (end - start) * t + (255 - start - (end - start) * t) * mark)
-                                for start, end in ((91, 53), (141, 84), (255, 230)))
+            distance = min((_segment_distance(px, py, *segment) for segment in near), default=reach)
+            inside = sum(crossing > px for crossing in crossings) % 2
+            distance = (-distance if inside else distance) - grow
+            if size >= ICON_EYE_SIZE:
+                distance = max(distance, eye_radius - math.hypot(px - eye_x, py - eye_y))
+            mark = _coverage(distance)
+            red, green, blue = (round(tile + (255 - tile) * mark) for tile in ICON_TILE)
             pixels.extend((blue, green, red, round(edge * 255)))
     mask_stride = ((size + 31) // 32) * 4
     mask = bytearray(mask_stride * size)

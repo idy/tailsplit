@@ -52,6 +52,12 @@ func connectionPresentation(snapshot tray.Snapshot) connectionView {
 	}
 }
 
+// isConnected matches the configuration panel's connected status: a live tunnel
+// or proxy session with traffic flowing, which the tray icon shows in green.
+func isConnected(snapshot tray.Snapshot) bool {
+	return snapshot.Active && snapshot.State == "running" && (snapshot.Mode == "tun" || snapshot.Mode == "proxy")
+}
+
 func canReconnect(snapshot tray.Snapshot) bool {
 	switch snapshot.State {
 	case "stopping", "logging-out", "authorizing":
