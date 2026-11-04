@@ -28,13 +28,27 @@ class DownloadAuthenticationTests(unittest.TestCase):
     def request(self, url, environment):
         response = io.BytesIO(b"downloaded data")
         response.geturl = lambda: url
+        # Keep Windows TLS/runtime variables; isolate only the credentials under test.
         with tempfile.TemporaryDirectory() as temporary, \
-                patch.dict(os.environ, environment, clear=True), \
+                patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": "", **environment}), \
                 patch.object(packager, "build_opener") as opener:
             opener.return_value.open.return_value = response
             result = packager.fetch(url, Path(temporary) / "payload")
             self.assertEqual(result.read_bytes(), b"downloaded data")
             return opener.return_value.open.call_args.args[0]
+
+    def test_authentication_fixture_preserves_runtime_and_isolates_credentials(self):
+        original_handler = packager.HTTPSHandler
+        def https_handler():
+            self.assertEqual(os.environ.get("TAILSPLIT_TEST_RUNTIME"), "preserved")
+            self.assertEqual(os.environ.get("GH_TOKEN"), "")
+            self.assertEqual(os.environ.get("GITHUB_TOKEN"), "")
+            return original_handler()
+        with patch.dict(os.environ, {"TAILSPLIT_TEST_RUNTIME": "preserved", "GH_TOKEN": "ambient-test-token",
+                                     "GITHUB_TOKEN": "ambient-fallback-token"}), \
+                patch.object(packager, "HTTPSHandler", side_effect=https_handler):
+            request = self.request(API, {})
+        self.assertIsNone(request.get_header("Authorization"))
 
     def test_github_api_uses_available_token_and_prefers_gh_token(self):
         cases = [({"GH_TOKEN": "ci-token", "GITHUB_TOKEN": "fallback-token"}, "ci-token"),
