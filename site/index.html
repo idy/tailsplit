@@ -11,44 +11,49 @@
   <meta property="og:url" content="https://tailsplit.idy.dev/">
   <link rel="canonical" href="https://tailsplit.idy.dev/">
   <link rel="icon" href="favicon.svg?v=20261104" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=20261103">
-  <script src="script.js?v=20261103" defer></script>
+  <script src="shared/idy.js"></script>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="shared/idy.css">
+  <script src="script.js" defer></script>
   <title>TailSplit — your device, your routing rules</title>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
-  <header class="site-header wrap">
-    <a class="brand" href="#" aria-label="TailSplit home">
-      <svg class="brand-mark" viewBox="7.5 9.2 48 48" aria-hidden="true"><path d="M53.4 21.68C52.9 22.65 51.94 23.25 50.89 23.49C46.01 24.6 43.48 20.21 39.58 18.56C36.94 17.45 34.01 17.28 31.18 17.37C28.78 17.45 26.27 18.1 24.6 19.93C19.47 25.57 30.86 27.54 34.03 28.41C39.04 29.8 45.05 32.06 47.15 37.29C48.15 39.81 47.99 42.69 47.04 45.2C45.28 49.83 40.8 52.56 36.03 53.12C34.32 53.32 32.58 53.24 30.87 53.33C28.75 53.44 26.64 53.64 24.54 53.9C19.38 54.53 14.28 55.52 9.22 56.66C15.21 53.26 21.56 51.11 28.22 49.44C21.03 46.73 14.91 42.28 9.22 37.19C14.49 39.48 19.52 42.29 24.98 44.12C28.28 45.23 32.2 46.35 35.7 45.67C37.15 45.38 38.65 44.68 39.42 43.36C44.7 34.38 14.31 38.99 15.03 22.36C15.19 18.56 17.15 15.03 20.16 12.74C25.74 8.52 33.87 9.15 40.21 11.26C41.74 11.77 43.13 12.62 44.64 13.13C46.06 13.61 47.58 13.49 49 13.95C51.97 14.92 55.06 18.45 53.4 21.68ZM46.8 16.7a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-linejoin="round"/></svg>
-      <span>TailSplit</span>
-    </a>
-    <nav aria-label="Main navigation">
-      <a href="https://idy.dev/" aria-label="idy.dev home">idy.dev</a>
-      <a href="#routing">Routing</a>
-      <a href="#install">Install</a>
-      <a class="github-star" href="https://github.com/idy/tailsplit" aria-label="Star TailSplit on GitHub"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.78 5.63L21 9.54l-4.5 4.39 1.06 6.2L12 17.2l-5.56 2.93 1.06-6.2L3 9.54l6.22-.91L12 3Z"/></svg><span>GitHub Star</span></a>
-    </nav>
+  <a class="skip-link" href="#main" data-i18n="skipContent">Skip to content</a>
+  <header class="idy-header">
+    <div class="idy-header-inner">
+      <a class="idy-home" href="https://idy.dev/">idy.dev</a>
+      <a class="idy-project" href="#main">TailSplit</a>
+      <nav class="idy-nav" aria-label="Main navigation" data-i18n-aria-label="navigation">
+        <a href="#routing" data-i18n="splitNavRouting">Routing</a>
+        <a href="#install" data-i18n="splitNavInstall">Install</a>
+        <a href="https://github.com/idy/tailsplit">GitHub</a>
+      </nav>
+      <div class="idy-preferences">
+        <label><span data-i18n="language">Language</span><select data-idy-language><option value="auto" data-i18n="automatic">Auto</option><option value="en">English</option><option value="zh">中文</option></select></label>
+        <label><span data-i18n="theme">Theme</span><select data-idy-theme><option value="system" data-i18n="system">System</option><option value="light" data-i18n="light">Light</option><option value="dark" data-i18n="dark">Dark</option></select></label>
+      </div>
+    </div>
   </header>
 
   <main id="main">
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-heading">
-        <h1 id="hero-title">Your device.<br>Your routing rules.</h1>
+        <h1 id="hero-title" data-i18n-html="splitHeroTitle">Your device.<br>Your routing rules.</h1>
         <div class="hero-intro">
-          <p>A desktop app for Windows and macOS with domain and IP rules. Keep direct traffic on your network, send selected connections through a proxy exit, and reach your Tailnet when configured.</p>
+          <p data-i18n="splitHeroDescription">A desktop app for Windows and macOS with domain and IP rules. Keep direct traffic on your network, send selected connections through a proxy exit, and reach your Tailnet when configured.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#install">Get TailSplit</a>
-            <a class="text-link" href="https://github.com/idy/tailsplit#readme">Read the docs <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
+            <a class="button button-primary" href="#install" data-i18n="splitGet">Get TailSplit</a>
+            <a class="text-link" href="https://github.com/idy/tailsplit#readme"><span data-i18n="splitDocs">Read the docs</span> <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
           </div>
         </div>
       </div>
 
       <figure class="route-concept" id="split-concept" data-route="proxy">
-        <figcaption>Routing concept <span>One connection, one matching route.</span></figcaption>
+        <figcaption><span class="concept-caption" data-i18n="splitConcept">Routing concept</span> <span data-i18n="splitConceptCaption">One connection, one matching route.</span></figcaption>
         <div class="concept-layout">
           <svg class="split-map" viewBox="0 0 560 300" role="img" aria-labelledby="split-map-title split-map-description">
-            <title id="split-map-title">Rules choose the route</title>
-            <desc id="split-map-description">A connection from your device reaches TailSplit rules. It can go directly over the current network, through the selected proxy exit, or to a configured and authorized Tailnet destination.</desc>
+            <title id="split-map-title" data-i18n="splitMapTitle">Rules choose the route</title>
+            <desc id="split-map-description" data-i18n="splitMapDescription">A connection from your device reaches TailSplit rules. It can go directly over the current network, through the selected proxy exit, or to a configured and authorized Tailnet destination.</desc>
             <path class="route-base" d="M62 150H220M220 150H272Q298 150 298 124V88Q298 62 324 62H382M220 150H382M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
             <path class="entry-path" d="M62 150H220"/>
             <path class="route-branch direct-branch" d="M220 150H272Q298 150 298 124V88Q298 62 324 62H382"/>
@@ -56,158 +61,165 @@
             <path class="route-branch tailnet-branch" d="M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
             <circle class="mac-node" cx="62" cy="150" r="29"/>
             <g class="mac-icon" aria-hidden="true"><rect x="48" y="139" width="28" height="18" rx="2"/><path d="M43 162h38"/></g>
-            <text class="map-label" x="62" y="207" text-anchor="middle">Your device</text>
+            <text class="map-label" x="62" y="207" text-anchor="middle" data-i18n="splitYourDevice">Your device</text>
             <circle class="rules-halo" cx="220" cy="150" r="52"/>
             <circle class="rules-node" cx="220" cy="150" r="37"/>
             <g class="rules-icon" aria-hidden="true"><path d="M201 150h10c10 0 7-12 19-12M211 150c10 0 7 12 19 12"/><circle cx="201" cy="150" r="3"/><circle cx="230" cy="138" r="3"/><circle cx="230" cy="162" r="3"/></g>
-            <text class="map-label map-label-strong" x="220" y="231" text-anchor="middle">Your rules</text>
+            <text class="map-label map-label-strong" x="220" y="231" text-anchor="middle" data-i18n="splitYourRules">Your rules</text>
             <g class="destination direct-destination"><circle cx="382" cy="62" r="14"/><path d="M376 62h12m-4-4 4 4-4 4"/></g>
-            <text class="map-label" x="412" y="58">Direct</text>
-            <text class="map-detail" x="412" y="80">Current network</text>
+            <text class="map-label" x="412" y="58" data-i18n="splitDirect">Direct</text>
+            <text class="map-detail" x="412" y="80" data-i18n="splitCurrentNetwork">Current network</text>
             <g class="destination proxy-destination"><circle cx="382" cy="150" r="14"/><path d="m376 150 4 4 8-8"/></g>
-            <text class="map-label" x="412" y="146">Proxy</text>
-            <text class="map-detail" x="412" y="168">Selected exit</text>
+            <text class="map-label" x="412" y="146" data-i18n="splitProxy">Proxy</text>
+            <text class="map-detail" x="412" y="168" data-i18n="splitSelectedExit">Selected exit</text>
             <g class="destination tailnet-destination"><circle cx="382" cy="238" r="14"/><path d="M378 234h8v8h-8z"/></g>
             <text class="map-label" x="412" y="234">Tailnet</text>
-            <text class="map-detail" x="412" y="256">Authorized peers</text>
+            <text class="map-detail" x="412" y="256" data-i18n="splitAuthorizedPeers">Authorized peers</text>
           </svg>
           <div class="concept-interaction">
-            <div class="concept-controls" data-demo-controls hidden role="group" aria-label="Choose a conceptual routing rule">
-              <button type="button" data-split-route="direct" aria-pressed="false"><span class="rule-indicator" aria-hidden="true"></span>Direct rule</button>
-              <button type="button" data-split-route="proxy" aria-pressed="true"><span class="rule-indicator" aria-hidden="true"></span>Proxy rule</button>
-              <button type="button" data-split-route="tailnet" aria-pressed="false"><span class="rule-indicator" aria-hidden="true"></span>Tailnet rule</button>
+            <div class="concept-controls" data-demo-controls hidden role="group" aria-label="Choose a conceptual routing rule" data-i18n-aria-label="splitChooseRule">
+              <button type="button" data-split-route="direct" aria-pressed="false"><span class="rule-indicator" aria-hidden="true"></span><span data-i18n="splitDirectRule">Direct rule</span></button>
+              <button type="button" data-split-route="proxy" aria-pressed="true"><span class="rule-indicator" aria-hidden="true"></span><span data-i18n="splitProxyRule">Proxy rule</span></button>
+              <button type="button" data-split-route="tailnet" aria-pressed="false"><span class="rule-indicator" aria-hidden="true"></span><span data-i18n="splitTailnetRule">Tailnet rule</span></button>
             </div>
             <p class="concept-result" id="split-result" role="status" aria-live="polite" aria-atomic="true">A domain on your proxy list uses the selected exit. The rule’s DNS follows that exit too.</p>
-            <p class="concept-disclaimer">Illustration only. No connection is made and no network settings change.</p>
+            <p class="concept-disclaimer" data-i18n="splitConceptDisclaimer">Illustration only. No connection is made and no network settings change.</p>
           </div>
         </div>
       </figure>
-      <p class="hero-note">Starts disconnected in your menu bar or Windows tray. You decide when to connect.</p>
+      <p class="hero-note" data-i18n="splitHeroNote">Starts disconnected in your menu bar or Windows tray. You decide when to connect.</p>
     </section>
 
     <section class="routing-section wrap" id="routing" aria-labelledby="routing-title">
       <div class="routing-intro">
-        <h2 id="routing-title">Keep the route<br> in your hands.</h2>
-        <p>Manage domain lists, IP ranges, and GFWList rules in the configuration panel or YAML editor.</p>
-        <p>Use an application’s HTTP/SOCKS proxy settings, or enable TUN routing for captured system traffic. Both modes use the same routing rules.</p>
+        <h2 id="routing-title" data-i18n-html="splitRoutingTitle">Keep the route<br> in your hands.</h2>
+        <p data-i18n="splitRoutingDescription">Manage domain lists, IP ranges, and GFWList rules in the configuration panel or YAML editor.</p>
+        <p data-i18n="splitRoutingModes">Use an application’s HTTP/SOCKS proxy settings, or enable TUN routing for captured system traffic. Both modes use the same routing rules.</p>
       </div>
       <div class="rule-ledger">
-        <p class="ledger-intro">In rule mode, connections are matched in this order:</p>
+        <p class="ledger-intro" data-i18n="splitRuleOrder">In rule mode, connections are matched in this order:</p>
         <ol class="rule-order">
-          <li><div><h3>Configured Tailnet destinations</h3><p>MagicDNS names, configured Tailnet domains, and Tailnet addresses use the embedded Tailscale connection.</p></div></li>
-          <li><div><h3>Your direct exceptions</h3><p>Direct domains, GFWList exceptions, and direct IP ranges stay on your network.</p></div></li>
-          <li><div><h3>Your proxy rules</h3><p>Proxy IP ranges, proxy domains, and GFWList proxy matches use the selected exit.</p></div></li>
-          <li><div><h3>The remaining traffic</h3><p>Other private destinations go direct. Everything else follows your configured default.</p></div></li>
+          <li><div><h3 data-i18n="splitTailnetHeading">Configured Tailnet destinations</h3><p data-i18n="splitTailnetDescription">MagicDNS names, configured Tailnet domains, and Tailnet addresses use the embedded Tailscale connection.</p></div></li>
+          <li><div><h3 data-i18n="splitDirectHeading">Your direct exceptions</h3><p data-i18n="splitDirectDescription">Direct domains, GFWList exceptions, and direct IP ranges stay on your network.</p></div></li>
+          <li><div><h3 data-i18n="splitProxyHeading">Your proxy rules</h3><p data-i18n="splitProxyDescription">Proxy IP ranges, proxy domains, and GFWList proxy matches use the selected exit.</p></div></li>
+          <li><div><h3 data-i18n="splitRemainingHeading">The remaining traffic</h3><p data-i18n="splitRemainingDescription">Other private destinations go direct. Everything else follows your configured default.</p></div></li>
         </ol>
-        <p class="dns-note">DNS is part of the route. Proxy-domain lookups use the proxy exit; Tailnet names use the appropriate Tailnet resolver.</p>
+        <p class="dns-note" data-i18n="splitDnsNote">DNS is part of the route. Proxy-domain lookups use the proxy exit; Tailnet names use the appropriate Tailnet resolver.</p>
       </div>
     </section>
 
     <section class="install-section" id="install" aria-labelledby="install-title">
       <div class="wrap">
         <div class="install-heading">
-          <h2 id="install-title">From download<br> to connection.</h2>
+          <h2 id="install-title" data-i18n-html="splitInstallTitle">From download<br> to connection.</h2>
           <div class="download-intro">
-            <p>Open-source on <a href="https://github.com/idy/tailsplit">GitHub</a>. Desktop apps for Windows and macOS, with a CLI for Linux, Windows and macOS. Native builds support x64 and ARM64.<span data-release-label hidden> Current release: <span data-release-version></span>.</span></p>
-            <p class="download-platform">Windows desktop</p>
-            <div class="download-actions" role="group" aria-label="Download the Windows desktop installer">
-              <a class="button button-primary" data-download="windows-amd64" href="https://github.com/idy/tailsplit/releases/latest">Windows x64 (.exe) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
-              <a class="button button-secondary" data-download="windows-arm64" href="https://github.com/idy/tailsplit/releases/latest">Windows ARM64 (.exe) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+            <p data-i18n-html="splitDownloadIntro">Open-source on <a href="https://github.com/idy/tailsplit">GitHub</a>. Desktop apps for Windows and macOS, with a CLI for Linux, Windows and macOS. Native builds support x64 and ARM64.</p>
+            <p class="release-status" data-release-status role="status" aria-live="polite">Check GitHub Releases for the latest version and downloads.</p>
+            <p class="download-platform" data-i18n="splitWindowsDesktop">Windows desktop</p>
+            <div class="download-actions" role="group" aria-label="Download the Windows desktop installer" data-i18n-aria-label="splitWindowsDownload">
+              <a class="button button-primary" data-download="windows-amd64" href="https://github.com/idy/tailsplit/releases">Windows x64 (.exe) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+              <a class="button button-secondary" data-download="windows-arm64" href="https://github.com/idy/tailsplit/releases">Windows ARM64 (.exe) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
             </div>
-            <p class="access-note">Windows 10+ on x64; Windows 11 on ARM64. Setup installs the window, tray and network service. Windows executables are unsigned; verify the <a data-download="checksums" href="https://github.com/idy/tailsplit/releases/latest">release checksums</a>.</p>
-            <p class="download-platform">macOS app</p>
-            <div class="download-actions" role="group" aria-label="Download the macOS app">
-              <a class="button button-primary" data-download="darwin-arm64" href="https://github.com/idy/tailsplit/releases/latest">Apple Silicon (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
-              <a class="button button-secondary" data-download="darwin-amd64" href="https://github.com/idy/tailsplit/releases/latest">Intel Mac (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+            <p class="access-note"><span data-i18n="splitWindowsNote">Windows 10+ on x64; Windows 11 on ARM64. Setup installs the window, tray and network service. Windows executables are unsigned; verify the</span> <a data-download="checksums" href="https://github.com/idy/tailsplit/releases" data-i18n="splitChecksums">release checksums</a><span data-i18n="splitPeriod">.</span></p>
+            <p class="download-platform" data-i18n="splitMacApp">macOS app</p>
+            <div class="download-actions" role="group" aria-label="Download the macOS app" data-i18n-aria-label="splitMacDownload">
+              <a class="button button-primary" data-download="darwin-arm64" href="https://github.com/idy/tailsplit/releases">Apple Silicon (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
+              <a class="button button-secondary" data-download="darwin-amd64" href="https://github.com/idy/tailsplit/releases">Intel Mac (.dmg) <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v9m-4-4 4 4 4-4M3 12v2h10v-2"/></svg></a>
             </div>
-            <p class="access-note">macOS 14 or later. Both Mac apps are Developer ID signed and Apple notarized; each release includes signing receipts.</p>
-            <p class="download-other">Windows CLI: <a data-download="windows-cli-amd64" href="https://github.com/idy/tailsplit/releases/latest">x64 .zip</a> or <a data-download="windows-cli-arm64" href="https://github.com/idy/tailsplit/releases/latest">ARM64 .zip</a>.</p>
-            <p class="download-other">Linux CLI: <a data-download="linux-amd64" href="https://github.com/idy/tailsplit/releases/latest">amd64 .deb</a> or <a data-download="linux-arm64" href="https://github.com/idy/tailsplit/releases/latest">arm64 .deb</a>.</p>
-            <p class="download-other"><a href="https://github.com/idy/tailsplit/releases/latest">Release notes and all downloads</a></p>
+            <p class="access-note" data-i18n="splitMacNote">macOS 14 or later. Both Mac apps are Developer ID signed and Apple notarized; each release includes signing receipts.</p>
+            <p class="download-other"><span data-i18n="splitWindowsCli">Windows CLI:</span> <a data-download="windows-cli-amd64" href="https://github.com/idy/tailsplit/releases">x64 .zip</a> <span data-i18n="splitOr">or</span> <a data-download="windows-cli-arm64" href="https://github.com/idy/tailsplit/releases">ARM64 .zip</a>.</p>
+            <p class="download-other"><span data-i18n="splitLinuxCli">Linux CLI:</span> <a data-download="linux-amd64" href="https://github.com/idy/tailsplit/releases">amd64 .deb</a> <span data-i18n="splitOr">or</span> <a data-download="linux-arm64" href="https://github.com/idy/tailsplit/releases">arm64 .deb</a>.</p>
+            <p class="download-other"><a data-release-link href="https://github.com/idy/tailsplit/releases" data-i18n="splitReleaseNotes">Release notes and all downloads</a></p>
           </div>
         </div>
         <div class="build-note">
-          <h3>Install on macOS or Linux.</h3>
-          <p>The installer detects your platform, verifies SHA-256, and installs the app on macOS or the CLI on Linux. It preserves your configuration and device state.</p>
+          <h3 data-i18n="splitInstallShellTitle">Install on macOS or Linux.</h3>
+          <p data-i18n="splitInstallShellDescription">The installer detects your platform, verifies SHA-256, and installs the app on macOS or the CLI on Linux. It preserves your configuration and device state.</p>
           <div class="command-line">
             <code id="split-install-command">curl -fsSL https://tailsplit.idy.dev/install.sh | sh</code>
-            <button class="copy-button" type="button" data-copy-target="split-install-command" aria-label="Copy TailSplit install command" hidden>Copy</button>
+            <button class="copy-button" type="button" data-copy-target="split-install-command" aria-label="Copy TailSplit install command" data-i18n-aria-label="splitCopyInstall" hidden>Copy</button>
           </div>
           <p class="copy-status" role="status" aria-live="polite" data-copy-status></p>
-          <p>For a user-local CLI, add <code>sh -s -- --cli --no-sudo</code> after the pipe. See the <a href="https://github.com/idy/tailsplit#install">installer options</a>.</p>
+          <p data-i18n-html="splitInstallOptions">For a user-local CLI, add <code>sh -s -- --cli --no-sudo</code> after the pipe. See the <a href="https://github.com/idy/tailsplit#install">installer options</a>.</p>
         </div>
         <ol class="install-steps">
           <li>
-            <h3>Open TailSplit.</h3>
-            <p>Run the Windows EXE installer, or install the macOS app from its DMG. Open TailSplit normally; a new installation starts disconnected in the tray or menu bar.</p>
+            <h3 data-i18n="splitStepOneTitle">Open TailSplit.</h3>
+            <p data-i18n="splitStepOneDescription">Run the Windows EXE installer, or install the macOS app from its DMG. Open TailSplit normally; a new installation starts disconnected in the tray or menu bar.</p>
           </li>
           <li>
-            <h3>Allow the network service.</h3>
-            <p>Windows Setup installs the network service. On macOS, the first connection opens its bundled package installer. An administrator approves the service; the app itself runs normally.</p>
+            <h3 data-i18n="splitStepTwoTitle">Allow the network service.</h3>
+            <p data-i18n="splitStepTwoDescription">Windows Setup installs the network service. On macOS, the first connection opens its bundled package installer. An administrator approves the service; the app itself runs normally.</p>
           </li>
           <li>
-            <h3>Review your rules. Connect.</h3>
-            <p>Sign in to your Tailnet, choose an exit and review the routing rules in the window or configuration panel. Device authorization opens your default browser; connecting is a separate action.</p>
+            <h3 data-i18n="splitStepThreeTitle">Review your rules. Connect.</h3>
+            <p data-i18n="splitStepThreeDescription">Sign in to your Tailnet, choose an exit and review the routing rules in the window or configuration panel. Device authorization opens your default browser; connecting is a separate action.</p>
           </li>
         </ol>
-        <p class="upgrade-note">Upgrading an older YAML? Remove the obsolete <code>dns.listen</code> field before connecting. Keep your other configuration and device state.</p>
-        <div class="mode-comparison" aria-label="Connection modes">
-          <div><h3>Application proxy</h3><p>Opt individual apps into the local HTTP/SOCKS proxy. A narrow DNS TUN route is created; the system proxy, default traffic route, and system DNS stay as they are.</p></div>
-          <div><h3>System routing</h3><p>Enable <code>tun.enabled</code> in YAML to add system-traffic routing and DNS interception. Rules apply to connections captured by the TUN.</p></div>
+        <p class="upgrade-note" data-i18n-html="splitUpgradeNote">Upgrading an older YAML? Remove the obsolete <code>dns.listen</code> field before connecting. Keep your other configuration and device state.</p>
+        <div class="mode-comparison" aria-label="Connection modes" data-i18n-aria-label="splitConnectionModes">
+          <div><h3 data-i18n="splitApplicationProxy">Application proxy</h3><p data-i18n="splitApplicationProxyDescription">Opt individual apps into the local HTTP/SOCKS proxy. A narrow DNS TUN route is created; the system proxy, default traffic route, and system DNS stay as they are.</p></div>
+          <div><h3 data-i18n="splitSystemRouting">System routing</h3><p data-i18n-html="splitSystemRoutingDescription">Enable <code>tun.enabled</code> in YAML to add system-traffic routing and DNS interception. Rules apply to connections captured by the TUN.</p></div>
         </div>
       </div>
     </section>
 
     <section class="details-section wrap" aria-labelledby="details-title">
       <div>
-        <h2 id="details-title">A little context<br>before connecting.</h2>
+        <h2 id="details-title" data-i18n-html="splitDetailsTitle">A little context<br>before connecting.</h2>
         <div class="build-note">
-          <h3>Building the macOS app?</h3>
-          <p>With Go 1.26.2 or later, Python 3.11+, and Xcode Command Line Tools, run this from a <a href="https://github.com/idy/tailsplit">TailSplit checkout</a>:</p>
+          <h3 data-i18n="splitBuildTitle">Building the macOS app?</h3>
+          <p data-i18n-html="splitBuildDescription">With Go 1.26.2 or later, Python 3.11+, and Xcode Command Line Tools, run this from a <a href="https://github.com/idy/tailsplit">TailSplit checkout</a>:</p>
           <div class="command-line">
             <code id="split-build-command">make app</code>
-            <button class="copy-button" type="button" data-copy-target="split-build-command" aria-label="Copy TailSplit app build command" hidden>Copy</button>
+            <button class="copy-button" type="button" data-copy-target="split-build-command" aria-label="Copy TailSplit app build command" data-i18n-aria-label="splitCopyBuild" hidden>Copy</button>
           </div>
           <p class="copy-status" role="status" aria-live="polite" data-copy-status></p>
-          <p class="build-caveat">This creates an ad-hoc development build. Developer ID signing and notarization use the separate <a href="https://github.com/idy/tailsplit#readme">documented release process</a>.</p>
+          <p class="build-caveat" data-i18n-html="splitBuildCaveat">This creates an ad-hoc development build. Developer ID signing and notarization use the separate <a href="https://github.com/idy/tailsplit#readme">documented release process</a>.</p>
         </div>
       </div>
       <div class="questions">
         <details open>
-          <summary>What happens when an exit is unavailable?</summary>
-          <p>Global mode sends captured traffic through the selected exit and keeps the running TUN in place if that exit goes offline. It blocks those connections until the exit recovers.</p>
-          <p>This protection depends on TailSplit and its TUN remaining active. Disconnecting, quitting, or a background-service crash removes the TUN and temporary DNS, restoring system networking. It is not a persistent system-wide firewall kill switch.</p>
+          <summary data-i18n="splitFaqExitTitle">What happens when an exit is unavailable?</summary>
+          <p data-i18n="splitFaqExitAnswer">Global mode sends captured traffic through the selected exit and keeps the running TUN in place if that exit goes offline. It blocks those connections until the exit recovers.</p>
+          <p data-i18n="splitFaqExitCaveat">This protection depends on TailSplit and its TUN remaining active. Disconnecting, quitting, or a background-service crash removes the TUN and temporary DNS, restoring system networking. It is not a persistent system-wide firewall kill switch.</p>
         </details>
         <details>
-          <summary>Why does application proxy mode need permission?</summary>
-          <p>Both connection modes create a TUN for DNS. Application proxy mode adds only its narrow DNS route; system routing adds the broader traffic routes. The network service performs this work, and the Windows or macOS installer handles administrator approval.</p>
+          <summary data-i18n="splitFaqPermissionTitle">Why does application proxy mode need permission?</summary>
+          <p data-i18n="splitFaqPermissionAnswer">Both connection modes create a TUN for DNS. Application proxy mode adds only its narrow DNS route; system routing adds the broader traffic routes. The network service performs this work, and the Windows or macOS installer handles administrator approval.</p>
         </details>
         <details>
-          <summary>Does signing in start the proxy?</summary>
-          <p>No. Signing in authorizes the embedded Tailscale device. Starting the proxy is a separate action. Opening the app and automatic connection are also separate preferences; automatic connection is off by default.</p>
+          <summary data-i18n="splitFaqLoginTitle">Does signing in start the proxy?</summary>
+          <p data-i18n="splitFaqLoginAnswer">No. Signing in authorizes the embedded Tailscale device. Starting the proxy is a separate action. Opening the app and automatic connection are also separate preferences; automatic connection is off by default.</p>
         </details>
         <details>
-          <summary>Can I choose another exit?</summary>
-          <p>The exit menu lists devices your Tailnet makes available as exits. Offline or expired devices cannot be selected. Switching exits saves the choice and reconnects a running proxy while preserving your device login and routing rules. TailSplit does not silently choose another exit for you.</p>
+          <summary data-i18n="splitFaqSwitchTitle">Can I choose another exit?</summary>
+          <p data-i18n="splitFaqSwitchAnswer">The exit menu lists devices your Tailnet makes available as exits. Offline or expired devices cannot be selected. Switching exits saves the choice and reconnects a running proxy while preserving your device login and routing rules. TailSplit does not silently choose another exit for you.</p>
         </details>
         <details>
-          <summary>How does TailSplit stay up to date?</summary>
-          <p>The desktop app checks GitHub Releases shortly after it starts and every six hours, and offers only newer stable versions. Nothing is downloaded or installed until you confirm, and each download must match the release checksums. Windows runs the verified Setup, which asks for administrator approval; on macOS, TailSplit checks the new app’s signature, then replaces and reopens it. Your configuration and device login are kept.</p>
-          <p>Check manually or turn off automatic checks from the tray, the menu bar or the configuration panel. Windows versions before 0.7.0 and macOS versions before 0.7.1 need one manual update from this page.</p>
+          <summary data-i18n="splitFaqUpdateTitle">How does TailSplit stay up to date?</summary>
+          <p data-i18n="splitFaqUpdateAnswer">The desktop app checks GitHub Releases shortly after it starts and every six hours, and offers only newer stable versions. Nothing is downloaded or installed until you confirm, and each download must match the release checksums. Windows runs the verified Setup, which asks for administrator approval; on macOS, TailSplit checks the new app’s signature, then replaces and reopens it. Your configuration and device login are kept.</p>
+          <p data-i18n="splitFaqUpdateManual">Check manually or turn off automatic checks from the tray, the menu bar or the configuration panel. Windows versions before 0.7.0 and macOS versions before 0.7.1 need one manual update from this page.</p>
         </details>
       </div>
     </section>
 
     <div class="companion wrap">
-      <p>Need to provide a SOCKS5-backed Tailnet exit?</p>
-      <a href="https://tailrelay.idy.dev/">Meet TailRelay <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
+      <p data-i18n="splitCompanion">Need to provide a SOCKS5-backed Tailnet exit?</p>
+      <a href="https://tailrelay.idy.dev/"><span data-i18n="splitMeetRelay">Meet TailRelay</span> <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
     </div>
   </main>
 
-  <footer class="site-footer wrap">
-    <a class="footer-brand" href="#">TailSplit</a>
-    <p>An independent project built with Tailscale and sing-box.</p>
-    <div class="footer-links"><a href="https://idy.dev/">idy.dev</a><a href="https://github.com/idy/tailsplit">Source</a><a href="https://github.com/idy/tailsplit/releases">Releases</a><a href="https://github.com/idy/tailsplit/blob/main/LICENSE">GPL-3.0</a></div>
+  <footer class="idy-footer">
+    <div class="idy-footer-inner">
+      <div><a class="idy-home" href="https://idy.dev/">idy.dev</a><p data-i18n="footerNote">Independent tools. Open source.</p></div>
+      <nav data-i18n-aria-label="projectLinks" aria-label="Project links">
+        <a href="https://idy.dev/" data-i18n="allProjects">All projects</a>
+        <a href="https://github.com/idy/tailsplit">GitHub</a>
+        <a href="https://github.com/idy/tailsplit/releases" data-i18n="releases">Releases</a>
+        <a href="https://github.com/idy/tailsplit/blob/main/LICENSE">GPL-3.0</a>
+      </nav>
+    </div>
   </footer>
 </body>
 </html>
