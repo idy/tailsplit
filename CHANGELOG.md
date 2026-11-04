@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.4
+
+- Replace the split-route mark with a monochrome snake: its body draws the S and
+  its forked tail is the route splitting in two. The app, installer, tray, menu
+  bar, website and configuration panel all use it, on one dark tile color.
+- Show the connection in the menu bar and tray. The snake turns green while a
+  tunnel or proxy session is running, matching the configuration panel's status,
+  and returns to its normal color while connecting, blocked or disconnected.
+
 ## 0.7.3
 
 - Open the macOS configuration panel in TailSplit's own dark, resizable window
