@@ -316,6 +316,24 @@ Without configured signing, macOS builds are explicitly recorded as ad-hoc.
 The public site is deployed independently from `site/` by its Pages workflow;
 the root installer is published as `/install.sh` alongside it.
 
+## Pull request review
+
+[The OpenAI PR review workflow](.github/workflows/codex-review.yml) calls the
+shared [GizClaw reviewer](https://github.com/GizClaw/github-workflows) at its
+`latest` tag. It reviews ready pull requests when they are opened, reopened,
+edited, marked ready or updated, and on request: post `@codex review` on its own
+line in a new PR comment, or run the workflow manually with the PR number. Each
+review publishes the `OpenAI PR Review`, `OpenAI Issue Review` and
+`OpenAI Code Review` checks on the reviewed head with one combined review report.
+The reviewer checks out only the trusted base and reads the PR diff as data; it
+never runs PR code. Actions reruns are rejected; post a new request instead.
+
+The workflow takes effect from the default branch and needs the `OPENAI_API_KEY`
+Actions secret. Because this repository is public, pull requests from forks are
+reviewed automatically with that key, so use a dedicated key with a spending
+limit. Diffs over 5,000,000 bytes wait until an admin comments
+`@codex review approve <full-head-sha>`.
+
 ## License and source provenance
 
 TailSplit is GPL-3.0-or-later; see [LICENSE](LICENSE) and
