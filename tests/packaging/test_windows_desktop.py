@@ -175,14 +175,17 @@ class DependencyTests(unittest.TestCase):
         def download(_url, destination):
             destination.write_bytes(b"package")
             return destination
-        def invoke(command, **_kwargs):
+        def invoke(command, **kwargs):
             events.append("invoke")
             self.assertIn("/PORTABLE=1", command)
             self.assertIn("/CURRENTUSER", command)
+            self.assertNotIn("GH_TOKEN", kwargs["env"])
+            self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
             portable = Path(next(value.removeprefix("/DIR=") for value in command if value.startswith("/DIR=")))
             self.assertEqual(list(portable.iterdir()), [])
             (portable / "ISCC.exe").write_bytes(b"compiler")
         with tempfile.TemporaryDirectory() as temporary, \
+                patch.dict(os.environ, {"GH_TOKEN": "test-token", "GITHUB_TOKEN": "other-test-token"}), \
                 patch.object(packager, "fetch_json", return_value=release), \
                 patch.object(packager, "fetch", side_effect=download), \
                 patch.object(packager, "verify_authenticode", side_effect=lambda *args: events.append("verify")), \

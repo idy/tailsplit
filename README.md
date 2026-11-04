@@ -115,6 +115,8 @@ collects native toolchain inputs, notices and installer payloads:
 python -I -B packaging/release.py build --os windows --arch amd64 --directory bin/release/assets
 ```
 
+An optional `GH_TOKEN` (or `GITHUB_TOKEN`) authenticates public GitHub release metadata requests to avoid shared-IP rate limits. CI supplies its read-only token to Windows packaging steps. The downloader sends it only to `api.github.com`, does not forward it through redirects, and excludes it from downloaded tools and installed-app subprocesses.
+
 Use `arm64` on Windows on Arm. Windows CI is configured to execute the installed UI at medium
 integrity, captures its native window, exercises real service sessions and tests
 repair, failed-upgrade recovery, upgrading a running and connected desktop with a

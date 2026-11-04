@@ -21,10 +21,15 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def run(*args, timeout=120, check=True, extra=None):
-    environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+def child_environment(extra=None):
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() not in {"PSMODULEPATH", "GH_TOKEN", "GITHUB_TOKEN"}}
     environment.update(extra or {})
-    result = subprocess.run(list(map(str, args)), cwd=ROOT, env=environment, capture_output=True, text=True,
+    return environment
+
+
+def run(*args, timeout=120, check=True, extra=None):
+    result = subprocess.run(list(map(str, args)), cwd=ROOT, env=child_environment(extra), capture_output=True, text=True,
                             timeout=timeout, check=False)
     if check and result.returncode:
         # This fixture never authenticates a Tailnet. Do not copy arbitrary
@@ -153,7 +158,7 @@ def free_port():
 
 def broker(core, config):
     process = subprocess.Popen([str(core), "app-run", "--events", "--parent-pid", str(os.getpid()), "-c", str(config)],
-                               cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               cwd=ROOT, env=child_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                text=True, creationflags=subprocess.CREATE_NO_WINDOW)
     records = queue.Queue()
     def read():
@@ -207,7 +212,8 @@ def fixture_installer(name, arch, version, commit, core, notices):
     assets = ROOT / "bin" / name / "assets"
     run(sys.executable, "-I", "-B", ROOT / "packaging/windows/build.py", "--arch", arch,
         "--version", version, "--commit", commit, "--core", core, "--notices", notices,
-        "--directory", assets, "--build-number", (ROOT / "BUILD_NUMBER").read_text().strip(), timeout=600)
+        "--directory", assets, "--build-number", (ROOT / "BUILD_NUMBER").read_text().strip(), timeout=600,
+        extra={key: os.environ[key] for key in ("GH_TOKEN", "GITHUB_TOKEN") if key in os.environ})
     return assets / f"TailSplit_{version}_windows_{arch}_setup.exe"
 
 

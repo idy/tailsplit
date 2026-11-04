@@ -108,15 +108,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go vet -mod=readonly -tags with_gvisor ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./internal/appupdate ./cmd/tailsplit-tray
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build and execute native Windows archive
+      - name: Build native Windows archive
         shell: pwsh
-        run: |
-          python -I -B packaging/release.py build --os windows --arch '${{ matrix.arch }}' --directory bin/ci-windows/assets
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -I -B tests/packaging/windows.py --arch '${{ matrix.arch }}' --directory bin/ci-windows/assets
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -I -B packaging/release.py build --os windows --arch '${{ matrix.arch }}' --directory bin/ci-windows/assets
+      - name: Execute native Windows archive
+        shell: pwsh
+        run: python -I -B tests/packaging/windows.py --arch '${{ matrix.arch }}' --directory bin/ci-windows/assets
       - name: Verify native desktop window, SYSTEM service and installer lifecycle
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python -I -B tests/packaging/windows_desktop.py --arch '${{ matrix.arch }}' --directory bin/ci-windows/assets
       - name: Preserve native desktop verification evidence
         if: always()
