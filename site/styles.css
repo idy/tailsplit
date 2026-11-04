@@ -28,6 +28,20 @@
   --install-line: #443950;
 }
 
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --accent: #bea6ff;
+    --accent-soft: #302749;
+    --accent-hover: #ccb8ff;
+    --accent-line: #6f5a9d;
+    --on-accent: #25193f;
+    --selection: #51426c;
+    --install-surface: #211f35;
+    --install-line: #443950;
+  }
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 html { scroll-behavior: smooth; scroll-padding-top: 32px; }
 body { margin: 0; color: var(--ink); background: var(--paper); font: 400 16px/1.65 var(--font); -webkit-font-smoothing: antialiased; }
