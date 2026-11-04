@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3
+
+- Open the macOS configuration panel in TailSplit's own dark, resizable window
+  using the system WKWebView. Remember the window's size and position, show it
+  in the Dock and Command-Tab while open, and support standard editing shortcuts.
+  Closing hides the window and keeps unsaved edits for the next opening.
+- Keep the panel's web data in memory and restrict navigation to its own local
+  origin. Block new windows, downloads and external navigation; use the browser
+  only if the native window cannot be created.
+- Retry only the window's own failed page load. A later successful load clears
+  the failure state so reopening the panel does not reload and discard a draft.
+
 ## 0.7.2
 
 - Let the configuration panel use the full window width. Remove the 1240px
