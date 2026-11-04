@@ -162,7 +162,7 @@ func main() {
 		loginItemSettings := startup.AddSubMenuItem("系统登录项设置…", "")
 		tools := systray.AddMenuItem("设置与工具", "")
 		restart := tools.AddSubMenuItem("重新连接", "停止后使用当前配置重新连接")
-		configuration := tools.AddSubMenuItem("配置面板…", "在本机网页中查看、编辑和校验配置")
+		configuration := tools.AddSubMenuItem("配置面板…", "在 TailSplit 窗口中查看、编辑和校验配置")
 		if configurationErr != nil {
 			configuration.Disable()
 			configuration.SetTooltip("无法启动本地配置页面，仍可使用“编辑配置…”")
@@ -422,7 +422,10 @@ func main() {
 					tray.OpenLoginItemSettings()
 				case <-configuration.ClickedCh:
 					if configurationPage != nil {
-						openPath(configurationPage.URL())
+						if err := tray.ShowConfigurationWindow(configurationPage.URL()); err != nil {
+							controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
+							openPath(configurationPage.URL())
+						}
 					}
 				case <-edit.ClickedCh:
 					openPath("-t", *config)

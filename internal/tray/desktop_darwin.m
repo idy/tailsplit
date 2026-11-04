@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void tailsplit_on_main(void (^action)(void)) {
+void tailsplit_on_main(void (^action)(void)) {
     if ([NSThread isMainThread]) {
         action();
     } else {

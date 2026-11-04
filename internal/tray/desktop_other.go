@@ -11,3 +11,6 @@ func ShowAbout()                           {}
 func AppVersion() string                   { return "dev" }
 func ConfirmUpdate(string) bool            { return false }
 func EditDeviceName(string) (string, bool) { return "", false }
+func ShowConfigurationWindow(string) error {
+	return errors.New("the configuration window requires the macOS app")
+}
