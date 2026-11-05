@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.5 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.6 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -54,8 +54,9 @@ work from 0.7.1 onward; Windows 0.7.0 is unaffected.
 Packaged macOS and Windows apps check the stable GitHub Release ten seconds after
 startup and every six hours while running. Choose **Check for updates…** in the
 tray menu (under **Settings and Tools** on macOS), or open **Device and Startup →
-App Updates** in the configuration panel. The panel shows the installed version,
-release notes, last check, download progress and errors. Development builds skip
+App Updates** in the configuration panel. The title-row update button shows
+download percentage and installation state without adding a second row. The panel's App Updates settings show the installed
+version, release notes, last check and errors. Development builds skip
 automatic checks; prereleases and older versions are never offered.
 
 `app.check_for_updates` defaults to `true` when omitted. The menu and panel can
@@ -176,9 +177,15 @@ may require an explicit launch approval.
 
 Choose **Open** (`打开`), the first item in the menu bar app's menu, to open the
 configuration panel. The panel opens in TailSplit's own window, which uses the
-system web view (WKWebView). It groups connection, DNS, routing and startup
-settings in a compact dark layout. Wide windows add a live YAML preview, and a
-full source editor is always available. Validate or save/apply
+system web view (WKWebView). A single integrated title row contains the app
+identity, current section, connection state and update button. Downloads show
+their percentage inside that button; installation shows its current phase in
+the same place. The title row supports window dragging and double-click zoom,
+with native macOS window buttons and Windows minimize, maximize/restore and
+close controls. Closing still hides the window to the menu bar or tray.
+The panel groups connection, DNS, routing and startup settings in a compact dark
+layout. Wide windows add a live YAML preview, and a full source editor is always
+available. Validate or save/apply
 changes from either view. Saving reconnects an active proxy; an idle app stays
 idle. Existing comments and unrelated settings are preserved. External edits
 cause a revision conflict, and failed edits retain the unsaved draft. App service

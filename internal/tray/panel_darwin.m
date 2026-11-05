@@ -17,6 +17,10 @@ static int panelPort;
 static BOOL panelLoaded;
 static BOOL panelFailed;
 static WKNavigation *panelNavigation; // The app's own load of panelURL.
+static NSEvent *panelTitlebarMouseDown;
+static NSRect panelFillRestoreFrame;
+static NSRect panelLastFillFrame;
+static BOOL panelHasFillRestoreFrame;
 
 static NSString *const panelFrameName = @"TailSplitConfigurationWindow";
 
@@ -31,7 +35,7 @@ static NSString *const panelFrameName = @"TailSplitConfigurationWindow";
 }
 @end
 
-@interface TailSplitPanelDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate, WKUIDelegate>
+@interface TailSplitPanelDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler>
 @end
 
 static BOOL tailsplit_panel_allows(NSURL *url) {
@@ -53,6 +57,47 @@ static void tailsplit_panel_failed(WKNavigation *navigation) {
 }
 
 @implementation TailSplitPanelDelegate
+
+// The local main frame can request only titlebar gestures. Use the original
+// native mouse event, and require a recent click inside this window's title row.
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+    if (message.webView != panelView || !message.frameInfo.mainFrame ||
+        !tailsplit_panel_allows(message.frameInfo.request.URL) ||
+        ![message.body isKindOfClass:[NSString class]] || !panelTitlebarMouseDown) return;
+    NSEvent *event = [[panelTitlebarMouseDown retain] autorelease];
+    [panelTitlebarMouseDown release];
+    panelTitlebarMouseDown = nil;
+    if (event.window != panelWindow) return;
+    if ([message.body isEqualToString:@"drag"] && event.clickCount == 1) {
+        // Start the native move loop after returning to WebKit. The block retains
+        // its mouse event; do nothing if the user has already released the button.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (panelWindow.visible && (NSEvent.pressedMouseButtons & 1)) [panelWindow performWindowDragWithEvent:event];
+        });
+    } else if ([message.body isEqualToString:@"zoom"] && event.clickCount == 2 &&
+               NSProcessInfo.processInfo.systemUptime - event.timestamp < 1) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!panelWindow.visible) return;
+            NSString *action = [NSUserDefaults.standardUserDefaults stringForKey:@"AppleActionOnDoubleClick"];
+            if ([action isEqualToString:@"Minimize"]) {
+                [panelWindow performMiniaturize:nil];
+            } else if ([action isEqualToString:@"Fill"] && panelWindow.screen) {
+                NSRect available = panelWindow.screen.visibleFrame;
+                if (panelHasFillRestoreFrame && NSEqualRects(panelWindow.frame, panelLastFillFrame)) {
+                    [panelWindow setFrame:panelFillRestoreFrame display:YES animate:YES];
+                    panelHasFillRestoreFrame = NO;
+                } else {
+                    panelFillRestoreFrame = panelWindow.frame;
+                    panelLastFillFrame = available;
+                    panelHasFillRestoreFrame = YES;
+                    [panelWindow setFrame:available display:YES animate:YES];
+                }
+            } else if (![action isEqualToString:@"None"]) {
+                [panelWindow performZoom:nil];
+            }
+        });
+    }
+}
 
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action
     decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
@@ -177,12 +222,13 @@ static BOOL tailsplit_panel_create(NSURL *url, int port) {
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = NO;
     // A loopback page needs no Safe Browsing lookups.
     configuration.preferences.fraudulentWebsiteWarningEnabled = NO;
+    [configuration.userContentController addScriptMessageHandler:delegate name:@"tailsplitWindow"];
     WKWebView *view = [[[TailSplitPanelWebView alloc] initWithFrame:bounds configuration:configuration] autorelease];
     NSWindow.allowsAutomaticWindowTabbing = NO;
     NSWindow *window = [[[NSWindow alloc] initWithContentRect:bounds
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                               NSWindowStyleMaskMiniaturizable |
-                                                              NSWindowStyleMaskResizable
+                                                              NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView
                                                       backing:NSBackingStoreBuffered
                                                         defer:YES] autorelease];
     if (!view || !window) return NO;
@@ -210,6 +256,18 @@ static BOOL tailsplit_panel_create(NSURL *url, int port) {
     window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     window.backgroundColor = canvas;
     window.titlebarAppearsTransparent = YES;
+    window.titleVisibility = NSWindowTitleHidden;
+    // AppKit keeps its traffic lights above the full-size web content.
+    [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown handler:^NSEvent *(NSEvent *event) {
+        [panelTitlebarMouseDown release];
+        panelTitlebarMouseDown = nil;
+        if (event.window == panelWindow) {
+            NSPoint point = [panelView convertPoint:event.locationInWindow fromView:nil];
+            CGFloat top = panelView.isFlipped ? point.y : NSHeight(panelView.bounds) - point.y;
+            if (top >= 0 && top < 40 && point.x >= 80) panelTitlebarMouseDown = [event retain];
+        }
+        return event;
+    }];
     window.contentMinSize = NSMakeSize(760, 560);
     window.delegate = delegate;
     if (![window setFrameUsingName:panelFrameName]) [window center];

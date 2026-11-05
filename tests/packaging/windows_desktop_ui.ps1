@@ -20,6 +20,7 @@ public static class TailSplitDesktopFixture {
  [StructLayout(LayoutKind.Sequential)] public struct ProcessInfo { public IntPtr process,thread; public int pid,tid; }
  [StructLayout(LayoutKind.Sequential)] public struct Label { public IntPtr sid; public int attributes; }
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left,top,right,bottom; }
+ [StructLayout(LayoutKind.Sequential)] public struct MonitorInfo { public int size; public Rect monitor,work; public uint flags; }
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
  public static string TokenSource = "fresh standard Windows account";
  [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateProcessWithLogonW(string user,string domain,string password,uint logonFlags,string app,string command,uint flags,IntPtr environment,string directory,ref Startup startup,out ProcessInfo result);
@@ -37,6 +38,9 @@ public static class TailSplitDesktopFixture {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect result);
+ [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
+ [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr window,uint flags);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor,ref MonitorInfo info);
  [DllImport("user32.dll",SetLastError=true)] public static extern bool PrintWindow(IntPtr window,IntPtr deviceContext,uint flags);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
  [DllImport("user32.dll")] public static extern IntPtr GetProp(IntPtr window,string name);
@@ -124,9 +128,28 @@ try {
     Wait-Until { [TailSplitDesktopFixture]::GetProp($window,'TailSplit.WebView2.Ready') -ne [IntPtr]::Zero } 'WebView2 did not load its local document.' | Out-Null
     $automation = [System.Windows.Automation.AutomationElement]::FromHandle($window)
     Wait-Until { Find-Button $automation '连接' } 'The native window has no desktop controls.' | Out-Null
-    foreach ($name in @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用')) {
+    foreach ($name in @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用','最大化或还原')) {
         if (-not (Find-Button $automation $name)) { throw "Missing actual window control: $name" }
     }
+    $stage = 'maximizing and restoring the native window'
+    Invoke-Button $automation '最大化或还原'
+    Wait-Until { [TailSplitDesktopFixture]::IsZoomed($window) } 'Window did not maximize.' | Out-Null
+    $maximized = New-Object TailSplitDesktopFixture+Rect
+    if (-not [TailSplitDesktopFixture]::GetWindowRect($window,[ref]$maximized)) { throw 'Cannot inspect maximized window bounds.' }
+    $monitor = New-Object TailSplitDesktopFixture+MonitorInfo
+    $monitor.size = [Runtime.InteropServices.Marshal]::SizeOf([type]'TailSplitDesktopFixture+MonitorInfo')
+    $monitorHandle = [TailSplitDesktopFixture]::MonitorFromWindow($window,2)
+    if (-not [TailSplitDesktopFixture]::GetMonitorInfo($monitorHandle,[ref]$monitor)) { throw 'Cannot inspect monitor work area.' }
+    # Windows may place the invisible resize frame just outside the work area.
+    # A loose 64px allowance permits that frame but rejects a whole extra display.
+    if ($maximized.left -lt ($monitor.work.left - 64) -or $maximized.top -lt ($monitor.work.top - 64) -or
+        $maximized.right -gt ($monitor.work.right + 64) -or $maximized.bottom -gt ($monitor.work.bottom + 64) -or
+        $maximized.left -gt $monitor.work.left -or $maximized.top -gt $monitor.work.top -or
+        $maximized.right -lt $monitor.work.right -or $maximized.bottom -lt $monitor.work.bottom) {
+        throw 'Maximized window does not fit the monitor work area.'
+    }
+    Invoke-Button $automation '最大化或还原'
+    Wait-Until { -not [TailSplitDesktopFixture]::IsZoomed($window) } 'Window did not restore after maximizing.' | Out-Null
     $stage = 'desktop controls found; capturing window'
     [TailSplitDesktopFixture]::SetForegroundWindow($window) | Out-Null
     Start-Sleep -Milliseconds 500
@@ -165,7 +188,7 @@ try {
         Invoke-Button $automation '连接'
         Wait-Connected $automation 'Reconnect before upgrade did not reach a running service session.'
     }
-    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
+    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; maximize_restore=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
 } catch {
     $primaryFailure = $_
     $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource; elapsed_ms=$startupClock.ElapsedMilliseconds; startup_phases=$nativePhases.ToArray() }

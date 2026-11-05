@@ -33,6 +33,7 @@ namespace {
 constexpr UINT kShow = WM_APP + 0x451;
 constexpr UINT kQuit = WM_APP + 0x452;
 constexpr UINT kFinish = WM_APP + 0x453;
+constexpr UINT kTitlebarAction = WM_APP + 0x454;
 constexpr wchar_t kReady[] = L"TailSplit.WebView2.Ready";
 // A numeric phase lets startup diagnostics inspect a hidden window without
 // exposing its capability URL, profile contents or browser command line.
@@ -101,8 +102,31 @@ Function User32Function(const char* name) noexcept {
     return reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"user32.dll"), name));
 }
 
+enum class TitlebarAction : WPARAM { None, Drag, Zoom, Minimize, Close };
+
+TitlebarAction ParseTitlebarAction(const wchar_t* message, const wchar_t* json) noexcept {
+    if (!message || !json) {
+        return TitlebarAction::None;
+    }
+    // The string getter has no length. Check its JSON encoding too, so an
+    // embedded NUL such as "drag\0other" cannot pass as the bounded command.
+    if (wcscmp(message, L"drag") == 0 && wcscmp(json, L"\"drag\"") == 0) {
+        return TitlebarAction::Drag;
+    }
+    if (wcscmp(message, L"zoom") == 0 && wcscmp(json, L"\"zoom\"") == 0) {
+        return TitlebarAction::Zoom;
+    }
+    if (wcscmp(message, L"minimize") == 0 && wcscmp(json, L"\"minimize\"") == 0) {
+        return TitlebarAction::Minimize;
+    }
+    if (wcscmp(message, L"close") == 0 && wcscmp(json, L"\"close\"") == 0) {
+        return TitlebarAction::Close;
+    }
+    return TitlebarAction::None;
+}
+
 // The embedded panel is dark. DWMWA_USE_IMMERSIVE_DARK_MODE (20) darkens the
-// native title bar on Windows 10 20H1 and later; older systems keep their own.
+// retained native frame on Windows 10 20H1 and later; older systems keep their own.
 void UseDarkFrame(HWND window) noexcept {
     const HMODULE dwm = LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!dwm) {
@@ -242,7 +266,9 @@ public:
         }
         registered_ = true;
 
-        constexpr DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+        // HTML owns the titlebar; keep the native resize frame, system menu and
+        // minimize/maximize styles for keyboard shortcuts and window management.
+        constexpr DWORD style = (WS_OVERLAPPEDWINDOW & ~WS_CAPTION) | WS_CLIPCHILDREN;
         const UINT dpi = WindowDPI(nullptr);
         RECT bounds{0, 0, MulDiv(1120, dpi, USER_DEFAULT_SCREEN_DPI),
                            MulDiv(780, dpi, USER_DEFAULT_SCREEN_DPI)};
@@ -400,7 +426,7 @@ private:
             FAILED(hr = settings->put_AreDefaultContextMenusEnabled(FALSE)) ||
             FAILED(hr = settings->put_AreDefaultScriptDialogsEnabled(FALSE)) ||
             FAILED(hr = settings->put_AreHostObjectsAllowed(FALSE)) ||
-            FAILED(hr = settings->put_IsWebMessageEnabled(FALSE)) ||
+            FAILED(hr = settings->put_IsWebMessageEnabled(TRUE)) ||
             FAILED(hr = settings->put_IsStatusBarEnabled(FALSE)) ||
             FAILED(hr = settings->put_IsZoomControlEnabled(FALSE)) ||
             FAILED(hr = settings->put_IsBuiltInErrorPageEnabled(FALSE))) {
@@ -429,6 +455,37 @@ private:
             return hr;
         }
 
+        hr = webMessages_.Add(webview_.Get(), &ICoreWebView2::add_WebMessageReceived,
+                              &ICoreWebView2::remove_WebMessageReceived,
+            Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                    LPWSTR source = nullptr;
+                    const HRESULT sourceResult = args->get_Source(&source);
+                    const bool allowed = SUCCEEDED(sourceResult) && Allows(source);
+                    CoTaskMemFree(source);
+                    if (!allowed) {
+                        return S_OK;
+                    }
+                    LPWSTR message = nullptr;
+                    LPWSTR json = nullptr;
+                    TitlebarAction action = TitlebarAction::None;
+                    if (SUCCEEDED(args->TryGetWebMessageAsString(&message)) &&
+                        SUCCEEDED(args->get_WebMessageAsJson(&json))) {
+                        action = ParseTitlebarAction(message, json);
+                    }
+                    CoTaskMemFree(message);
+                    CoTaskMemFree(json);
+                    // Native move/size loops must start after the WebView2
+                    // callback returns. Only the enum, never page data, is queued.
+                    if (action != TitlebarAction::None &&
+                        !PostMessageW(window_, kTitlebarAction, static_cast<WPARAM>(action), 0)) {
+                        return LastErrorResult();
+                    }
+                    return S_OK;
+                }));
+        if (FAILED(hr)) {
+            return hr;
+        }
         hr = navigation_.Add(webview_.Get(), &ICoreWebView2::add_NavigationStarting,
                              &ICoreWebView2::remove_NavigationStarting,
             Callback<ICoreWebView2NavigationStartingEventHandler>(
@@ -588,6 +645,41 @@ private:
         return controller_->put_Bounds(bounds);
     }
 
+    void RunTitlebarAction(TitlebarAction action) noexcept {
+        if (!window_ || !ready_ || stopping_ || !wantVisible_ || IsIconic(window_)) {
+            return;
+        }
+        switch (action) {
+        case TitlebarAction::Drag: {
+            // The asynchronous message may arrive after mouse-up. Also refuse a
+            // second drag while the native move loop is dispatching messages.
+            if (dragging_ || !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+                return;
+            }
+            POINT cursor{};
+            if (!GetCursorPos(&cursor)) {
+                return;
+            }
+            dragging_ = true;
+            ReleaseCapture();
+            SendMessageW(window_, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(cursor.x, cursor.y));
+            dragging_ = false;
+            return;
+        }
+        case TitlebarAction::Zoom:
+            SendMessageW(window_, WM_SYSCOMMAND, IsZoomed(window_) ? SC_RESTORE : SC_MAXIMIZE, 0);
+            return;
+        case TitlebarAction::Minimize:
+            SendMessageW(window_, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+            return;
+        case TitlebarAction::Close:
+            SendMessageW(window_, WM_CLOSE, 0, 0); // Use the same close-to-tray path as Alt+F4.
+            return;
+        default:
+            return;
+        }
+    }
+
     void Show() noexcept {
         if (!ready_ || stopping_) {
             return;
@@ -639,6 +731,7 @@ private:
     }
 
     void CloseBrowser() noexcept {
+        webMessages_.Reset();
         completed_.Reset();
         resourceEvents_.Reset();
         externalURIEvents_.Reset();
@@ -691,6 +784,9 @@ private:
         case kFinish:
             host->Finish();
             return 0;
+        case kTitlebarAction:
+            host->RunTitlebarAction(static_cast<TitlebarAction>(wparam));
+            return 0;
         case WM_CLOSE:
             host->Hide();
             return 0;
@@ -723,6 +819,10 @@ private:
         }
         case WM_GETMINMAXINFO: {
             auto* sizes = reinterpret_cast<MINMAXINFO*>(lparam);
+            // Leave the system's maximize bounds intact. Windows initializes
+            // these for the primary monitor and adjusts them for secondary
+            // monitors; inserting secondary dimensions here applies that
+            // adjustment twice on larger displays.
             const UINT dpi = WindowDPI(window);
             sizes->ptMinTrackSize.x = MulDiv(760, dpi, USER_DEFAULT_SCREEN_DPI);
             sizes->ptMinTrackSize.y = MulDiv(560, dpi, USER_DEFAULT_SCREEN_DPI);
@@ -766,6 +866,7 @@ private:
     bool ready_ = false;
     bool wantVisible_ = true;
     bool navigationPending_ = false;
+    bool dragging_ = false;
     UINT64 loadingNavigation_ = 0;
     unsigned pending_ = 0;
     HRESULT result_ = S_OK;
@@ -783,6 +884,7 @@ private:
     Subscription<ICoreWebView2_18> externalURIEvents_;
     Subscription<ICoreWebView2> resourceEvents_;
     Subscription<ICoreWebView2> completed_;
+    Subscription<ICoreWebView2> webMessages_;
 };
 
 } // namespace

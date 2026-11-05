@@ -48,7 +48,7 @@ class Element {
   }
 }
 
-async function page(snapshot = {}) {
+async function page(snapshot = {}, native = '') {
   const nodes = new Map();
   const $ = (selector) => {
     if (!nodes.has(selector)) nodes.set(selector, new Element());
@@ -61,6 +61,8 @@ async function page(snapshot = {}) {
   const fields = [level, mtu, routing, tun];
   $('#form-tab').setAttribute('aria-selected', 'true');
   $('#yaml-tab').setAttribute('aria-selected', 'false');
+  $('#form-tab').tabIndex = 0;
+  $('#yaml-tab').tabIndex = -1;
   $('#yaml-editor').hidden = true;
   const navigation = $('[data-section="connection"]'); navigation.dataset.section = 'connection';
   const events = new Element();
@@ -68,17 +70,29 @@ async function page(snapshot = {}) {
   const timers = new Map();
   let timer = 0;
   let poll;
-  const app = { $, requests, snapshot: { state: 'stopped', revision: 'original', ...snapshot }, override: () => undefined };
+  const window = new Element();
+  const messages = [];
+  const host = { postMessage: (value) => messages.push(value) };
+  if (native === 'macos') window.webkit = { messageHandlers: { tailsplitWindow: host } };
+  if (native === 'windows') window.chrome = { webview: host };
+  const windowButtons = ['minimize', 'zoom', 'close'].map((action) => {
+    const button = $(`[data-window-action="${action}"]`);
+    button.dataset.windowAction = action;
+    return button;
+  });
+  $('#window-controls').hidden = true;
+  const app = { $, requests, messages, windowEvents: window, snapshot: { state: 'stopped', revision: 'original', ...snapshot }, override: () => undefined };
   const document = {
-    hidden: false, querySelector: $, createElement: () => new Element(),
+    documentElement: new Element(), hidden: false, querySelector: $, createElement: () => new Element(),
     createTextNode: () => new Element(), createDocumentFragment: () => new Element(),
     querySelectorAll: (selector) => selector === '[data-field]' ? fields :
+      selector === '[data-window-action]' ? windowButtons :
       selector === '[data-section]' ? [navigation] :
       selector === '.editor-tabs button, [data-section]' ? [$('#form-tab'), $('#yaml-tab'), navigation] : [],
     addEventListener: (...args) => events.addEventListener(...args),
   };
   vm.runInNewContext(source, {
-    document, window: new Element(), URLSearchParams, location: { hash: '#token=fixture' },
+    document, window, URLSearchParams, location: { hash: '#token=fixture' },
     history: { replaceState() {} }, sessionStorage: { setItem() {}, getItem() {} },
     navigator: { clipboard: { writeText: async () => {} } },
     setTimeout: (callback) => { timers.set(++timer, callback); return timer; },
@@ -110,6 +124,62 @@ async function page(snapshot = {}) {
   };
   return app;
 }
+
+test('native titlebar gestures exclude controls and keep platform window buttons separate', async () => {
+  for (const platform of ['macos', 'windows']) {
+    const app = await page({}, platform);
+    assert.equal(app.$('#window-controls').hidden, platform !== 'windows');
+    const blank = { closest: () => null };
+    const control = { closest: () => ({}) };
+    await app.$('#titlebar').emit('mousedown', { button: 0, detail: 1, target: blank, clientX: 200, clientY: 20 });
+    await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 202, clientY: 20 });
+    assert.deepEqual(app.messages, []); // Small motion must still allow double-click.
+    await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 205, clientY: 20 });
+    await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 210, clientY: 20 });
+    assert.deepEqual(app.messages, ['drag']); // Only one native move loop per drag.
+    for (const input of [
+      { button: 0, detail: 2, target: blank },
+      { button: 2, detail: 1, target: blank },
+      { button: 0, detail: 1, target: control },
+    ]) {
+      await app.$('#titlebar').emit('mousedown', { ...input, clientX: 200, clientY: 20 });
+      await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 210, clientY: 20 });
+    }
+    await app.$('#titlebar').emit('mousedown', { button: 0, detail: 1, target: blank, clientX: 200, clientY: 20 });
+    await app.windowEvents.emit('mouseup');
+    await app.windowEvents.emit('mousemove', { buttons: 0, clientX: 210, clientY: 20 });
+    await app.$('#titlebar').emit('dblclick', { button: 0, target: blank });
+    await app.$('#titlebar').emit('dblclick', { button: 0, target: control });
+    assert.deepEqual(app.messages, ['drag', 'zoom']);
+    if (platform === 'windows') {
+      for (const action of ['minimize', 'zoom', 'close']) await app.$(`[data-window-action="${action}"]`).emit('click');
+      assert.deepEqual(app.messages, ['drag', 'zoom', 'minimize', 'zoom', 'close']);
+    }
+  }
+  const browser = await page();
+  assert.equal(browser.$('#window-controls').hidden, true);
+  assert.deepEqual(browser.messages, []);
+});
+
+test('titlebar updates preserve the current YAML draft and do not switch pages', async () => {
+  const app = await page({ updates: updateState() });
+  await app.$('#yaml-tab').emit('click');
+  await app.input('#raw-yaml', 'unfinished: [');
+  app.override = (request) => {
+    if (request.path !== '/api/update-action') return undefined;
+    if (request.data.action === 'check') app.snapshot.updates = updateState({ available: true, latest_version: '0.6.2' });
+    else app.snapshot.updates.installing = true;
+    return response({ ok: true });
+  };
+  await app.$('#update-pill').emit('click');
+  assert.equal(app.$('#update-pill-version').textContent, '更新');
+  await app.$('#update-pill').emit('click');
+  assert.equal(app.$('#update-pill-version').textContent, '安装中…');
+  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.deepEqual(app.requests.filter((r) => r.path === '/api/update-action').map((r) => r.data.action), ['check', 'install']);
+  assert.equal(app.requests.some((r) => r.path === '/api/config' && r.method === 'POST'), false);
+});
 
 test('a rejected form preview keeps edits when changing mode', async () => {
   const app = await page();
@@ -158,6 +228,41 @@ test('an external reload response cannot replace a newer browser draft', async (
   assert.doesNotMatch(app.$('#raw-yaml').value, /external edit/);
 });
 
+test('editor arrow navigation keeps only the selected tab in the Tab sequence', async () => {
+  const app = await page();
+  assert.equal(app.$('#form-tab').tabIndex, 0);
+  assert.equal(app.$('#yaml-tab').tabIndex, -1);
+  await app.$('.editor-tabs').emit('keydown', { key: 'ArrowRight' });
+  assert.equal(app.$('#yaml-tab').tabIndex, 0);
+  assert.equal(app.$('#form-tab').tabIndex, -1);
+  assert.equal(app.$('#yaml-editor').hidden, false);
+  await app.$('.editor-tabs').emit('keydown', { key: 'Home' });
+  assert.equal(app.$('#form-tab').tabIndex, 0);
+  assert.equal(app.$('#yaml-tab').tabIndex, -1);
+  assert.equal(app.$('#form-editor').hidden, false);
+});
+
+test('connection warnings and offline errors clear after recovery', async () => {
+  const app = await page({ active: true, mode: 'proxy', state: 'blocked' });
+  assert.equal(app.$('#connection-status').classList.contains('attention'), true);
+  assert.equal(app.$('#connection-status').title, '出口不可用 · 已阻断');
+  app.override = (request) => request.path === '/api/state' ? response({ error: 'Offline' }, false) : undefined;
+  await app.poll();
+  assert.equal(app.$('#connection-status').classList.contains('error'), true);
+  assert.equal(app.$('#connection-status').classList.contains('attention'), false);
+  assert.equal(app.$('#connection-status').title, '页面连接中断');
+  app.override = () => undefined;
+  app.snapshot.state = 'failed';
+  await app.poll();
+  assert.equal(app.$('#connection-status span').textContent, '连接异常');
+  assert.equal(app.$('#connection-status').classList.contains('error'), true);
+  app.snapshot.state = 'running';
+  await app.poll();
+  assert.equal(app.$('#connection-status span').textContent, '已连接');
+  assert.equal(app.$('#connection-status').classList.contains('connected'), true);
+  assert.equal(app.$('#connection-status').classList.contains('error'), false);
+});
+
 test('only a running proxy is presented as connected', async () => {
   const app = await page();
   for (const state of ['blocked', 'checking-exit', 'waiting-exit', 'missing-exit', 'connecting', 'login']) {
@@ -180,13 +285,14 @@ test('update controls are independent of desktop connection controls', async () 
   assert.equal(app.$('#desktop-controls').hidden, true);
   assert.equal(app.$('#update-current').textContent, '当前版本 0.6.1');
   assert.equal(app.$('#update-latest').textContent, '最新版本 尚未检查');
-  assert.equal(app.$('#update-install').hidden, true);
+  assert.equal(app.$('#update-pill').hidden, false);
+  assert.equal(app.$('#update-pill-version').textContent, '检查更新');
   assert.equal(app.$('#update-last-checked').textContent, '上次检查：尚未检查');
   app.snapshot.updates = updateState({ latest_version: '0.6.2', available: true });
   app.snapshot.preview = true;
   await app.poll();
-  assert.equal(app.$('#update-install').hidden, false);
-  assert.equal(app.$('#update-install').textContent, '模拟安装');
+  assert.equal(app.$('#update-pill').hidden, false);
+  assert.equal(app.$('#update-pill-version').textContent, '模拟更新');
   assert.equal(app.$('#update-preview').hidden, false);
   app.snapshot.updates = null;
   await app.poll();
@@ -227,10 +333,10 @@ test('pending update requests block duplicates while leaving draft controls usab
   const check = deferred();
   app.override = (request) => request.path === '/api/update-action' ? check.promise : undefined;
   const checking = app.$('#update-check').emit('click');
-  for (const selector of ['#update-check', '#update-install', '#update-automatic']) assert.equal(app.$(selector).disabled, true);
+  for (const selector of ['#update-check', '#update-pill', '#update-automatic']) assert.equal(app.$(selector).disabled, true);
   assert.equal(app.$('#level').disabled, false);
   await app.$('#update-check').emit('click');
-  await app.$('#update-install').emit('click');
+  await app.$('#update-pill').emit('click');
   await app.$('#update-automatic').emit('change');
   await app.input('#level', 'debug');
   app.snapshot.updates.checking = true;
@@ -252,24 +358,30 @@ test('backend update phases disable actions and show bounded download progress',
       [phase]: true, available: true, latest_version: '0.6.2', downloaded_bytes: 524288, total_bytes: 1048576,
     });
     await app.poll();
-    for (const selector of ['#update-check', '#update-install', '#update-automatic']) assert.equal(app.$(selector).disabled, true, phase);
+    for (const selector of ['#update-check', '#update-pill', '#update-automatic']) assert.equal(app.$(selector).disabled, true, phase);
     await app.$('#update-check').emit('click');
-    assert.equal(app.$('#update-progress').hidden, phase !== 'downloading');
+    assert.equal(app.$('#update-pill').hidden, false);
+    assert.equal(app.$('#update-pill').classList.contains('busy'), true);
     if (phase === 'downloading') {
       app.snapshot.updates.installing = true;
       await app.poll();
-      assert.equal(app.$('#update-install').textContent, '正在下载…');
-      assert.equal(app.$('#update-progress').value, 0.5);
-      assert.match(app.$('#update-status').textContent, /512.0 KiB \/ 1.0 MiB（50%）/);
+      assert.equal(app.$('#update-pill-version').textContent, '下载中 50%');
+      assert.match(app.$('#update-pill').title, /512.0 KiB \/ 1.0 MiB/);
+      assert.match(app.$('#update-pill').attributes.get('aria-label'), /下载中 50%/);
       app.snapshot.updates.downloaded_bytes = 2097152;
       await app.poll();
-      assert.equal(app.$('#update-progress').value, 1);
-      assert.match(app.$('#update-status').textContent, /100%/);
+      assert.equal(app.$('#update-pill-version').textContent, '下载中 100%');
       app.snapshot.updates.total_bytes = 0;
       await app.poll();
-      assert.match(app.$('#update-status').textContent, /总大小待确定/);
+      assert.equal(app.$('#update-pill-version').textContent, '下载中…');
+      assert.match(app.$('#update-pill').title, /总大小待确定/);
+      app.snapshot.updates.total_bytes = 1048576;
+      app.snapshot.updates.downloaded_bytes = -1;
+      await app.poll();
+      assert.equal(app.$('#update-pill-version').textContent, '下载中 0%');
     }
-    if (phase === 'installing') assert.match(app.$('#update-status').textContent, /准备安装更新/);
+    if (phase === 'installing') assert.equal(app.$('#update-pill-version').textContent, '安装中…');
+    if (phase === 'checking') assert.equal(app.$('#update-pill-version').textContent, '检查中…');
   }
   assert.equal(app.requests.some((request) => request.path === '/api/update-action'), false);
 });
@@ -282,10 +394,11 @@ test('install requests go directly to native confirmation and follow installing 
     app.snapshot.updates.installing = true;
     return response({ ok: true });
   };
-  await app.$('#update-install').emit('click');
+  await app.$('#update-pill').emit('click');
   assert.equal(app.requests.filter((request) => request.path === '/api/update-action').length, 1);
-  assert.equal(app.$('#update-install').disabled, true);
-  assert.match(app.$('#update-status').textContent, /系统确认或安装向导/);
+  assert.equal(app.$('#update-pill').disabled, true);
+  assert.equal(app.$('#update-pill-version').textContent, '安装中…');
+  assert.match(app.$('#update-pill').title, /系统确认或安装向导/);
   assert.equal(app.$('#notice').hidden, true);
 });
 
@@ -307,7 +420,9 @@ test('release notes are bounded plain text and background errors stay inline', a
   assert.equal(app.$('#update-notes').hidden, true);
   app.snapshot.updates = updateState({ error: 'Update check failed', last_checked: '2026-11-03T12:00:00Z' });
   await app.poll();
-  assert.equal(app.$('#update-status').textContent, '暂时无法确认最新版本。');
+  assert.equal(app.$('#update-pill-version').textContent, '重试更新');
+  assert.equal(app.$('#update-pill').title, 'Update check failed');
+  assert.equal(app.$('#update-pill').classList.contains('error'), true);
   assert.equal(app.$('#notice').hidden, true);
 });
 
@@ -341,10 +456,10 @@ test('a poll started before an update action cannot replace its new update state
   const polling = app.poll();
   await settle();
   await app.$('#update-check').emit('click');
-  assert.equal(app.$('#update-install').hidden, false);
+  assert.equal(app.$('#update-pill').hidden, false);
   stale.resolve(response({ state: 'stopped', revision: 'original', updates: updateState() }));
   await polling;
-  assert.equal(app.$('#update-install').hidden, false);
+  assert.equal(app.$('#update-pill').hidden, false);
   assert.equal(app.$('#update-latest').textContent, '最新版本 0.6.2');
 });
 

@@ -2,7 +2,45 @@
   'use strict';
 
   const $ = (selector) => document.querySelector(selector);
+  // Polling should announce a status only when its text actually changes.
+  function setStatusText(selector, text) {
+    const element = $(selector);
+    if (element.textContent !== text) element.textContent = text;
+  }
   const controls = [...document.querySelectorAll('[data-field]')];
+  const macWindow = window.webkit?.messageHandlers?.tailsplitWindow;
+  const windowsWindow = window.chrome?.webview;
+  const windowHost = macWindow || windowsWindow;
+  if (windowHost) {
+    document.documentElement.dataset.windowChrome = macWindow ? 'macos' : 'windows';
+    $('#window-controls').hidden = !windowsWindow;
+    const isTitlebarBackground = (event) => !event.target.closest('button, a, input, select, textarea, [role="button"]');
+    let titlebarPress = null;
+    $('#titlebar').addEventListener('mousedown', (event) => {
+      titlebarPress = null;
+      if (event.button !== 0 || event.detail > 1 || !isTitlebarBackground(event)) return;
+      event.preventDefault();
+      titlebarPress = { x: event.clientX, y: event.clientY };
+    });
+    // Hand off only an actual drag. Entering a native move loop on mouse-down
+    // would consume the click sequence needed for double-click zoom.
+    window.addEventListener('mousemove', (event) => {
+      if (!(event.buttons & 1)) titlebarPress = null;
+      if (!titlebarPress || Math.hypot(event.clientX - titlebarPress.x, event.clientY - titlebarPress.y) < 4) return;
+      titlebarPress = null;
+      windowHost.postMessage('drag');
+    });
+    window.addEventListener('mouseup', () => { titlebarPress = null; });
+    window.addEventListener('blur', () => { titlebarPress = null; });
+    $('#titlebar').addEventListener('dblclick', (event) => {
+      if (event.button !== 0 || !isTitlebarBackground(event)) return;
+      event.preventDefault();
+      windowHost.postMessage('zoom');
+    });
+    document.querySelectorAll('[data-window-action]').forEach((button) => {
+      button.addEventListener('click', () => windowHost.postMessage(button.dataset.windowAction));
+    });
+  }
   const defaults = {
     listen: '127.0.0.1:17890', interface: '', log_level: 'info',
     'tailscale.hostname': '', 'tailscale.exit_node': '', 'tailscale.tailnet': '', 'tailscale.domains': [],
@@ -180,6 +218,8 @@
     $('#yaml-tab').classList.toggle('selected', raw);
     $('#form-tab').setAttribute('aria-selected', String(!raw));
     $('#yaml-tab').setAttribute('aria-selected', String(raw));
+    $('#form-tab').tabIndex = raw ? -1 : 0;
+    $('#yaml-tab').tabIndex = raw ? 0 : -1;
   }
 
   async function runPreview() {
@@ -300,9 +340,6 @@
     return true;
   }
   for (const nav of document.querySelectorAll('[data-section]')) nav.addEventListener('click', () => showSection(nav));
-  $('#update-pill').addEventListener('click', async () => {
-    if (await showSection(document.querySelector('[data-section="device"]'))) $('#app-updates').scrollIntoView({ block: 'center' });
-  });
 
   async function reload() {
     if (isLocked()) return;
@@ -361,7 +398,6 @@
     desktopLive = live;
     $('#desktop-controls').hidden = !live.desktop;
     if (!live.desktop) return;
-    $('.page-header h1').textContent = 'TailSplit';
     document.querySelectorAll('[data-desktop-action]').forEach((button) => { button.disabled = desktopBusy; });
     $('#desktop-connect').disabled = desktopBusy || live.active || state.dirty;
     $('#desktop-disconnect').disabled = desktopBusy || !live.active;
@@ -403,36 +439,41 @@
     updateLive = live;
     const updates = live?.updates;
     $('#app-updates').hidden = !updates;
-    $('#update-pill').hidden = !updates?.available;
+    const updateButton = $('#update-pill');
+    updateButton.hidden = !updates;
     if (!updates) return;
-    $('#update-pill-version').textContent = `更新 ${updates.latest_version || ''}`.trim();
     const busy = Boolean(updatesBusy());
+    updateButton.disabled = busy;
+    updateButton.classList.toggle('busy', busy);
+    const failed = Boolean(updateError || updates.error);
+    updateButton.classList.toggle('error', !busy && failed);
     $('#update-current').textContent = `当前版本 ${updates.current_version || '未知'}`;
     $('#update-latest').textContent = `最新版本 ${updates.latest_version || '尚未检查'}`;
     $('#update-automatic').checked = updatePending === 'automatic-on' || updatePending !== 'automatic-off' && updates.automatic === true;
     $('#update-automatic').disabled = busy;
     $('#update-check').disabled = busy;
     $('#update-check').textContent = updates.checking ? '正在检查…' : '检查更新';
-    $('#update-install').hidden = !updates.available;
-    $('#update-install').disabled = busy;
-    $('#update-install').textContent = live.preview ? '模拟安装' : updates.downloading ? '正在下载…' : updates.installing ? '正在安装…' : '下载并安装';
     $('#update-install-hint').hidden = !updates.available || live.preview;
     $('#update-preview').hidden = !live.preview;
     const checked = new Date(updates.last_checked);
     const hasChecked = checked.getTime() > 0;
+    const current = !updates.available && hasChecked && Boolean(updates.latest_version);
+    $('#update-pill .icon use').setAttribute('href', busy || failed ? '#i-reload' : updates.available ? '#i-up' : current ? '#i-check' : '#i-reload');
     $('#update-last-checked').textContent = `上次检查：${hasChecked ? checked.toLocaleString('zh-CN') : '尚未检查'}`;
     const downloaded = Math.max(0, Number(updates.downloaded_bytes) || 0);
     const total = Math.max(0, Number(updates.total_bytes) || 0);
-    const progress = $('#update-progress');
-    progress.hidden = !updates.downloading;
-    if (total > 0) progress.value = Math.min(1, downloaded / total);
-    else progress.removeAttribute('value');
-    const pendingLabels = { check: '正在请求检查…', install: '正在请求安装…', 'automatic-on': '正在保存更新偏好…', 'automatic-off': '正在保存更新偏好…' };
-    $('#update-status').textContent = updates.downloading ?
-      `正在下载更新：${updateBytes(downloaded)}${total > 0 ? ` / ${updateBytes(total)}（${Math.min(100, Math.floor(downloaded / total * 100))}%）` : '，总大小待确定'}。` :
-      updates.installing ? '正在准备安装更新，请完成系统确认或安装向导。' : updates.checking ? '正在检查更新…' : updatePending ? pendingLabels[updatePending] :
-      updates.available ? `发现新版本 ${updates.latest_version || ''}。` : updates.error ? '暂时无法确认最新版本。' :
-      hasChecked && updates.latest_version ? '当前已是最新版本。' : '尚未检查更新。';
+    const percent = total > 0 ? Math.min(100, Math.floor(downloaded / total * 100)) : null;
+    const pendingLabels = { check: '检查中…', install: '等待确认…', 'automatic-on': '保存中…', 'automatic-off': '保存中…' };
+    const label = updates.downloading ? `下载中${percent === null ? '…' : ` ${percent}%`}` :
+      updates.installing ? '安装中…' : updates.checking ? '检查中…' : updatePending ? pendingLabels[updatePending] :
+      failed ? '重试更新' : updates.available ? (live.preview ? '模拟更新' : '更新') :
+      current ? '已是最新' : '检查更新';
+    setStatusText('#update-pill-version', label);
+    updateButton.title = updates.downloading ?
+      `${label} · ${updateBytes(downloaded)}${total > 0 ? ` / ${updateBytes(total)}` : '，总大小待确定'}` :
+      updates.installing ? '正在准备安装更新，请完成系统确认或安装向导。' : updateError || updates.error ||
+      (updates.available ? `更新至 ${updates.latest_version || '最新版本'}，安装前会请求确认。` : '检查应用更新');
+    updateButton.setAttribute('aria-label', updates.downloading ? updateButton.title : `${label}。${updateButton.title}`);
     $('#update-error').textContent = updateError || updates.error || '';
     $('#update-error').hidden = !$('#update-error').textContent;
     const notes = String(updates.release_notes || '');
@@ -457,7 +498,7 @@
     }
   }
   $('#update-check').addEventListener('click', () => appUpdateAction('check'));
-  $('#update-install').addEventListener('click', () => appUpdateAction('install'));
+  $('#update-pill').addEventListener('click', () => appUpdateAction(updateLive?.updates?.available ? 'install' : 'check'));
   $('#update-automatic').addEventListener('change', (event) => appUpdateAction(event.target.checked ? 'automatic-on' : 'automatic-off'));
 
   async function refreshState() {
@@ -476,8 +517,12 @@
       };
       const connected = live.active && ['tun', 'proxy'].includes(live.mode) && live.state === 'running';
       $('#connection-status').classList.toggle('connected', connected);
-      $('#connection-status span').textContent = live.preview ? '预览环境' : connected ? '已连接' : labels[live.state] || '未连接';
-      $('#exit-label').textContent = live.exit || (live.preview ? '更改仅保存到预览副本' : '本机配置');
+      $('#connection-status').classList.toggle('attention', ['blocked', 'waiting-exit', 'missing-exit'].includes(live.state));
+      $('#connection-status').classList.toggle('error', live.state === 'failed');
+      setStatusText('#connection-status span', live.preview ? '预览环境' : connected ? '已连接' : labels[live.state] || '未连接');
+      $('#connection-status').title = $('#connection-status span').textContent;
+      setStatusText('#exit-label', live.exit || (live.preview ? '更改仅保存到预览副本' : '本机配置'));
+      $('#exit-label').title = $('#exit-label').textContent;
       const nodes = Array.isArray(live.exit_nodes) ? live.exit_nodes : [];
       $('#exit-nodes').replaceChildren(...nodes.map((node) => {
         const option = document.createElement('option');
@@ -499,8 +544,12 @@
       }
     } catch (_) {
       $('#connection-status').classList.remove('connected');
-      $('#connection-status span').textContent = '页面连接中断';
-      $('#exit-label').textContent = '请确认 TailSplit 仍在运行';
+      $('#connection-status').classList.toggle('attention', false);
+      $('#connection-status').classList.toggle('error', true);
+      setStatusText('#connection-status span', '页面连接中断');
+      $('#connection-status').title = '页面连接中断';
+      setStatusText('#exit-label', '请确认 TailSplit 仍在运行');
+      $('#exit-label').title = $('#exit-label').textContent;
     }
   }
 

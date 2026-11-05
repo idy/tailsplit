@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.6
+
+- Bring the app identity, current configuration section, connection status and
+  update action together in a single desktop window title row. Download progress
+  appears as a percentage in the update button, without a separate progress row.
+- Support dragging the title row and native window controls while preserving
+  close-to-tray behavior, unsaved drafts and the existing local security boundary.
+- Improve configuration-panel text contrast, keyboard navigation, touch targets
+  and the visibility of connection and update errors.
+
 ## 0.7.5
 
 - Ship the forked-tail snake icon and green connected state from the unreleased

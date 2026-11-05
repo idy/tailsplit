@@ -22,12 +22,26 @@
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4m-4 5v2"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
 </defs></svg>
-<div class="app-shell">
-  <aside class="sidebar">
+<header class="titlebar" id="titlebar">
     <a class="brand" href="/" aria-label="TailSplit 配置首页">
       <span class="brand-mark"><svg viewBox="7.5 9.2 48 48" aria-hidden="true"><path d="M53.4 21.68C52.9 22.65 51.94 23.25 50.89 23.49C46.01 24.6 43.48 20.21 39.58 18.56C36.94 17.45 34.01 17.28 31.18 17.37C28.78 17.45 26.27 18.1 24.6 19.93C19.47 25.57 30.86 27.54 34.03 28.41C39.04 29.8 45.05 32.06 47.15 37.29C48.15 39.81 47.99 42.69 47.04 45.2C45.28 49.83 40.8 52.56 36.03 53.12C34.32 53.32 32.58 53.24 30.87 53.33C28.75 53.44 26.64 53.64 24.54 53.9C19.38 54.53 14.28 55.52 9.22 56.66C15.21 53.26 21.56 51.11 28.22 49.44C21.03 46.73 14.91 42.28 9.22 37.19C14.49 39.48 19.52 42.29 24.98 44.12C28.28 45.23 32.2 46.35 35.7 45.67C37.15 45.38 38.65 44.68 39.42 43.36C44.7 34.38 14.31 38.99 15.03 22.36C15.19 18.56 17.15 15.03 20.16 12.74C25.74 8.52 33.87 9.15 40.21 11.26C41.74 11.77 43.13 12.62 44.64 13.13C46.06 13.61 47.58 13.49 49 13.95C51.97 14.92 55.06 18.45 53.4 21.68ZM46.8 16.7a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-linejoin="round"/></svg></span>
       <span class="brand-name">TailSplit</span>
     </a>
+    <div class="titlebar-content">
+      <div class="crumbs"><h1>配置</h1><span class="crumb-sep" aria-hidden="true">/</span><span id="crumb-section">连接设置</span></div>
+      <div class="header-actions">
+        <div class="connection-status" role="status"><span class="exit-label" id="exit-label"></span><span class="status-pill" id="connection-status"><i aria-hidden="true"></i><span>正在读取</span></span></div>
+        <button class="update-pill" id="update-pill" hidden><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span id="update-pill-version" aria-live="polite" aria-atomic="true">检查更新</span></button>
+      </div>
+      <div class="window-controls" id="window-controls" hidden>
+        <button data-window-action="minimize" aria-label="最小化" title="最小化"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10"/></svg></button>
+        <button data-window-action="zoom" aria-label="最大化或还原" title="最大化或还原"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9"/></svg></button>
+        <button data-window-action="close" aria-label="关闭窗口" title="关闭窗口，保留在托盘"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m1 1 10 10M1 11 11 1"/></svg></button>
+      </div>
+    </div>
+</header>
+<div class="app-shell">
+  <aside class="sidebar">
     <nav class="section-nav" aria-label="配置分类">
       <p class="nav-group">网络</p>
       <button class="nav-item active" data-section="connection" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><span>连接设置</span></button>
@@ -43,14 +57,6 @@
   </aside>
 
   <main class="workspace">
-    <header class="page-header">
-      <div class="crumbs"><h1>配置</h1><span class="crumb-sep" aria-hidden="true">/</span><span id="crumb-section">连接设置</span></div>
-      <div class="header-actions">
-        <button class="update-pill" id="update-pill" hidden><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span id="update-pill-version">更新</span></button>
-        <div class="connection-status"><span class="exit-label" id="exit-label"></span><span class="status-pill" id="connection-status"><i></i><span>正在读取</span></span></div>
-      </div>
-    </header>
-
     <section class="desktop-controls" id="desktop-controls" aria-label="连接与设备操作" hidden>
       <div class="desktop-main">
         <div class="desktop-copy"><strong>网络连接</strong><p class="desktop-hint" id="desktop-hint" role="status">连接和设备登录分别控制；关闭窗口后仍保留在托盘。</p></div>
@@ -71,7 +77,7 @@
     <div class="toolbar">
       <div class="editor-tabs" role="tablist" aria-label="编辑方式">
         <button id="form-tab" role="tab" aria-selected="true" aria-controls="form-editor" class="selected">表单编辑</button>
-        <button id="yaml-tab" role="tab" aria-selected="false" aria-controls="yaml-editor"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>YAML 原文</button>
+        <button id="yaml-tab" role="tab" aria-selected="false" aria-controls="yaml-editor" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>YAML 原文</button>
       </div>
       <button class="button subtle" id="reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>重新读取</span></button>
     </div>
@@ -130,11 +136,9 @@
               <div class="field-control">
                 <div class="update-versions"><span id="update-current"></span><span id="update-latest"></span></div>
                 <label class="desktop-startup update-automatic"><input type="checkbox" id="update-automatic">后台自动检查更新</label>
-                <div class="update-actions"><button class="button small" id="update-check">检查更新</button><button class="button primary small" id="update-install" hidden>下载并安装</button></div>
-                <p class="field-hint" id="update-install-hint">安装前会请求确认；当前连接将结束，TailSplit 随后重新启动。</p>
+                <div class="update-actions"><button class="button small" id="update-check">检查更新</button></div>
+                <p class="field-hint" id="update-install-hint">点按标题栏中的更新按钮安装。安装前会请求确认；当前连接将结束，TailSplit 随后重新启动。</p>
                 <p class="field-hint" id="update-preview" hidden>界面预览：检查与安装仅模拟状态，不会联网下载或运行安装程序。</p>
-                <p class="field-hint" id="update-status" role="status"></p>
-                <progress id="update-progress" max="1" aria-label="更新下载进度" hidden></progress>
                 <p class="field-hint update-error" id="update-error" role="status" hidden></p>
                 <p class="field-hint" id="update-last-checked"></p>
                 <details class="update-notes" id="update-notes" hidden><summary>版本说明</summary><pre id="update-release-notes"></pre></details>
