@@ -131,6 +131,11 @@ def fetch(url, destination):
     destination = Path(destination)
     opener = build_opener(HTTPSHandler(), OfficialRedirects())
     request = Request(url, headers={"User-Agent": "TailSplit-Windows-Packager/1", "Accept": "*/*"})
+    if urlsplit(url).hostname.lower() == "api.github.com":
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if token:
+            # urllib does not copy unredirected headers into redirected requests.
+            request.add_unredirected_header("Authorization", "Bearer " + token)
     total = 0
     with opener.open(request, timeout=120) as response, destination.open("xb") as output:
         check_url(response.geturl())
@@ -314,7 +319,7 @@ def prepare_inno(work, toolchain):
     # and file associations. This is a temporary tool, not a host installation.
     subprocess.run([str(installer), "/PORTABLE=1", "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES",
                     "/NORESTART", "/SP-", "/NOICONS", "/TASKS=", "/DIR=" + str(compiler_dir)],
-                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+                   cwd=ROOT, env=clean_environment(), check=True, stdout=subprocess.DEVNULL)
     compiler = compiler_dir / "ISCC.exe"
     if not compiler.is_file():
         raise BuildError("Pinned portable Inno compiler was not extracted")

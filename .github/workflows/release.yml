@@ -103,6 +103,7 @@ jobs:
       - name: Build release binaries, packages and license notices
         shell: bash
         env:
+          GH_TOKEN: ${{ matrix.goos == 'windows' && github.token || '' }}
           TAILSPLIT_SIGNED_RELEASE: ${{ matrix.goos == 'darwin' && github.event.repository.name == 'tailsplit' && vars.TAILSPLIT_SIGNED_RELEASES == 'true' && '1' || '0' }}
           SOPS_AGE_KEY: ${{ matrix.goos == 'darwin' && github.event.repository.name == 'tailsplit' && vars.TAILSPLIT_SIGNED_RELEASES == 'true' && secrets.TAILSPLIT_RELEASE_AGE_KEY || '' }}
         run: python -I -B packaging/release.py build --os '${{ matrix.goos }}' --arch '${{ matrix.arch }}' --tag "$RELEASE_TAG"
@@ -116,6 +117,7 @@ jobs:
         if: matrix.goos == 'windows'
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           PYTHONUTF8: '1'
         run: python -I -B tests/packaging/windows_desktop.py --arch '${{ matrix.arch }}' --directory bin/release/assets
       - name: Preserve Windows desktop verification evidence

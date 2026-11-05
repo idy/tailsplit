@@ -115,6 +115,8 @@ collects native toolchain inputs, notices and installer payloads:
 python -I -B packaging/release.py build --os windows --arch amd64 --directory bin/release/assets
 ```
 
+An optional `GH_TOKEN` (or `GITHUB_TOKEN`) authenticates public GitHub release metadata requests to avoid shared-IP rate limits. CI supplies its read-only token to Windows packaging steps. The downloader sends it only to `api.github.com`, does not forward it through redirects, and excludes it from downloaded tools and installed-app subprocesses.
+
 Use `arm64` on Windows on Arm. Windows CI is configured to execute the installed UI at medium
 integrity, captures its native window, exercises real service sessions and tests
 repair, failed-upgrade recovery, upgrading a running and connected desktop with a
@@ -317,6 +319,24 @@ credential payload is committed here. See [signing setup](credentials/README.md)
 Without configured signing, macOS builds are explicitly recorded as ad-hoc.
 The public site is deployed independently from `site/` by its Pages workflow;
 the root installer is published as `/install.sh` alongside it.
+
+## Website preview
+
+The static project page lives in `site/`. Preview it with
+`python3 -m http.server 8080 --directory site`; no build or package installation
+is required. The Pages workflow also publishes the root installer as `/install.sh`.
+
+The page follows the browser's English/Chinese language preference and the
+system light/dark theme. Header controls override either choice and remember it
+for this site's origin. `site/shared/` contains the common idy.dev header/footer
+styles, preference and release helpers, and the self-hosted Manrope font/license;
+keep those shared files identical across the project websites.
+
+Downloads use GitHub's latest stable release, falling back to the newest published
+prerelease only when no stable release exists. Buttons use the actual release
+asset URLs; missing assets or API failures retain useful release-page links.
+The page remains readable in English without JavaScript. Run the dependency-free
+website checks with `node --test tests/website.test.cjs`.
 
 ## Pull request review
 
