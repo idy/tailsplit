@@ -32,7 +32,7 @@
     splitDownloadFallback: 'Open the release page: no matching package in this release',
   });
   const chinese = {
-    "starLabel": "在 GitHub 上为 TailSplit 点星（在新标签页打开）",
+    "starLabel": "star — 在 GitHub 上为 TailSplit 点星（在新标签页打开）",
     "splitNavRouting": "分流规则",
     "splitNavInstall": "安装",
     "pageTitle": "TailSplit — 你的设备，你的分流规则",
