@@ -19,6 +19,7 @@
   Object.assign(english, {
     pageTitle: document.title,
     pageDescription: document.querySelector('meta[name="description"]').content,
+    starLabel: 'Star TailSplit on GitHub (opens in a new tab)',
     splitOgDescription: document.querySelector('meta[property="og:description"]').content,
     splitDirectResult: 'A matching direct rule keeps the connection on your current network, without using the proxy exit.',
     splitProxyResult: 'A domain on your proxy list uses the selected exit. The rule’s DNS follows that exit too.',
@@ -31,6 +32,7 @@
     splitDownloadFallback: 'Open the release page: no matching package in this release',
   });
   const chinese = {
+    "starLabel": "star — 在 GitHub 上为 TailSplit 点星（在新标签页打开）",
     "splitNavRouting": "分流规则",
     "splitNavInstall": "安装",
     "pageTitle": "TailSplit — 你的设备，你的分流规则",
