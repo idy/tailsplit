@@ -56,16 +56,17 @@ func TestFixtureAddressHandlesUDPExcludedPorts(t *testing.T) {
 			attempts := 0
 			var packetProbe *fixtureProbePacketConn
 			listenPacket := func(network, address string) (net.PacketConn, error) {
+				probe := listeners[len(listeners)-1]
+				if network != "udp4" || address != probe.Addr().String() || probe.closed {
+					t.Fatal("UDP probe must use the still-bound TCP port")
+				}
 				attempts++
 				if attempts <= test.failures {
 					return nil, os.ErrPermission
 				}
-				packets, err := net.ListenPacket(network, address)
-				if err != nil {
-					return nil, err
-				}
-				t.Cleanup(func() { _ = packets.Close() })
-				packetProbe = &fixtureProbePacketConn{PacketConn: packets}
+				// Keep retry counts independent of real UDP port availability.
+				// The real TCP/UDP bind is covered by the test above.
+				packetProbe = &fixtureProbePacketConn{}
 				return packetProbe, nil
 			}
 			address, err := fixtureAddress(listen, listenPacket)
@@ -125,5 +126,5 @@ type fixtureProbePacketConn struct {
 
 func (p *fixtureProbePacketConn) Close() error {
 	p.closed = true
-	return p.PacketConn.Close()
+	return nil
 }
