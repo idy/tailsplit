@@ -147,6 +147,7 @@ h2 { font-size: clamp(32px, 3vw, 43px); line-height: 1.16; letter-spacing: -0.04
 .command-line { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 16px; padding: 12px 13px 12px 17px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 .command-line > code { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
 .copy-button { flex-shrink: 0; min-width: 44px; min-height: 44px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--paper); font-size: 12px; font-weight: 600; }
+:root[data-idy-header-pending] .copy-button[hidden] { display: inline-flex !important; visibility: hidden; }
 .copy-button:hover { border-color: var(--accent); color: var(--accent); }
 .build-note > .copy-status { min-height: 1.75em; margin-top: 6px; font-size: 11px; }
 .build-note > .build-caveat { margin-top: 5px; font-size: 11px; }
