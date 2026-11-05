@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.4 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.5 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -174,8 +174,8 @@ may require an explicit launch approval.
 
 ### Configuration panel and logging
 
-Choose **Settings and Tools → Configuration Panel…** (`设置与工具 → 配置面板…`)
-from the menu bar app. The panel opens in TailSplit's own window, which uses the
+Choose **Open** (`打开`), the first item in the menu bar app's menu, to open the
+configuration panel. The panel opens in TailSplit's own window, which uses the
 system web view (WKWebView). It groups connection, DNS, routing and startup
 settings in a compact dark layout. Wide windows add a live YAML preview, and a
 full source editor is always available. Validate or save/apply
@@ -203,9 +203,9 @@ and other web data in memory only. It loads only that page's own
 or web inspector. If the window cannot be created, the menu opens the page in the
 default browser instead. Reopen the panel from the menu after restarting the app.
 
-**Detailed Logging (Debug)** (`详细日志（Debug）`) in the same menu saves
-`log_level: debug` and reconnects an active proxy. Disable it to restore
-`log_level: info`. Use **View Logs…** (`查看日志…`) to inspect DNS, routing and
+**Detailed Logging (Debug)** (`详细日志（Debug）`) under **Settings and Tools**
+(`设置与工具`) saves `log_level: debug` and reconnects an active proxy. Disable it
+to restore `log_level: info`. Use **View Logs…** (`查看日志…`) to inspect DNS, routing and
 connection diagnostics.
 
 ## CLI configuration
