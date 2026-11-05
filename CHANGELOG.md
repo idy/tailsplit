@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.5
+
+- Ship the forked-tail snake icon and green connected state from the unreleased
+  0.7.4 build.
+- Put Open (`打开`) first in the macOS menu bar app's menu, opening the existing
+  configuration panel directly instead of from Settings and Tools.
+- Choose loopback integration-test ports through TCP before probing UDP, avoiding
+  Windows TCP-excluded ranges that prevented the ARM64 release build.
+
 ## 0.7.4
 
 - Replace the split-route mark with a monochrome snake: its body draws the S and

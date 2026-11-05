@@ -132,6 +132,12 @@ func main() {
 	systray.Run(func() {
 		setTrayIcon(false)
 		systray.SetTooltip("TailSplit")
+		configuration := systray.AddMenuItem("打开", "打开 TailSplit 配置面板")
+		if configurationErr != nil {
+			configuration.Disable()
+			configuration.SetTooltip("无法启动本地配置页面，请使用“设置与工具 → 编辑配置…”")
+		}
+		systray.AddSeparator()
 		status := systray.AddMenuItem("TailSplit · 未连接", "")
 		status.Disable()
 		connect := systray.AddMenuItem("连接", "连接或断开 TailSplit")
@@ -161,11 +167,6 @@ func main() {
 		loginItemSettings := startup.AddSubMenuItem("系统登录项设置…", "")
 		tools := systray.AddMenuItem("设置与工具", "")
 		restart := tools.AddSubMenuItem("重新连接", "停止后使用当前配置重新连接")
-		configuration := tools.AddSubMenuItem("配置面板…", "在 TailSplit 窗口中查看、编辑和校验配置")
-		if configurationErr != nil {
-			configuration.Disable()
-			configuration.SetTooltip("无法启动本地配置页面，仍可使用“编辑配置…”")
-		}
 		dnsMenu := tools.AddSubMenuItem("直连 DNS", "")
 		systemDNS := dnsMenu.AddSubMenuItemCheckbox("跟随当前网络", "使用物理网卡的系统 DNS；代理域名仍使用出口侧 DNS", preferences.DirectDNS == "system")
 		dnsInfo := dnsMenu.AddSubMenuItem("当前上游", "")

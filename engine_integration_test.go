@@ -267,25 +267,36 @@ func getFixture(t *testing.T, client *http.Client, address string) {
 
 func unusedTCPAddress(t *testing.T) string {
 	t.Helper()
-	// The fixture's mixed/direct inbounds also bind UDP. Windows can reserve
-	// different ranges per protocol, so a TCP-only probe is insufficient.
+	address, err := fixtureAddress(net.Listen, net.ListenPacket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
+
+func fixtureAddress(
+	listen func(string, string) (net.Listener, error),
+	listenPacket func(string, string) (net.PacketConn, error),
+) (string, error) {
+	// Let TCP choose the port: Windows can repeatedly allocate UDP ports from
+	// a TCP-excluded range. The mixed/direct inbounds need both protocols, so
+	// keep TCP bound while probing UDP and retry if that port is UDP-excluded.
 	var lastErr error
 	for attempt := 0; attempt < 100; attempt++ {
-		packets, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		listener, err := listen("tcp4", "127.0.0.1:0")
 		if err != nil {
-			t.Fatal(err)
+			return "", fmt.Errorf("could not allocate a TCP fixture port: %w", err)
 		}
-		address := packets.LocalAddr().String()
-		listener, err := net.Listen("tcp4", address)
-		_ = packets.Close()
+		address := listener.Addr().String()
+		packets, err := listenPacket("udp4", address)
+		_ = listener.Close()
 		if err == nil {
-			_ = listener.Close()
-			return address
+			_ = packets.Close()
+			return address, nil
 		}
 		lastErr = err
 	}
-	t.Fatalf("could not allocate a TCP/UDP fixture port: %v", lastErr)
-	return ""
+	return "", fmt.Errorf("could not allocate a TCP/UDP fixture port: %w", lastErr)
 }
 
 func dnsFixtureInbound(listen string) object {
