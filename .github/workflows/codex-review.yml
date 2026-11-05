@@ -13,6 +13,11 @@ on:
         description: Open internal pull request to review.
         required: true
         type: string
+      dispatch_source_run_id:
+        description: Original PR-event run for an automatic review; leave empty for manual reviews.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: write
@@ -23,7 +28,10 @@ permissions:
 
 concurrency:
   group: openai-pr-review-${{ github.event_name == 'pull_request_target' && 'dispatch' || 'worker' }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request_number }}
-  cancel-in-progress: true
+  # Retain every pending approval; cancel-in-progress: false alone still drops
+  # the older pending worker in GitHub's default single-slot queue.
+  queue: max
+  cancel-in-progress: false
 
 jobs:
   dispatch_review:
@@ -66,7 +74,7 @@ jobs:
             await github.rest.actions.createWorkflowDispatch({
               ...context.repo, workflow_id: run.workflow_id,
               ref: repository.default_branch,
-              inputs: { pull_request_number: String(number) },
+              inputs: { pull_request_number: String(number), dispatch_source_run_id: String(context.runId) },
             });
             core.info(`Requested a review of PR ${number} on the trusted default branch.`);
 
@@ -93,6 +101,7 @@ jobs:
         Issues are optional; check Issue linkage and plan conformance when
         present.
       pull_request_number: ${{ inputs.pull_request_number }}
+      dispatch_source_run_id: ${{ inputs.dispatch_source_run_id }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
