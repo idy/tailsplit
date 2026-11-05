@@ -52,7 +52,9 @@
   <main id="main">
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-heading">
-        <h1 id="hero-title" data-i18n-html="splitHeroTitle">Your device.<br>Your routing rules.</h1>
+        <div class="hero-title-block">
+          <h1 id="hero-title" data-i18n-html="splitHeroTitle">Your device.<br>Your routing rules.</h1>
+        </div>
         <div class="hero-intro">
           <p data-i18n="splitHeroDescription">A desktop app for Windows and macOS with domain and IP rules. Keep direct traffic on your network, send selected connections through a proxy exit, and reach your Tailnet when configured.</p>
           <div class="hero-actions">
@@ -65,31 +67,32 @@
       <figure class="route-concept" id="split-concept" data-route="proxy">
         <figcaption><span class="concept-caption" data-i18n="splitConcept">Routing concept</span> <span data-i18n="splitConceptCaption">One connection, one matching route.</span></figcaption>
         <div class="concept-layout">
-          <svg class="split-map" viewBox="0 0 560 300" role="img" aria-labelledby="split-map-title split-map-description">
-            <title id="split-map-title" data-i18n="splitMapTitle">Rules choose the route</title>
-            <desc id="split-map-description" data-i18n="splitMapDescription">A connection from your device reaches TailSplit rules. It can go directly over the current network, through the selected proxy exit, or to a configured and authorized Tailnet destination.</desc>
-            <path class="route-base" d="M62 150H220M220 150H272Q298 150 298 124V88Q298 62 324 62H382M220 150H382M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
-            <path class="entry-path" d="M62 150H220"/>
-            <path class="route-branch direct-branch" d="M220 150H272Q298 150 298 124V88Q298 62 324 62H382"/>
-            <path class="route-branch proxy-branch" d="M220 150H382"/>
-            <path class="route-branch tailnet-branch" d="M220 150H272Q298 150 298 176V212Q298 238 324 238H382"/>
-            <circle class="mac-node" cx="62" cy="150" r="29"/>
-            <g class="mac-icon" aria-hidden="true"><rect x="48" y="139" width="28" height="18" rx="2"/><path d="M43 162h38"/></g>
-            <text class="map-label" x="62" y="207" text-anchor="middle" data-i18n="splitYourDevice">Your device</text>
-            <circle class="rules-halo" cx="220" cy="150" r="52"/>
-            <circle class="rules-node" cx="220" cy="150" r="37"/>
-            <g class="rules-icon" aria-hidden="true"><path d="M201 150h10c10 0 7-12 19-12M211 150c10 0 7 12 19 12"/><circle cx="201" cy="150" r="3"/><circle cx="230" cy="138" r="3"/><circle cx="230" cy="162" r="3"/></g>
-            <text class="map-label map-label-strong" x="220" y="231" text-anchor="middle" data-i18n="splitYourRules">Your rules</text>
-            <g class="destination direct-destination"><circle cx="382" cy="62" r="14"/><path d="M376 62h12m-4-4 4 4-4 4"/></g>
-            <text class="map-label" x="412" y="58" data-i18n="splitDirect">Direct</text>
-            <text class="map-detail" x="412" y="80" data-i18n="splitCurrentNetwork">Current network</text>
-            <g class="destination proxy-destination"><circle cx="382" cy="150" r="14"/><path d="m376 150 4 4 8-8"/></g>
-            <text class="map-label" x="412" y="146" data-i18n="splitProxy">Proxy</text>
-            <text class="map-detail" x="412" y="168" data-i18n="splitSelectedExit">Selected exit</text>
-            <g class="destination tailnet-destination"><circle cx="382" cy="238" r="14"/><path d="M378 234h8v8h-8z"/></g>
-            <text class="map-label" x="412" y="234">Tailnet</text>
-            <text class="map-detail" x="412" y="256" data-i18n="splitAuthorizedPeers">Authorized peers</text>
-          </svg>
+          <div class="route-diagram">
+            <svg class="split-map" viewBox="0 0 560 300" role="img" aria-labelledby="split-map-title split-map-description">
+              <title id="split-map-title" data-i18n="splitMapTitle">Rules choose the route</title>
+              <desc id="split-map-description" data-i18n="splitMapDescription">A connection from your device reaches TailSplit rules. It can go directly over the current network, through the selected proxy exit, or to a configured and authorized Tailnet destination.</desc>
+              <path class="route-base" d="M62 150H220M220 150H250Q276 150 276 124V88Q276 62 302 62H330M220 150H330M220 150H250Q276 150 276 176V212Q276 238 302 238H330"/>
+              <path class="entry-path" d="M62 150H220"/>
+              <path class="route-branch direct-branch" d="M220 150H250Q276 150 276 124V88Q276 62 302 62H330"/>
+              <path class="route-branch proxy-branch" d="M220 150H330"/>
+              <path class="route-branch tailnet-branch" d="M220 150H250Q276 150 276 176V212Q276 238 302 238H330"/>
+              <circle class="mac-node" cx="62" cy="150" r="29"/>
+              <g class="mac-icon" aria-hidden="true"><rect x="48" y="139" width="28" height="18" rx="2"/><path d="M43 162h38"/></g>
+              <circle class="rules-halo" cx="220" cy="150" r="52"/>
+              <circle class="rules-node" cx="220" cy="150" r="37"/>
+              <g class="rules-icon" aria-hidden="true"><path d="M201 150h10c10 0 7-12 19-12M211 150c10 0 7 12 19 12"/><circle cx="201" cy="150" r="3"/><circle cx="230" cy="138" r="3"/><circle cx="230" cy="162" r="3"/></g>
+              <g class="destination direct-destination"><circle cx="330" cy="62" r="14"/><path d="M324 62h12m-4-4 4 4-4 4"/></g>
+              <g class="destination proxy-destination"><circle cx="330" cy="150" r="14"/><path d="m324 150 4 4 8-8"/></g>
+              <g class="destination tailnet-destination"><circle cx="330" cy="238" r="14"/><path d="M326 234h8v8h-8z"/></g>
+            </svg>
+            <div class="map-labels" aria-hidden="true">
+              <span class="map-device" data-i18n="splitYourDevice">Your device</span>
+              <span class="map-rules" data-i18n="splitYourRules">Your rules</span>
+              <span class="map-destination map-direct"><span data-i18n="splitDirect">Direct</span><span class="map-detail" data-i18n="splitCurrentNetwork">Current network</span></span>
+              <span class="map-destination map-proxy"><span data-i18n="splitProxy">Proxy</span><span class="map-detail" data-i18n="splitSelectedExit">Selected exit</span></span>
+              <span class="map-destination map-tailnet"><span>Tailnet</span><span class="map-detail" data-i18n="splitAuthorizedPeers">Authorized peers</span></span>
+            </div>
+          </div>
           <div class="concept-interaction">
             <div class="concept-controls" data-demo-controls hidden role="group" aria-label="Choose a conceptual routing rule" data-i18n-aria-label="splitChooseRule">
               <button type="button" data-split-route="direct" aria-pressed="false"><span class="rule-indicator" aria-hidden="true"></span><span data-i18n="splitDirectRule">Direct rule</span></button>
@@ -145,16 +148,16 @@
             <p class="download-other"><span data-i18n="splitLinuxCli">Linux CLI:</span> <a data-download="linux-amd64" href="https://github.com/idy/tailsplit/releases">amd64 .deb</a> <span data-i18n="splitOr">or</span> <a data-download="linux-arm64" href="https://github.com/idy/tailsplit/releases">arm64 .deb</a>.</p>
             <p class="download-other"><a data-release-link href="https://github.com/idy/tailsplit/releases" data-i18n="splitReleaseNotes">Release notes and all downloads</a></p>
           </div>
-        </div>
-        <div class="build-note">
-          <h3 data-i18n="splitInstallShellTitle">Install on macOS or Linux.</h3>
-          <p data-i18n="splitInstallShellDescription">The installer detects your platform, verifies SHA-256, and installs the app on macOS or the CLI on Linux. It preserves your configuration and device state.</p>
-          <div class="command-line">
-            <code id="split-install-command">curl -fsSL https://tailsplit.idy.dev/install.sh | sh</code>
-            <button class="copy-button" type="button" data-copy-target="split-install-command" aria-label="Copy TailSplit install command" data-i18n-aria-label="splitCopyInstall" hidden>Copy</button>
+          <div class="build-note">
+            <h3 data-i18n="splitInstallShellTitle">Install on macOS or Linux.</h3>
+            <p data-i18n="splitInstallShellDescription">The installer detects your platform, verifies SHA-256, and installs the app on macOS or the CLI on Linux. It preserves your configuration and device state.</p>
+            <div class="command-line">
+              <code id="split-install-command">curl -fsSL https://tailsplit.idy.dev/install.sh | sh</code>
+              <button class="copy-button" type="button" data-copy-target="split-install-command" aria-label="Copy TailSplit install command" data-i18n-aria-label="splitCopyInstall" hidden>Copy</button>
+            </div>
+            <p class="copy-status" role="status" aria-live="polite" data-copy-status></p>
+            <p data-i18n-html="splitInstallOptions">For a user-local CLI, add <code>sh -s -- --cli --no-sudo</code> after the pipe. See the <a href="https://github.com/idy/tailsplit#install">installer options</a>.</p>
           </div>
-          <p class="copy-status" role="status" aria-live="polite" data-copy-status></p>
-          <p data-i18n-html="splitInstallOptions">For a user-local CLI, add <code>sh -s -- --cli --no-sudo</code> after the pipe. See the <a href="https://github.com/idy/tailsplit#install">installer options</a>.</p>
         </div>
         <ol class="install-steps">
           <li>
@@ -180,7 +183,7 @@
 
     <section class="details-section wrap" aria-labelledby="details-title">
       <div>
-        <h2 id="details-title" data-i18n-html="splitDetailsTitle">A little context<br>before connecting.</h2>
+        <h2 id="details-title" data-i18n-html="splitDetailsTitle">A little context<br> before connecting.</h2>
         <div class="build-note">
           <h3 data-i18n="splitBuildTitle">Building the macOS app?</h3>
           <p data-i18n-html="splitBuildDescription">With Go 1.26.2 or later, Python 3.11+, and Xcode Command Line Tools, run this from a <a href="https://github.com/idy/tailsplit">TailSplit checkout</a>:</p>

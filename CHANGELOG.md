@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.7
+
+- Improve desktop configuration readability with clearer section headings, larger
+  labels and explanatory text, consistent control sizes and more space between
+  fields. Keep the native title row and window controls at their existing sizes.
+- Keep the live YAML preview clear of the title row and bottom actions when
+  scrolling, and give the full editor and preview consistent code typography.
+- Improve the website's heading wraps, body and supporting text sizes, and
+  narrow-screen routing illustration. Keep route explanations stable when
+  switching examples and bring the shell installer alongside desktop downloads.
+
 ## 0.7.6
 
 - Bring the app identity, current configuration section, connection status and
