@@ -150,6 +150,7 @@ $className = 'TailSplit.Window.' + $accountSID
 $arguments = '--no-connect --config "' + $Config + '" --log "' + $Log + '"'
 $guiProcess = [TailSplitDesktopFixture]::LaunchStandard($credential.username,$credential.password,$Application,$arguments,$false)
 $primaryFailure = $null
+$maximizeGeometry = $null
 $startupClock = [Diagnostics.Stopwatch]::StartNew()
 $nativePhases = New-Object 'System.Collections.Generic.List[object]'
 $stage = 'process launched'
@@ -202,21 +203,26 @@ try {
     }
     $stage = 'maximizing and restoring the native window'
     Invoke-Button $automation '最大化或还原'
-    Wait-Until { [TailSplitDesktopFixture]::IsZoomed($window) } 'Window did not maximize.' | Out-Null
-    $maximized = New-Object TailSplitDesktopFixture+Rect
-    if (-not [TailSplitDesktopFixture]::GetWindowRect($window,[ref]$maximized)) { throw 'Cannot inspect maximized window bounds.' }
-    $monitor = New-Object TailSplitDesktopFixture+MonitorInfo
-    $monitor.size = [Runtime.InteropServices.Marshal]::SizeOf([type]'TailSplitDesktopFixture+MonitorInfo')
-    $monitorHandle = [TailSplitDesktopFixture]::MonitorFromWindow($window,2)
-    if (-not [TailSplitDesktopFixture]::GetMonitorInfo($monitorHandle,[ref]$monitor)) { throw 'Cannot inspect monitor work area.' }
-    # Windows may place the invisible resize frame just outside the work area.
-    # A loose 64px allowance permits that frame but rejects a whole extra display.
-    if ($maximized.left -lt ($monitor.work.left - 64) -or $maximized.top -lt ($monitor.work.top - 64) -or
-        $maximized.right -gt ($monitor.work.right + 64) -or $maximized.bottom -gt ($monitor.work.bottom + 64) -or
-        $maximized.left -gt $monitor.work.left -or $maximized.top -gt $monitor.work.top -or
-        $maximized.right -lt $monitor.work.right -or $maximized.bottom -lt $monitor.work.bottom) {
-        throw 'Maximized window does not fit the monitor work area.'
-    }
+    $maximizeGeometry = @{}
+    # The maximized state can be visible before Windows finishes positioning the
+    # window. Wait for both state and bounds, using the same finite wait budget.
+    Wait-Until {
+        if (-not [TailSplitDesktopFixture]::IsZoomed($window)) { return $false }
+        $maximized = New-Object TailSplitDesktopFixture+Rect
+        if (-not [TailSplitDesktopFixture]::GetWindowRect($window,[ref]$maximized)) { throw 'Cannot inspect maximized window bounds.' }
+        $monitor = New-Object TailSplitDesktopFixture+MonitorInfo
+        $monitor.size = [Runtime.InteropServices.Marshal]::SizeOf([type]'TailSplitDesktopFixture+MonitorInfo')
+        $monitorHandle = [TailSplitDesktopFixture]::MonitorFromWindow($window,2)
+        if (-not [TailSplitDesktopFixture]::GetMonitorInfo($monitorHandle,[ref]$monitor)) { throw 'Cannot inspect monitor work area.' }
+        $maximizeGeometry['window'] = $maximized
+        $maximizeGeometry['work'] = $monitor.work
+        # Windows may place the invisible resize frame just outside the work
+        # area. Keep the existing 64px allowance and require full work-area coverage.
+        return ($maximized.left -ge ($monitor.work.left - 64) -and $maximized.top -ge ($monitor.work.top - 64) -and
+            $maximized.right -le ($monitor.work.right + 64) -and $maximized.bottom -le ($monitor.work.bottom + 64) -and
+            $maximized.left -le $monitor.work.left -and $maximized.top -le $monitor.work.top -and
+            $maximized.right -ge $monitor.work.right -and $maximized.bottom -ge $monitor.work.bottom)
+    } 'Maximized window does not fit the monitor work area.' | Out-Null
     Invoke-Button $automation '最大化或还原'
     Wait-Until { -not [TailSplitDesktopFixture]::IsZoomed($window) } 'Window did not restore after maximizing.' | Out-Null
     $stage = 'desktop controls found; capturing window'
@@ -261,6 +267,7 @@ try {
 } catch {
     $primaryFailure = $_
     $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource; elapsed_ms=$startupClock.ElapsedMilliseconds; startup_phases=$nativePhases.ToArray() }
+    if ($null -ne $maximizeGeometry) { $failure['maximize_geometry'] = $maximizeGeometry }
     try {
         $instance = Get-Process -Id $guiProcess -ErrorAction SilentlyContinue
         $failure['process_running'] = $null -ne $instance
