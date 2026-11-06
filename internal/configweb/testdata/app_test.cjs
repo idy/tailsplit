@@ -333,6 +333,35 @@ test('changing network requires confirmation and refreshes the network and exits
   assert.equal(app.requests.filter((r) => r.path === '/api/action').length, 1);
 });
 
+test('network switch conflicts stay visible across revision reloads until recovery', async () => {
+  for (const recovery of ['reload', 'login']) {
+    const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running' });
+    const conflict = { zh: '配置已在切换期间更新，请重试。', en: 'Configuration changed during switching. Try again.' };
+    app.override = (request) => {
+      if (request.path === '/api/action' && request.data.action === 'switch-network') {
+        app.snapshot = { ...app.snapshot, network: '', backend_state: 'NeedsLogin', revision: 'external' };
+        return response({ error: conflict.en, error_i18n: conflict }, false);
+      }
+      if (request.path === '/api/config') return response(doc(yaml + '# External edit\n', 'external'));
+      return undefined;
+    };
+    await app.$('#desktop-switch-network').emit('click');
+    app.$('#switch-network-dialog').returnValue = 'switch-network';
+    await app.$('#switch-network-dialog').emit('close');
+    await settle();
+    assert.match(app.$('#raw-yaml').value, /External edit/);
+    assert.equal(app.$('#desktop-network-name').textContent, '未登录');
+    assert.equal(app.$('#notice').hidden, false);
+    assert.equal(app.$('#notice-detail').textContent, conflict.zh);
+    await app.poll();
+    app.i18n.setLanguage('en');
+    assert.equal(app.$('#notice').hidden, false);
+    assert.equal(app.$('#notice-detail').textContent, conflict.en);
+    await app.$(recovery === 'reload' ? '#reload' : '#desktop-login').emit('click');
+    assert.equal(app.$('#notice').hidden, true, `error was not cleared by ${recovery}`);
+  }
+});
+
 test('changing network protects drafts and blocks duplicate requests', async () => {
   const app = await page({ desktop: true, network: 'old.ts.net' });
   const button = app.$('#desktop-switch-network');

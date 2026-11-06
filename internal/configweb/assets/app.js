@@ -94,6 +94,8 @@
   }
 
   let activeNotice = null;
+  // A desktop failure survives automatic reloads until a retry or explicit reload.
+  let desktopError = null;
   let activeToast = '';
   function notice(title, detail, kind = 'error', canReload = false) {
     activeNotice = { title, detail };
@@ -105,7 +107,9 @@
   }
 
   function clearNotice() {
-    if (state.external) {
+    if (desktopError) {
+      notice(t('操作未完成'), desktopError, 'error', state.external);
+    } else if (state.external) {
       notice(t('磁盘中的配置已更新'), t('当前草稿仍保留。重新读取最新配置后再保存，避免覆盖其他更改。'), 'warning', true);
     } else {
       activeNotice = null;
@@ -213,6 +217,7 @@
   }
 
   async function load() {
+    desktopError = null;
     state.loading = true; updateActions();
     try {
       useDocument(await api('config'));
@@ -439,11 +444,12 @@
         return;
       }
     }
+    desktopError = null; clearNotice();
     desktopBusy = true;
     if (desktopLive) updateDesktop(desktopLive);
     $('#desktop-hint').textContent = t('正在处理…');
     try { await api('action', { action }); }
-    catch (error) { notice(t('操作未完成'), error); }
+    catch (error) { desktopError = error; clearNotice(); }
     finally { desktopBusy = false; await refreshState(); }
   }
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
