@@ -36,6 +36,10 @@ type configurationApply struct {
 	done   chan error
 }
 
+func (request configurationApply) blocked(editing, loggingOut, browserOpening bool, snapshot tray.Snapshot) bool {
+	return editing || loggingOut || browserOpening || snapshot.State == "authorizing" && request.action != "disconnect"
+}
+
 func main() {
 	executable, err := os.Executable()
 	if err != nil {
@@ -143,6 +147,14 @@ func main() {
 		},
 		Logs: func() (string, error) { return desktopLogTail(*logPath) }, Startup: startupEnabled.Load,
 	})
+	showConfiguration := func() {
+		if configurationPage != nil {
+			if err := tray.ShowConfigurationWindow(configurationPage.URL()); err != nil {
+				controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
+				openPath(configurationPage.URL())
+			}
+		}
+	}
 	systray.Run(func() {
 		setTrayIcon(false)
 		systray.SetTooltip("TailSplit")
@@ -174,7 +186,7 @@ func main() {
 		login := addMenu(account, "登录 Tailscale…", "打开当前设备的登录页面")
 		copyLogin := addMenu(account, "复制登录链接", "复制当前有效的设备授权链接")
 		copyLogin.Hide()
-		logout := addMenu(account, "退出并切换 Tailnet…", "退出此 App 的设备登录，然后重新授权")
+		logout := addMenu(account, "退出并切换 Tailnet…", "在配置面板中确认切换网络；未保存的更改会保留")
 		startup := addMenu(nil, "启动设置", "")
 		startAtLogin := addMenu(startup, "登录 macOS 时打开", "通过系统登录项启动 .app", false)
 		connectOnStart := addMenu(startup, "打开 App 后自动连接", "只影响下次打开；需要登录时仍由你主动点击登录", preferences.ConnectOnStart)
@@ -340,10 +352,9 @@ func main() {
 					if loggingOut || editing || flow.Opening() {
 						continue
 					}
-					flow.Cancel()
-					loggingOut, switchingNetwork = true, true
-					login.Disable()
-					go func() { logoutDone <- controller.SwitchNetwork() }()
+					// Reuse the panel's confirmation and draft guard. Showing its
+					// existing window preserves edits and performs no device action.
+					showConfiguration()
 				case err := <-logoutDone:
 					loggingOut = false
 					if err == nil && switchingNetwork {
@@ -400,7 +411,7 @@ func main() {
 						}
 					}
 				case request := <-configurationRequests:
-					if editing || loggingOut || flow.Opening() || controller.Snapshot().State == "authorizing" {
+					if request.blocked(editing, loggingOut, flow.Opening(), controller.Snapshot()) {
 						request.done <- configweb.ErrBusy
 						continue
 					}
@@ -496,12 +507,7 @@ func main() {
 				case <-loginItemSettings.ClickedCh:
 					tray.OpenLoginItemSettings()
 				case <-configuration.ClickedCh:
-					if configurationPage != nil {
-						if err := tray.ShowConfigurationWindow(configurationPage.URL()); err != nil {
-							controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-							openPath(configurationPage.URL())
-						}
-					}
+					showConfiguration()
 				case <-edit.ClickedCh:
 					openPath("-t", *config)
 				case <-reveal.ClickedCh:
@@ -650,7 +656,7 @@ func main() {
 					busy := editing || loggingOut || snapshot.State == "stopping" || snapshot.State == "logging-out"
 					setEnabled(connect, !busy && !flow.Opening())
 					setEnabled(restart, canReconnect(snapshot) && !busy && !flow.Opening())
-					setEnabled(logout, !busy && !flow.Opening())
+					setEnabled(logout, configurationPage != nil && !busy && !flow.Opening())
 					setEnabled(login, !busy && !flow.Opening() &&
 						snapshot.Mode != "discovery" &&
 						snapshot.BackendState != "Running" && snapshot.BackendState != "Direct")

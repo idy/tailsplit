@@ -14,6 +14,22 @@ import (
 	"github.com/idy/tailsplit/internal/tray"
 )
 
+func TestConfigurationPanelCanCancelServiceAuthorization(t *testing.T) {
+	snapshot := tray.Snapshot{State: "authorizing", Active: true}
+	for _, action := range []string{"", "connect", "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off"} {
+		request := configurationApply{action: action}
+		if blocked := request.blocked(false, false, false, snapshot); blocked != (action != "disconnect") {
+			t.Fatalf("action %q blocked=%t during service authorization", action, blocked)
+		}
+	}
+	request := configurationApply{action: "disconnect"}
+	for _, busy := range [][3]bool{{true, false, false}, {false, true, false}, {false, false, true}} {
+		if !request.blocked(busy[0], busy[1], busy[2], snapshot) {
+			t.Fatal("disconnect interrupted another owned operation:", busy)
+		}
+	}
+}
+
 func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	directory := t.TempDir()
 	template := filepath.Join(directory, "template.yaml")
