@@ -39,7 +39,8 @@ class Element {
   setAttribute(name, value) { this.attributes.set(name, value); }
   removeAttribute(name) { this.attributes.delete(name); }
   append() {}
-  replaceChildren() {}
+  replaceChildren(...children) { this.children = children; }
+  showModal() { this.open = true; }
   focus() {}
   async emit(name, event = {}) {
     if (this.disabled && ['click', 'input', 'change', 'keydown'].includes(name)) return;
@@ -81,6 +82,11 @@ async function page(snapshot = {}, native = '', localeOptions = {}) {
     button.dataset.windowAction = action;
     return button;
   });
+  const desktopButtons = ['connect', 'disconnect', 'login', 'logout', 'switch-network', 'refresh-exits'].map((action) => {
+    const button = $(action === 'switch-network' ? '#desktop-switch-network' : `#desktop-${action}`);
+    button.dataset.desktopAction = action;
+    return button;
+  });
   $('#window-controls').hidden = true;
   const app = { $, requests, messages, windowEvents: window, snapshot: { state: 'stopped', revision: 'original', ...snapshot },
     language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: () => undefined };
@@ -89,6 +95,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}) {
     createTextNode: () => new Element(), createDocumentFragment: () => new Element(),
     querySelectorAll: (selector) => selector === '[data-field]' ? fields :
       selector === '[data-window-action]' ? windowButtons :
+      selector === '[data-desktop-action]' ? desktopButtons :
       selector === '[data-section]' ? [navigation] :
       selector === '.editor-tabs button, [data-section]' ? [$('#form-tab'), $('#yaml-tab'), navigation] : [],
     addEventListener: (...args) => events.addEventListener(...args),
@@ -284,6 +291,72 @@ test('only a running proxy is presented as connected', async () => {
   app.snapshot.state = 'running';
   await app.poll();
   assert.equal(app.$('#connection-status').classList.contains('connected'), true);
+});
+
+test('current network follows authentication and keeps user names literal across languages', async () => {
+  const app = await page({ desktop: true, network: '<Team>.ts.net', backend_state: 'Running' });
+  assert.equal(app.$('#desktop-network-name').textContent, '<Team>.ts.net');
+  app.i18n.setLanguage('en');
+  assert.equal(app.$('#desktop-network-name').textContent, '<Team>.ts.net');
+  app.snapshot.network = '';
+  app.snapshot.backend_state = 'NeedsLogin';
+  await app.poll();
+  assert.equal(app.$('#desktop-network-name').textContent, 'Signed out');
+  app.snapshot.backend_state = '';
+  await app.poll();
+  assert.equal(app.$('#desktop-network-name').textContent, 'Network not checked yet');
+});
+
+test('changing network requires confirmation and refreshes the network and exits', async () => {
+  const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running' });
+  const dialog = app.$('#switch-network-dialog');
+  const button = app.$('#desktop-switch-network');
+  await button.emit('click');
+  assert.equal(dialog.open, true);
+  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+  dialog.returnValue = 'cancel';
+  await dialog.emit('close');
+  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+  app.override = (request) => {
+    if (request.path !== '/api/action') return undefined;
+    assert.equal(request.data.action, 'switch-network');
+    app.snapshot.network = 'new.ts.net';
+    app.snapshot.exit_nodes = [{ id: 'new-exit', name: 'New exit' }];
+    return response({ ok: true });
+  };
+  await button.emit('click');
+  dialog.returnValue = 'switch-network';
+  await dialog.emit('close');
+  await settle();
+  assert.equal(app.$('#desktop-network-name').textContent, 'new.ts.net');
+  assert.equal(app.$('#exit-nodes').children[0].value, 'new-exit');
+  assert.equal(app.requests.filter((r) => r.path === '/api/action').length, 1);
+});
+
+test('changing network protects drafts and blocks duplicate requests', async () => {
+  const app = await page({ desktop: true, network: 'old.ts.net' });
+  const button = app.$('#desktop-switch-network');
+  await app.$('#yaml-tab').emit('click');
+  await app.input('#raw-yaml', 'unfinished: [');
+  assert.equal(button.disabled, true);
+  await button.emit('click');
+  assert.equal(app.$('#switch-network-dialog').open, undefined);
+  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+
+  const clean = await page({ desktop: true, network: 'old.ts.net' });
+  const pending = deferred();
+  clean.override = (request) => request.path === '/api/action' ? pending.promise : undefined;
+  await clean.$('#desktop-switch-network').emit('click');
+  clean.$('#switch-network-dialog').returnValue = 'switch-network';
+  await clean.$('#switch-network-dialog').emit('close');
+  assert.equal(clean.$('#desktop-switch-network').disabled, true);
+  await clean.$('#desktop-switch-network').emit('click');
+  pending.resolve(response({ error: 'Fixture logout failed' }, false));
+  await settle();
+  assert.equal(clean.$('#notice-detail').textContent, 'Fixture logout failed');
+  assert.equal(clean.$('#desktop-switch-network').disabled, false);
+  assert.equal(clean.requests.filter((r) => r.path === '/api/action').length, 1);
 });
 
 test('update controls are independent of desktop connection controls', async () => {

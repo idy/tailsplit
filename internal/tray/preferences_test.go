@@ -76,6 +76,37 @@ tun:
 	}
 }
 
+func TestNetworkSwitchPreservesConcurrentEditsAndRejectsInvalidConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	original := []byte("tailscale:\n  exit_node: 100.64.0.1\n  tailnet: old.ts.net\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	save, err := prepareNetworkSwitch(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := append([]byte("# An external edit\n"), original...)
+	if err := os.WriteFile(path, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := save(); err != ErrConfigChanged {
+		t.Fatal("network switch overwrote a concurrent edit:", err)
+	}
+	data, _ := os.ReadFile(path)
+	if !bytes.Equal(changed, data) {
+		t.Fatal("concurrent edit was modified")
+	}
+	for _, invalid := range []string{"tailscale: [", "rules:\n  final: direct\n"} {
+		if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := prepareNetworkSwitch(path); err == nil {
+			t.Fatal("prepared a network switch without a valid Tailscale configuration")
+		}
+	}
+}
+
 func TestUpdatePreferenceDefaultsAndPreservesPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	original := "# Keep my policy\napp:\n  connect_on_start: true\nrules:\n  direct_domains: [example.com] # Local rule\n"

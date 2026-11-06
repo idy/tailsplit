@@ -68,6 +68,34 @@ func SetExitNode(path, value string) error {
 	return updatePreference(path, "tailscale", "exit_node", value)
 }
 
+// prepareNetworkSwitch validates before logout and keeps the original revision
+// so a concurrent edit cannot be overwritten after the device signs out.
+func prepareNetworkSwitch(path string) (func() error, error) {
+	original, revision, err := ReadConfigDocument(path)
+	if err != nil {
+		return nil, err
+	}
+	config, err := ValidateConfigDocument(path, original)
+	if err != nil {
+		return nil, err
+	}
+	if config.Tailscale == nil {
+		return nil, errors.New("no embedded Tailscale endpoint is configured")
+	}
+	updated, err := PatchConfigDocument(original,
+		ConfigChange{"tailscale", "tailnet", ""},
+		ConfigChange{"tailscale", "exit_node", ""},
+		ConfigChange{"tailscale", "auth_key_env", ""},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ValidateConfigDocument(path, updated); err != nil {
+		return nil, err
+	}
+	return func() error { return SaveConfigDocument(path, revision, updated) }, nil
+}
+
 func SetConnectOnStart(path string, enabled bool) error {
 	return updatePreference(path, "app", "connect_on_start", enabled)
 }

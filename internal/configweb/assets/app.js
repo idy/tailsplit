@@ -164,6 +164,7 @@
     $('#raw-yaml').disabled = locked;
     for (const button of document.querySelectorAll('.editor-tabs button, [data-section]')) button.disabled = locked;
     updateGlobalMode();
+    if (desktopLive) updateDesktop(desktopLive);
   }
 
   function paintPreview() {
@@ -418,10 +419,26 @@
     $('#desktop-disconnect').disabled = desktopBusy || !live.active;
     $('#desktop-startup').disabled = desktopBusy;
     $('#desktop-startup').checked = live.startup === true;
+    const changing = ['starting', 'stopping', 'logging-out'].includes(live.state) || live.active && !['tun', 'proxy'].includes(live.mode);
+    $('#desktop-switch-network').disabled = desktopBusy || changing || state.dirty || isLocked();
+    $('#desktop-switch-network').title = state.dirty ? t('请先保存或放弃更改，再更换网络。') : '';
+    const network = live.state === 'logging-out' ? t('正在退出登录') : live.network ||
+      (live.backend_state === 'Running' ? t('已登录（网络名称未提供）') :
+        live.backend_state === 'NeedsLogin' ? t('未登录') : changing ? t('正在读取网络…') : t('尚未读取网络'));
+    setStatusText('#desktop-network-name', network);
+    $('#desktop-network-name').title = network;
     $('#desktop-hint').textContent = live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') : live.error ? message(backendError(live)) : (state.dirty ? t('请先保存配置，再连接。') : t('连接和设备登录分别控制；关闭窗口后仍保留在托盘。'));
   }
-  async function desktopAction(action) {
+  async function desktopAction(action, confirmed = false) {
     if (desktopBusy) return;
+    if (action === 'switch-network') {
+      if (state.dirty || isLocked() || $('#desktop-switch-network').disabled) return;
+      if (!confirmed) {
+        const dialog = $('#switch-network-dialog');
+        dialog.returnValue = 'cancel'; dialog.showModal();
+        return;
+      }
+    }
     desktopBusy = true;
     if (desktopLive) updateDesktop(desktopLive);
     $('#desktop-hint').textContent = t('正在处理…');
@@ -431,6 +448,9 @@
   }
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
   $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
+  $('#switch-network-dialog').addEventListener('close', (event) => {
+    if (event.target.returnValue === 'switch-network') desktopAction('switch-network', true);
+  });
   let logsError = null;
   let logsEmpty = false;
   async function refreshDesktopLogs() {

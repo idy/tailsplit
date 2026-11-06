@@ -203,7 +203,7 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 	// LoginURL and other authentication state never enter the browser API.
 	state := map[string]any{
 		"state": snapshot.State, "active": snapshot.Active, "mode": snapshot.Mode,
-		"exit": snapshot.ExitNode, "network": snapshot.NetworkName,
+		"exit": snapshot.ExitNode, "network": snapshot.NetworkName, "backend_state": snapshot.BackendState,
 		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
 		"startup": s.options.Startup != nil && s.options.Startup(),

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/tray"
@@ -39,7 +40,17 @@ func main() {
 		},
 	}
 	if *desktop {
-		snapshot := tray.Snapshot{State: "stopped"}
+		snapshot := tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
+		previewLogin := func(network string) {
+			exitIP := "100.64.0.10"
+			if network == "preview-work.ts.net" {
+				exitIP = "100.64.0.20"
+			}
+			snapshot = tray.Snapshot{
+				State: "authenticated", BackendState: "Running", NetworkName: network,
+				ExitNodes: []tailsplit.ExitNode{{ID: exitIP, Name: "preview-exit." + network, Online: true}},
+			}
+		}
 		startup := false
 		updates := appupdate.State{CurrentVersion: "0.6.1", Automatic: true}
 		options.UpdateState = func() appupdate.State { mutex.Lock(); defer mutex.Unlock(); return updates }
@@ -82,11 +93,34 @@ func main() {
 			}
 			switch action {
 			case "connect":
-				snapshot = tray.Snapshot{State: "running", Mode: "proxy", Active: true}
-			case "disconnect", "logout":
-				snapshot = tray.Snapshot{State: "stopped"}
+				snapshot.State, snapshot.Mode, snapshot.Active = "running", "proxy", true
+			case "disconnect":
+				snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
+			case "logout":
+				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
 			case "login":
-				snapshot = tray.Snapshot{State: "authenticated"}
+				previewLogin("preview-personal.ts.net")
+			case "switch-network":
+				original, revision, err := tray.ReadConfigDocument(*config)
+				if err != nil {
+					return err
+				}
+				updated, err := tray.PatchConfigDocument(original,
+					tray.ConfigChange{Section: "tailscale", Key: "tailnet", Value: ""},
+					tray.ConfigChange{Section: "tailscale", Key: "exit_node", Value: ""},
+					tray.ConfigChange{Section: "tailscale", Key: "auth_key_env", Value: ""},
+				)
+				if err != nil {
+					return err
+				}
+				if err := tray.SaveConfigDocument(*config, revision, updated); err != nil {
+					return err
+				}
+				network := "preview-work.ts.net"
+				if snapshot.NetworkName == network {
+					network = "preview-personal.ts.net"
+				}
+				previewLogin(network)
 			case "startup-on":
 				startup = true
 			case "startup-off":

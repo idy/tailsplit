@@ -7,7 +7,9 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/idy/tailsplit/internal/tray"
 )
@@ -58,6 +60,27 @@ func TestLegacySharedDeviceNameMigratesWithoutChangingChosenNames(t *testing.T) 
 		if !bytes.Contains(data, []byte("enabled: true")) {
 			t.Fatal("device-name migration changed the selected TUN mode")
 		}
+	}
+}
+
+func TestDesktopLogTailIsBoundedAndValidUTF8(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tailsplit.log")
+	if _, err := desktopLogTail(path); !os.IsNotExist(err) {
+		t.Fatal("missing log did not report its error:", err)
+	}
+	if err := os.WriteFile(path, []byte("starting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := desktopLogTail(path); err != nil || text != "starting\n" {
+		t.Fatal("short log was changed:", text, err)
+	}
+	data := []byte(strings.Repeat("x", 128<<10) + "\xfflast entry\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := desktopLogTail(path)
+	if err != nil || !utf8.ValidString(text) || !strings.HasSuffix(text, "�last entry\n") || len(text) != (128<<10)+2 {
+		t.Fatalf("log tail was not bounded and sanitized: length=%d valid=%t err=%v", len(text), utf8.ValidString(text), err)
 	}
 }
 
