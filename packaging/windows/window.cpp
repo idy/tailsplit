@@ -125,16 +125,27 @@ TitlebarAction ParseTitlebarAction(const wchar_t* message, const wchar_t* json) 
     return TitlebarAction::None;
 }
 
-// The embedded panel is dark. DWMWA_USE_IMMERSIVE_DARK_MODE (20) darkens the
-// retained native frame on Windows 10 20H1 and later; older systems keep their own.
-void UseDarkFrame(HWND window) noexcept {
+// Windows exposes separate app and system modes. Follow the app mode, including
+// when the user chooses a custom combination in Personalization > Colors.
+// https://learn.microsoft.com/windows/apps/develop/settings/settings-common
+bool AppsUseDarkTheme() noexcept {
+    DWORD light = 1;
+    DWORD size = sizeof(light);
+    return RegGetValueW(HKEY_CURRENT_USER,
+                       L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                       L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size) == ERROR_SUCCESS &&
+           light == 0;
+}
+
+// DWMWA_USE_IMMERSIVE_DARK_MODE (20) colors the retained native frame on Windows
+// 10 20H1 and later; older systems keep their own frame.
+void UseSystemFrame(HWND window, BOOL dark) noexcept {
     const HMODULE dwm = LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!dwm) {
         return;
     }
     using SetAttribute = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
     if (const auto setAttribute = reinterpret_cast<SetAttribute>(GetProcAddress(dwm, "DwmSetWindowAttribute"))) {
-        const BOOL dark = TRUE;
         setAttribute(window, 20, &dark, sizeof(dark));
     }
     FreeLibrary(dwm);
@@ -259,7 +270,7 @@ public:
         klass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         klass.hIcon = ApplicationIcon(SM_CXICON, SM_CYICON);
         klass.hIconSm = ApplicationIcon(SM_CXSMICON, SM_CYSMICON);
-        klass.hbrBackground = CreateSolidBrush(RGB(28, 28, 30)); // The panel's canvas.
+        // WM_ERASEBKGND paints the current canvas without owning a class brush.
         klass.lpszClassName = className_;
         if (!RegisterClassExW(&klass)) {
             return LastErrorResult();
@@ -286,7 +297,7 @@ public:
         if (!window_) {
             return LastErrorResult();
         }
-        UseDarkFrame(window_);
+        RefreshAppearance();
         StartupStage(1); // Native HWND created; its browser is not ready yet.
         const HRESULT hr = StartEnvironment();
         if (FAILED(hr)) {
@@ -320,6 +331,26 @@ public:
     }
 
 private:
+    COLORREF CanvasColor() const noexcept {
+        return dark_ ? RGB(28, 28, 30) : RGB(245, 245, 247);
+    }
+
+    void RefreshAppearance() noexcept {
+        dark_ = AppsUseDarkTheme();
+        if (controller_) {
+            ComPtr<ICoreWebView2Controller2> background;
+            if (SUCCEEDED(controller_.As(&background))) {
+                const COLORREF color = CanvasColor();
+                background->put_DefaultBackgroundColor(
+                    COREWEBVIEW2_COLOR{255, GetRValue(color), GetGValue(color), GetBValue(color)});
+            }
+        }
+        if (window_) {
+            UseSystemFrame(window_, dark_);
+            RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+        }
+    }
+
     void StartupStage(UINT stage) noexcept {
         if (window_) {
             SetPropW(window_, kStartupStage, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(stage)));
@@ -413,11 +444,16 @@ private:
         if (FAILED(hr)) {
             return hr;
         }
-        // Paint the panel's dark canvas while its local document loads.
-        ComPtr<ICoreWebView2Controller2> background;
-        if (SUCCEEDED(controller_.As(&background))) {
-            background->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{255, 28, 28, 30});
+        // AUTO makes prefers-color-scheme follow the OS, including live changes.
+        // Set it explicitly so a retained profile cannot force an old preference.
+        ComPtr<ICoreWebView2_13> profileView;
+        ComPtr<ICoreWebView2Profile> profile;
+        if (FAILED(hr = webview_.As(&profileView)) ||
+            FAILED(hr = profileView->get_Profile(&profile)) ||
+            FAILED(hr = profile->put_PreferredColorScheme(COREWEBVIEW2_PREFERRED_COLOR_SCHEME_AUTO))) {
+            return hr;
         }
+        RefreshAppearance();
         ComPtr<ICoreWebView2Settings> settings;
         if (FAILED(hr = webview_->get_Settings(&settings))) {
             return hr;
@@ -790,6 +826,24 @@ private:
         case WM_CLOSE:
             host->Hide();
             return 0;
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED:
+            // WM_SETTINGCHANGE is broadcast for app appearance changes. Its
+            // lParam may be null or identify only an area, so reload our setting.
+            // WM_THEMECHANGED alone does not cover switching the app color mode.
+            host->RefreshAppearance();
+            break;
+        case WM_ERASEBKGND: {
+            RECT bounds{};
+            if (GetClientRect(window, &bounds)) {
+                const auto context = reinterpret_cast<HDC>(wparam);
+                const COLORREF previous = SetDCBrushColor(context, host->CanvasColor());
+                FillRect(context, &bounds, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+                SetDCBrushColor(context, previous);
+                return 1;
+            }
+            break;
+        }
         case WM_SIZE: {
             const HRESULT hr = host->Resize();
             if (FAILED(hr)) {
@@ -860,6 +914,7 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
     bool registered_ = false;
+    bool dark_ = AppsUseDarkTheme();
     bool stopping_ = false;
     bool finished_ = false;
     bool finishPosted_ = false;

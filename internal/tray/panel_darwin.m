@@ -25,6 +25,15 @@ static BOOL panelHasFillRestoreFrame;
 
 static NSString *const panelFrameName = @"TailSplitConfigurationWindow";
 
+// Match the page's canvas before it loads and during overscroll.
+static NSColor *tailsplit_panel_canvas(NSAppearance *appearance) {
+    NSString *match = [appearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    if ([match isEqualToString:NSAppearanceNameDarkAqua]) {
+        return [NSColor colorWithSRGBRed:28 / 255.0 green:28 / 255.0 blue:30 / 255.0 alpha:1];
+    }
+    return [NSColor colorWithSRGBRed:245 / 255.0 green:245 / 255.0 blue:247 / 255.0 alpha:1];
+}
+
 // As on Windows, the page has no context menu: its items could reload the page
 // or open and download links elsewhere. AppKit does not show an empty menu.
 @interface TailSplitPanelWebView : WKWebView
@@ -33,6 +42,13 @@ static NSString *const panelFrameName = @"TailSplitConfigurationWindow";
 @implementation TailSplitPanelWebView
 - (void)willOpenMenu:(NSMenu *)menu withEvent:(NSEvent *)event {
     [menu removeAllItems];
+}
+
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    NSColor *canvas = tailsplit_panel_canvas(self.effectiveAppearance);
+    self.window.backgroundColor = canvas;
+    if (@available(macOS 12.0, *)) self.underPageBackgroundColor = canvas;
 }
 @end
 
@@ -131,7 +147,7 @@ static void tailsplit_panel_failed(WKNavigation *navigation) {
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     // The page removes its capability from the address after loading, so load
-    // the original URL again behind the dark canvas.
+    // the original URL again behind the themed canvas.
     webView.hidden = YES;
     tailsplit_panel_load();
 }
@@ -256,7 +272,7 @@ static void tailsplit_panel_install_menu(id delegate) {
 static BOOL tailsplit_panel_create(NSURL *url, int port) {
     static TailSplitPanelDelegate *delegate;
     if (!delegate) delegate = [[TailSplitPanelDelegate alloc] init];
-    NSColor *canvas = [NSColor colorWithSRGBRed:28 / 255.0 green:28 / 255.0 blue:30 / 255.0 alpha:1];
+    NSColor *canvas = tailsplit_panel_canvas(NSApp.effectiveAppearance);
     const NSRect bounds = NSMakeRect(0, 0, 1120, 780);
 
     WKWebViewConfiguration *configuration = [[[WKWebViewConfiguration alloc] init] autorelease];
@@ -284,7 +300,7 @@ static BOOL tailsplit_panel_create(NSURL *url, int port) {
     view.allowsBackForwardNavigationGestures = NO;
     if (@available(macOS 12.0, *)) view.underPageBackgroundColor = canvas;
     if (@available(macOS 13.3, *)) view.inspectable = NO;
-    // The window shows its dark canvas, not a blank page, until the panel loads.
+    // The window shows its themed canvas, not a blank page, until the panel loads.
     view.hidden = YES;
     view.frame = window.contentView.bounds;
     view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -296,7 +312,7 @@ static BOOL tailsplit_panel_create(NSURL *url, int port) {
     window.restorable = NO;
     window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
-    window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    // Inherit the system appearance; WebKit also uses it for prefers-color-scheme.
     window.backgroundColor = canvas;
     window.titlebarAppearsTransparent = YES;
     window.titleVisibility = NSWindowTitleHidden;
