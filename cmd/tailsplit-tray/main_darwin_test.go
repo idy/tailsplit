@@ -30,6 +30,23 @@ func TestConfigurationPanelCanCancelServiceAuthorization(t *testing.T) {
 	}
 }
 
+func TestPanelStartupRequiresApprovalBeforeReportingEnabled(t *testing.T) {
+	opened := 0
+	openSettings := func() { opened++ }
+	if finishPanelStartup("startup-on", tray.LoginItemNeedsApproval, openSettings) || opened != 1 {
+		t.Fatal("pending login item was reported enabled or did not open approval settings")
+	}
+	if finishPanelStartup("", tray.LoginItemNeedsApproval, openSettings) || opened != 1 {
+		t.Fatal("polling a pending login item reopened settings or reported it enabled")
+	}
+	if !finishPanelStartup("", tray.LoginItemEnabled, openSettings) || opened != 1 {
+		t.Fatal("approved login item was not reflected in the panel")
+	}
+	if finishPanelStartup("startup-off", tray.LoginItemDisabled, openSettings) || opened != 1 {
+		t.Fatal("disabling startup opened settings or left the panel enabled")
+	}
+}
+
 func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	directory := t.TempDir()
 	template := filepath.Join(directory, "template.yaml")

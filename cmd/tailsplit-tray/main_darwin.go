@@ -40,6 +40,14 @@ func (request configurationApply) blocked(editing, loggingOut, browserOpening bo
 	return editing || loggingOut || browserOpening || snapshot.State == "authorizing" && request.action != "disconnect"
 }
 
+// Report actual startup availability, not just a registration awaiting approval.
+func finishPanelStartup(action string, status tray.LoginItemStatus, openSettings func()) bool {
+	if action == "startup-on" && status == tray.LoginItemNeedsApproval {
+		openSettings()
+	}
+	return status == tray.LoginItemEnabled
+}
+
 func main() {
 	executable, err := os.Executable()
 	if err != nil {
@@ -271,8 +279,8 @@ func main() {
 			loginItemStatus := tray.LoginItemUnavailable
 			refreshLoginItem := func() {
 				loginItemStatus = tray.LoginItem()
-				startupEnabled.Store(loginItemStatus == tray.LoginItemEnabled || loginItemStatus == tray.LoginItemNeedsApproval)
-				setChecked(startAtLogin, startupEnabled.Load())
+				startupEnabled.Store(finishPanelStartup("", loginItemStatus, tray.OpenLoginItemSettings))
+				setChecked(startAtLogin, loginItemStatus == tray.LoginItemEnabled || loginItemStatus == tray.LoginItemNeedsApproval)
 				setEnabled(startAtLogin, loginItemStatus != tray.LoginItemUnavailable)
 				if loginItemStatus == tray.LoginItemNeedsApproval {
 					startAtLogin.SetTitle(tr("登录时打开（等待系统允许）"))
@@ -476,6 +484,9 @@ func main() {
 					}
 					if pendingAction == "startup-on" || pendingAction == "startup-off" {
 						refreshLoginItem()
+						if err == nil {
+							startupEnabled.Store(finishPanelStartup(pendingAction, loginItemStatus, tray.OpenLoginItemSettings))
+						}
 					}
 					// Return errors to the panel after clearing the busy state.
 					if !completeRequest(err) && err != nil {
