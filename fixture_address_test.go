@@ -7,18 +7,10 @@ import (
 	"testing"
 )
 
-func TestFixtureAddressAvoidsTCPExcludedPorts(t *testing.T) {
-	// Model Windows choosing UDP ports from a TCP-excluded range. TCP's
-	// allocator can still choose an available ephemeral port of its own.
-	listen := func(network, address string) (net.Listener, error) {
-		if address != "127.0.0.1:0" {
-			return nil, os.ErrPermission
-		}
-		return net.Listen(network, address)
-	}
-	address, err := fixtureAddress(listen, net.ListenPacket)
+func TestFixtureAddressReleasesTCPAndUDPProbes(t *testing.T) {
+	address, err := fixtureAddress(net.Listen, net.ListenPacket)
 	if err != nil {
-		t.Fatal("UDP-selected excluded ports prevented a TCP/UDP fixture:", err)
+		t.Fatal("could not find a port usable by both TCP and UDP:", err)
 	}
 	listener, err := net.Listen("tcp4", address)
 	if err != nil {
@@ -44,12 +36,19 @@ func TestFixtureAddressHandlesUDPExcludedPorts(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var listeners []*fixtureProbeListener
 			listen := func(network, address string) (net.Listener, error) {
-				listener, err := net.Listen(network, address)
+				candidate, err := net.ResolveTCPAddr(network, address)
 				if err != nil {
-					return nil, err
+					t.Fatal(err)
 				}
-				t.Cleanup(func() { _ = listener.Close() })
-				probe := &fixtureProbeListener{Listener: listener}
+				if len(listeners) == 0 {
+					if candidate.Port != 0 {
+						t.Fatal("first attempt did not use the TCP allocator")
+					}
+					candidate.Port = 55000
+				} else if candidate.Port < 1024 || candidate.Port > 65535 {
+					t.Fatal("retry reused the excluded allocator range or a privileged port:", address)
+				}
+				probe := &fixtureProbeListener{address: candidate}
 				listeners = append(listeners, probe)
 				return probe, nil
 			}
@@ -96,6 +95,41 @@ func TestFixtureAddressHandlesUDPExcludedPorts(t *testing.T) {
 	}
 }
 
+func TestFixtureAddressRetriesTCPExcludedFallbackPorts(t *testing.T) {
+	tcpAttempts, udpAttempts := 0, 0
+	var probes []*fixtureProbeListener
+	address, err := fixtureAddress(func(network, address string) (net.Listener, error) {
+		tcpAttempts++
+		if tcpAttempts == 2 {
+			return nil, os.ErrPermission
+		}
+		candidate, err := net.ResolveTCPAddr(network, address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if candidate.Port == 0 {
+			candidate.Port = 55000
+		}
+		probe := &fixtureProbeListener{address: candidate}
+		probes = append(probes, probe)
+		return probe, nil
+	}, func(string, string) (net.PacketConn, error) {
+		udpAttempts++
+		if udpAttempts == 1 {
+			return nil, os.ErrPermission
+		}
+		return &fixtureProbePacketConn{}, nil
+	})
+	if err != nil || address == "" || tcpAttempts != 3 || udpAttempts != 2 {
+		t.Fatalf("did not recover from UDP and TCP exclusions: %q, TCP=%d UDP=%d err=%v", address, tcpAttempts, udpAttempts, err)
+	}
+	for _, probe := range probes {
+		if !probe.closed {
+			t.Fatal("fallback TCP probe leaked")
+		}
+	}
+}
+
 func TestFixtureAddressReportsTCPBindFailure(t *testing.T) {
 	address, err := fixtureAddress(
 		func(string, string) (net.Listener, error) { return nil, os.ErrPermission },
@@ -111,12 +145,15 @@ func TestFixtureAddressReportsTCPBindFailure(t *testing.T) {
 
 type fixtureProbeListener struct {
 	net.Listener
-	closed bool
+	address net.Addr
+	closed  bool
 }
+
+func (p *fixtureProbeListener) Addr() net.Addr { return p.address }
 
 func (p *fixtureProbeListener) Close() error {
 	p.closed = true
-	return p.Listener.Close()
+	return nil
 }
 
 type fixtureProbePacketConn struct {

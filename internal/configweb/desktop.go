@@ -27,7 +27,7 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch request.Action {
-	case "connect", "disconnect", "login", "logout", "refresh-exits", "startup-on", "startup-off":
+	case "connect", "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off":
 	default:
 		fail(w, http.StatusBadRequest, "action", "未知操作。")
 		return

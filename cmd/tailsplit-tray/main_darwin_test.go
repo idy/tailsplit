@@ -7,10 +7,45 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/idy/tailsplit/internal/tray"
 )
+
+func TestConfigurationPanelCanCancelServiceAuthorization(t *testing.T) {
+	snapshot := tray.Snapshot{State: "authorizing", Active: true}
+	for _, action := range []string{"", "connect", "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off"} {
+		request := configurationApply{action: action}
+		if blocked := request.blocked(false, false, false, snapshot); blocked != (action != "disconnect") {
+			t.Fatalf("action %q blocked=%t during service authorization", action, blocked)
+		}
+	}
+	request := configurationApply{action: "disconnect"}
+	for _, busy := range [][3]bool{{true, false, false}, {false, true, false}, {false, false, true}} {
+		if !request.blocked(busy[0], busy[1], busy[2], snapshot) {
+			t.Fatal("disconnect interrupted another owned operation:", busy)
+		}
+	}
+}
+
+func TestPanelStartupRequiresApprovalBeforeReportingEnabled(t *testing.T) {
+	opened := 0
+	openSettings := func() { opened++ }
+	if finishPanelStartup("startup-on", tray.LoginItemNeedsApproval, openSettings) || opened != 1 {
+		t.Fatal("pending login item was reported enabled or did not open approval settings")
+	}
+	if finishPanelStartup("", tray.LoginItemNeedsApproval, openSettings) || opened != 1 {
+		t.Fatal("polling a pending login item reopened settings or reported it enabled")
+	}
+	if !finishPanelStartup("", tray.LoginItemEnabled, openSettings) || opened != 1 {
+		t.Fatal("approved login item was not reflected in the panel")
+	}
+	if finishPanelStartup("startup-off", tray.LoginItemDisabled, openSettings) || opened != 1 {
+		t.Fatal("disabling startup opened settings or left the panel enabled")
+	}
+}
 
 func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	directory := t.TempDir()
@@ -58,6 +93,27 @@ func TestLegacySharedDeviceNameMigratesWithoutChangingChosenNames(t *testing.T) 
 		if !bytes.Contains(data, []byte("enabled: true")) {
 			t.Fatal("device-name migration changed the selected TUN mode")
 		}
+	}
+}
+
+func TestDesktopLogTailIsBoundedAndValidUTF8(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tailsplit.log")
+	if _, err := desktopLogTail(path); !os.IsNotExist(err) {
+		t.Fatal("missing log did not report its error:", err)
+	}
+	if err := os.WriteFile(path, []byte("starting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := desktopLogTail(path); err != nil || text != "starting\n" {
+		t.Fatal("short log was changed:", text, err)
+	}
+	data := []byte(strings.Repeat("x", 128<<10) + "\xfflast entry\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := desktopLogTail(path)
+	if err != nil || !utf8.ValidString(text) || !strings.HasSuffix(text, "�last entry\n") || len(text) != (128<<10)+2 {
+		t.Fatalf("log tail was not bounded and sanitized: length=%d valid=%t err=%v", len(text), utf8.ValidString(text), err)
 	}
 }
 

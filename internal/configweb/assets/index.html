@@ -66,12 +66,16 @@
           <button class="button" data-desktop-action="disconnect" id="desktop-disconnect">断开</button>
         </div>
       </div>
+      <div class="desktop-network">
+        <div class="desktop-network-details"><span>当前网络</span><strong id="desktop-network-name" role="status">尚未读取网络</strong></div>
+        <button class="link-button" data-desktop-action="switch-network" id="desktop-switch-network">更换网络…</button>
+      </div>
       <div class="desktop-more">
         <button class="link-button" data-desktop-action="login">登录 Tailnet…</button>
         <button class="link-button" data-desktop-action="logout">退出设备登录</button>
         <button class="link-button" data-desktop-action="refresh-exits">刷新出口</button>
         <button class="link-button" id="desktop-logs">查看日志</button>
-        <label class="desktop-startup"><input type="checkbox" id="desktop-startup">登录 Windows 后启动</label>
+        <label class="desktop-startup"><input type="checkbox" id="desktop-startup">登录系统后启动</label>
       </div>
     </section>
 
@@ -174,6 +178,7 @@
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
 <dialog class="desktop-log-dialog" id="desktop-log-dialog"><h2>诊断日志</h2><p>最近的本机日志；设备授权链接和认证密钥会被隐藏。</p><pre id="desktop-log-text" tabindex="0"></pre><form method="dialog"><div class="dialog-actions"><button type="button" class="button" id="desktop-log-refresh">刷新日志</button><button class="button primary" value="close">关闭</button></div></form></dialog>
+<dialog id="switch-network-dialog" aria-labelledby="switch-network-title" aria-describedby="switch-network-detail switch-network-config"><form method="dialog"><h2 id="switch-network-title">更换 Tailscale 网络？</h2><p id="switch-network-detail">当前连接会断开，并退出此设备的 Tailscale 登录。随后请在浏览器中选择要加入的网络。</p><p id="switch-network-config">旧网络限定、出口选择和自动授权设置将清空；授权后请重新选择出口。其他配置会保留。</p><div class="dialog-actions"><button class="button" value="cancel" autofocus>取消</button><button class="button primary" value="switch-network">继续并选择网络</button></div></form></dialog>
 <dialog id="discard-dialog"><form method="dialog"><h2>放弃未保存的更改？</h2><p>重新读取磁盘中的配置，当前草稿将被替换。</p><div class="dialog-actions"><button class="button" value="cancel">继续编辑</button><button class="button primary" value="discard">放弃并重新读取</button></div></form></dialog>
 </body>
 </html>

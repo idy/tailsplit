@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.9 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.10 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -88,10 +88,15 @@ application window and notification-area controls. The installer puts
 `Program Files\\TailSplit` and installs an idle SYSTEM network service. The UI
 runs as a normal user; only installation and service maintenance request UAC.
 
-The window contains connection, Tailnet login/logout, exit selection, configuration
-and bounded diagnostic logs. Settings stay in the window; device authorization
-opens the default browser. Closing the window hides it to the tray, whose icon
-turns green while connected. Quit first
+The window contains connection, the current Tailnet, login/logout, network switching,
+exit selection, configuration and bounded diagnostic logs. Settings stay in the
+window; device authorization opens the default browser. On both macOS and Windows,
+**Change network…** asks for confirmation, disconnects, signs out the embedded
+device, and opens a fresh browser authorization to choose a Tailnet. It clears the
+previous Tailnet restriction, exit selection and auth-key environment-variable
+setting, while preserving other settings and comments. Save or discard any draft
+before switching, then choose an exit after authorization and connect explicitly.
+Closing the window hides it to the tray, whose icon turns green while connected. Quit first
 disconnects and waits for the network service to clean up. Windows login startup
 is optional and separate from automatic connection.
 

@@ -95,14 +95,35 @@ func (f *LoginFlow) Message() string {
 // URL to an arbitrary existing Chrome instance can route it into a headless
 // automation profile instead of opening the user's normal browser window.
 func OpenLoginPage(ctx context.Context, value string) error {
-	if runtime.GOOS == "windows" {
-		return openWindowsLogin(ctx, value)
-	}
-	return openLoginPage(ctx, value, defaultBrowserID(), func(ctx context.Context, name string, args ...string) error {
-		// Do not copy command output or URL arguments into logs: the link
-		// contains transient authentication material.
-		return exec.CommandContext(ctx, name, args...).Run()
+	return runBrowserOpen(ctx, func() error {
+		if runtime.GOOS == "windows" {
+			return openWindowsLogin(ctx, value)
+		}
+		return openLoginPage(ctx, value, defaultBrowserID(), func(ctx context.Context, name string, args ...string) error {
+			// Do not copy command output or URL arguments into logs: the link
+			// contains transient authentication material.
+			return exec.CommandContext(ctx, name, args...).Run()
+		})
 	})
+}
+
+// Shell/DDE calls cannot be interrupted by a context. Bound the request instead;
+// a late native completion goes only to this private buffer, never a newer flow.
+func runBrowserOpen(ctx context.Context, open func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- open() }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
 }
 
 type browserCommand func(context.Context, string, ...string) error
