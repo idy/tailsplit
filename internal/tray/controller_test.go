@@ -23,6 +23,10 @@ func TestHelperProcess(t *testing.T) {
 	}
 	for _, argument := range os.Args {
 		if argument == "logout" {
+			if mode == "logout-fail" {
+				fmt.Fprintln(os.Stderr, "fixture logout failed")
+				os.Exit(3)
+			}
 			fmt.Println("Signed out fixture embedded device")
 			os.Exit(0)
 		}
@@ -355,6 +359,53 @@ func TestLogoutStopsTheCoreBeforeReauthentication(t *testing.T) {
 		t.Fatal("logout left the app unable to start a new login:", err)
 	}
 	waitState(t, controller, "running")
+}
+
+func TestSwitchNetworkClearsOldSelectionAndStartsOnlyLogin(t *testing.T) {
+	controller := testController(t, "login")
+	config := "# Keep my policy\ntailscale:\n  exit_node: 100.64.0.1\n  tailnet: old.ts.net\n  auth_key_env: OLD_NETWORK_KEY\nrules:\n  direct_domains: [example.com]\n"
+	if err := os.WriteFile(controller.options.ConfigPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, controller, "login")
+	controller.onEvent([]byte(`{"event":"status","backend_state":"Running","network_name":"old.ts.net","exit_node":"old-exit","exit_nodes":[{"id":"old-exit","name":"Old exit"}]}`))
+	if err := controller.SwitchNetwork(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := waitState(t, controller, "login")
+	if snapshot.Mode != "login" || snapshot.NetworkName != "" || snapshot.ExitNode != "" || len(snapshot.ExitNodes) != 0 || snapshot.LoginURL == "" {
+		t.Fatal("switch retained old identity or started the proxy:", snapshot)
+	}
+	data, _, err := ReadConfigDocument(controller.options.ConfigPath)
+	if err != nil || !bytes.Contains(data, []byte("# Keep my policy")) || !bytes.Contains(data, []byte("[example.com]")) ||
+		bytes.Contains(data, []byte("old.ts.net")) || bytes.Contains(data, []byte("100.64.0.1")) || bytes.Contains(data, []byte("OLD_NETWORK_KEY")) {
+		t.Fatal("switch did not clear only the previous network selection:", string(data), err)
+	}
+}
+
+func TestSwitchNetworkKeepsSelectionWhenLogoutFails(t *testing.T) {
+	controller := testController(t, "logout-fail")
+	original := []byte("tailscale:\n  exit_node: 100.64.0.1\n  tailnet: old.ts.net\n")
+	if err := os.WriteFile(controller.options.ConfigPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, controller, "running")
+	if err := controller.SwitchNetwork(); err == nil {
+		t.Fatal("logout failure was hidden")
+	}
+	data, _, err := ReadConfigDocument(controller.options.ConfigPath)
+	if err != nil || !bytes.Equal(original, data) {
+		t.Fatal("failed logout changed the network selection:", err)
+	}
+	if snapshot := controller.Snapshot(); snapshot.Active || snapshot.LoginURL != "" || snapshot.State != "failed" {
+		t.Fatal("failed logout started a new login:", snapshot)
+	}
 }
 
 func TestReconfigurationStopsBeforeEditingAndRestartsAfterFailure(t *testing.T) {

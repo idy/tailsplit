@@ -144,6 +144,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return appservice.Launch(ctx, executable, config, out)
 	}
 	if command == "logout" || command == "app-logout" {
+		config = deviceLogoutConfig(config)
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if command == "app-logout" {
@@ -197,6 +198,17 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		}
 		return tailsplit.Run(ctx, config, compiled)
 	}
+}
+
+// Logout uses only the saved device identity. Keep the on-disk configuration
+// unchanged until the controller's revision-checked network switch is committed.
+func deviceLogoutConfig(config tailsplit.Config) tailsplit.Config {
+	if config.Tailscale != nil {
+		endpoint := *config.Tailscale
+		endpoint.AuthKeyEnv = ""
+		config.Tailscale = &endpoint
+	}
+	return config
 }
 
 func installedService(args []string, diagnostic io.Writer) error {

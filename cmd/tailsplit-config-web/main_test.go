@@ -41,6 +41,52 @@ func previewAction(t *testing.T, options configweb.Options, action string) tray.
 	return options.Snapshot()
 }
 
+func TestDesktopPreviewNetworkSwitchKeepsUnrelatedSettingsAndStaysDisconnected(t *testing.T) {
+	options := testDesktopPreview(t)
+	previewAction(t, options, "login")
+	previewAction(t, options, "connect")
+	before, err := os.ReadFile(options.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := tray.PatchConfigDocument(append([]byte("# keep-preview-settings\n"), before...),
+		tray.ConfigChange{Section: "tailscale", Key: "tailnet", Value: "old.tail.ts.net"},
+		tray.ConfigChange{Section: "tailscale", Key: "auth_key_env", Value: "LEGACY_PREVIEW_AUTH"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.ConfigPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	switched := previewAction(t, options, "switch-network")
+	if switched.Active || switched.Mode != "" || switched.State != "authenticated" || switched.NetworkName != "preview-work.ts.net" || switched.ExitNode != "" || switched.Hostname != "preview-laptop" {
+		t.Fatalf("network switch retained an active session or lost the device settings: %+v", switched)
+	}
+	for _, exit := range switched.ExitNodes {
+		if exit.Selected || exit.SelectedFor != "" {
+			t.Fatal("network switch retained the previous exit selection:", exit)
+		}
+	}
+	after, err := os.ReadFile(options.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, old := range []string{"old.tail.ts.net", "LEGACY_PREVIEW_AUTH", "exit_node: 100.64.0.10"} {
+		if strings.Contains(string(after), old) {
+			t.Fatalf("network switch retained old authorization configuration: %s", after)
+		}
+	}
+	for _, kept := range []string{"# keep-preview-settings", "hostname: preview-laptop", "mode: split"} {
+		if !strings.Contains(string(after), kept) {
+			t.Fatalf("network switch discarded unrelated configuration: %s", after)
+		}
+	}
+	if refreshed := previewAction(t, options, "refresh-exits"); !reflect.DeepEqual(refreshed, switched) {
+		t.Fatalf("refresh restored the prior preview network: %+v", refreshed)
+	}
+}
+
 func TestDesktopPreviewIdentityAndExitLifecycle(t *testing.T) {
 	options := testDesktopPreview(t)
 	initial := options.Snapshot()

@@ -106,6 +106,7 @@ var englishUI = map[string]string{
 	"复制当前有效的设备授权链接":          "Copy the current device authorization link",
 	"退出并切换 Tailnet…":         "Sign Out & Switch Tailnet…",
 	"退出此 App 的设备登录，然后重新授权":   "Sign this app’s device out, then authorize again",
+	"在配置面板中确认切换网络；未保存的更改会保留": "Confirm the network change in Settings; unsaved edits are kept",
 	"启动设置":                   "Startup",
 	"登录 macOS 时打开":           "Open at macOS login",
 	"通过系统登录项启动 .app":         "Launch the app through system login items",

@@ -103,6 +103,8 @@
   }
 
   let activeNotice = null;
+  // A desktop failure survives automatic reloads until a retry or explicit reload.
+  let desktopError = null;
   let activeToast = '';
   function notice(title, detail, kind = 'error', canReload = false) {
     activeNotice = { title, detail };
@@ -114,7 +116,9 @@
   }
 
   function clearNotice() {
-    if (state.external) {
+    if (desktopError) {
+      notice(t('操作未完成'), desktopError, 'error', state.external);
+    } else if (state.external) {
       notice(t('磁盘中的配置已更新'), t('当前草稿仍保留。重新读取最新配置后再保存，避免覆盖其他更改。'), 'warning', true);
     } else {
       activeNotice = null;
@@ -228,6 +232,7 @@
   }
 
   async function load() {
+    desktopError = null;
     state.loading = true; updateActions();
     try {
       useDocument(await api('config'));
@@ -523,7 +528,14 @@
     $('#startup-setting').hidden = !live.desktop;
     $('#desktop-startup').disabled = !live.desktop || locked;
     $('#desktop-startup').checked = live.startup === true;
-    const identity = authenticated ? [live.hostname, live.network].filter(Boolean).join(' · ') || t('已登录') :
+    const transitioning = ['starting', 'stopping', 'authorizing', 'logging-out'].includes(live.state) || discovering;
+    $('#desktop-switch-network').disabled = !live.desktop || locked || transitioning || state.dirty || changing;
+    $('#desktop-switch-network').title = state.dirty || changing ? t('请先保存或放弃更改，再更换网络。') : '';
+    const network = live.state === 'logging-out' ? t('正在退出登录') : live.network ||
+      (authenticated ? t('已登录（网络名称未提供）') : live.backend_state === 'NeedsLogin' ? t('未登录') : transitioning ? t('正在读取网络…') : t('尚未读取网络'));
+    setStatusText('#desktop-network-name', network);
+    $('#desktop-network-name').title = network;
+    const identity = authenticated ? live.hostname || t('已登录') :
       discovering ? t('正在读取设备') : t('未登录 Tailscale');
     setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : identity);
     const current = connected ? live.exit || savedExit() : savedExit();
@@ -623,19 +635,35 @@
       notice(error.code === 'conflict' ? t('配置文件已更新') : t('无法应用连接更改'), error, 'error', error.code === 'conflict');
     } finally { quickBusy = false; state.busy = false; await refreshState(); updateActions(); }
   });
-  async function desktopAction(action) {
+  async function desktopAction(action, confirmed = false) {
     if (desktopBusy || quickBusy || connectionLost || !desktopLive?.desktop) return;
+    if (action === 'switch-network') {
+      if (state.dirty || Object.keys(connectionChanges()).length || isLocked() || $('#desktop-switch-network').disabled) return;
+      if (!confirmed) {
+        const dialog = $('#switch-network-dialog');
+        dialog.returnValue = 'cancel'; dialog.showModal();
+        return;
+      }
+    }
+    desktopError = null; clearNotice();
     stateRequest++;
     desktopBusy = true; desktopPending = action;
     renderConnectionCenter();
     try {
       await api('action', { action });
-      if (action === 'logout') selectedExit = selectedMode = null;
-    } catch (error) { notice(t('操作未完成'), error); }
+      if (action === 'logout' || action === 'switch-network') {
+        selectedExit = selectedMode = null;
+        $('#exit-node').value = ''; $('#exit-search').value = '';
+        $('#account-menu').open = false;
+      }
+    } catch (error) { desktopError = error; clearNotice(); }
     finally { desktopBusy = false; desktopPending = ''; await refreshState(); renderConnectionCenter(); }
   }
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
   $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
+  $('#switch-network-dialog').addEventListener('close', (event) => {
+    if (event.target.returnValue === 'switch-network') desktopAction('switch-network', true);
+  });
   $('#desktop-logout').addEventListener('click', async () => {
     const dialog = $('#logout-dialog');
     dialog.returnValue = 'cancel'; dialog.showModal();

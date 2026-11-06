@@ -379,6 +379,10 @@ func (a *windowsApp) operate() {
 		case request := <-a.operations:
 			if err := request.ctx.Err(); err != nil {
 				request.done <- err
+			} else if a.login.Opening() {
+				// Cancel leaves Opening set until the browser completion arrives.
+				// Do not let that completion overwrite a newer login or switch.
+				request.done <- configweb.ErrBusy
 			} else {
 				request.done <- request.apply()
 			}
@@ -414,6 +418,13 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 		case "logout":
 			a.login.Cancel()
 			return a.controller.Logout()
+		case "switch-network":
+			a.login.Cancel()
+			if err := a.controller.SwitchNetwork(); err != nil {
+				return err
+			}
+			a.login.Request()
+			return nil
 		case "refresh-exits":
 			return a.controller.RefreshExitNodes()
 		case "startup-on":

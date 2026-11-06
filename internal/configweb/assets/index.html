@@ -57,8 +57,8 @@
 
     <section class="app-page connection-page" id="page-connection" aria-label="连接页面" hidden>
       <div class="tailnet-row">
-        <div class="tailnet-identity"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><div><h2>Tailscale</h2><p id="tailnet-identity">正在读取设备</p></div></div>
-        <div class="tailnet-actions"><button class="button small" data-desktop-action="login" id="desktop-login">登录 Tailscale</button><details class="account-menu" id="account-menu" hidden><summary aria-label="Tailscale 设备操作">更多</summary><div><button class="link-button" data-desktop-action="login">重新登录</button><button class="link-button danger" id="desktop-logout">退出登录…</button></div></details></div>
+        <div class="tailnet-identity"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><div><h2>Tailscale</h2><p id="tailnet-identity">正在读取设备</p><div class="desktop-network-details"><span>当前网络</span><strong id="desktop-network-name" role="status">尚未读取网络</strong></div></div></div>
+        <div class="tailnet-actions"><button class="button small" data-desktop-action="login" id="desktop-login">登录 Tailscale</button><button class="link-button" data-desktop-action="switch-network" id="desktop-switch-network">更换网络…</button><details class="account-menu" id="account-menu" hidden><summary aria-label="Tailscale 设备操作">更多</summary><div><button class="link-button" data-desktop-action="login">重新登录</button><button class="link-button danger" id="desktop-logout">退出登录…</button></div></details></div>
       </div>
       <section class="connection-panel" aria-labelledby="heading-connection">
         <div class="desktop-main" id="desktop-controls" hidden>
@@ -152,6 +152,7 @@
   </main>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
+<dialog id="switch-network-dialog" aria-labelledby="switch-network-title" aria-describedby="switch-network-detail switch-network-config"><form method="dialog"><h2 id="switch-network-title">更换 Tailscale 网络？</h2><p id="switch-network-detail">当前连接会断开，并退出此设备的 Tailscale 登录。随后请在浏览器中选择要加入的网络。</p><p id="switch-network-config">旧网络限定、出口选择和自动授权设置将清空；授权后请重新选择出口。其他配置会保留。</p><div class="dialog-actions"><button class="button" value="cancel" autofocus>取消</button><button class="button primary" value="switch-network">继续并选择网络</button></div></form></dialog>
 <dialog id="discard-dialog"><form method="dialog"><h2>放弃未保存的更改？</h2><p>重新读取磁盘中的配置，当前草稿将被替换。</p><div class="dialog-actions"><button class="button" value="cancel">继续编辑</button><button class="button primary" value="discard">放弃并重新读取</button></div></form></dialog>
 <dialog id="logout-dialog"><form method="dialog"><h2>退出 Tailscale 登录？</h2><p>当前连接将断开。下次连接前需要重新登录。</p><div class="dialog-actions"><button class="button" value="cancel">取消</button><button class="button primary" value="logout">退出登录</button></div></form></dialog>
 </body>

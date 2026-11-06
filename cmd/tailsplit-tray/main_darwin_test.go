@@ -11,10 +11,44 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/tray"
 )
+
+func TestConfigurationPanelCanCancelServiceAuthorization(t *testing.T) {
+	snapshot := tray.Snapshot{State: "authorizing", Active: true}
+	for _, action := range []string{"", "connect", "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off"} {
+		request := configurationApply{action: action}
+		if blocked := request.blocked(false, false, false, snapshot); blocked != (action != "disconnect") {
+			t.Fatalf("action %q blocked=%t during service authorization", action, blocked)
+		}
+	}
+	request := configurationApply{action: "disconnect"}
+	for _, busy := range [][3]bool{{true, false, false}, {false, true, false}, {false, false, true}} {
+		if !request.blocked(busy[0], busy[1], busy[2], snapshot) {
+			t.Fatal("disconnect interrupted another owned operation:", busy)
+		}
+	}
+}
+
+func TestPanelStartupRequiresApprovalBeforeReportingEnabled(t *testing.T) {
+	opened := 0
+	openSettings := func() { opened++ }
+	if finishPanelStartup("startup-on", tray.LoginItemNeedsApproval, openSettings) || opened != 1 {
+		t.Fatal("pending login item was reported enabled or did not open approval settings")
+	}
+	if finishPanelStartup("", tray.LoginItemNeedsApproval, openSettings) || opened != 1 {
+		t.Fatal("polling a pending login item reopened settings or reported it enabled")
+	}
+	if !finishPanelStartup("", tray.LoginItemEnabled, openSettings) || opened != 1 {
+		t.Fatal("approved login item was not reflected in the panel")
+	}
+	if finishPanelStartup("startup-off", tray.LoginItemDisabled, openSettings) || opened != 1 {
+		t.Fatal("disabling startup opened settings or left the panel enabled")
+	}
+}
 
 func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	directory := t.TempDir()
@@ -65,6 +99,27 @@ func TestLegacySharedDeviceNameMigratesWithoutChangingChosenNames(t *testing.T) 
 	}
 }
 
+func TestDesktopLogTailIsBoundedAndValidUTF8(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tailsplit.log")
+	if _, err := desktopLogTail(path); !os.IsNotExist(err) {
+		t.Fatal("missing log did not report its error:", err)
+	}
+	if err := os.WriteFile(path, []byte("starting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := desktopLogTail(path); err != nil || text != "starting\n" {
+		t.Fatal("short log was changed:", text, err)
+	}
+	data := []byte(strings.Repeat("x", desktopLogLimit) + "\n\xfflast entry\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := desktopLogTail(path)
+	if err != nil || !utf8.ValidString(text) || text != "�last entry\n" || len(text) > desktopLogLimit {
+		t.Fatalf("log tail was not bounded and sanitized: length=%d valid=%t err=%v", len(text), utf8.ValidString(text), err)
+	}
+}
+
 func TestTemplateIconIsValid(t *testing.T) {
 	for _, connected := range []bool{false, true} {
 		icon, err := png.Decode(bytes.NewReader(trayIcon(connected)))
@@ -85,6 +140,7 @@ func (c *desktopActionFixture) Start() error            { return c.record("conne
 func (c *desktopActionFixture) StartLogin() error       { return c.record("start-login") }
 func (c *desktopActionFixture) Stop() error             { return c.record("disconnect") }
 func (c *desktopActionFixture) Logout() error           { return c.record("logout") }
+func (c *desktopActionFixture) SwitchNetwork() error    { return c.record("switch-network") }
 func (c *desktopActionFixture) RefreshExitNodes() error { return c.record("refresh-exits") }
 func (c *desktopActionFixture) record(action string) error {
 	c.calls = append(c.calls, action)
@@ -131,7 +187,7 @@ func TestDesktopLoginFailureKeepsPrivateDetailsOutOfActionError(t *testing.T) {
 }
 
 func TestDesktopActionsDeferWorkAndCancelLoginBeforeWorker(t *testing.T) {
-	for _, action := range []string{"connect", "disconnect", "logout", "refresh-exits", "startup-on", "startup-off"} {
+	for _, action := range []string{"connect", "disconnect", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off"} {
 		t.Run(action, func(t *testing.T) {
 			controller := &desktopActionFixture{}
 			var flow tray.LoginFlow
@@ -147,7 +203,7 @@ func TestDesktopActionsDeferWorkAndCancelLoginBeforeWorker(t *testing.T) {
 			if len(controller.calls) != 0 || len(startupCalls) != 0 {
 				t.Fatal("a blocking operation ran on the event loop")
 			}
-			if action == "disconnect" || action == "logout" {
+			if action == "connect" || action == "disconnect" || action == "logout" || action == "switch-network" {
 				if next := flow.Next(tray.Snapshot{LoginURL: "https://login.tailscale.com/a/stale"}); next != "" {
 					t.Fatal("login intent was not canceled before dispatching the worker")
 				}
@@ -190,7 +246,7 @@ func TestDesktopDisconnectCancelsPendingAuthorization(t *testing.T) {
 
 func TestDesktopConfigurationKeepsSerializationGuardsDuringAuthorization(t *testing.T) {
 	snapshot := tray.Snapshot{State: "authorizing", Active: true}
-	for _, action := range []string{"", "connect", "login", "logout", "refresh-exits", "startup-on", "startup-off"} {
+	for _, action := range []string{"", "connect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off"} {
 		if !desktopConfigurationBusy(action, snapshot, false, false, false) {
 			t.Fatalf("%q bypassed pending service authorization", action)
 		}

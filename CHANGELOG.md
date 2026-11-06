@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.10
+## 0.7.11
 
 - Put Connection and Logs at the top of the desktop sidebar and pin Settings at
   the bottom. Keep Tailscale sign-in, connect/disconnect, split/global routing
@@ -17,6 +17,16 @@
 - Align the sidebar Settings divider with the settings actionbar, including
   window resizing and wrapped English actions. Retain system appearance and
   English/Simplified Chinese support.
+
+## 0.7.10
+
+- Add explicit Tailnet switching from the desktop window and tray, with a
+  confirmation before disconnecting and signing the device out.
+- Clear the previous Tailnet restriction, exit selection and automatic
+  authorization setting while preserving unrelated configuration. Request fresh
+  browser authorization and leave exit selection and connection explicit.
+- Preserve network-switch errors across configuration reloads, bound native
+  browser requests, and handle macOS login-item approval accurately.
 
 ## 0.7.9
 

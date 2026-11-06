@@ -5,7 +5,9 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestLoginClickWaitsForTheFreshURLAfterLogout(t *testing.T) {
@@ -72,6 +74,70 @@ func TestBrowserLaunchUsesTheFreshInstanceAndDoesNotExposeTheLinkInErrors(t *tes
 			return nil
 		}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBrowserOpeningCancellationIgnoresLateNativeCompletion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseNative := sync.OnceFunc(func() { close(release) })
+	defer releaseNative()
+	result := make(chan error, 1)
+	go func() {
+		result <- runBrowserOpen(ctx, func() error {
+			close(started)
+			<-release // Model a shell handler that ignores its caller's context.
+			close(finished)
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("native browser request did not start")
+	}
+	var flow LoginFlow
+	flow.Request()
+	flow.Next(Snapshot{LoginURL: "https://login.tailscale.com/a/old"})
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("stalled native call lost cancellation:", err)
+		}
+		flow.Complete(err)
+	case <-time.After(time.Second):
+		t.Fatal("stalled browser request kept the UI busy")
+	}
+	flow.Request()
+	if flow.Next(Snapshot{LoginURL: "https://login.tailscale.com/a/new"}) == "" {
+		t.Fatal("cancelled browser request prevented a new login")
+	}
+	// A fresh request completes independently of the still-stalled native call.
+	failure := errors.New("new browser request failed")
+	if err := runBrowserOpen(context.Background(), func() error { return failure }); !errors.Is(err, failure) {
+		t.Fatal("old native call interfered with a new request:", err)
+	}
+	releaseNative()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("late native completion did not return")
+	}
+	if !flow.Opening() {
+		t.Fatal("late native completion changed the new login flow")
+	}
+}
+
+func TestBrowserOpeningHonorsAnExpiredDeadlineWithoutLaunching(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := runBrowserOpen(ctx, func() error {
+		t.Error("expired browser request reached the native launcher")
+		return nil
+	}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("expired browser deadline was lost:", err)
 	}
 }
 

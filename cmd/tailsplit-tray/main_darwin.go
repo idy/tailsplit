@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/idy/tailsplit"
@@ -40,11 +41,16 @@ type desktopActionController interface {
 	StartLogin() error
 	Stop() error
 	Logout() error
+	SwitchNetwork() error
 	RefreshExitNodes() error
 }
 
 func desktopConfigurationBusy(action string, snapshot tray.Snapshot, editing, loggingOut, opening bool) bool {
 	return editing || loggingOut || opening || snapshot.State == "authorizing" && action != "disconnect"
+}
+
+func (request configurationApply) blocked(editing, loggingOut, browserOpening bool, snapshot tray.Snapshot) bool {
+	return desktopConfigurationBusy(request.action, snapshot, editing, loggingOut, browserOpening)
 }
 
 // LoginFlow and action preparation belong to the menu's event loop. Only the
@@ -59,6 +65,7 @@ func desktopActionOperation(action string, controller desktopActionController, f
 		if snapshot.BackendState == "NeedsLogin" {
 			return nil, requestDesktopLogin(controller, flow)
 		}
+		flow.Cancel()
 		return controller.Start, nil
 	case "disconnect":
 		flow.Cancel()
@@ -67,9 +74,12 @@ func desktopActionOperation(action string, controller desktopActionController, f
 		return nil, requestDesktopLogin(controller, flow)
 	case "logout":
 		flow.Cancel()
-		// The window signs out only; the native switch-tailnet menu separately
-		// requests a fresh login after its logout operation completes.
+		// Signing out never opens a browser; only an explicit network switch
+		// requests authorization after its serialized operation completes.
 		return controller.Logout, nil
+	case "switch-network":
+		flow.Cancel()
+		return controller.SwitchNetwork, nil
 	case "refresh-exits":
 		return controller.RefreshExitNodes, nil
 	case "startup-on", "startup-off":
@@ -84,7 +94,7 @@ func setDesktopStartup(enabled bool, set func(bool) error, status func() tray.Lo
 		return err
 	}
 	if enabled && status() == tray.LoginItemNeedsApproval {
-		openSettings()
+		finishPanelStartup("startup-on", tray.LoginItemNeedsApproval, openSettings)
 		// Startup is a boolean in the window API: pending approval must not be
 		// presented as enabled. The native menu also shows the pending status.
 		if currentLanguage() == "zh" {
@@ -93,6 +103,14 @@ func setDesktopStartup(enabled bool, set func(bool) error, status func() tray.Lo
 		return errors.New("Allow TailSplit in System Settings → General → Login Items to finish enabling Open at Login.")
 	}
 	return nil
+}
+
+// Report actual startup availability, not just a registration awaiting approval.
+func finishPanelStartup(action string, status tray.LoginItemStatus, openSettings func()) bool {
+	if action == "startup-on" && status == tray.LoginItemNeedsApproval {
+		openSettings()
+	}
+	return status == tray.LoginItemEnabled
 }
 
 func main() {
@@ -159,6 +177,7 @@ func main() {
 	apply := func(requestCtx context.Context, update func() error, direct bool) error {
 		return submit(configurationApply{ctx: requestCtx, update: update, direct: direct})
 	}
+	var startupEnabled atomic.Bool
 	updates := newDesktopUpdates(ctx, tray.AppVersion(), preferences.CheckForUpdates,
 		func(ctx context.Context, enabled bool) error {
 			return apply(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) }, true)
@@ -200,10 +219,18 @@ func main() {
 			return submit(configurationApply{ctx: ctx, action: action})
 		},
 		Logs: func() (string, error) { return desktopLogTail(*logPath) },
-		// NeedsApproval is registered but cannot launch the app yet. The
-		// startup-on action explains approval and opens the native settings.
-		Startup: func() bool { return tray.LoginItem() == tray.LoginItemEnabled },
+		// Read the event loop's cached status from browser requests. A login
+		// item awaiting system approval must not be reported as enabled.
+		Startup: startupEnabled.Load,
 	})
+	showConfiguration := func() {
+		if configurationPage != nil {
+			if err := tray.ShowConfigurationWindow(configurationPage.URL()); err != nil {
+				controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
+				openPath(configurationPage.URL())
+			}
+		}
+	}
 	systray.Run(func() {
 		setTrayIcon(false)
 		systray.SetTooltip("TailSplit")
@@ -235,7 +262,7 @@ func main() {
 		login := addMenu(account, "登录 Tailscale…", "打开当前设备的登录页面")
 		copyLogin := addMenu(account, "复制登录链接", "复制当前有效的设备授权链接")
 		copyLogin.Hide()
-		logout := addMenu(account, "退出并切换 Tailnet…", "退出此 App 的设备登录，然后重新授权")
+		logout := addMenu(account, "退出并切换 Tailnet…", "在配置面板中确认切换网络；未保存的更改会保留")
 		startup := addMenu(nil, "启动设置", "")
 		startAtLogin := addMenu(startup, "登录 macOS 时打开", "通过系统登录项启动 .app", false)
 		connectOnStart := addMenu(startup, "打开 App 后自动连接", "只影响下次打开；需要登录时仍由你主动点击登录", preferences.ConnectOnStart)
@@ -282,8 +309,26 @@ func main() {
 			browserDone := make(chan error, 1)
 			logoutDone := make(chan error, 1)
 			loggingOut := false
+			switchingNetwork := false
 			editing := false
 			settingsDone := make(chan error, 1)
+			var pendingRequest chan error
+			var pendingAction string
+			completeRequest := func(err error) bool {
+				if pendingRequest == nil {
+					return false
+				}
+				pendingRequest <- err
+				pendingRequest, pendingAction = nil, ""
+				return true
+			}
+			reloadPreferences := func() {
+				if updated, readErr := tray.ReadPreferences(*config); readErr == nil {
+					preferences = updated
+					updates.updater.SetAutomatic(updated.CheckForUpdates)
+				}
+				previous = tray.Snapshot{}
+			}
 			reconfigure := func(update func() error) {
 				editing = true
 				flow.Cancel()
@@ -293,8 +338,8 @@ func main() {
 			loginItemStatus := tray.LoginItemUnavailable
 			refreshLoginItem := func() {
 				loginItemStatus = tray.LoginItem()
-				setChecked(startAtLogin, loginItemStatus == tray.LoginItemEnabled ||
-					loginItemStatus == tray.LoginItemNeedsApproval)
+				startupEnabled.Store(finishPanelStartup("", loginItemStatus, tray.OpenLoginItemSettings))
+				setChecked(startAtLogin, loginItemStatus == tray.LoginItemEnabled || loginItemStatus == tray.LoginItemNeedsApproval)
 				setEnabled(startAtLogin, loginItemStatus != tray.LoginItemUnavailable)
 				if loginItemStatus == tray.LoginItemNeedsApproval {
 					startAtLogin.SetTitle(tr("登录时打开（等待系统允许）"))
@@ -305,7 +350,7 @@ func main() {
 			refreshLoginItem()
 			ticks := 0
 			openReadyLogin := func(snapshot tray.Snapshot) {
-				if loggingOut {
+				if editing || loggingOut {
 					return
 				}
 				if value := flow.Next(snapshot); value != "" {
@@ -374,23 +419,22 @@ func main() {
 					if loggingOut || editing || flow.Opening() {
 						continue
 					}
-					flow.Cancel()
-					loggingOut = true
-					login.Disable()
-					go func() {
-						err := controller.Logout()
-						if err == nil {
-							err = controller.StartLogin()
-						}
-						logoutDone <- err
-					}()
+					// Reuse the panel's confirmation and draft guard. Showing its
+					// existing window preserves edits and performs no device action.
+					showConfiguration()
 				case err := <-logoutDone:
 					loggingOut = false
-					if err == nil {
+					if err == nil && switchingNetwork {
+						reloadPreferences()
 						flow.Request()
 						openReadyLogin(controller.Snapshot())
-					} else {
+					} else if err != nil {
 						flow.Fail("无法重新登录，请查看日志")
+					}
+					switchingNetwork = false
+					previous = tray.Snapshot{}
+					if !completeRequest(err) && err != nil {
+						showError(tr("无法重新登录，请查看日志"))
 					}
 				case <-customName.ClickedCh:
 					if editing || loggingOut || flow.Opening() {
@@ -428,13 +472,13 @@ func main() {
 						}
 					}
 				case <-refreshExits.ClickedCh:
-					if !editing && !loggingOut {
+					if !editing && !loggingOut && !flow.Opening() {
 						if err := controller.RefreshExitNodes(); err != nil {
 							showError(tr("无法刷新出口列表，请检查网络和后台服务"))
 						}
 					}
 				case request := <-configurationRequests:
-					if desktopConfigurationBusy(request.action, controller.Snapshot(), editing, loggingOut, flow.Opening()) {
+					if request.blocked(editing, loggingOut, flow.Opening(), controller.Snapshot()) {
 						request.done <- configweb.ErrBusy
 						continue
 					}
@@ -442,41 +486,45 @@ func main() {
 						request.done <- err
 						continue
 					}
+					var operation func() error
 					if request.action != "" {
-						update, err := desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
+						var err error
+						operation, err = desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
 							return setDesktopStartup(enabled, tray.SetLoginItem, tray.LoginItem, tray.OpenLoginItemSettings)
 						})
-						if err != nil || update == nil {
+						if err != nil || operation == nil {
 							if err == nil {
 								openReadyLogin(controller.Snapshot())
 							}
 							request.done <- err
 							continue
 						}
-						request.update, request.direct = update, true
 					} else {
 						flow.Cancel()
-					}
-					editing = true
-					go func() {
-						var err error
-						if request.direct {
-							err = request.update()
-						} else {
-							err = controller.Reconfigure(request.update)
+						operation = request.update
+						if !request.direct {
+							operation = func() error { return controller.Reconfigure(request.update) }
 						}
-						// The browser reports errors without a second native alert.
-						settingsDone <- nil
-						request.done <- err
-					}()
+					}
+					pendingRequest, pendingAction = request.done, request.action
+					if request.action == "logout" || request.action == "switch-network" {
+						loggingOut = true
+						switchingNetwork = request.action == "switch-network"
+						go func() { logoutDone <- operation() }()
+					} else {
+						editing = true
+						go func() { settingsDone <- operation() }()
+					}
 				case err := <-settingsDone:
 					editing = false
-					if updated, readErr := tray.ReadPreferences(*config); readErr == nil {
-						preferences = updated
-						updates.updater.SetAutomatic(updated.CheckForUpdates)
+					reloadPreferences()
+					if pendingAction == "startup-on" || pendingAction == "startup-off" {
+						// Refresh even after a registration or approval error so the
+						// panel sees the actual status before its request completes.
+						refreshLoginItem()
 					}
-					previous = tray.Snapshot{}
-					if err != nil {
+					// Return errors to the panel after clearing the busy state.
+					if !completeRequest(err) && err != nil {
 						showError(tr("无法应用设置，请检查配置和后台服务"))
 					}
 				case <-startAtLogin.ClickedCh:
@@ -492,7 +540,7 @@ func main() {
 						tray.OpenLoginItemSettings()
 					}
 				case <-connectOnStart.ClickedCh:
-					if editing {
+					if editing || loggingOut || flow.Opening() {
 						continue
 					}
 					value := !preferences.ConnectOnStart
@@ -505,12 +553,7 @@ func main() {
 				case <-loginItemSettings.ClickedCh:
 					tray.OpenLoginItemSettings()
 				case <-configuration.ClickedCh:
-					if configurationPage != nil {
-						if err := tray.ShowConfigurationWindow(configurationPage.URL()); err != nil {
-							controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-							openPath(configurationPage.URL())
-						}
-					}
+					showConfiguration()
 				case <-edit.ClickedCh:
 					openPath("-t", *config)
 				case <-reveal.ClickedCh:
@@ -537,16 +580,30 @@ func main() {
 				case <-about.ClickedCh:
 					tray.ShowAbout()
 				case <-installService.ClickedCh:
+					if editing || loggingOut || flow.Opening() || controller.Snapshot().State == "authorizing" {
+						continue
+					}
+					editing = true
+					flow.Cancel()
 					go func() {
-						if controller.Stop() == nil {
+						err := controller.Stop()
+						if err == nil {
 							openPath("-a", "Installer", filepath.Join(directory, "..", "Resources", "TailSplit Network Service.pkg"))
 						}
+						settingsDone <- err
 					}()
 				case <-removeService.ClickedCh:
+					if editing || loggingOut || flow.Opening() || controller.Snapshot().State == "authorizing" {
+						continue
+					}
+					editing = true
+					flow.Cancel()
 					go func() {
-						if controller.Stop() == nil {
+						err := controller.Stop()
+						if err == nil {
 							openPath("-a", "Installer", filepath.Join(directory, "..", "Resources", "Remove TailSplit Network Service.pkg"))
 						}
+						settingsDone <- err
 					}()
 				case <-copyAddress.ClickedCh:
 					if value := proxyAddress(*config); value != "" {
@@ -555,8 +612,10 @@ func main() {
 						_ = command.Run()
 					}
 				case <-quit.ClickedCh:
-					_ = controller.Stop()
-					systray.Quit()
+					go func() {
+						_ = controller.Close()
+						systray.Quit()
+					}()
 					return
 				case <-ticker.C:
 					language := currentLanguage()
@@ -643,7 +702,7 @@ func main() {
 					busy := editing || loggingOut || snapshot.State == "stopping" || snapshot.State == "logging-out"
 					setEnabled(connect, !busy && !flow.Opening())
 					setEnabled(restart, canReconnect(snapshot) && !busy && !flow.Opening())
-					setEnabled(logout, !busy && !flow.Opening())
+					setEnabled(logout, configurationPage != nil && !busy && !flow.Opening())
 					setEnabled(login, !busy && !flow.Opening() &&
 						snapshot.Mode != "discovery" &&
 						snapshot.BackendState != "Running" && snapshot.BackendState != "Direct")
@@ -655,7 +714,8 @@ func main() {
 					setEnabled(copyLogin, !busy)
 					setEnabled(device, !busy && !flow.Opening())
 					setEnabled(routing, !busy && !flow.Opening())
-					setEnabled(connectOnStart, !editing)
+					setEnabled(connectOnStart, !busy && !flow.Opening())
+					setEnabled(startAtLogin, loginItemStatus != tray.LoginItemUnavailable && !busy && !flow.Opening())
 					setEnabled(systemDNS, !busy && !flow.Opening())
 					setEnabled(debugLogging, !busy && !flow.Opening())
 					setEnabled(refreshExits, !busy && !flow.Opening())

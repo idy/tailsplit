@@ -28,6 +28,9 @@ func TestDesktopActionsRequireCapabilityAndExactVocabulary(t *testing.T) {
 		{"cmd.exe", nil, http.StatusBadRequest},
 		{"../config.yaml", nil, http.StatusBadRequest},
 		{"connect", nil, http.StatusOK},
+		{"switch-network", map[string]string{"Authorization": ""}, http.StatusUnauthorized},
+		{"switch-network", map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden},
+		{"switch-network", nil, http.StatusOK},
 		{"logout", nil, http.StatusConflict},
 	} {
 		status, _ := request(t, server, "POST", "/api/action", map[string]string{"action": test.action}, test.headers)
@@ -35,11 +38,11 @@ func TestDesktopActionsRequireCapabilityAndExactVocabulary(t *testing.T) {
 			t.Fatalf("%q: status %d, want %d", test.action, status, test.want)
 		}
 	}
-	if calls != 2 {
+	if calls != 3 {
 		t.Fatalf("unauthorized/unknown action reached controller: %d calls", calls)
 	}
 	status, _ := request(t, server, "POST", "/api/action", map[string]string{"action": "connect", "path": "C:\\Windows"}, nil)
-	if status != 400 || calls != 2 {
+	if status != 400 || calls != 3 {
 		t.Fatal("accepted an unknown authority field")
 	}
 }

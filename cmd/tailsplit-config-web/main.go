@@ -69,6 +69,24 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		if config, err := tailsplit.Load(configPath); err == nil {
 			updatePreviewSnapshot(&snapshot, config)
 		}
+		previewLogin := func(network string) {
+			snapshot.BackendState, snapshot.NetworkName = "Running", network
+			if !snapshot.Active {
+				snapshot.State = "authenticated"
+			}
+			snapshot.ExitNodes = []tailsplit.ExitNode{
+				{ID: "100.64.0.10", Name: "preview-singapore-exit", Online: true},
+				{ID: "100.64.0.20", Name: "preview-tokyo-exit", Online: true},
+				{ID: "100.64.0.30", Name: "preview-london-exit-offline", Online: false},
+			}
+			if network == "preview-work.ts.net" {
+				snapshot.ExitNodes = []tailsplit.ExitNode{
+					{ID: "100.64.0.20", Name: "preview-work-exit", Online: true},
+					{ID: "100.64.0.40", Name: "preview-work-backup", Online: true},
+					{ID: "100.64.0.50", Name: "preview-work-offline", Online: false},
+				}
+			}
+		}
 		startup := false
 		updates := appupdate.State{CurrentVersion: "0.6.1", Automatic: true}
 		options.UpdateState = func() appupdate.State { mutex.Lock(); defer mutex.Unlock(); return updates }
@@ -130,21 +148,44 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 						snapshot.BackendState = "Direct"
 					}
 				} else {
-					snapshot.BackendState, snapshot.NetworkName = "Running", "preview-tailnet.example"
-					if !snapshot.Active {
-						snapshot.State = "authenticated"
+					network := snapshot.NetworkName
+					if network == "" {
+						network = "preview-tailnet.example"
 					}
-					snapshot.ExitNodes = []tailsplit.ExitNode{
-						{ID: "100.64.0.10", Name: "preview-singapore-exit", Online: true},
-						{ID: "100.64.0.20", Name: "preview-tokyo-exit", Online: true},
-						{ID: "100.64.0.30", Name: "preview-london-exit-offline", Online: false},
-					}
+					previewLogin(network)
 				}
 				updatePreviewSnapshot(&snapshot, config)
 			case "disconnect":
 				snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
 			case "logout":
 				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin", RoutingMode: snapshot.RoutingMode}
+			case "switch-network":
+				original, revision, err := tray.ReadConfigDocument(configPath)
+				if err != nil {
+					return err
+				}
+				updated, err := tray.PatchConfigDocument(original,
+					tray.ConfigChange{Section: "tailscale", Key: "tailnet", Value: ""},
+					tray.ConfigChange{Section: "tailscale", Key: "exit_node", Value: ""},
+					tray.ConfigChange{Section: "tailscale", Key: "auth_key_env", Value: ""},
+				)
+				if err != nil {
+					return err
+				}
+				if err := tray.SaveConfigDocument(configPath, revision, updated); err != nil {
+					return err
+				}
+				updatedConfig, err := tailsplit.Load(configPath)
+				if err != nil {
+					return err
+				}
+				network := "preview-work.ts.net"
+				if snapshot.NetworkName == network {
+					network = "preview-personal.ts.net"
+				}
+				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
+				previewLogin(network)
+				updatePreviewSnapshot(&snapshot, updatedConfig)
 			case "startup-on":
 				startup = true
 			case "startup-off":

@@ -40,6 +40,7 @@ class Element {
   removeAttribute(name) { this.attributes.delete(name); }
   append(...children) { this.children.push(...children.flatMap((child) => child.fragment ? child.children : [child])); }
   replaceChildren(...children) { this.children = []; this.append(...children); }
+  showModal() { this.open = true; }
   focus() {}
   async emit(name, event = {}) {
     if (this.disabled && ['click', 'input', 'change', 'keydown'].includes(name)) return;
@@ -68,7 +69,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const modes = ['split', 'global'].map((mode) => {
     const button = $(`[data-routing-mode="${mode}"]`); button.dataset.routingMode = mode; return button;
   });
-  const desktopActions = ['connect', 'disconnect', 'login', 'refresh-exits'].map((action) => {
+  const desktopActions = ['connect', 'disconnect', 'login', 'switch-network', 'refresh-exits'].map((action) => {
     const selector = action === 'refresh-exits' ? '#refresh-exits' : `#desktop-${action}`;
     const button = $(selector); button.dataset.desktopAction = action; return button;
   });
@@ -300,6 +301,104 @@ test('only a running proxy is presented as connected', async () => {
   app.snapshot.state = 'running';
   await app.poll();
   assert.equal(app.$('#connection-status').classList.contains('connected'), true);
+});
+
+test('current network follows authentication and keeps user names literal across languages', async () => {
+  const app = await page({ desktop: true, network: '<Team>.ts.net', backend_state: 'Running' });
+  assert.equal(app.$('#desktop-network-name').textContent, '<Team>.ts.net');
+  app.i18n.setLanguage('en');
+  assert.equal(app.$('#desktop-network-name').textContent, '<Team>.ts.net');
+  app.snapshot.network = '';
+  app.snapshot.backend_state = 'NeedsLogin';
+  await app.poll();
+  assert.equal(app.$('#desktop-network-name').textContent, 'Signed out');
+  app.snapshot.backend_state = '';
+  await app.poll();
+  assert.equal(app.$('#desktop-network-name').textContent, 'Network not checked yet');
+});
+
+test('changing network requires confirmation and refreshes the network and exits', async () => {
+  const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running',
+    exit_nodes: [{ id: 'old-exit', name: 'Old exit', online: true }] });
+  const dialog = app.$('#switch-network-dialog');
+  const button = app.$('#desktop-switch-network');
+  await button.emit('click');
+  assert.equal(dialog.open, true);
+  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+  dialog.returnValue = 'cancel';
+  await dialog.emit('close');
+  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+  app.override = (request) => {
+    if (request.path !== '/api/action') return undefined;
+    assert.equal(request.data.action, 'switch-network');
+    app.snapshot.network = 'new.ts.net';
+    app.snapshot.exit_nodes = [{ id: 'new-exit', name: 'New exit', online: true }];
+    return response({ ok: true });
+  };
+  await button.emit('click');
+  dialog.returnValue = 'switch-network';
+  await dialog.emit('close');
+  await settle();
+  assert.equal(app.$('#desktop-network-name').textContent, 'new.ts.net');
+  assert.equal(exitRadio(app, 'new-exit').disabled, false);
+  assert.equal(app.$('#exit-list').children[0].children[1].children[0].textContent, 'New exit');
+  assert.equal(exitRadio(app, 'old-exit'), undefined);
+  assert.equal(app.requests.filter((r) => r.path === '/api/action').length, 1);
+});
+
+test('network switch conflicts stay visible across revision reloads until recovery', async () => {
+  for (const recovery of ['reload', 'login']) {
+    const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running' });
+    const conflict = { zh: '配置已在切换期间更新，请重试。', en: 'Configuration changed during switching. Try again.' };
+    app.override = (request) => {
+      if (request.path === '/api/action' && request.data.action === 'switch-network') {
+        app.snapshot = { ...app.snapshot, network: '', backend_state: 'NeedsLogin', revision: 'external' };
+        return response({ error: conflict.en, error_i18n: conflict }, false);
+      }
+      if (request.path === '/api/config') return response(doc(yaml + '# External edit\n', 'external'));
+      return undefined;
+    };
+    await app.$('#desktop-switch-network').emit('click');
+    app.$('#switch-network-dialog').returnValue = 'switch-network';
+    await app.$('#switch-network-dialog').emit('close');
+    await settle();
+    assert.match(app.$('#raw-yaml').value, /External edit/);
+    assert.equal(app.$('#desktop-network-name').textContent, '未登录');
+    assert.equal(app.$('#notice').hidden, false);
+    assert.equal(app.$('#notice-detail').textContent, conflict.zh);
+    await app.poll();
+    app.i18n.setLanguage('en');
+    assert.equal(app.$('#notice').hidden, false);
+    assert.equal(app.$('#notice-detail').textContent, conflict.en);
+    await app.$(recovery === 'reload' ? '#reload' : '#desktop-login').emit('click');
+    assert.equal(app.$('#notice').hidden, true, `error was not cleared by ${recovery}`);
+  }
+});
+
+test('changing network protects drafts and blocks duplicate requests', async () => {
+  const app = await page({ desktop: true, network: 'old.ts.net' });
+  const button = app.$('#desktop-switch-network');
+  await app.$('#yaml-tab').emit('click');
+  await app.input('#raw-yaml', 'unfinished: [');
+  assert.equal(button.disabled, true);
+  await button.emit('click');
+  assert.equal(app.$('#switch-network-dialog').open, undefined);
+  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+
+  const clean = await page({ desktop: true, network: 'old.ts.net' });
+  const pending = deferred();
+  clean.override = (request) => request.path === '/api/action' ? pending.promise : undefined;
+  await clean.$('#desktop-switch-network').emit('click');
+  clean.$('#switch-network-dialog').returnValue = 'switch-network';
+  await clean.$('#switch-network-dialog').emit('close');
+  assert.equal(clean.$('#desktop-switch-network').disabled, true);
+  await clean.$('#desktop-switch-network').emit('click');
+  pending.resolve(response({ error: 'Fixture logout failed' }, false));
+  await settle();
+  assert.equal(clean.$('#notice-detail').textContent, 'Fixture logout failed');
+  assert.equal(clean.$('#desktop-switch-network').disabled, false);
+  assert.equal(clean.requests.filter((r) => r.path === '/api/action').length, 1);
 });
 
 test('update controls are independent of desktop connection controls', async () => {
@@ -680,6 +779,64 @@ const exitsSnapshot = (changes = {}) => ({
   ], ...changes,
 });
 const exitRadio = (app, id) => app.$('#exit-list').children.find((row) => row.children[0].value === id)?.children[0];
+
+test('pending exit and mode selections block network switching until canceled', async () => {
+  for (const selection of ['exit', 'mode']) {
+    const app = await page(exitsSnapshot(), '', {}, exitDocument());
+    const button = app.$('#desktop-switch-network');
+    assert.equal(button.hidden, false);
+    assert.equal(button.disabled, false);
+    if (selection === 'exit') await exitRadio(app, '100.64.0.20').emit('change');
+    else await app.$('[data-routing-mode="global"]').emit('click');
+    assert.equal(button.disabled, true, selection);
+    await button.emit('click');
+    assert.equal(app.$('#switch-network-dialog').open, undefined);
+    assert.equal(app.$('#connection-apply').hidden, false);
+    assert.equal(app.requests.some((r) => r.method === 'POST'), false);
+    await app.$('#cancel-connection-change').emit('click');
+    assert.equal(button.disabled, false);
+    assert.equal(app.$('#connection-apply').hidden, true);
+  }
+});
+
+test('network confirmation rechecks drafts and pending connection choices', async () => {
+  for (const change of ['draft', 'exit', 'mode']) {
+    const app = await page(exitsSnapshot(), '', {}, exitDocument());
+    const dialog = app.$('#switch-network-dialog');
+    await app.$('#desktop-switch-network').emit('click');
+    assert.equal(dialog.open, true);
+    if (change === 'draft') {
+      await app.$('#yaml-tab').emit('click');
+      await app.input('#raw-yaml', 'unfinished: [');
+    } else if (change === 'exit') await exitRadio(app, '100.64.0.20').emit('change');
+    else await app.$('[data-routing-mode="global"]').emit('click');
+    dialog.returnValue = 'switch-network';
+    await dialog.emit('close');
+    await settle();
+    assert.equal(app.requests.some((r) => r.path === '/api/action'), false, change);
+    assert.equal(app.requests.some((r) => r.path === '/api/config' && r.method === 'POST'), false, change);
+    if (change === 'draft') assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+    else assert.equal(app.$('#connection-apply').hidden, false);
+  }
+});
+
+test('backend transition states block network switching until the device settles', async () => {
+  for (const transition of [
+    { state: 'starting' }, { state: 'stopping' }, { state: 'logging-out' },
+    { active: true, state: 'checking-exit', mode: '' },
+  ]) {
+    const app = await page(exitsSnapshot(transition), '', {}, exitDocument());
+    const button = app.$('#desktop-switch-network');
+    assert.equal(button.disabled, true, transition.state);
+    if (transition.state === 'logging-out') assert.equal(app.$('#desktop-network-name').textContent, '正在退出登录');
+    await button.emit('click');
+    assert.equal(app.$('#switch-network-dialog').open, undefined);
+    assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+    app.snapshot = { ...app.snapshot, active: false, state: 'stopped', mode: '' };
+    await app.poll();
+    assert.equal(button.disabled, false);
+  }
+});
 
 test('page navigation preserves incomplete YAML and keeps settings at a separate destination', async () => {
   const app = await page(exitsSnapshot());

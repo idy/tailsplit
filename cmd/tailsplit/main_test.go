@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/appservice"
 	"github.com/idy/tailsplit/internal/privatefs"
 )
 
@@ -46,6 +48,32 @@ func TestRenderAndStrictCommandArguments(t *testing.T) {
 		if err := execute(args, &out, &diagnostic); err == nil {
 			t.Fatalf("ignored invalid arguments: %v", args)
 		}
+	}
+}
+
+func TestDeviceLogoutPassesServicePolicyWithoutChangingSavedAuthorization(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	original := []byte("version: 1\nstate_dir: ./state\ntailscale:\n  auth_key_env: FIXTURE_OLD_NETWORK_KEY\n  tailnet: old.ts.net\n  exit_node: 100.64.0.1\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := tailsplit.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appservice.ValidateAppConfig(config); err == nil {
+		t.Fatal("fixture did not exercise the service's auth-key rejection")
+	}
+	logout := deviceLogoutConfig(config)
+	if err := appservice.ValidateAppConfig(logout); err != nil {
+		t.Fatal("device logout is still rejected by the service policy:", err)
+	}
+	if config.Tailscale.AuthKeyEnv != "FIXTURE_OLD_NETWORK_KEY" || logout.Tailscale.ExitNode != config.Tailscale.ExitNode || logout.Tailscale.Tailnet != config.Tailscale.Tailnet {
+		t.Fatal("preparing logout changed the original configuration or device selection")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, original) {
+		t.Fatal("preparing logout changed the saved configuration:", err)
 	}
 }
 

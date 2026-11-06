@@ -312,8 +312,24 @@ func (c *Controller) Logout() error {
 		c.snapshot = Snapshot{State: "failed", Error: "退出设备登录失败，请查看日志"}
 		return err
 	}
-	c.snapshot = Snapshot{State: "stopped"}
+	c.snapshot = Snapshot{State: "stopped", BackendState: "NeedsLogin"}
 	return nil
+}
+
+// SwitchNetwork leaves the proxy disconnected and requests a fresh interactive
+// device authorization. Desktop callers serialize it with other user actions.
+func (c *Controller) SwitchNetwork() error {
+	save, err := prepareNetworkSwitch(c.options.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if err := c.Logout(); err != nil {
+		return err
+	}
+	if err := save(); err != nil {
+		return err
+	}
+	return c.StartLogin()
 }
 
 func (c *Controller) Close() error {
