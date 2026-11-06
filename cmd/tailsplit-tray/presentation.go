@@ -10,6 +10,12 @@ type connectionView struct {
 	Action  string
 }
 
+func connectionPresentationForLanguage(snapshot tray.Snapshot, language string) connectionView {
+	view := connectionPresentation(snapshot)
+	return connectionView{tray.Translate(language, view.Summary), tray.Translate(language, view.Action)}
+}
+
+// Retain the original presentation for callers that need the source strings.
 func connectionPresentation(snapshot tray.Snapshot) connectionView {
 	if !snapshot.Active {
 		if snapshot.BackendState == "NeedsLogin" {

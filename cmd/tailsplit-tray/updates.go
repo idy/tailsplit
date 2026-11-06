@@ -116,6 +116,13 @@ func (d *desktopUpdates) action(ctx context.Context, action string) error {
 	}
 }
 
+func updateMenuTitleForLanguage(state appupdate.State, language string) string {
+	if state.Available && !state.Downloading && !state.Installing && !state.Checking {
+		return tray.Translate(language, "升级到 ") + state.LatestVersion + "…"
+	}
+	return tray.Translate(language, updateMenuTitle(state))
+}
+
 func updateMenuTitle(state appupdate.State) string {
 	switch {
 	case state.Downloading:

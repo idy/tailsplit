@@ -5,6 +5,7 @@ package tray
 /*
 #cgo LDFLAGS: -framework AppKit -framework ServiceManagement
 #include <stdlib.h>
+void tailsplit_set_ui_language(int chinese);
 int tailsplit_login_item_status(void);
 char *tailsplit_set_login_item(int enabled);
 void tailsplit_login_item_settings(void);
@@ -63,4 +64,12 @@ func EditDeviceName(current string) (string, bool) {
 	}
 	defer C.free(unsafe.Pointer(value))
 	return C.GoString(value), saved != 0
+}
+
+func setNativeUILanguage(language string) {
+	var chinese C.int
+	if language == "zh" {
+		chinese = 1
+	}
+	C.tailsplit_set_ui_language(chinese)
 }
