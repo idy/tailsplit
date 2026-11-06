@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -278,14 +279,22 @@ func fixtureAddress(
 	listen func(string, string) (net.Listener, error),
 	listenPacket func(string, string) (net.PacketConn, error),
 ) (string, error) {
-	// Let TCP choose the port: Windows can repeatedly allocate UDP ports from
-	// a TCP-excluded range. The mixed/direct inbounds need both protocols, so
-	// keep TCP bound while probing UDP and retry if that port is UDP-excluded.
+	// Try the TCP allocator first, then sample nonprivileged ports across the
+	// full range: Windows can keep choosing a TCP port from a UDP-excluded
+	// range. Every candidate must support both protocols before it is returned.
 	var lastErr error
 	for attempt := 0; attempt < 100; attempt++ {
-		listener, err := listen("tcp4", "127.0.0.1:0")
+		candidate := "127.0.0.1:0"
+		if attempt > 0 {
+			candidate = fmt.Sprintf("127.0.0.1:%d", 1024+rand.IntN(65536-1024))
+		}
+		listener, err := listen("tcp4", candidate)
 		if err != nil {
-			return "", fmt.Errorf("could not allocate a TCP fixture port: %w", err)
+			if attempt == 0 {
+				return "", fmt.Errorf("could not allocate a TCP fixture port: %w", err)
+			}
+			lastErr = err
+			continue
 		}
 		address := listener.Addr().String()
 		packets, err := listenPacket("udp4", address)
