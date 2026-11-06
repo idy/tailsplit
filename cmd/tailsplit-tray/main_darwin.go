@@ -49,17 +49,6 @@ func desktopConfigurationBusy(action string, snapshot tray.Snapshot, editing, lo
 
 // LoginFlow and action preparation belong to the menu's event loop. Only the
 // returned controller or login-item operation may run on the settings worker.
-func requestDesktopLogin(controller desktopActionController, flow *tray.LoginFlow) error {
-	if !controller.Snapshot().Active {
-		if err := controller.StartLogin(); err != nil {
-			flow.Fail("无法准备登录，请查看日志")
-			return errors.New(tr("无法准备登录，请查看日志"))
-		}
-	}
-	flow.Request()
-	return nil
-}
-
 func desktopActionOperation(action string, controller desktopActionController, flow *tray.LoginFlow, startup func(bool) error) (func() error, error) {
 	switch action {
 	case "connect":

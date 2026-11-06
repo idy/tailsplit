@@ -471,7 +471,8 @@
   let selectedMode = null;
   let exitListSignature = '';
   const networkActive = (live = desktopLive) => Boolean(live?.active && ['tun', 'proxy'].includes(live.mode));
-  const signedIn = (live = desktopLive) => live?.backend_state === 'Running' || live?.state === 'authenticated';
+  const needsAuthentication = (live = desktopLive) => live?.backend_state === 'NeedsLogin' || live?.state === 'login';
+  const signedIn = (live = desktopLive) => !needsAuthentication(live) && (live?.backend_state === 'Running' || live?.state === 'authenticated');
   const savedExit = () => String(fieldValue(state.savedValues, 'tailscale.exit_node') || '');
   const savedMode = () => fieldValue(state.savedValues, 'rules.mode') === 'global' ? 'global' : 'split';
   const connectionChanges = () => ({
@@ -514,7 +515,7 @@
     $('#desktop-disconnect').textContent = connected ? t('断开') : t('取消');
     for (const button of document.querySelectorAll('[data-desktop-action]')) {
       if (['connect', 'disconnect'].includes(button.dataset.desktopAction)) continue;
-      button.disabled = !live.desktop || locked || discovering || button.dataset.desktopAction === 'login' && connected;
+      button.disabled = !live.desktop || locked || discovering || button.dataset.desktopAction === 'login' && connected && !needsAuthentication(live);
     }
     $('#desktop-login').hidden = authenticated;
     $('#account-menu').hidden = !authenticated;

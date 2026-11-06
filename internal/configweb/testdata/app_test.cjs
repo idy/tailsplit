@@ -599,6 +599,22 @@ test('visible backend errors and location labels switch languages without retryi
   assert.equal(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').length, 1);
 });
 
+test('active sessions needing authentication can request sign-in without disconnecting', async () => {
+  for (const mode of ['proxy', 'tun']) {
+    for (const [state, backend_state] of [['login', 'NeedsLogin'], ['blocked', 'NeedsLogin'], ['login', 'Running']]) {
+      const app = await page({ desktop: true, active: true, mode, state, backend_state });
+      assert.equal(app.$('#desktop-login').hidden, false, `${mode}/${state}`);
+      assert.equal(app.$('#desktop-login').disabled, false, `${mode}/${state}`);
+      await app.$('#desktop-login').emit('click');
+      assert.deepEqual(app.requests.filter(request => request.path === '/api/action').map(request => request.data.action), ['login']);
+      assert.equal(app.snapshot.active, true);
+      assert.equal(app.snapshot.mode, mode);
+    }
+  }
+  const starting = await page({ desktop: true, active: true, mode: 'tun', state: 'starting', backend_state: '' });
+  assert.equal(starting.$('#desktop-login').disabled, true);
+});
+
 test('log-level changes in YAML mode update the source and saved payload without losing other edits', async () => {
   const edited = '# Keep this comment\n' + yaml.replace('1400', '1500');
   const app = await page({}, '', {}, doc(edited));

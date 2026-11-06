@@ -410,11 +410,7 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			a.login.Cancel()
 			return a.controller.Stop()
 		case "login":
-			if err := a.controller.Stop(); err != nil {
-				return err
-			}
-			a.login.Request()
-			return a.controller.StartLogin()
+			return requestDesktopLogin(a.controller, &a.login)
 		case "logout":
 			a.login.Cancel()
 			return a.controller.Logout()
