@@ -20,6 +20,7 @@ public static class TailSplitDesktopFixture {
  [StructLayout(LayoutKind.Sequential)] public struct ProcessInfo { public IntPtr process,thread; public int pid,tid; }
  [StructLayout(LayoutKind.Sequential)] public struct Label { public IntPtr sid; public int attributes; }
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left,top,right,bottom; }
+ [StructLayout(LayoutKind.Sequential)] public struct Point { public int x,y; }
  [StructLayout(LayoutKind.Sequential)] public struct MonitorInfo { public int size; public Rect monitor,work; public uint flags; }
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
  public static string TokenSource = "fresh standard Windows account";
@@ -38,6 +39,9 @@ public static class TailSplitDesktopFixture {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect result);
+ [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window,out Rect result);
+ [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window,ref Point point);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr window,uint message,IntPtr wparam,string lparam,uint flags,uint timeout,out IntPtr result);
  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
  [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr window,uint flags);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor,ref MonitorInfo info);
@@ -79,6 +83,33 @@ function Wait-Until([scriptblock]$Check, [string]$Failure, [int]$Seconds=40) {
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $deadline)
     throw $Failure
+}
+function Broadcast-AppearanceChange {
+    $result = [IntPtr]::Zero
+    # The desktop and WebView2 browser processes must both receive the same
+    # broadcast Windows sends after Personalization > Colors changes.
+    [TailSplitDesktopFixture]::SendMessageTimeout([IntPtr]0xffff,0x1a,[IntPtr]::Zero,'ImmersiveColorSet',2,1000,[ref]$result) | Out-Null
+}
+function Test-NativeCanvas([IntPtr]$Window, [int]$Light) {
+    $bounds = New-Object TailSplitDesktopFixture+Rect
+    $client = New-Object TailSplitDesktopFixture+Rect
+    $origin = New-Object TailSplitDesktopFixture+Point
+    if (-not [TailSplitDesktopFixture]::GetWindowRect($Window,[ref]$bounds) -or
+        -not [TailSplitDesktopFixture]::GetClientRect($Window,[ref]$client) -or
+        -not [TailSplitDesktopFixture]::ClientToScreen($Window,[ref]$origin)) { throw 'Cannot inspect themed window geometry.' }
+    $bitmap = New-Object Drawing.Bitmap(($bounds.right-$bounds.left),($bounds.bottom-$bounds.top))
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $context = $graphics.GetHdc()
+        try {
+            if (-not [TailSplitDesktopFixture]::PrintWindow($Window,$context,2)) { throw 'Cannot capture themed window.' }
+        } finally { $graphics.ReleaseHdc($context) }
+        # A blank point at the top center of the HTML titlebar reads the page's
+        # canvas, proving its media query changed in the actual native window.
+        $pixel = $bitmap.GetPixel(($origin.x-$bounds.left+[int](($client.right-$client.left)/2)),($origin.y-$bounds.top+2))
+        $expected = if ($Light) { [Drawing.Color]::FromArgb(245,245,247) } else { [Drawing.Color]::FromArgb(28,28,30) }
+        return $pixel.ToArgb() -eq $expected.ToArgb()
+    } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 function Find-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
     $condition = New-Object System.Windows.Automation.AndCondition(
@@ -130,6 +161,29 @@ try {
     Wait-Until { Find-Button $automation '连接' } 'The native window has no desktop controls.' | Out-Null
     foreach ($name in @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用','最大化或还原')) {
         if (-not (Find-Button $automation $name)) { throw "Missing actual window control: $name" }
+    }
+    $stage = 'checking initial and live system app appearance'
+    # Only this fixture's fresh account is changed; its Windows/system mode is
+    # deliberately opposite to prove the app follows AppsUseLightTheme.
+    $appearance = [Microsoft.Win32.Registry]::Users.CreateSubKey("$accountSID\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+    $savedAppearance = @{}
+    foreach ($name in @('AppsUseLightTheme','SystemUsesLightTheme')) { $savedAppearance[$name] = $appearance.GetValue($name,$null) }
+    try {
+        $initialLight = [int]$appearance.GetValue('AppsUseLightTheme',1)
+        Wait-Until { Test-NativeCanvas $window $initialLight } 'Initial page canvas does not follow the app appearance.' | Out-Null
+        foreach ($light in @(0,1)) {
+            $appearance.SetValue('AppsUseLightTheme',$light,[Microsoft.Win32.RegistryValueKind]::DWord)
+            $appearance.SetValue('SystemUsesLightTheme',(1-$light),[Microsoft.Win32.RegistryValueKind]::DWord)
+            Broadcast-AppearanceChange
+            Wait-Until { Test-NativeCanvas $window $light } "Page canvas did not follow a live app appearance change (light=$light)." | Out-Null
+        }
+    } finally {
+        foreach ($name in $savedAppearance.Keys) {
+            if ($null -eq $savedAppearance[$name]) { $appearance.DeleteValue($name,$false) }
+            else { $appearance.SetValue($name,$savedAppearance[$name],[Microsoft.Win32.RegistryValueKind]::DWord) }
+        }
+        $appearance.Close()
+        Broadcast-AppearanceChange
     }
     $stage = 'maximizing and restoring the native window'
     Invoke-Button $automation '最大化或还原'
@@ -188,7 +242,7 @@ try {
         Invoke-Button $automation '连接'
         Wait-Connected $automation 'Reconnect before upgrade did not reach a running service session.'
     }
-    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; maximize_restore=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
+    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; system_appearance=$true; maximize_restore=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
 } catch {
     $primaryFailure = $_
     $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource; elapsed_ms=$startupClock.ElapsedMilliseconds; startup_phases=$nativePhases.ToArray() }

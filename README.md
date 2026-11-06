@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.7 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.8 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -183,11 +183,13 @@ their percentage inside that button; installation shows its current phase in
 the same place. The title row supports window dragging and double-click zoom,
 with native macOS window buttons and Windows minimize, maximize/restore and
 close controls. Closing still hides the window to the menu bar or tray.
-The panel groups connection, DNS, routing and startup settings in a compact dark
-layout. Wide windows add a live YAML preview, and a full source editor is always
-available. Validate or save/apply
-changes from either view. Saving reconnects an active proxy; an idle app stays
-idle. Existing comments and unrelated settings are preserved. External edits
+The panel groups connection, DNS, routing and startup settings in a compact
+layout. The panel and native window follow the system's light or dark appearance
+and update immediately when it changes, preserving unsaved edits. The local page
+also follows the browser's color preference when opened outside the app.
+Wide windows add a live YAML preview, and a full source editor is always
+available. Validate or save/apply changes from either view. Saving reconnects an
+active proxy; an idle app stays idle. Existing comments and unrelated settings are preserved. External edits
 cause a revision conflict, and failed edits retain the unsaved draft. App service
 checks run before saving: the application proxy port must be at least 1024, the
 system chooses the TUN name, and the app uses interactive or saved login rather

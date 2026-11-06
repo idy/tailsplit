@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.8
+
+- Follow the system's light or dark appearance in the desktop configuration panel
+  and local browser page. Switch immediately without reloading or losing unsaved
+  form edits, YAML drafts or open dialogs.
+- Match macOS window and web-view backgrounds to the current appearance. Follow
+  Windows app color mode for the native frame, loading canvas and WebView2 page,
+  including live changes and custom app/system color combinations.
+- Adapt controls, status messages, dialogs and YAML highlighting for both themes,
+  and verify initial and live appearance in the native Windows desktop fixture.
+
 ## 0.7.7
 
 - Improve desktop configuration readability with clearer section headings, larger
