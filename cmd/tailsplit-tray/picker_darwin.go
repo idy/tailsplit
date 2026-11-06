@@ -19,7 +19,7 @@ type exitPicker struct {
 }
 
 func newExitPicker(parent *systray.MenuItem) *exitPicker {
-	empty := parent.AddSubMenuItem("登录后刷新出口列表", "")
+	empty := parent.AddSubMenuItem(tr("登录后刷新出口列表"), "")
 	empty.Disable()
 	return &exitPicker{
 		parent: parent, empty: empty, items: make(map[string]*systray.MenuItem),
@@ -28,6 +28,7 @@ func newExitPicker(parent *systray.MenuItem) *exitPicker {
 }
 
 func (p *exitPicker) update(snapshot tray.Snapshot, configured string, enabled bool) {
+	p.empty.SetTitle(tr("登录后刷新出口列表"))
 	for _, item := range p.items {
 		item.Hide()
 	}
@@ -61,10 +62,10 @@ func (p *exitPicker) update(snapshot tray.Snapshot, configured string, enabled b
 		}
 		label := node.Name + " · " + node.ID
 		if !node.Online {
-			label += "（离线或已过期）"
+			label += tr("（离线或已过期）")
 		}
 		item.SetTitle(label)
-		item.SetTooltip("选择后保存配置；正在运行的代理会重新连接")
+		item.SetTooltip(tr("选择后保存配置；正在运行的代理会重新连接"))
 		setChecked(item, node.ID == configured || node.Name == configured || !directMatch && node.Selected)
 		setEnabled(item, enabled && node.Online)
 		item.Show()

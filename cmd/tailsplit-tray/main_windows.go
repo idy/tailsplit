@@ -22,6 +22,7 @@ import (
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/configweb"
+	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/privatefs"
 	"github.com/idy/tailsplit/internal/tray"
 	"github.com/idy/tailsplit/internal/winui"
@@ -102,6 +103,8 @@ func runWindowsDesktop() (runErr error) {
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+	uiLanguage = locale.NewStore(*config)
+	tray.SetUILanguage(currentLanguage())
 	if flags.NArg() != 0 {
 		return errors.New("unexpected desktop application argument")
 	}
@@ -187,7 +190,7 @@ func runWindowsDesktop() (runErr error) {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
 		}, launchWindowsUpdate)
 	page, err := configweb.Start(configweb.Options{
-		ConfigPath: *config, Snapshot: controller.Snapshot,
+		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
 		Apply: func(ctx context.Context, update func() error) error {
 			return app.do(ctx, func() error {
 				err := controller.Reconfigure(update)
@@ -229,20 +232,20 @@ func runWindowsDesktop() (runErr error) {
 	systray.Run(func() {
 		systray.SetIcon(windowsTrayIcon(false))
 		systray.SetTooltip("TailSplit")
-		open := systray.AddMenuItem("打开 TailSplit", "连接、账号、分流与日志")
-		status := systray.AddMenuItem("未连接", "")
+		open := addMenu(nil, "打开 TailSplit", "连接、账号、分流与日志")
+		status := addMenu(nil, "未连接", "")
 		status.Disable()
-		connect := systray.AddMenuItem("连接", "使用当前配置连接")
-		disconnect := systray.AddMenuItem("断开", "停止网络会话并恢复受管理的网络")
-		login := systray.AddMenuItem("登录 Tailnet…", "在默认浏览器中授权本机设备")
-		logout := systray.AddMenuItem("退出设备登录", "先断开，再退出当前设备登录")
-		refresh := systray.AddMenuItem("刷新出口节点", "只读取设备，不创建 TUN")
-		startup := systray.AddMenuItemCheckbox("登录 Windows 后启动", "只启动界面；自动连接另行设置", tray.LoginItem() == tray.LoginItemEnabled)
+		connect := addMenu(nil, "连接", "使用当前配置连接")
+		disconnect := addMenu(nil, "断开", "停止网络会话并恢复受管理的网络")
+		login := addMenu(nil, "登录 Tailnet…", "在默认浏览器中授权本机设备")
+		logout := addMenu(nil, "退出设备登录", "先断开，再退出当前设备登录")
+		refresh := addMenu(nil, "刷新出口节点", "只读取设备，不创建 TUN")
+		startup := addMenu(nil, "登录 Windows 后启动", "只启动界面；自动连接另行设置", tray.LoginItem() == tray.LoginItemEnabled)
 		systray.AddSeparator()
-		checkUpdate := systray.AddMenuItem("检查更新…", "检查 GitHub 正式版；安装前会确认")
-		autoUpdates := systray.AddMenuItemCheckbox("自动检查更新", "启动后和每六小时检查", preferences.CheckForUpdates)
-		about := systray.AddMenuItem("关于 TailSplit", "版本与源代码信息")
-		exit := systray.AddMenuItem("退出 TailSplit", "先断开网络，再退出")
+		checkUpdate := addMenu(nil, "检查更新…", "检查 GitHub 正式版；安装前会确认")
+		autoUpdates := addMenu(nil, "自动检查更新", "启动后和每六小时检查", preferences.CheckForUpdates)
+		about := addMenu(nil, "关于 TailSplit", "版本与源代码信息")
+		exit := addMenu(nil, "退出 TailSplit", "先断开网络，再退出")
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		var connected bool
@@ -296,14 +299,20 @@ func runWindowsDesktop() (runErr error) {
 					}
 				}()
 			case <-about.ClickedCh:
-				windowsError(fmt.Sprintf("TailSplit %s\nSource: %s\nhttps://github.com/idy/tailsplit", version, commit))
+				windowsError(fmt.Sprintf("TailSplit %s\n%s%s\nhttps://github.com/idy/tailsplit", version, tr("源代码："), commit))
 			case <-exit.ClickedCh:
 				app.shutdown()
 				return
 			case <-ticker.C:
+				language := currentLanguage()
+				languageChanged := language != tray.UILanguage()
+				if languageChanged {
+					tray.SetUILanguage(language)
+					refreshMenuLanguage()
+				}
 				updateState := app.updates.snapshot()
-				checkUpdate.SetTitle(updateMenuTitle(updateState))
-				checkUpdate.SetTooltip(updateState.Error)
+				checkUpdate.SetTitle(updateMenuTitleForLanguage(updateState, currentLanguage()))
+				checkUpdate.SetTooltip(tr(updateState.Error))
 				if updateState.Checking || updateState.Downloading || updateState.Installing {
 					checkUpdate.Disable()
 				} else {
@@ -315,7 +324,9 @@ func runWindowsDesktop() (runErr error) {
 					autoUpdates.Uncheck()
 				}
 				snapshot := controller.Snapshot()
-				status.SetTitle("TailSplit · " + snapshot.State)
+				presentation := connectionPresentationForLanguage(snapshot, language)
+				status.SetTitle("TailSplit · " + presentation.Summary)
+				systray.SetTooltip("TailSplit · " + presentation.Summary)
 				if now := isConnected(snapshot); now != connected {
 					connected = now
 					systray.SetIcon(windowsTrayIcon(connected))
@@ -577,7 +588,7 @@ func hideInitialWindowsWindow(class string, ctx context.Context) {
 }
 
 func windowsError(message string) {
-	text, _ := windows.UTF16PtrFromString(message)
+	text, _ := windows.UTF16PtrFromString(tr(message))
 	title, _ := windows.UTF16PtrFromString("TailSplit")
 	windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
 }

@@ -6,6 +6,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = readFileSync(process.argv[2] || join(__dirname, '../assets/app.js'), 'utf8');
+const i18nSource = readFileSync(join(__dirname, '../assets/i18n.js'), 'utf8');
 const yaml = 'log_level: info\ntun:\n  mtu: 1400\n';
 const doc = (text = yaml, revision = 'original') => ({
   yaml: text, revision, valid: true, parsed: true,
@@ -48,7 +49,7 @@ class Element {
   }
 }
 
-async function page(snapshot = {}, native = '') {
+async function page(snapshot = {}, native = '', localeOptions = {}) {
   const nodes = new Map();
   const $ = (selector) => {
     if (!nodes.has(selector)) nodes.set(selector, new Element());
@@ -81,7 +82,8 @@ async function page(snapshot = {}, native = '') {
     return button;
   });
   $('#window-controls').hidden = true;
-  const app = { $, requests, messages, windowEvents: window, snapshot: { state: 'stopped', revision: 'original', ...snapshot }, override: () => undefined };
+  const app = { $, requests, messages, windowEvents: window, snapshot: { state: 'stopped', revision: 'original', ...snapshot },
+    language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: () => undefined };
   const document = {
     documentElement: new Element(), hidden: false, querySelector: $, createElement: () => new Element(),
     createTextNode: () => new Element(), createDocumentFragment: () => new Element(),
@@ -91,17 +93,21 @@ async function page(snapshot = {}, native = '') {
       selector === '.editor-tabs button, [data-section]' ? [$('#form-tab'), $('#yaml-tab'), navigation] : [],
     addEventListener: (...args) => events.addEventListener(...args),
   };
-  vm.runInNewContext(source, {
+  const sandbox = {
     document, window, URLSearchParams, location: { hash: '#token=fixture' },
     history: { replaceState() {} }, sessionStorage: { setItem() {}, getItem() {} },
-    navigator: { clipboard: { writeText: async () => {} } },
+    navigator: { languages: localeOptions.languages || ['zh-CN'], clipboard: { writeText: async () => {} } },
     setTimeout: (callback) => { timers.set(++timer, callback); return timer; },
     clearTimeout: (id) => timers.delete(id), setInterval: (callback) => { poll = callback; },
     fetch: async (path, options) => {
-      const request = { path, method: options.method, data: options.body && JSON.parse(options.body) };
+      const request = { path, method: options.method, headers: options.headers, data: options.body && JSON.parse(options.body) };
       requests.push(request);
       const overridden = app.override(request);
       if (overridden !== undefined) return overridden;
+      if (path === '/api/language') {
+        if (request.method === 'POST') app.language = { preference: request.data.preference, language: request.data.preference === 'auto' ? localeOptions.language || 'zh' : request.data.preference };
+        return response(app.language);
+      }
       if (path === '/api/state') return response(app.snapshot);
       if (path === '/api/config') return response(doc());
       if (path === '/api/preview') {
@@ -112,7 +118,11 @@ async function page(snapshot = {}, native = '') {
       }
       return response({ valid: true });
     },
-  });
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(i18nSource, sandbox, { filename: 'i18n.js' });
+  vm.runInContext(source, sandbox, { filename: 'app.js' });
+  app.i18n = window.TailSplitI18n;
   await settle();
   assert.equal($('#level').value, 'info');
   app.poll = () => poll();
@@ -482,4 +492,72 @@ test('a saved update preference preserves an existing draft and its revision pro
   assert.match(app.$('#raw-yaml').value, /log_level: debug/);
   assert.equal(app.requests.some((request) => request.method === 'POST' && request.path === '/api/config'), false);
   assert.equal(app.requests.some((request) => request.path === '/api/action'), false);
+});
+
+test('English preference translates dynamic states and uses English API diagnostics', async () => {
+  const app = await page({ state: 'blocked', updates: updateState({ downloading: true, downloaded_bytes: 512, total_bytes: 1024 }) }, '', { preference: 'en', language: 'en', languages: ['en-US'] });
+  assert.equal(app.i18n.language, 'en');
+  assert.equal(app.$('#ui-language').value, 'en');
+  assert.equal(app.$('#save-state span:last-child').textContent, 'All changes saved');
+  assert.equal(app.$('#connection-status span').textContent, 'Exit unavailable · Blocked');
+  assert.equal(app.$('#update-pill-version').textContent, 'Downloading 50%');
+  assert.equal(app.requests.find(r => r.path === '/api/config').headers['Accept-Language'], 'en');
+});
+
+test('language changes preserve incomplete YAML drafts without saving or reconnecting', async () => {
+  const app = await page({ desktop: true, updates: updateState() });
+  await app.$('#yaml-tab').emit('click');
+  await app.input('#raw-yaml', 'unfinished: [');
+  app.$('#ui-language').value = 'en';
+  await app.$('#ui-language').emit('change');
+  assert.equal(app.i18n.language, 'en');
+  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.$('#save-state span:last-child').textContent, 'Checking changes…');
+  assert.equal(app.requests.some(r => r.path === '/api/action' || r.method === 'POST' && r.path === '/api/config'), false);
+  app.$('#ui-language').value = 'zh';
+  await app.$('#ui-language').emit('change');
+  assert.equal(app.i18n.language, 'zh');
+  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+});
+
+test('a failed language save restores the previous preference and keeps the form draft', async () => {
+  const app = await page();
+  await app.input('#level', 'debug');
+  app.override = r => r.path === '/api/language' && r.method === 'POST' ? response({ error: 'Read-only settings directory' }, false) : undefined;
+  app.$('#ui-language').value = 'en';
+  await app.$('#ui-language').emit('change');
+  assert.equal(app.i18n.language, 'zh');
+  assert.equal(app.$('#ui-language').value, 'auto');
+  assert.equal(app.$('#ui-language').disabled, false);
+  assert.equal(app.$('#level').value, 'debug');
+  assert.equal(app.$('#notice-title').textContent, '无法保存语言偏好');
+  assert.equal(app.$('#notice-detail').textContent, 'Read-only settings directory');
+});
+
+test('pending language requests do not block edits or send duplicate requests', async () => {
+  const app = await page();
+  const pending = deferred();
+  app.override = r => r.path === '/api/language' && r.method === 'POST' ? pending.promise : undefined;
+  app.$('#ui-language').value = 'en';
+  const changing = app.$('#ui-language').emit('change');
+  await app.$('#ui-language').emit('change');
+  await app.input('#level', 'debug');
+  assert.equal(app.$('#level').value, 'debug');
+  pending.resolve(response({ preference: 'en', language: 'en' }));
+  await changing;
+  assert.equal(app.i18n.language, 'en');
+  assert.equal(app.requests.filter(r => r.path === '/api/language' && r.method === 'POST').length, 1);
+  assert.equal(app.$('#level').value, 'debug');
+});
+
+test('changing language cannot restore a stale connected indicator after a failed poll', async () => {
+  const app = await page({ state: 'running', active: true, mode: 'proxy' });
+  assert.equal(app.$('#connection-status').classList.contains('connected'), true);
+  app.override = r => r.path === '/api/state' ? Promise.reject(new Error('Offline')) : undefined;
+  await app.poll();
+  app.$('#ui-language').value = 'en';
+  await app.$('#ui-language').emit('change');
+  assert.equal(app.$('#connection-status').classList.contains('connected'), false);
+  assert.equal(app.$('#connection-status span').textContent, 'Page connection lost');
 });

@@ -54,7 +54,7 @@ The product name is **TailSplit**, part of the idy.dev collection of independent
 
 Existing product copy explains routing and connection behavior in concrete terms. Keep claims tied to implemented behavior and release evidence, especially around permissions, exit failures, signing and updates.
 
-The website supports English and Simplified Chinese, with browser-based defaults and persistent language/theme overrides. The current local configuration panel uses Simplified Chinese. Locally maintained project documentation is written in English.
+The website supports English and Simplified Chinese, with browser-based defaults and persistent language/theme overrides. The configuration panel and application-owned desktop menus and dialogs also support English and Simplified Chinese, with a shared Follow system/English/简体中文 preference. The app saves this separately from network configuration and applies changes without reconnecting or replacing unsaved drafts. Unsupported system languages fall back to English. Diagnostic logs, YAML keys, user-provided names and upstream release notes retain their original content. Locally maintained project documentation is written in English.
 
 ## Evidence on Hand
 
