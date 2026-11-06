@@ -60,6 +60,13 @@ func desktopPipeDescriptor(sid string) string {
 	return "O:" + sid + "D:P(A;;GA;;;SY)(A;;0x12019b;;;BA)(A;;GA;;;" + sid + ")"
 }
 
+func windowsStartupAction(connectOnStart, noConnect bool) string {
+	if connectOnStart && !noConnect {
+		return "connect"
+	}
+	return "refresh-exits"
+}
+
 func main() {
 	if err := runWindowsDesktop(); err != nil {
 		maintenance := false
@@ -253,9 +260,8 @@ func runWindowsDesktop() (runErr error) {
 			go hideInitialWindowsWindow("TailSplit.Window."+sid, ctx)
 		}
 		preferences, _ := tray.ReadPreferences(*config)
-		if preferences.ConnectOnStart && !*noConnect {
-			go func() { _ = app.action(ctx, "connect") }()
-		}
+		// Load the saved device's login and exits even when startup must stay disconnected.
+		go func() { _ = app.action(ctx, windowsStartupAction(preferences.ConnectOnStart, *noConnect)) }()
 		for {
 			select {
 			case <-ctx.Done():

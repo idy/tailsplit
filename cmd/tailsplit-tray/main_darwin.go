@@ -43,6 +43,10 @@ type desktopActionController interface {
 	RefreshExitNodes() error
 }
 
+func desktopConfigurationBusy(action string, snapshot tray.Snapshot, editing, loggingOut, opening bool) bool {
+	return editing || loggingOut || opening || snapshot.State == "authorizing" && action != "disconnect"
+}
+
 // LoginFlow and action preparation belong to the menu's event loop. Only the
 // returned controller or login-item operation may run on the settings worker.
 func requestDesktopLogin(controller desktopActionController, flow *tray.LoginFlow) error {
@@ -441,7 +445,7 @@ func main() {
 						}
 					}
 				case request := <-configurationRequests:
-					if editing || loggingOut || flow.Opening() || controller.Snapshot().State == "authorizing" {
+					if desktopConfigurationBusy(request.action, controller.Snapshot(), editing, loggingOut, flow.Opening()) {
 						request.done <- configweb.ErrBusy
 						continue
 					}

@@ -169,6 +169,53 @@ func TestDesktopActionsDeferWorkAndCancelLoginBeforeWorker(t *testing.T) {
 	}
 }
 
+func TestDesktopDisconnectCancelsPendingAuthorization(t *testing.T) {
+	controller := &desktopActionFixture{snapshot: tray.Snapshot{State: "authorizing", Active: true, Mode: "tun"}}
+	var flow tray.LoginFlow
+	flow.Request()
+	if desktopConfigurationBusy("disconnect", controller.Snapshot(), false, false, flow.Opening()) {
+		t.Fatal("disconnect cannot cancel the pending service installation")
+	}
+	operation, err := desktopActionOperation("disconnect", controller, &flow, nil)
+	if err != nil || operation == nil || len(controller.calls) != 0 {
+		t.Fatal("disconnect was not deferred to the serialized settings worker:", err)
+	}
+	if flow.Next(tray.Snapshot{LoginURL: "https://login.tailscale.com/a/cancelled"}) != "" {
+		t.Fatal("cancelling authorization retained a pending browser request")
+	}
+	if err := operation(); err != nil || !slices.Equal(controller.calls, []string{"disconnect"}) {
+		t.Fatal("cancelling authorization did not stop the helper:", controller.calls, err)
+	}
+}
+
+func TestDesktopConfigurationKeepsSerializationGuardsDuringAuthorization(t *testing.T) {
+	snapshot := tray.Snapshot{State: "authorizing", Active: true}
+	for _, action := range []string{"", "connect", "login", "logout", "refresh-exits", "startup-on", "startup-off"} {
+		if !desktopConfigurationBusy(action, snapshot, false, false, false) {
+			t.Fatalf("%q bypassed pending service authorization", action)
+		}
+	}
+	for _, test := range []struct {
+		name       string
+		editing    bool
+		loggingOut bool
+		opening    bool
+	}{
+		{"editing", true, false, false},
+		{"logging-out", false, true, false},
+		{"opening-browser", false, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !desktopConfigurationBusy("disconnect", snapshot, test.editing, test.loggingOut, test.opening) {
+				t.Fatal("disconnect bypassed an active serialized operation")
+			}
+		})
+	}
+	if desktopConfigurationBusy("connect", tray.Snapshot{State: "stopped"}, false, false, false) {
+		t.Fatal("an idle controller rejected a normal request")
+	}
+}
+
 func TestDesktopConnectIsIdempotentWhileActiveAndUnknownActionsAreRejected(t *testing.T) {
 	controller := &desktopActionFixture{snapshot: tray.Snapshot{Active: true}}
 	var flow tray.LoginFlow

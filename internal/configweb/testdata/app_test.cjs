@@ -55,7 +55,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     if (!nodes.has(selector)) nodes.set(selector, new Element());
     return nodes.get(selector);
   };
-  const level = $('#level'); level.dataset.field = 'log_level';
+  const level = $('#log-level'); nodes.set('#level', level); level.dataset.field = 'log_level';
   const mtu = $('#mtu'); mtu.dataset = { field: 'tun.mtu', kind: 'int' };
   const tun = $('#tun-enabled'); tun.type = 'checkbox'; tun.dataset.field = 'tun.enabled';
   const fields = [level, mtu, tun];
@@ -599,6 +599,58 @@ test('visible backend errors and location labels switch languages without retryi
   assert.equal(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').length, 1);
 });
 
+test('log-level changes in YAML mode update the source and saved payload without losing other edits', async () => {
+  const edited = '# Keep this comment\n' + yaml.replace('1400', '1500');
+  const app = await page({}, '', {}, doc(edited));
+  await app.$('[data-page="settings"]').emit('click');
+  await app.$('#yaml-tab').emit('click');
+  await app.$('[data-page="logs"]').emit('click');
+  await app.input('#level', 'debug');
+  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.$('#raw-yaml').value, edited.replace('info', 'debug'));
+  app.override = (request) => request.path === '/api/config' && request.method === 'POST'
+    ? response(doc(request.data.yaml, 'updated')) : undefined;
+  await app.$('#save').emit('click');
+  const save = app.requests.find((request) => request.path === '/api/config' && request.method === 'POST');
+  assert.equal(save.data.yaml, edited.replace('info', 'debug'));
+});
+
+test('an unparseable YAML draft disables log-level edits until the source is repaired', async () => {
+  const app = await page();
+  await app.$('#yaml-tab').emit('click');
+  app.override = (request) => request.path === '/api/preview' && request.data.yaml === 'unfinished: ['
+    ? response({ ...doc('unfinished: ['), valid: false, parsed: false, values: {}, error: 'Invalid YAML' }) : undefined;
+  await app.input('#raw-yaml', 'unfinished: [');
+  await app.$('#form-tab').emit('click');
+  await app.$('[data-page="logs"]').emit('click');
+  assert.equal(app.$('#level').disabled, true);
+  await app.input('#level', 'debug');
+  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+  assert.equal(app.requests.some((request) => request.path === '/api/config' && request.method === 'POST'), false);
+  await app.input('#raw-yaml', yaml);
+  await app.$('#form-tab').emit('click');
+  await app.$('#yaml-tab').emit('click');
+  assert.equal(app.$('#level').disabled, false);
+});
+
+test('a pending YAML log-level patch protects raw input and a failed request restores the control', async () => {
+  const app = await page();
+  await app.$('#yaml-tab').emit('click');
+  const pending = deferred();
+  app.override = (request) => request.path === '/api/preview' && request.data.changes?.log_level === 'debug'
+    ? pending.promise : undefined;
+  const change = app.input('#level', 'debug');
+  assert.equal(app.$('#raw-yaml').disabled, true);
+  await app.input('#raw-yaml', '# newer edit\n' + yaml);
+  pending.resolve(response({ error: 'Preview unavailable' }, false));
+  await change;
+  assert.equal(app.$('#raw-yaml').value, yaml);
+  assert.equal(app.$('#level').value, 'info');
+  assert.equal(app.$('#raw-yaml').disabled, false);
+  await app.input('#level', 'warn');
+  assert.match(app.$('#raw-yaml').value, /log_level: warn/);
+});
+
 const exitDocument = (exit = '100.64.0.10', mode = 'split', revision = 'original') => ({
   ...doc(`tailscale:\n  exit_node: ${exit}\nrules:\n  mode: ${mode}\ntun:\n  enabled: false\n`, revision),
   values: { log_level: 'info', tailscale: { exit_node: exit }, rules: { mode }, tun: { enabled: false, mtu: 1400 } },
@@ -693,6 +745,36 @@ test('missing configured exits remain visible and offline exits cannot be select
   assert.equal(app.$('#exit-empty').hidden, false);
   assert.equal(app.$('#exit-empty-title').textContent, '没有匹配的出口');
   assert.equal(app.requests.some((r) => r.method === 'POST'), false);
+});
+
+test('a stale selected flag cannot hide a manually saved exit or block restoring the prior exit', async () => {
+  const snapshot = exitsSnapshot(); snapshot.exit_nodes[0].selected_for = '100.64.0.10';
+  const app = await page(snapshot, '', {}, exitDocument());
+  app.override = (request) => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    const chosen = request.data.changes['tailscale.exit_node'];
+    app.config = exitDocument(chosen, 'split', chosen); app.snapshot.revision = chosen;
+    // Idle reconfiguration deliberately retains the old discovery snapshot.
+    return response(app.config);
+  };
+  await app.input('#exit-node', '100.64.0.99');
+  await app.$('#select-manual-exit').emit('click');
+  await app.$('#apply-connection-change').emit('click');
+  assert.equal(exitRadio(app, '100.64.0.99').checked, true);
+  assert.equal(exitRadio(app, '100.64.0.10').checked, false);
+  await exitRadio(app, '100.64.0.10').emit('change');
+  assert.equal(app.$('#connection-apply').hidden, false);
+  assert.equal(app.$('#apply-connection-change').disabled, false);
+  await app.$('#apply-connection-change').emit('click');
+  assert.deepEqual(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').map(r => r.data.changes['tailscale.exit_node']), ['100.64.0.99', '100.64.0.10']);
+});
+
+test('selection metadata bound to the saved DNS alias identifies its discovered node', async () => {
+  const alias = 'home.example.ts.net';
+  const snapshot = exitsSnapshot(); snapshot.exit_nodes[0].selected_for = alias;
+  const app = await page(snapshot, '', {}, exitDocument(alias));
+  assert.equal(exitRadio(app, '100.64.0.10').checked, true);
+  assert.equal(exitRadio(app, alias), undefined);
 });
 
 test('a stale poll cannot restore old device state after a desktop action', async () => {

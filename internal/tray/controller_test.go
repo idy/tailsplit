@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -60,7 +61,15 @@ func TestHelperProcess(t *testing.T) {
 	fmt.Println(`{"event":"ready"}`)
 	if mode == "login" {
 		fmt.Println(`{"event":"status","backend_state":"NeedsLogin","auth_url":"https://login.tailscale.com/a/test-login"}`)
-	} else {
+	} else if mode == "discovery" {
+		if !slices.Contains(os.Args, "discover") {
+			fmt.Fprintln(os.Stderr, "fixture discovery selected a network or login command")
+			os.Exit(4)
+		}
+		fmt.Println(`{"event":"status","mode":"discovery","backend_state":"Running","hostname":"saved-device","exit_nodes":[{"id":"100.64.0.2","name":"saved-exit","online":true}]}`)
+		fmt.Println(`{"event":"discovered","mode":"discovery"}`)
+		os.Exit(0)
+	} else if mode != "manual-events" {
 		fmt.Println(`{"event":"status","backend_state":"Running","exit_node":"fixture-exit","exit_online":true}`)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), signals...)
@@ -417,6 +426,26 @@ func TestDiscoveryNeverUsesTUNStartupAndKeepsPickerAfterCompletion(t *testing.T)
 	_ = controller.Stop()
 }
 
+func TestControllerDiscoveryRestoresSavedLoginWithoutConnecting(t *testing.T) {
+	controller := testController(t, "discovery")
+	if err := controller.RefreshExitNodes(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-controller.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("discovery did not release its helper session")
+	}
+	snapshot := controller.Snapshot()
+	if snapshot.State != "stopped" || snapshot.Active || snapshot.Mode != "" || snapshot.LoginURL != "" {
+		t.Fatal("idle discovery started a connection or retained a login request:", snapshot)
+	}
+	if snapshot.BackendState != "Running" || snapshot.Hostname != "saved-device" ||
+		len(snapshot.ExitNodes) != 1 || snapshot.ExitNodes[0].Name != "saved-exit" {
+		t.Fatal("idle discovery did not restore the saved device's login and exit status:", snapshot)
+	}
+}
+
 func TestPickerSnapshotsDoNotShareMutableSlices(t *testing.T) {
 	controller := testController(t, "normal")
 	if err := controller.Start(); err != nil {
@@ -465,6 +494,68 @@ func TestLoginFlowOpensAgainAfterTheControllerLogsOut(t *testing.T) {
 	second := waitState(t, controller, "login")
 	if flow.Next(second) == "" {
 		t.Fatal("logout made the next login click ineffective")
+	}
+}
+
+func TestLoginFlowWaitsForFreshHelperAuthenticationAfterStop(t *testing.T) {
+	const link = "https://login.tailscale.com/a/fresh-helper"
+	for _, test := range []struct {
+		name    string
+		event   string
+		wantURL string
+	}{
+		{"login-link", `{"event":"status","backend_state":"NeedsLogin","auth_url":"` + link + `"}`, link},
+		{"running-status", `{"event":"status","backend_state":"Running"}`, ""},
+		{"authenticated", `{"event":"authenticated","mode":"login"}`, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// This helper emits only ready; the test controls all backend events.
+			controller := testController(t, "manual-events")
+			if err := controller.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waitState(t, controller, "connecting")
+			controller.onEvent([]byte(`{"event":"status","backend_state":"Running","exit_online":true}`))
+			if snapshot := controller.Snapshot(); snapshot.State != "running" {
+				t.Fatal("previous helper did not reach Running:", snapshot)
+			}
+			if err := controller.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot := controller.Snapshot(); snapshot.Active || snapshot.BackendState != "Running" {
+				t.Fatal("fixture did not retain the stopped helper's backend state:", snapshot)
+			}
+			if err := controller.StartLogin(); err != nil {
+				t.Fatal(err)
+			}
+			var flow LoginFlow
+			flow.Request()
+			assertWaiting := func() {
+				t.Helper()
+				if value := flow.Next(controller.Snapshot()); value != "" || !flow.pending || flow.Opening() {
+					t.Fatalf("login request did not wait for fresh authentication: pending=%t, message=%q, snapshot=%+v",
+						flow.pending, flow.Message(), controller.Snapshot())
+				}
+			}
+			// The desktop event loop checks immediately after starting login,
+			// then checks again while the helper is preparing authentication.
+			assertWaiting()
+			waitState(t, controller, "connecting")
+			assertWaiting()
+			controller.onEvent([]byte(`{"event":"preflight","mode":"login"}`))
+			assertWaiting()
+			controller.onEvent([]byte(test.event))
+			if value := flow.Next(controller.Snapshot()); value != test.wantURL || flow.pending {
+				t.Fatal("fresh helper authentication did not resolve the pending request:", flow.Message())
+			}
+			if test.wantURL != "" {
+				if !flow.Opening() || flow.Next(controller.Snapshot()) != "" {
+					t.Fatal("the fresh login link did not open exactly once")
+				}
+			} else if flow.Opening() || flow.ShowMessage() || flow.Message() != "设备已登录" {
+				t.Fatal("fresh authentication was not recognized as an already logged in device:", flow.Message())
+			}
+		})
 	}
 }
 

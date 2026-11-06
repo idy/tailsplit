@@ -170,6 +170,7 @@
     $('#preview-draft').textContent = state.dirty ? t('草稿') : t('已保存');
     $('#preview-draft').classList.toggle('dirty', state.dirty);
     for (const control of controls) control.disabled = locked;
+    $('#log-level').disabled = locked || state.mode === 'yaml' && (!state.parsed || state.previewing);
     $('#raw-yaml').disabled = locked;
     for (const button of document.querySelectorAll('.editor-tabs button, [data-section]')) button.disabled = locked;
     $('#settings-draft').hidden = !state.dirty;
@@ -254,7 +255,8 @@
 
   async function runPreview() {
     const generation = state.generation;
-    const data = state.mode === 'yaml' ? { yaml: state.draft } : { yaml: state.base, changes: state.changes };
+    const raw = state.mode === 'yaml';
+    const data = raw ? { yaml: state.draft, ...(Object.keys(state.changes).length ? { changes: state.changes } : {}) } : { yaml: state.base, changes: state.changes };
     const promise = api('preview', data);
     state.pending = { generation, promise };
     try {
@@ -264,6 +266,11 @@
       state.previewed = generation;
       state.valid = doc.valid; state.parsed = doc.parsed;
       state.dirty = state.draft !== state.saved;
+      if (raw) {
+        state.base = state.draft; state.changes = Object.create(null);
+        $('#raw-yaml').value = state.draft;
+        if (doc.parsed) $('#log-level').value = String(fieldValue(state.values, 'log_level'));
+      }
       paintPreview();
       if (doc.valid) clearNotice();
       else notice(t('配置需要修正'), backendError(doc) || t('请检查字段内容。'));
@@ -304,8 +311,9 @@
   }
 
   for (const control of controls) {
-    control.addEventListener('input', () => {
+    control.addEventListener('input', async () => {
       if (isLocked()) return;
+      const previous = fieldValue(state.values, control.dataset.field);
       let value;
       if (control.type === 'checkbox') value = control.checked;
       else if (control.dataset.kind === 'list') value = control.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -317,6 +325,19 @@
         $('#tun-enabled').checked = true;
       }
       updateGlobalMode(); schedulePreview();
+      if (state.mode === 'yaml') {
+        // Logs remains editable outside Settings; patch the latest source before
+        // allowing further raw edits, rather than silently dropping the field.
+        state.switching = true; updateActions();
+        try {
+          if (!(await flushPreview())) {
+            state.changes = Object.create(null);
+            if (control.type === 'checkbox') control.checked = previous === true;
+            else control.value = Array.isArray(previous) ? previous.join('\n') : String(previous ?? '');
+            state.dirty = state.draft !== state.saved;
+          }
+        } finally { state.switching = false; updateActions(); }
+      }
     });
   }
   $('#raw-yaml').addEventListener('input', (event) => {
@@ -461,10 +482,11 @@
     const nodes = (Array.isArray(desktopLive?.exit_nodes) ? desktopLive.exit_nodes : []).map((node) => ({
       id: String(node.id || node.ID || ''), name: String(node.name || node.Name || node.id || node.ID || ''),
       online: node.online === true || node.Online === true, selected: node.selected === true || node.Selected === true,
+      selectedFor: String(node.selected_for || node.SelectedFor || ''),
     })).filter((node) => node.id);
     const configured = savedExit();
     const directMatch = nodes.some((node) => node.id === configured || node.name === configured);
-    for (const node of nodes) node.configured = node.id === configured || node.name === configured || !directMatch && node.selected;
+    for (const node of nodes) node.configured = node.id === configured || node.name === configured || configured !== '' && !directMatch && node.selected && node.selectedFor === configured;
     if (configured && !nodes.some((node) => node.configured)) nodes.unshift({ id: configured, name: configured, online: false, configured: true, missing: true });
     return nodes;
   }

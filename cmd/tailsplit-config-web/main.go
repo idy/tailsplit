@@ -173,6 +173,10 @@ func updatePreviewSnapshot(snapshot *tray.Snapshot, config tailsplit.Config) {
 	for i := range snapshot.ExitNodes {
 		exit := &snapshot.ExitNodes[i]
 		exit.Selected = snapshot.ExitNode == exit.ID || snapshot.ExitNode == exit.Name
+		exit.SelectedFor = ""
+		if exit.Selected {
+			exit.SelectedFor = snapshot.ExitNode
+		}
 	}
 	if snapshot.Active {
 		snapshot.Mode = "proxy"
