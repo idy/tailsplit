@@ -51,7 +51,6 @@
   --actionbar: #f5f5f7f0;
   --toast-shadow: #0002;
   --dialog-shadow: #0003;
-  --backdrop: #0005;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   --mono: "SF Mono", "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
   --type-body: 0.875rem;
@@ -119,7 +118,6 @@
     --actionbar: #1c1c1ef0;
     --toast-shadow: #0008;
     --dialog-shadow: #000a;
-    --backdrop: #0009;
   }
 }
 * { box-sizing: border-box; }
@@ -343,7 +341,9 @@ textarea { display: block; min-height: 80px; padding-block: 8px; line-height: 1.
 .save-state.invalid .save-dot { background: var(--error); }
 .toast { position: fixed; bottom: 76px; left: 50%; z-index: 10; max-width: min(80vw, 520px); padding: 10px 16px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--raised); color: var(--emphasis-ink); font-size: var(--type-note); line-height: 1.5; overflow-wrap: anywhere; box-shadow: 0 10px 30px var(--toast-shadow); transform: translateX(-50%); }
 dialog { width: min(440px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: 0 20px 60px var(--dialog-shadow); }
-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
+/* Chromium 120 does not inherit root custom properties into ::backdrop. */
+dialog::backdrop { background: #0005; backdrop-filter: blur(2px); }
+@media (prefers-color-scheme: dark) { dialog::backdrop { background: #0009; } }
 dialog h2 { font-size: 1.125rem; }
 dialog p { margin-top: 8px; color: var(--muted); font-size: var(--type-body); line-height: 1.6; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
