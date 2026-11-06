@@ -21,6 +21,7 @@ import (
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/appservice"
 	"github.com/idy/tailsplit/internal/appupdate"
+	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/tray"
 
 	"gopkg.in/yaml.v3"
@@ -32,6 +33,7 @@ var assets embed.FS
 var ErrBusy = errors.New("another app operation is in progress")
 
 type Options struct {
+	Language     *locale.Store
 	ConfigPath   string
 	Listen       string
 	Preview      bool
@@ -81,6 +83,9 @@ func Start(options Options) (*Server, error) {
 	if options.Apply == nil {
 		return nil, errors.New("configuration page needs an apply handler")
 	}
+	if options.Language == nil {
+		options.Language = locale.NewStore(options.ConfigPath)
+	}
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return nil, err
@@ -108,6 +113,8 @@ func (s *Server) handler() http.Handler {
 	files, _ := fs.Sub(assets, "assets")
 	static := http.FileServer(http.FS(files))
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/language", s.readLanguage)
+	mux.HandleFunc("POST /api/language", s.setLanguage)
 	mux.HandleFunc("GET /api/config", s.readConfig)
 	mux.HandleFunc("GET /api/state", s.readState)
 	mux.HandleFunc("POST /api/preview", s.preview)
@@ -117,6 +124,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/update-action", s.updateAction)
 	mux.HandleFunc("GET /api/logs", s.desktopLogs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w = languageResponseWriter{ResponseWriter: w, english: requestsEnglish(r)}
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -140,7 +148,7 @@ func (s *Server) handler() http.Handler {
 			mux.ServeHTTP(w, r)
 			return
 		}
-		if r.Method != http.MethodGet || (r.URL.Path != "/" && r.URL.Path != "/app.js" && r.URL.Path != "/style.css") {
+		if r.Method != http.MethodGet || (r.URL.Path != "/" && r.URL.Path != "/app.js" && r.URL.Path != "/i18n.js" && r.URL.Path != "/style.css") {
 			http.NotFound(w, r)
 			return
 		}
@@ -369,6 +377,9 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	if err != nil {
 		status = http.StatusInternalServerError
 		data = []byte(`{"code":"encoding","error":"无法生成配置响应。"}`)
+	}
+	if localized, ok := w.(languageResponseWriter); ok {
+		data = localizeErrors(data, localized.english)
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)

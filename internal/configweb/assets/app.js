@@ -2,6 +2,15 @@
   'use strict';
 
   const $ = (selector) => document.querySelector(selector);
+  const locale = window.TailSplitI18n;
+  const t = (key, values) => locale.t(key, values);
+  function backendError(value) {
+    return value?.error_i18n ? { messages: value.error_i18n, message: value.error || '' } : value?.error || '';
+  }
+  function message(value) {
+    const text = value && typeof value === 'object' ? value.messages?.[locale.language] ?? value.message ?? '' : value || '';
+    return t(text);
+  }
   // Polling should announce a status only when its text actually changes.
   function setStatusText(selector, text) {
     const element = $(selector);
@@ -70,22 +79,26 @@
   async function api(path, data) {
     const response = await fetch(`/api/${path}`, {
       method: data === undefined ? 'GET' : 'POST',
-      headers: { Authorization: `Bearer ${token || ''}`, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: { Authorization: `Bearer ${token || ''}`, 'Accept-Language': locale.language, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
       body: data === undefined ? undefined : JSON.stringify(data),
       cache: 'no-store',
     });
     const value = await response.json();
     if (!response.ok) {
-      const error = new Error(value.error || '请求未完成，请重试。');
+      const error = new Error(value.error || t('请求未完成，请重试。'));
       error.code = value.code;
+      error.messages = value.error_i18n;
       throw error;
     }
     return value;
   }
 
+  let activeNotice = null;
+  let activeToast = '';
   function notice(title, detail, kind = 'error', canReload = false) {
-    $('#notice-title').textContent = title;
-    $('#notice-detail').textContent = detail;
+    activeNotice = { title, detail };
+    $('#notice-title').textContent = t(title);
+    $('#notice-detail').textContent = message(detail);
     $('#notice').classList.toggle('error', kind === 'error');
     $('#notice-reload').hidden = !canReload;
     $('#notice').hidden = false;
@@ -93,15 +106,17 @@
 
   function clearNotice() {
     if (state.external) {
-      notice('磁盘中的配置已更新', '当前草稿仍保留。重新读取最新配置后再保存，避免覆盖其他更改。', 'warning', true);
+      notice(t('磁盘中的配置已更新'), t('当前草稿仍保留。重新读取最新配置后再保存，避免覆盖其他更改。'), 'warning', true);
     } else {
+      activeNotice = null;
       $('#notice').hidden = true;
     }
   }
 
   function toast(message) {
     clearTimeout(state.toastTimer);
-    $('#toast').textContent = message;
+    activeToast = message;
+    $('#toast').textContent = t(message);
     $('#toast').hidden = false;
     state.toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 3200);
   }
@@ -137,13 +152,13 @@
     $('#discard').disabled = !state.dirty || locked;
     $('#validate').disabled = !state.loaded || locked || state.validating || state.previewing;
     $('#reload').disabled = locked;
-    $('#save').textContent = state.busy ? '正在应用…' : '保存并应用';
+    $('#save').textContent = state.busy ? t('正在应用…') : t('保存并应用');
     $('#save-state').classList.toggle('dirty', state.dirty);
     $('#save-state').classList.toggle('invalid', !state.valid && state.loaded && !state.previewing);
-    $('#save-state span:last-child').textContent = state.busy ? '正在保存并应用配置' :
-      state.previewing ? '正在检查更改…' : !state.valid && state.loaded ? '配置需要修正' :
-      state.dirty ? '有未保存的更改' : '所有更改已保存';
-    $('#preview-draft').textContent = state.dirty ? '草稿' : '已保存';
+    $('#save-state span:last-child').textContent = state.busy ? t('正在保存并应用配置') :
+      state.previewing ? t('正在检查更改…') : !state.valid && state.loaded ? t('配置需要修正') :
+      state.dirty ? t('有未保存的更改') : t('所有更改已保存');
+    $('#preview-draft').textContent = state.dirty ? t('草稿') : t('已保存');
     $('#preview-draft').classList.toggle('dirty', state.dirty);
     for (const control of controls) control.disabled = locked;
     $('#raw-yaml').disabled = locked;
@@ -172,7 +187,7 @@
       fragment.append(row);
     }
     $('#yaml-preview').replaceChildren(fragment);
-    $('#line-count').textContent = `${lines.length} 行`;
+    $('#line-count').textContent = t('行数', { count: lines.length });
   }
 
   function useDocument(doc) {
@@ -185,13 +200,13 @@
     state.valid = doc.valid; state.parsed = doc.parsed;
     state.dirty = false; state.previewing = false; state.external = false; state.loaded = true;
     $('#file-location').title = doc.path || '';
-    $('#file-location').textContent = '当前设备';
+    $('#file-location').textContent = t('当前设备');
     fillFields(state.values);
     $('#raw-yaml').value = state.draft;
     paintPreview();
     $('#loading').hidden = true; $('#editor-layout').hidden = false; $('#actionbar').hidden = false;
     if (!doc.parsed) showMode('yaml');
-    if (!doc.valid) notice('配置需要修正', doc.error || '请检查 YAML 内容。');
+    if (!doc.valid) notice(t('配置需要修正'), backendError(doc) || t('请检查 YAML 内容。'));
     else clearNotice();
     updateActions();
   }
@@ -202,7 +217,7 @@
       useDocument(await api('config'));
     } catch (error) {
       $('#loading').hidden = true;
-      notice('无法读取本机配置', error.message || '请从 TailSplit 菜单重新打开页面。');
+      notice(t('无法读取本机配置'), error.message ? error : t('请从 TailSplit 菜单重新打开页面。'));
     } finally { state.loading = false; updateActions(); }
     await refreshState();
   }
@@ -236,11 +251,11 @@
       state.dirty = state.draft !== state.saved;
       paintPreview();
       if (doc.valid) clearNotice();
-      else notice('配置需要修正', doc.error || '请检查字段内容。');
+      else notice(t('配置需要修正'), backendError(doc) || t('请检查字段内容。'));
     } catch (error) {
       if (generation !== state.generation) return;
       state.valid = false;
-      notice('暂时无法检查配置', error.message || '请确认 TailSplit 仍在运行。');
+      notice(t('暂时无法检查配置'), error.message ? error : t('请确认 TailSplit 仍在运行。'));
     } finally {
       if (generation === state.generation) {
         state.previewing = false;
@@ -307,11 +322,11 @@
     state.switching = true; updateActions();
     try {
       if (!(await flushPreview())) {
-        notice('暂时无法切换编辑方式', '请先修正表单输入或重试，当前草稿会保留。');
+        notice(t('暂时无法切换编辑方式'), t('请先修正表单输入或重试，当前草稿会保留。'));
         return false;
       }
       if (mode === 'form' && !state.parsed) {
-        notice('暂时无法切换到表单', '请先修正 YAML 语法，原文草稿会保留。');
+        notice(t('暂时无法切换到表单'), t('请先修正 YAML 语法，原文草稿会保留。'));
         return false;
       }
       state.base = state.draft; state.changes = Object.create(null);
@@ -362,10 +377,10 @@
     try {
       await api('validate', { yaml: state.draft });
       if (generation !== state.generation) return;
-      state.valid = true; clearNotice(); toast('配置校验通过');
+      state.valid = true; clearNotice(); toast(t('配置校验通过'));
     } catch (error) {
       if (generation !== state.generation) return;
-      state.valid = false; notice('配置未通过校验', error.message);
+      state.valid = false; notice(t('配置未通过校验'), error);
     } finally { state.validating = false; updateActions(); }
   });
 
@@ -376,18 +391,18 @@
       if (!(await flushPreview()) || !state.valid || state.external) return;
       const doc = await api('config', { yaml: state.draft, revision: state.revision });
       useDocument(doc);
-      toast('配置已保存并应用');
+      toast(t('配置已保存并应用'));
       await refreshState();
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
-      notice(error.code === 'conflict' ? '配置文件已更新' : '配置未能应用', error.message, 'error', error.code === 'conflict');
+      notice(error.code === 'conflict' ? t('配置文件已更新') : t('配置未能应用'), error, 'error', error.code === 'conflict');
     } finally { state.busy = false; updateActions(); }
   });
 
   async function copy() {
     if (isLocked() || !(await flushPreview())) return;
-    try { await navigator.clipboard.writeText(state.draft); toast('YAML 已复制'); }
-    catch (_) { toast('无法访问剪贴板，请在 YAML 原文中选择并复制。'); }
+    try { await navigator.clipboard.writeText(state.draft); toast(t('YAML 已复制')); }
+    catch (_) { toast(t('无法访问剪贴板，请在 YAML 原文中选择并复制。')); }
   }
   $('#copy-preview').addEventListener('click', copy);
   $('#copy-raw').addEventListener('click', copy);
@@ -403,22 +418,30 @@
     $('#desktop-disconnect').disabled = desktopBusy || !live.active;
     $('#desktop-startup').disabled = desktopBusy;
     $('#desktop-startup').checked = live.startup === true;
-    $('#desktop-hint').textContent = live.preview ? '界面预览：操作仅模拟界面状态，不会创建网络连接。' : live.error || (state.dirty ? '请先保存配置，再连接。' : '连接和设备登录分别控制；关闭窗口后仍保留在托盘。');
+    $('#desktop-hint').textContent = live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') : live.error ? message(backendError(live)) : (state.dirty ? t('请先保存配置，再连接。') : t('连接和设备登录分别控制；关闭窗口后仍保留在托盘。'));
   }
   async function desktopAction(action) {
     if (desktopBusy) return;
     desktopBusy = true;
     if (desktopLive) updateDesktop(desktopLive);
-    $('#desktop-hint').textContent = '正在处理…';
+    $('#desktop-hint').textContent = t('正在处理…');
     try { await api('action', { action }); }
-    catch (error) { notice('操作未完成', error.message); }
+    catch (error) { notice(t('操作未完成'), error); }
     finally { desktopBusy = false; await refreshState(); }
   }
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
   $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
+  let logsError = null;
+  let logsEmpty = false;
   async function refreshDesktopLogs() {
-    try { $('#desktop-log-text').textContent = (await api('logs')).text || '暂无日志。'; }
-    catch (error) { $('#desktop-log-text').textContent = error.message; }
+    try {
+      const text = (await api('logs')).text;
+      logsError = null; logsEmpty = !text;
+      $('#desktop-log-text').textContent = text || t('暂无日志。');
+    } catch (error) {
+      logsError = error; logsEmpty = false;
+      $('#desktop-log-text').textContent = message(error);
+    }
   }
   $('#desktop-logs').addEventListener('click', async () => { $('#desktop-log-dialog').showModal(); await refreshDesktopLogs(); });
   $('#desktop-log-refresh').addEventListener('click', refreshDesktopLogs);
@@ -431,8 +454,8 @@
 
   function updateBytes(bytes) {
     if (bytes < 1024) return `${Math.floor(bytes)} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+    if (bytes < 1024 * 1024) return `${new Intl.NumberFormat(locale.language, { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }).format(bytes / 1024)} KiB`;
+    return `${new Intl.NumberFormat(locale.language, { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }).format(bytes / (1024 * 1024))} MiB`;
   }
 
   function updateAppUpdates(live) {
@@ -447,34 +470,34 @@
     updateButton.classList.toggle('busy', busy);
     const failed = Boolean(updateError || updates.error);
     updateButton.classList.toggle('error', !busy && failed);
-    $('#update-current').textContent = `当前版本 ${updates.current_version || '未知'}`;
-    $('#update-latest').textContent = `最新版本 ${updates.latest_version || '尚未检查'}`;
+    $('#update-current').textContent = t('当前版本 {version}', { version: updates.current_version || t('未知') });
+    $('#update-latest').textContent = t('最新版本 {version}', { version: updates.latest_version || t('尚未检查') });
     $('#update-automatic').checked = updatePending === 'automatic-on' || updatePending !== 'automatic-off' && updates.automatic === true;
     $('#update-automatic').disabled = busy;
     $('#update-check').disabled = busy;
-    $('#update-check').textContent = updates.checking ? '正在检查…' : '检查更新';
+    $('#update-check').textContent = updates.checking ? t('正在检查…') : t('检查更新');
     $('#update-install-hint').hidden = !updates.available || live.preview;
     $('#update-preview').hidden = !live.preview;
     const checked = new Date(updates.last_checked);
     const hasChecked = checked.getTime() > 0;
     const current = !updates.available && hasChecked && Boolean(updates.latest_version);
     $('#update-pill .icon use').setAttribute('href', busy || failed ? '#i-reload' : updates.available ? '#i-up' : current ? '#i-check' : '#i-reload');
-    $('#update-last-checked').textContent = `上次检查：${hasChecked ? checked.toLocaleString('zh-CN') : '尚未检查'}`;
+    $('#update-last-checked').textContent = t('上次检查：{date}', { date: hasChecked ? checked.toLocaleString(locale.language === 'zh' ? 'zh-CN' : 'en') : t('尚未检查') });
     const downloaded = Math.max(0, Number(updates.downloaded_bytes) || 0);
     const total = Math.max(0, Number(updates.total_bytes) || 0);
     const percent = total > 0 ? Math.min(100, Math.floor(downloaded / total * 100)) : null;
-    const pendingLabels = { check: '检查中…', install: '等待确认…', 'automatic-on': '保存中…', 'automatic-off': '保存中…' };
-    const label = updates.downloading ? `下载中${percent === null ? '…' : ` ${percent}%`}` :
-      updates.installing ? '安装中…' : updates.checking ? '检查中…' : updatePending ? pendingLabels[updatePending] :
-      failed ? '重试更新' : updates.available ? (live.preview ? '模拟更新' : '更新') :
-      current ? '已是最新' : '检查更新';
+    const pendingLabels = { check: t('检查中…'), install: t('等待确认…'), 'automatic-on': t('保存中…'), 'automatic-off': t('保存中…') };
+    const label = updates.downloading ? (percent === null ? t('下载中…') : t('下载中 {percent}%', { percent })) :
+      updates.installing ? t('安装中…') : updates.checking ? t('检查中…') : updatePending ? pendingLabels[updatePending] :
+      failed ? t('重试更新') : updates.available ? (live.preview ? t('模拟更新') : t('更新')) :
+      current ? t('已是最新') : t('检查更新');
     setStatusText('#update-pill-version', label);
     updateButton.title = updates.downloading ?
-      `${label} · ${updateBytes(downloaded)}${total > 0 ? ` / ${updateBytes(total)}` : '，总大小待确定'}` :
-      updates.installing ? '正在准备安装更新，请完成系统确认或安装向导。' : updateError || updates.error ||
-      (updates.available ? `更新至 ${updates.latest_version || '最新版本'}，安装前会请求确认。` : '检查应用更新');
-    updateButton.setAttribute('aria-label', updates.downloading ? updateButton.title : `${label}。${updateButton.title}`);
-    $('#update-error').textContent = updateError || updates.error || '';
+      `${label} · ${updateBytes(downloaded)}${total > 0 ? ` / ${updateBytes(total)}` : ` · ${t('总大小待确定')}`}` :
+      updates.installing ? t('正在准备安装更新，请完成系统确认或安装向导。') : message(updateError || backendError(updates)) ||
+      (updates.available ? t('更新至 {version}，安装前会请求确认。', { version: updates.latest_version || t('最新版本') }) : t('检查应用更新'));
+    updateButton.setAttribute('aria-label', updates.downloading ? updateButton.title : `${label}. ${updateButton.title}`);
+    $('#update-error').textContent = message(updateError || backendError(updates));
     $('#update-error').hidden = !$('#update-error').textContent;
     const notes = String(updates.release_notes || '');
     $('#update-notes').hidden = !notes;
@@ -489,7 +512,7 @@
     try {
       await api('update-action', { action });
     } catch (error) {
-      updateError = error.message;
+      updateError = error;
     } finally {
       updateGeneration++;
       await refreshState();
@@ -501,28 +524,34 @@
   $('#update-pill').addEventListener('click', () => appUpdateAction(updateLive?.updates?.available ? 'install' : 'check'));
   $('#update-automatic').addEventListener('change', (event) => appUpdateAction(event.target.checked ? 'automatic-on' : 'automatic-off'));
 
+  let connectionLost = false;
+  function renderConnection(live) {
+    const labels = {
+      starting: live.mode === 'discovery' ? t('正在读取设备') : t('正在连接'), connecting: t('正在连接'),
+      stopping: t('正在断开'), failed: t('连接异常'), authorizing: t('等待授权'), authenticated: t('已登录'),
+      blocked: t('出口不可用 · 已阻断'), 'checking-exit': t('正在检查出口'), 'waiting-exit': t('等待出口上线'),
+      'missing-exit': t('请重新选择出口'), login: t('等待 Tailscale 登录'), authenticating: t('正在登录'),
+      discovering: t('正在读取出口'), 'logging-out': t('正在退出登录'),
+    };
+    const connected = !connectionLost && live.active && ['tun', 'proxy'].includes(live.mode) && live.state === 'running';
+    $('#connection-status').classList.toggle('connected', connected);
+    $('#connection-status').classList.toggle('attention', !connectionLost && ['blocked', 'waiting-exit', 'missing-exit'].includes(live.state));
+    $('#connection-status').classList.toggle('error', connectionLost || live.state === 'failed');
+    setStatusText('#connection-status span', connectionLost ? t('页面连接中断') : live.preview ? t('预览环境') : connected ? t('已连接') : labels[live.state] || t('未连接'));
+    $('#connection-status').title = $('#connection-status span').textContent;
+    setStatusText('#exit-label', connectionLost ? t('请确认 TailSplit 仍在运行') : live.exit || (live.preview ? t('更改仅保存到预览副本') : t('本机配置')));
+    $('#exit-label').title = $('#exit-label').textContent;
+  }
+
   async function refreshState() {
     if (!state.loaded || document.hidden) return;
     const generation = updateGeneration;
     try {
       const live = await api('state');
+      connectionLost = false;
       updateDesktop(live);
       if (generation === updateGeneration) updateAppUpdates(live);
-      const labels = {
-        starting: live.mode === 'discovery' ? '正在读取设备' : '正在连接', connecting: '正在连接',
-        stopping: '正在断开', failed: '连接异常', authorizing: '等待授权', authenticated: '已登录',
-        blocked: '出口不可用 · 已阻断', 'checking-exit': '正在检查出口', 'waiting-exit': '等待出口上线',
-        'missing-exit': '请重新选择出口', login: '等待 Tailscale 登录', authenticating: '正在登录',
-        discovering: '正在读取出口', 'logging-out': '正在退出登录',
-      };
-      const connected = live.active && ['tun', 'proxy'].includes(live.mode) && live.state === 'running';
-      $('#connection-status').classList.toggle('connected', connected);
-      $('#connection-status').classList.toggle('attention', ['blocked', 'waiting-exit', 'missing-exit'].includes(live.state));
-      $('#connection-status').classList.toggle('error', live.state === 'failed');
-      setStatusText('#connection-status span', live.preview ? '预览环境' : connected ? '已连接' : labels[live.state] || '未连接');
-      $('#connection-status').title = $('#connection-status span').textContent;
-      setStatusText('#exit-label', live.exit || (live.preview ? '更改仅保存到预览副本' : '本机配置'));
-      $('#exit-label').title = $('#exit-label').textContent;
+      renderConnection(live);
       const nodes = Array.isArray(live.exit_nodes) ? live.exit_nodes : [];
       $('#exit-nodes').replaceChildren(...nodes.map((node) => {
         const option = document.createElement('option');
@@ -543,24 +572,66 @@
         state.external = true; clearNotice(); updateActions();
       }
     } catch (_) {
-      $('#connection-status').classList.remove('connected');
-      $('#connection-status').classList.toggle('attention', false);
-      $('#connection-status').classList.toggle('error', true);
-      setStatusText('#connection-status span', '页面连接中断');
-      $('#connection-status').title = '页面连接中断';
-      setStatusText('#exit-label', '请确认 TailSplit 仍在运行');
-      $('#exit-label').title = $('#exit-label').textContent;
+      connectionLost = true;
+      renderConnection(desktopLive || {});
     }
   }
+
+  let languagePreference = 'auto';
+  let languageBusy = false;
+  let languageGeneration = 0;
+  function useLanguage(value) {
+    if (!['auto', 'en', 'zh'].includes(value.preference) || !['en', 'zh'].includes(value.language)) return;
+    languagePreference = value.preference;
+    $('#ui-language').value = languagePreference;
+    locale.setLanguage(value.language);
+  }
+  async function loadLanguage() {
+    const generation = languageGeneration;
+    try {
+      const value = await api('language');
+      if (generation === languageGeneration) useLanguage(value);
+    } catch (_) { /* Keep the browser-language fallback if settings cannot be read. */ }
+  }
+  $('#ui-language').addEventListener('change', async (event) => {
+    if (languageBusy) return;
+    const preference = event.target.value;
+    languageGeneration++;
+    languageBusy = true; event.target.disabled = true;
+    try { useLanguage(await api('language', { preference })); }
+    catch (error) {
+      event.target.value = languagePreference;
+      notice(t('无法保存语言偏好'), error.message ? error : t('语言设置未更改，请重试。'));
+    } finally { languageBusy = false; event.target.disabled = false; }
+  });
+  locale.subscribe(() => {
+    const current = document.querySelector('[data-section][aria-current="page"]');
+    if (current) $('#crumb-section').textContent = current.textContent.trim();
+    updateActions();
+    if (state.loaded) {
+      paintPreview();
+      $('#file-location').textContent = t('当前设备');
+    }
+    if (desktopLive) updateDesktop(desktopLive);
+    if (desktopLive || connectionLost) renderConnection(desktopLive || {});
+    if (updateLive) updateAppUpdates(updateLive);
+    if (activeNotice && !$('#notice').hidden) {
+      $('#notice-title').textContent = t(activeNotice.title);
+      $('#notice-detail').textContent = message(activeNotice.detail);
+    }
+    if (!$('#toast').hidden) $('#toast').textContent = t(activeToast);
+    if (logsError) $('#desktop-log-text').textContent = message(logsError);
+    else if (logsEmpty) $('#desktop-log-text').textContent = t('暂无日志。');
+  });
 
   window.addEventListener('beforeunload', (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });
   document.addEventListener('visibilitychange', refreshState);
   $('.brand').addEventListener('click', (event) => { event.preventDefault(); document.querySelector('[data-section="connection"]').click(); });
   if (!token) {
     $('#loading').hidden = true;
-    notice('从 TailSplit 打开配置页面', '请点击菜单栏中的 TailSplit，再选择“设置与工具 → 配置面板…”。');
+    notice(t('从 TailSplit 打开配置页面'), t('请点击菜单栏中的 TailSplit，再选择“设置与工具 → 配置面板…”。'));
   } else {
-    load().then(refreshState);
+    loadLanguage().then(load).then(refreshState);
     setInterval(refreshState, 4000);
   }
 })();

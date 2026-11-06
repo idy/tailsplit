@@ -1,18 +1,50 @@
 #!/usr/bin/env python3
 """Verify and execute a native Windows CLI ZIP without starting a connection."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def cleanup_smoke_directory(directory):
+    # A just-exited executable can remain mapped or be scanned briefly on Windows.
+    # Retry sharing/lock violations only, for at most five seconds.
+    for attempt in range(20):
+        try:
+            shutil.rmtree(directory)
+            return
+        except OSError as error:
+            if getattr(error, "winerror", None) not in (32, 33) or attempt == 19:
+                raise
+            time.sleep(0.25)
+
+
+@contextmanager
+def smoke_directory():
+    directory = tempfile.mkdtemp(prefix="tailsplit-windows-smoke-")
+    try:
+        yield directory
+    except BaseException:
+        try:
+            cleanup_smoke_directory(directory)
+        except OSError as error:
+            # Do not replace an actual archive/CLI failure with a cleanup failure.
+            print(f"Warning: smoke-directory cleanup failed: {error}", file=sys.stderr)
+        raise
+    else:
+        cleanup_smoke_directory(directory)
 
 
 def verify(directory, arch):
@@ -24,7 +56,7 @@ def verify(directory, arch):
     version = (ROOT / "VERSION").read_text().strip()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     archive = directory / f"tailsplit_{version}_windows_{arch}.zip"
-    with tempfile.TemporaryDirectory(prefix="tailsplit-windows-smoke-") as temporary:
+    with smoke_directory() as temporary:
         work = Path(temporary)
         with zipfile.ZipFile(archive) as bundle:
             expected = {"tailsplit.exe", "LICENSE", "THIRD_PARTY_NOTICES.md", "build.json"}

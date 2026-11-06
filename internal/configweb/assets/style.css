@@ -220,7 +220,18 @@ h1 { color: var(--muted); font-size: var(--type-body); font-weight: 450; }
 .desktop-log-dialog { width: min(920px, 90vw); max-height: 85vh; }
 .desktop-log-dialog pre { overflow: auto; max-height: 58vh; margin-top: 16px; padding: 14px; border-radius: 8px; background: var(--code); color: var(--secondary-ink); font: var(--type-code)/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: var(--section-gap); margin-bottom: 16px; }
+.toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-top: var(--section-gap); margin-bottom: 16px; }
+.toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-inline-start: auto; }
+.language-control { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--type-note); }
+.language-control select { width: auto; min-width: 112px; max-width: 180px; font-size: var(--type-note); }
+.section-heading p, .field-label p, .field-hint, .desktop-hint, .section-note { overflow-wrap: anywhere; }
+:lang(en) .desktop-main { flex-wrap: wrap; }
+:lang(en) .desktop-copy { flex: 1 1 260px; }
+:lang(en) .desktop-actions { margin-inline-start: auto; }
+:lang(en) .action-buttons { flex-wrap: wrap; justify-content: flex-end; margin-inline-start: auto; }
+:lang(en) .crumbs { flex: 0 1 auto; }
+:lang(en) .crumbs h1 { display: none; }
+:lang(en) .crumb-sep { display: none; }
 .editor-tabs { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--wash); }
 .editor-tabs button { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: var(--type-note); font-weight: 500; line-height: 1.4; }
 .editor-tabs button:hover:not(:disabled) { color: var(--ink); }

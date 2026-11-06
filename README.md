@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.8 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.9 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -194,6 +194,14 @@ cause a revision conflict, and failed edits retain the unsaved draft. App servic
 checks run before saving: the application proxy port must be at least 1024, the
 system chooses the TUN name, and the app uses interactive or saved login rather
 than environment authentication keys.
+
+The **Language** control in the editor toolbar offers **Follow system**,
+**English** and **简体中文**. The panel and application-owned native menus and
+dialogs share this choice; unsupported system languages use English. Changes take
+effect without reconnecting or replacing unsaved form/YAML drafts. The preference
+is saved beside the selected configuration as `config.yaml.ui.json`, independently
+of network settings, so it survives app restarts and the panel's changing port.
+YAML keys, node names, diagnostic logs and upstream release notes remain unchanged.
 
 While the window is open, TailSplit also appears in the Dock and Command-Tab,
 and the menu bar shows its TailSplit, Edit and Window menus, so the standard

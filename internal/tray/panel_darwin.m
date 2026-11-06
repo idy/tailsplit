@@ -7,6 +7,7 @@
 // Defined in desktop_darwin.m.
 void tailsplit_on_main(void (^action)(void));
 void tailsplit_show_about(void);
+NSString *tailsplit_ui_text(NSString *chinese, NSString *english);
 
 // The configuration window, its page and delegate live until the app exits.
 // They are used only on the main thread.
@@ -175,15 +176,57 @@ static void tailsplit_panel_failed(WKNavigation *navigation) {
 
 @end
 
+static NSString *tailsplit_menu_text(NSString *key) {
+    NSDictionary *english = @{
+        @"关于 TailSplit": @"About TailSplit",
+        @"隐藏 TailSplit": @"Hide TailSplit",
+        @"隐藏其他": @"Hide Others",
+        @"全部显示": @"Show All",
+        @"退出 TailSplit": @"Quit TailSplit",
+        @"编辑": @"Edit",
+        @"撤销": @"Undo",
+        @"重做": @"Redo",
+        @"剪切": @"Cut",
+        @"拷贝": @"Copy",
+        @"粘贴": @"Paste",
+        @"粘贴并匹配样式": @"Paste and Match Style",
+        @"删除": @"Delete",
+        @"全选": @"Select All",
+        @"窗口": @"Window",
+        @"最小化": @"Minimize",
+        @"缩放": @"Zoom",
+        @"关闭": @"Close"
+    };
+    return tailsplit_ui_text(key, english[key] ?: key);
+}
+
+static void tailsplit_refresh_menu(NSMenu *menu) {
+    for (NSMenuItem *item in menu.itemArray) {
+        if ([item.representedObject isKindOfClass:[NSString class]]) {
+            item.title = tailsplit_menu_text(item.representedObject);
+            if (item.submenu) item.submenu.title = item.title;
+        }
+        if (item.submenu) tailsplit_refresh_menu(item.submenu);
+    }
+}
+
+void tailsplit_panel_refresh_language(void) {
+    tailsplit_refresh_menu(NSApp.mainMenu);
+}
+
 static NSMenu *tailsplit_panel_menu(NSMenu *bar, NSString *title) {
     NSMenu *menu = [[[NSMenu alloc] initWithTitle:title] autorelease];
-    [[bar addItemWithTitle:title action:NULL keyEquivalent:@""] setSubmenu:menu];
+    NSMenuItem *item = [bar addItemWithTitle:tailsplit_menu_text(title) action:NULL keyEquivalent:@""];
+    item.representedObject = title;
+    item.submenu = menu;
+    menu.title = item.title;
     return menu;
 }
 
 static void tailsplit_panel_item(NSMenu *menu, NSString *title, SEL action, NSString *key,
                                  NSEventModifierFlags modifiers, id target) {
-    NSMenuItem *item = [menu addItemWithTitle:title action:action keyEquivalent:key];
+    NSMenuItem *item = [menu addItemWithTitle:tailsplit_menu_text(title) action:action keyEquivalent:key];
+    item.representedObject = title;
     item.keyEquivalentModifierMask = modifiers;
     item.target = target;
 }

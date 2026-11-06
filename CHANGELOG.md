@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.8
+## 0.7.9
 
 - Follow the system's light or dark appearance in the desktop configuration panel
   and local browser page. Switch immediately without reloading or losing unsaved
@@ -10,6 +10,18 @@
   including live changes and custom app/system color combinations.
 - Adapt controls, status messages, dialogs and YAML highlighting for both themes,
   and verify initial and live appearance in the native Windows desktop fixture.
+
+## 0.7.8
+
+- Add English and Simplified Chinese throughout the desktop configuration panel,
+  application menus, dialogs, connection states and update controls. Follow the
+  system language by default, with a persistent language selector in the panel.
+- Apply language changes without reconnecting, saving network configuration or
+  replacing unsaved form and YAML drafts. Keep the preference in a separate
+  local file so it survives app restarts and changing panel ports.
+- Adapt settings layouts for longer English labels and localize dates, line
+  counts, placeholders and accessibility labels. Keep user names, YAML keys,
+  diagnostic logs, release notes and detailed validation diagnostics intact.
 
 ## 0.7.7
 

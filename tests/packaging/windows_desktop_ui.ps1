@@ -111,16 +111,31 @@ function Test-NativeCanvas([IntPtr]$Window, [int]$Light) {
         return $pixel.ToArgb() -eq $expected.ToArgb()
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
+# Both the previous Chinese release (upgrade fixture) and the current localized
+# release run here. Match application-owned controls in either supported locale.
+$UiNames = @{
+    '连接'='Connect'; '断开'='Disconnect'; '登录 Tailnet…'='Sign in to Tailnet…';
+    '退出设备登录'='Sign out of device'; '刷新出口'='Refresh exits'; '查看日志'='View logs';
+    '保存并应用'='Save & apply'; '最大化或还原'='Maximize or restore';
+    '刷新日志'='Refresh logs'; '关闭'='Close'
+}
 function Find-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
-    $condition = New-Object System.Windows.Automation.AndCondition(
-        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)),
-        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$Name)))
-    return $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
+    foreach ($candidate in @($Name, $UiNames[$Name])) {
+        if (-not $candidate) { continue }
+        $condition = New-Object System.Windows.Automation.AndCondition(
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)),
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$candidate)))
+        $found = $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
+        if ($found) { return $found }
+    }
+    return $null
 }
 function Wait-Connected([System.Windows.Automation.AutomationElement]$Root, [string]$Failure) {
     # Disconnect is enabled as soon as a session starts; only the page's
     # running state proves the SYSTEM service accepted this user's session.
-    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'已连接')
+    $condition = New-Object System.Windows.Automation.OrCondition(
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'已连接')),
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Connected')))
     Wait-Until { $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition) } $Failure 60 | Out-Null
 }
 function Invoke-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {

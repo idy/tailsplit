@@ -10,9 +10,10 @@ import (
 // LoginFlow is owned by the UI event loop. A click can precede the new auth
 // URL after logout; queue that intent instead of silently discarding it.
 type LoginFlow struct {
-	pending bool
-	opening bool
-	message string
+	pending     bool
+	opening     bool
+	message     string
+	showMessage bool
 }
 
 func (f *LoginFlow) Request() {
@@ -20,11 +21,13 @@ func (f *LoginFlow) Request() {
 		return
 	}
 	f.pending = true
+	f.showMessage = true
 	f.message = "正在准备新授权链接"
 }
 
 func (f *LoginFlow) Cancel() {
 	f.pending = false
+	f.showMessage = false
 	f.message = "未打开"
 }
 
@@ -34,16 +37,19 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 	}
 	if snapshot.State == "failed" {
 		f.pending = false
+		f.showMessage = true
 		f.message = "连接失败，请查看日志"
 		return ""
 	}
 	if snapshot.BackendState == "Direct" {
 		f.pending = false
+		f.showMessage = true
 		f.message = "当前配置无需设备登录"
 		return ""
 	}
 	if snapshot.BackendState == "Running" && snapshot.LoginURL == "" {
 		f.pending = false
+		f.showMessage = false
 		f.message = "设备已登录"
 		return ""
 	}
@@ -51,6 +57,7 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 		return ""
 	}
 	f.pending, f.opening = false, true
+	f.showMessage = true
 	f.message = "正在打开默认浏览器"
 	return snapshot.LoginURL
 }
@@ -58,16 +65,22 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 func (f *LoginFlow) Complete(err error) {
 	f.opening = false
 	if err != nil {
+		f.showMessage = true
 		f.message = "打开失败，请复制登录链接"
 	} else {
+		f.showMessage = true
 		f.message = "已请求浏览器打开"
 	}
 }
 
 func (f *LoginFlow) Fail(message string) {
 	f.pending, f.opening = false, false
+	f.showMessage = true
 	f.message = message
 }
+
+// ShowMessage is presentation state, independent of the translated text.
+func (f *LoginFlow) ShowMessage() bool { return f.showMessage }
 
 func (f *LoginFlow) Opening() bool { return f.opening }
 

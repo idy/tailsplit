@@ -48,8 +48,8 @@ func SetLoginItem(enabled bool) error {
 }
 
 func ConfirmUpdate(version string) bool {
-	text, _ := windows.UTF16PtrFromString(fmt.Sprintf("升级到 TailSplit %s？\n\n将下载并校验安装包，然后打开安装向导。安装时会断开连接；配置和设备登录会保留。Windows 将请求管理员批准。", version))
-	title, _ := windows.UTF16PtrFromString("TailSplit 更新")
+	text, _ := windows.UTF16PtrFromString(fmt.Sprintf(Translate(UILanguage(), "升级到 TailSplit %s？\n\n将下载并校验安装包，然后打开安装向导。安装时会断开连接；配置和设备登录会保留。Windows 将请求管理员批准。"), version))
+	title, _ := windows.UTF16PtrFromString(Translate(UILanguage(), "TailSplit 更新"))
 	answer, _ := windows.MessageBox(0, text, title, windows.MB_YESNO|windows.MB_ICONQUESTION|windows.MB_DEFBUTTON2|windows.MB_SETFOREGROUND)
 	return answer == 6 // IDYES
 }
