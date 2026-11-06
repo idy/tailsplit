@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-06T11:28:58.449945+00:00",
+  "title": "Design System: TailSplit Desktop Configuration Panel",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Accent"
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Canvas"
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface"
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar"
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Connection state."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Ordinary desktop interface text."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "YAML preview and raw configuration; logs vary line height."
+      }
+    },
+    "shadows": [
+      {
+        "name": "toast",
+        "value": "0 10px 30px var(--toast-shadow)",
+        "purpose": "Transient message; shadow color follows appearance."
+      },
+      {
+        "name": "dialog",
+        "value": "0 20px 60px var(--dialog-shadow)",
+        "purpose": "Modal confirmation; shadow color follows appearance."
+      },
+      {
+        "name": "switch-thumb",
+        "value": "0 1px 2px #0006",
+        "purpose": "Small physical separation of the switch thumb."
+      }
+    ],
+    "motion": [
+      {
+        "name": "field-transition",
+        "value": "border-color .12s, box-shadow .12s",
+        "purpose": "Editable field state changes."
+      },
+      {
+        "name": "switch-background",
+        "value": "background .15s",
+        "purpose": "Switch track."
+      },
+      {
+        "name": "switch-thumb",
+        "value": "transform .15s",
+        "purpose": "Switch thumb."
+      },
+      {
+        "name": "spinner",
+        "value": "spin .8s linear infinite",
+        "purpose": "Loading indicator; update indicator uses 1s."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "animation: none !important; transition: none !important; scroll-behavior: auto !important",
+        "purpose": "Applied to every element and pseudo-element under prefers-reduced-motion: reduce."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "preview-collapse",
+        "value": "1199px"
+      },
+      {
+        "name": "header-exit-hide",
+        "value": "960px"
+      },
+      {
+        "name": "stacked-fields",
+        "value": "860px"
+      },
+      {
+        "name": "icon-sidebar",
+        "value": "640px"
+      },
+      {
+        "name": "brand-name-hide",
+        "value": "380px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Existing primary action variant.",
+      "html": "<button class=\"ds-button-primary\">Refresh</button>",
+      "css": ".ds-button-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:var(--control-height,34px);border:1px solid var(--line-strong);border-radius:6px;font:500 var(--type-note,.8125rem)/1.5 var(--font);white-space:nowrap;cursor:pointer;background:var(--accent);color:#fff;padding:6px 16px;border-color:var(--accent)}.ds-button-primary:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover);}.ds-button-primary:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}.ds-button-primary:disabled{opacity:.45;cursor:not-allowed}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Existing secondary action variant.",
+      "html": "<button class=\"ds-button-secondary\">Refresh</button>",
+      "css": ".ds-button-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:var(--control-height,34px);border:1px solid var(--line-strong);border-radius:6px;font:500 var(--type-note,.8125rem)/1.5 var(--font);white-space:nowrap;cursor:pointer;background:var(--raised);color:var(--ink);padding:6px 12px;border-color:var(--line-strong)}.ds-button-secondary:hover:not(:disabled){background:var(--button-hover);}.ds-button-secondary:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}.ds-button-secondary:disabled{opacity:.45;cursor:not-allowed}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    },
+    {
+      "name": "Subtle Button",
+      "kind": "button",
+      "refersTo": "button-subtle",
+      "description": "Existing subtle action variant.",
+      "html": "<button class=\"ds-button-subtle\">Refresh</button>",
+      "css": ".ds-button-subtle{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:var(--control-height,34px);border:1px solid var(--line-strong);border-radius:6px;font:500 var(--type-note,.8125rem)/1.5 var(--font);white-space:nowrap;cursor:pointer;background:transparent;color:var(--subtle-ink);padding:6px 12px;border-color:transparent}.ds-button-subtle:hover:not(:disabled){background:var(--subtle-hover);}.ds-button-subtle:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}.ds-button-subtle:disabled{opacity:.45;cursor:not-allowed}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Editable local configuration value.",
+      "html": "<input class=\"ds-input\" aria-label=\"Device name\" placeholder=\"Device name\">",
+      "css": ".ds-input{width:100%;min-height:var(--control-height,34px);padding:6px 10px;border:1px solid var(--line-strong);border-radius:6px;background:var(--field);color:var(--ink);font:var(--type-body,.875rem)/1.5 var(--font);transition:border-color .12s,box-shadow .12s}.ds-input::placeholder{color:var(--faint);opacity:1}.ds-input:hover:not(:disabled){border-color:var(--field-hover)}.ds-input:focus{border-color:var(--accent-ink);outline:2px solid var(--accent-ink);outline-offset:2px}.ds-input:disabled{opacity:.6}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    },
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Connection and Logs above bottom-pinned Settings in the app shell.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><button class=\"ds-nav-item ds-active\" aria-current=\"page\">Connection</button><button class=\"ds-nav-item\">Logs</button><button class=\"ds-nav-item ds-settings\">Settings</button></nav>",
+      "css": ".ds-nav{display:flex;flex-direction:column;gap:4px;min-height:180px;padding:12px 10px 16px;background:var(--sidebar);font-family:var(--font)}.ds-nav-item{min-height:36px;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:var(--soft-ink);font:var(--type-body,.875rem)/1.4 var(--font);text-align:left;cursor:pointer}.ds-nav-item:hover{background:var(--hover)}.ds-nav-item.ds-active{background:var(--selected);color:var(--emphasis-ink);font-weight:500}.ds-settings{margin-top:auto}.ds-nav-item:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    },
+    {
+      "name": "Settings Group",
+      "kind": "card",
+      "refersTo": "settings-group",
+      "description": "Flat grouped rows with internal separators.",
+      "html": "<section class=\"ds-group\"><div class=\"ds-row\"><label for=\"ds-host\">Device name</label><input id=\"ds-host\" value=\"tailsplit\"></div><div class=\"ds-row\">Local configuration</div></section>",
+      "css": ".ds-group{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font:var(--type-body,.875rem)/1.5 var(--font)}.ds-row{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);gap:20px;align-items:start;padding:12px 16px}.ds-row+.ds-row{border-top:1px solid var(--line)}.ds-row label{padding-top:6px;font-weight:500}.ds-row input{width:100%;min-height:34px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:6px;background:var(--field);color:var(--ink);font:inherit}.ds-row input:hover{border-color:var(--field-hover)}.ds-row input:focus{border-color:var(--accent-ink);outline:2px solid var(--accent-ink);outline-offset:2px}@media(max-width:860px){.ds-row{grid-template-columns:1fr;gap:8px}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    },
+    {
+      "name": "Connection Status",
+      "kind": "custom",
+      "refersTo": "status",
+      "description": "Text and dot indicate connection state; this is not a chip filter.",
+      "html": "<span class=\"ds-status\" role=\"status\"><i aria-hidden=\"true\"></i>Connected</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;gap:7px;color:var(--good-ink);font:var(--type-caption,.75rem)/1.5 var(--font);white-space:nowrap}.ds-status i{width:7px;height:7px;border-radius:50%;background:var(--good);flex-shrink:0}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    },
+    {
+      "name": "Routing Segments",
+      "kind": "custom",
+      "refersTo": "mode-option",
+      "description": "A staged routing choice with neutral selected fill; app confirmation remains separate.",
+      "html": "<div class=\"ds-modes\" role=\"group\" aria-label=\"Connection mode\"><button class=\"ds-mode ds-selected\" aria-pressed=\"true\">Split</button><button class=\"ds-mode\" aria-pressed=\"false\">Global</button></div>",
+      "css": ".ds-modes{display:flex;gap:3px;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--wash)}.ds-mode{min-height:32px;padding:5px 14px;border:0;border-radius:5px;background:transparent;color:var(--muted);font:var(--type-note,.8125rem)/1.5 var(--font);cursor:pointer}.ds-mode:hover:not(:disabled){color:var(--ink);background:var(--hover)}.ds-mode.ds-selected{background:var(--selected);color:var(--emphasis-ink);font-weight:600}.ds-mode:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}.ds-mode:disabled{opacity:.45;cursor:not-allowed}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Desktop Configuration Panel",
+    "overview": "TailSplit uses a compact, neutral desktop configuration panel with system typography, blue actions, and semantic connection states. This system applies to the embedded configuration UI in macOS WKWebView and Windows WebView2. It preserves the incumbent desktop world selected by the user.\n\nSystem appearance changes the surfaces, text, borders, and state treatments through CSS media queries. Density supports repeated local configuration tasks; clear labels, separate draft states, and explicit actions carry the hierarchy.",
+    "keyCharacteristics": [
+      "Neutral surfaces that follow system appearance.",
+      "Compact controls with visible keyboard focus.",
+      "Text-backed semantic state colors.",
+      "Native window chrome and practical configuration density."
+    ],
+    "rules": [
+      {
+        "name": "The Appearance Rule",
+        "body": "Use the existing semantic CSS properties so light and dark appearance change together. The accent fill remains shared; accent text and hover colors adapt.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Rule",
+        "body": "Pair semantic color with a readable state label; selected, pending, current, connected, warning, and error are distinct.",
+        "section": "colors"
+      },
+      {
+        "name": "The Desktop Type Rule",
+        "body": "Use the incumbent system text stack for interface text and the mono stack for configuration and diagnostic content.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Surface Rule",
+        "body": "Use tonal surfaces and hairline separators for ordinary panels; reserve ambient shadows for overlays and the small switch thumb.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use semantic CSS properties for both system appearances.",
+      "Do retain visible keyboard focus and reduced-motion behavior.",
+      "Do allow English and Chinese labels, long addresses, and helper text to wrap where the source provides for it.",
+      "Do keep current and pending selections visibly distinct and provide explicit confirmation."
+    ],
+    "donts": [
+      "Don't apply this desktop panel system to the public website without inspecting that surface's own implementation.",
+      "Don't replace the chosen neutral desktop world with a new visual identity or illustration.",
+      "Don't imply a connection or saved configuration from selection styling alone."
+    ]
+  }
+}

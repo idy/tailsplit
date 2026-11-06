@@ -551,25 +551,6 @@ func initializeWindowsConfig(path string) error {
 	return errors.Join(writeErr, file.Sync(), file.Close())
 }
 
-func desktopLogTail(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	if info.Size() > 128<<10 {
-		if _, err := file.Seek(-(128 << 10), io.SeekEnd); err != nil {
-			return "", err
-		}
-	}
-	data, err := io.ReadAll(io.LimitReader(file, 128<<10))
-	return strings.ToValidUTF8(string(data), "�"), err
-}
-
 func hideInitialWindowsWindow(class string, ctx context.Context) {
 	name, _ := windows.UTF16PtrFromString(class)
 	user32 := windows.NewLazySystemDLL("user32.dll")

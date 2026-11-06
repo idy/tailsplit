@@ -204,6 +204,8 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 	state := map[string]any{
 		"state": snapshot.State, "active": snapshot.Active, "mode": snapshot.Mode,
 		"exit": snapshot.ExitNode, "network": snapshot.NetworkName,
+		"hostname": snapshot.Hostname, "backend_state": snapshot.BackendState,
+		"routing_mode": snapshot.RoutingMode, "logs_available": s.options.Logs != nil,
 		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
 		"startup": s.options.Startup != nil && s.options.Startup(),

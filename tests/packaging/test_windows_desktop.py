@@ -425,6 +425,63 @@ class CommandAndResourceTests(unittest.TestCase):
         self.assertEqual(environment, {"PATH": "system-tools"})
 
 
+class NativeUIContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.script = (ROOT / "tests/packaging/windows_desktop_ui.ps1").read_text(encoding="utf-8")
+
+    def test_connect_action_is_distinct_from_navigation_with_legacy_fallback(self):
+        html = (ROOT / "internal/configweb/assets/index.html").read_text(encoding="utf-8")
+        translations = (ROOT / "internal/configweb/assets/i18n.js").read_text(encoding="utf-8")
+        self.assertRegex(html, r'<button\b(?=[^>]*\bid="desktop-connect")(?=[^>]*\baria-label="连接 TailSplit")[^>]*>')
+        self.assertIn("'连接 TailSplit': 'Connect TailSplit'", translations)
+        self.assertIn("'连接页面': 'Connection'", translations)
+        self.assertIn("'连接页面': '连接'", translations)
+        self.assertIn("'连接 TailSplit'='Connect TailSplit'", self.script)
+        self.assertIn("'连接页面'=@('连接','Connection')", self.script)
+        self.assertIn("'连接'='Connect'", self.script)
+        self.assertIn("$pageNavigation = [bool]((Find-Button $automation '连接 TailSplit') -or (Find-Button $automation '设置'))", self.script)
+        self.assertIn("$connectName = if ($pageNavigation) { '连接 TailSplit' } else { '连接' }", self.script)
+        # Both the normal connection and the connection left for Setup must use
+        # the action name, even when the Chinese sidebar is also named 连接.
+        self.assertEqual(self.script.count("Invoke-Button $automation $connectName"), 2)
+        self.assertNotIn("Invoke-Button $automation '连接'", self.script)
+        initial = self.script.split("$initialControls = if ($pageNavigation)", 1)[1].split("foreach ($name in $initialControls)", 1)[0]
+        current, legacy = initial.split("} else {", 1)
+        self.assertIn("'登录 Tailscale'", current)
+        self.assertIn("'日志'", current)
+        self.assertIn("'设置'", current)
+        for hidden in ("'断开'", "'退出登录…'", "'保存并应用'"):
+            self.assertNotIn(hidden, current)
+        for required in ("'断开'", "'登录 Tailnet…'", "'退出设备登录'", "'查看日志'", "'保存并应用'"):
+            self.assertIn(required, legacy)
+
+    def test_config_save_navigates_before_editing_and_checks_disk(self):
+        save = self.script.split("$stage = 'saving configuration from native window'", 1)[1].split("$stage = 'connecting from native window'", 1)[0]
+        self.assertRegex(save, r"(?s)if \(\$pageNavigation\) \{\s*Invoke-Button \$automation '设置'\s*Invoke-Button \$automation '网络'\s*\}")
+        self.assertLess(save.index("'网络'"), save.index("Find-Control $automation '代理监听地址'"))
+        self.assertIn("[System.Windows.Automation.ValuePattern]::Pattern", save)
+        self.assertLess(save.index("$listenPattern.SetValue($savedListen)"), save.index("Invoke-Button $automation '保存并应用'"))
+        self.assertIn("Get-Content -LiteralPath $Config -Raw).Contains($savedListen)", save)
+        self.assertIn("-not $button.Current.IsEnabled", save)
+        self.assertIn("if ($pageNavigation) { Invoke-Button $automation '连接页面' }", save)
+
+    def test_log_workflow_checks_bounded_content_and_refresh_in_both_layouts(self):
+        logs = self.script.split("$stage = 'reading and refreshing bounded native logs'", 1)[1].split("$stage = 'disconnecting from native window'", 1)[0]
+        self.assertIn("if ($pageNavigation) { Invoke-Button $automation '日志' }", logs)
+        self.assertIn("else { Invoke-Button $automation '查看日志' }", logs)
+        self.assertIn("if ($pageNavigation) { Invoke-Button $automation '连接页面' }", logs)
+        self.assertIn("else { Invoke-Button $automation '关闭' }", logs)
+        self.assertIn("Assert-BoundedLogs $logText $oldLogMarker $latestLogMarker", logs)
+        self.assertIn("Assert-BoundedLogs $logText $oldLogMarker $refreshedLogMarker", logs)
+        self.assertLess(logs.index("Add-FixtureLog ($refreshedLogMarker"), logs.index("Invoke-Button $automation '刷新日志'"))
+        self.assertIn("$text.Contains($refreshedLogMarker)", logs)
+        bounds = self.script.split("function Assert-BoundedLogs", 1)[1].split("function Wait-Connected", 1)[0]
+        self.assertIn("-not $Text.Contains($LatestMarker)", bounds)
+        self.assertIn("$Text.Contains($OldMarker)", bounds)
+        self.assertIn("$Text.Length -gt ((128 -shl 10) + 8192)", bounds)
+
+
 class BuildContractTests(unittest.TestCase):
     def test_one_installer_asset_stages_distinct_gui_and_core(self):
         for arch in ("amd64", "arm64"):

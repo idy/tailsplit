@@ -30,7 +30,76 @@ type configurationApply struct {
 	ctx    context.Context
 	update func() error
 	direct bool
+	action string
 	done   chan error
+}
+
+type desktopActionController interface {
+	Snapshot() tray.Snapshot
+	Start() error
+	StartLogin() error
+	Stop() error
+	Logout() error
+	RefreshExitNodes() error
+}
+
+// LoginFlow and action preparation belong to the menu's event loop. Only the
+// returned controller or login-item operation may run on the settings worker.
+func requestDesktopLogin(controller desktopActionController, flow *tray.LoginFlow) error {
+	if !controller.Snapshot().Active {
+		if err := controller.StartLogin(); err != nil {
+			flow.Fail("无法准备登录，请查看日志")
+			return errors.New(tr("无法准备登录，请查看日志"))
+		}
+	}
+	flow.Request()
+	return nil
+}
+
+func desktopActionOperation(action string, controller desktopActionController, flow *tray.LoginFlow, startup func(bool) error) (func() error, error) {
+	switch action {
+	case "connect":
+		snapshot := controller.Snapshot()
+		if snapshot.Active {
+			return nil, nil
+		}
+		if snapshot.BackendState == "NeedsLogin" {
+			return nil, requestDesktopLogin(controller, flow)
+		}
+		return controller.Start, nil
+	case "disconnect":
+		flow.Cancel()
+		return controller.Stop, nil
+	case "login":
+		return nil, requestDesktopLogin(controller, flow)
+	case "logout":
+		flow.Cancel()
+		// The window signs out only; the native switch-tailnet menu separately
+		// requests a fresh login after its logout operation completes.
+		return controller.Logout, nil
+	case "refresh-exits":
+		return controller.RefreshExitNodes, nil
+	case "startup-on", "startup-off":
+		return func() error { return startup(action == "startup-on") }, nil
+	default:
+		return nil, errors.New("unknown desktop action")
+	}
+}
+
+func setDesktopStartup(enabled bool, set func(bool) error, status func() tray.LoginItemStatus, openSettings func()) error {
+	if err := set(enabled); err != nil {
+		return err
+	}
+	if enabled && status() == tray.LoginItemNeedsApproval {
+		openSettings()
+		// Startup is a boolean in the window API: pending approval must not be
+		// presented as enabled. The native menu also shows the pending status.
+		if currentLanguage() == "zh" {
+			return errors.New("请在“系统设置 → 通用 → 登录项”中允许 TailSplit，完成登录时启动设置。")
+		}
+		return errors.New("Allow TailSplit in System Settings → General → Login Items to finish enabling Open at Login.")
+	}
+	return nil
 }
 
 func main() {
@@ -76,23 +145,26 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	configurationRequests := make(chan configurationApply)
-	apply := func(requestCtx context.Context, update func() error, direct bool) error {
-		request := configurationApply{ctx: requestCtx, update: update, direct: direct, done: make(chan error, 1)}
+	submit := func(request configurationApply) error {
+		request.done = make(chan error, 1)
 		select {
 		case configurationRequests <- request:
-		case <-requestCtx.Done():
-			return requestCtx.Err()
+		case <-request.ctx.Done():
+			return request.ctx.Err()
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 		select {
 		case err := <-request.done:
 			return err
-		case <-requestCtx.Done():
-			return requestCtx.Err()
+		case <-request.ctx.Done():
+			return request.ctx.Err()
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	apply := func(requestCtx context.Context, update func() error, direct bool) error {
+		return submit(configurationApply{ctx: requestCtx, update: update, direct: direct})
 	}
 	updates := newDesktopUpdates(ctx, tray.AppVersion(), preferences.CheckForUpdates,
 		func(ctx context.Context, enabled bool) error {
@@ -131,6 +203,13 @@ func main() {
 		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
 		Apply:       func(ctx context.Context, update func() error) error { return apply(ctx, update, false) },
 		UpdateState: updates.snapshot, UpdateAction: updates.action,
+		Action: func(ctx context.Context, action string) error {
+			return submit(configurationApply{ctx: ctx, action: action})
+		},
+		Logs: func() (string, error) { return desktopLogTail(*logPath) },
+		// NeedsApproval is registered but cannot launch the app yet. The
+		// startup-on action explains approval and opens the native settings.
+		Startup: func() bool { return tray.LoginItem() == tray.LoginItemEnabled },
 	})
 	systray.Run(func() {
 		setTrayIcon(false)
@@ -217,16 +296,7 @@ func main() {
 				flow.Cancel()
 				go func() { settingsDone <- controller.Reconfigure(update) }()
 			}
-			requestLogin := func() {
-				snapshot := controller.Snapshot()
-				if !snapshot.Active {
-					if controller.StartLogin() != nil {
-						flow.Fail("无法准备登录，请查看日志")
-						return
-					}
-				}
-				flow.Request()
-			}
+			requestLogin := func() error { return requestDesktopLogin(controller, &flow) }
 			loginItemStatus := tray.LoginItemUnavailable
 			refreshLoginItem := func() {
 				loginItemStatus = tray.LoginItem()
@@ -379,8 +449,22 @@ func main() {
 						request.done <- err
 						continue
 					}
+					if request.action != "" {
+						update, err := desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
+							return setDesktopStartup(enabled, tray.SetLoginItem, tray.LoginItem, tray.OpenLoginItemSettings)
+						})
+						if err != nil || update == nil {
+							if err == nil {
+								openReadyLogin(controller.Snapshot())
+							}
+							request.done <- err
+							continue
+						}
+						request.update, request.direct = update, true
+					} else {
+						flow.Cancel()
+					}
 					editing = true
-					flow.Cancel()
 					go func() {
 						var err error
 						if request.direct {
@@ -403,6 +487,9 @@ func main() {
 						showError(tr("无法应用设置，请检查配置和后台服务"))
 					}
 				case <-startAtLogin.ClickedCh:
+					if editing || loggingOut || flow.Opening() {
+						continue
+					}
 					enable := loginItemStatus != tray.LoginItemEnabled && loginItemStatus != tray.LoginItemNeedsApproval
 					if err := tray.SetLoginItem(enable); err != nil {
 						showError(tr("无法更新登录项，请从打包的 TailSplit.app 操作或检查系统登录项设置"))

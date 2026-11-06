@@ -17,6 +17,15 @@
     if (element.textContent !== text) element.textContent = text;
   }
   const controls = [...document.querySelectorAll('[data-field]')];
+  // Keep both footer dividers level when translated actions wrap or resize.
+  if (window.ResizeObserver) {
+    const actionbar = $('#actionbar');
+    new window.ResizeObserver(() => {
+      const height = actionbar.getBoundingClientRect().height;
+      if (height > 0) document.documentElement.style.setProperty('--actionbar-height', `${height}px`);
+      else document.documentElement.style.removeProperty('--actionbar-height');
+    }).observe(actionbar);
+  }
   const macWindow = window.webkit?.messageHandlers?.tailsplitWindow;
   const windowsWindow = window.chrome?.webview;
   const windowHost = macWindow || windowsWindow;
@@ -61,7 +70,7 @@
   };
   const state = {
     saved: '', base: '', draft: '', revision: '', changes: Object.create(null),
-    mode: 'form', valid: false, parsed: false, values: {}, loaded: false,
+    mode: 'form', page: 'connection', valid: false, parsed: false, values: {}, savedValues: {}, savedValid: false, loaded: false,
     dirty: false, busy: false, loading: false, switching: false, validating: false,
     previewing: false, external: false,
     generation: 0, previewed: 0, pending: null, timer: null, toastTimer: null,
@@ -141,7 +150,7 @@
   }
 
   function updateGlobalMode() {
-    const global = $('#routing-mode').value === 'global';
+    const global = fieldValue(state.values, 'rules.mode') === 'global';
     $('#global-hint').hidden = !global;
     $('#tun-enabled').disabled = global || isLocked();
   }
@@ -163,7 +172,10 @@
     for (const control of controls) control.disabled = locked;
     $('#raw-yaml').disabled = locked;
     for (const button of document.querySelectorAll('.editor-tabs button, [data-section]')) button.disabled = locked;
+    $('#settings-draft').hidden = !state.dirty;
+    $('#actionbar').hidden = !state.loaded || (state.page !== 'settings' && !state.dirty);
     updateGlobalMode();
+    if (state.loaded) renderConnectionCenter();
   }
 
   function paintPreview() {
@@ -195,7 +207,8 @@
     state.previewed = state.generation; state.pending = null;
     state.saved = state.base = state.draft = doc.yaml;
     state.revision = doc.revision;
-    state.values = doc.values || {};
+    state.values = state.savedValues = doc.values || {};
+    state.savedValid = doc.valid;
     state.changes = Object.create(null);
     state.valid = doc.valid; state.parsed = doc.parsed;
     state.dirty = false; state.previewing = false; state.external = false; state.loaded = true;
@@ -204,8 +217,10 @@
     fillFields(state.values);
     $('#raw-yaml').value = state.draft;
     paintPreview();
-    $('#loading').hidden = true; $('#editor-layout').hidden = false; $('#actionbar').hidden = false;
-    if (!doc.parsed) showMode('yaml');
+    $('#loading').hidden = true; $('#editor-layout').hidden = false;
+    $(`#page-${state.page}`).hidden = false;
+    renderPageTitle();
+    if (!doc.parsed) { showMode('yaml'); showPage('settings'); }
     if (!doc.valid) notice(t('配置需要修正'), backendError(doc) || t('请检查 YAML 内容。'));
     else clearNotice();
     updateActions();
@@ -343,18 +358,36 @@
     const mode = event.key === 'Home' ? 'form' : event.key === 'End' ? 'yaml' : state.mode === 'form' ? 'yaml' : 'form';
     if (await switchMode(mode)) $(`#${mode}-tab`).focus();
   });
+  function showPage(name) {
+    state.page = name;
+    for (const nav of document.querySelectorAll('[data-page]')) {
+      const active = nav.dataset.page === name;
+      nav.classList.toggle('active', active);
+      if (active) nav.setAttribute('aria-current', 'page');
+      else nav.removeAttribute('aria-current');
+    }
+    for (const page of document.querySelectorAll('.app-page')) page.hidden = page.id !== `page-${name}`;
+    renderPageTitle();
+    updateActions();
+    if (name === 'logs') refreshDesktopLogs();
+  }
+  function renderPageTitle() {
+    const labels = { connection: t('连接页面'), logs: t('日志'), settings: t('设置') };
+    $('#crumb-section').textContent = labels[state.page];
+  }
+  for (const nav of document.querySelectorAll('[data-page]')) nav.addEventListener('click', () => showPage(nav.dataset.page));
   async function showSection(nav) {
     if (!(await switchMode('form'))) return false;
     for (const item of document.querySelectorAll('[data-section]')) {
-      item.classList.toggle('active', item === nav);
+      item.classList.toggle('selected', item === nav);
       if (item === nav) item.setAttribute('aria-current', 'page');
       else item.removeAttribute('aria-current');
     }
     for (const page of document.querySelectorAll('.settings-page')) page.hidden = page.id !== `section-${nav.dataset.section}`;
-    $('#crumb-section').textContent = nav.textContent.trim();
     return true;
   }
   for (const nav of document.querySelectorAll('[data-section]')) nav.addEventListener('click', () => showSection(nav));
+  $('#view-settings-draft').addEventListener('click', () => showPage('settings'));
 
   async function reload() {
     if (isLocked()) return;
@@ -408,32 +441,191 @@
   $('#copy-raw').addEventListener('click', copy);
 
   let desktopBusy = false;
+  let desktopPending = '';
   let desktopLive = null;
+  let connectionLost = false;
+  let quickBusy = false;
+  let stateRequest = 0;
+  let selectedExit = null;
+  let selectedMode = null;
+  let exitListSignature = '';
+  const networkActive = (live = desktopLive) => Boolean(live?.active && ['tun', 'proxy'].includes(live.mode));
+  const signedIn = (live = desktopLive) => live?.backend_state === 'Running' || live?.state === 'authenticated';
+  const savedExit = () => String(fieldValue(state.savedValues, 'tailscale.exit_node') || '');
+  const savedMode = () => fieldValue(state.savedValues, 'rules.mode') === 'global' ? 'global' : 'split';
+  const connectionChanges = () => ({
+    ...(selectedExit !== null && selectedExit !== savedExit() ? { 'tailscale.exit_node': selectedExit } : {}),
+    ...(selectedMode !== null && selectedMode !== savedMode() ? { 'rules.mode': selectedMode, ...(selectedMode === 'global' ? { 'tun.enabled': true } : {}) } : {}),
+  });
+  function exitNodes() {
+    const nodes = (Array.isArray(desktopLive?.exit_nodes) ? desktopLive.exit_nodes : []).map((node) => ({
+      id: String(node.id || node.ID || ''), name: String(node.name || node.Name || node.id || node.ID || ''),
+      online: node.online === true || node.Online === true, selected: node.selected === true || node.Selected === true,
+    })).filter((node) => node.id);
+    const configured = savedExit();
+    const directMatch = nodes.some((node) => node.id === configured || node.name === configured);
+    for (const node of nodes) node.configured = node.id === configured || node.name === configured || !directMatch && node.selected;
+    if (configured && !nodes.some((node) => node.configured)) nodes.unshift({ id: configured, name: configured, online: false, configured: true, missing: true });
+    return nodes;
+  }
   function updateDesktop(live) {
     desktopLive = live;
-    $('#desktop-controls').hidden = !live.desktop;
-    if (!live.desktop) return;
-    document.querySelectorAll('[data-desktop-action]').forEach((button) => { button.disabled = desktopBusy; });
-    $('#desktop-connect').disabled = desktopBusy || live.active || state.dirty;
-    $('#desktop-disconnect').disabled = desktopBusy || !live.active;
-    $('#desktop-startup').disabled = desktopBusy;
-    $('#desktop-startup').checked = live.startup === true;
-    $('#desktop-hint').textContent = live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') : live.error ? message(backendError(live)) : (state.dirty ? t('请先保存配置，再连接。') : t('连接和设备登录分别控制；关闭窗口后仍保留在托盘。'));
+    renderConnectionCenter();
   }
+  function renderConnectionCenter() {
+    const live = desktopLive || {};
+    const connected = networkActive(live);
+    const authenticated = signedIn(live);
+    const discovering = live.active && !connected;
+    const locked = isLocked() || desktopBusy || quickBusy || connectionLost;
+    const changing = Boolean(Object.keys(connectionChanges()).length);
+    const hasTailnet = Boolean(state.savedValues.tailscale);
+    const nodes = exitNodes();
+    const chosen = selectedExit ?? savedExit();
+    const mode = selectedMode ?? savedMode();
+    const chosenNode = nodes.find((node) => node.id === chosen || node.name === chosen || selectedExit === null && node.configured);
+    $('#desktop-controls').hidden = !live.desktop;
+    $('#desktop-connect').hidden = Boolean(live.active);
+    $('#desktop-disconnect').hidden = !live.active;
+    $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || !state.savedValid || changing || hasTailnet && (!authenticated || !savedExit() || nodes.some((node) => node.configured && !node.online && !node.missing));
+    $('#desktop-disconnect').disabled = !live.desktop || desktopBusy || quickBusy || connectionLost;
+    $('#desktop-disconnect').textContent = connected ? t('断开') : t('取消');
+    for (const button of document.querySelectorAll('[data-desktop-action]')) {
+      if (['connect', 'disconnect'].includes(button.dataset.desktopAction)) continue;
+      button.disabled = !live.desktop || locked || discovering || button.dataset.desktopAction === 'login' && connected;
+    }
+    $('#desktop-login').hidden = authenticated;
+    $('#account-menu').hidden = !authenticated;
+    $('#desktop-logout').disabled = !live.desktop || locked || discovering;
+    $('#startup-setting').hidden = !live.desktop;
+    $('#desktop-startup').disabled = !live.desktop || locked;
+    $('#desktop-startup').checked = live.startup === true;
+    const identity = authenticated ? [live.hostname, live.network].filter(Boolean).join(' · ') || t('已登录') :
+      discovering ? t('正在读取设备') : t('未登录 Tailscale');
+    setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : identity);
+    const current = connected ? live.exit || savedExit() : savedExit();
+    setStatusText('#current-exit', current ? t(connected ? '当前出口：{name}' : '已保存出口：{name}', { name: current }) : t('尚未选择出口'));
+    const hint = connectionLost ? t('请确认 TailSplit 仍在运行') : live.error ? message(backendError(live)) :
+      desktopPending ? t('正在处理…') : quickBusy ? t('正在应用连接更改…') :
+      !live.desktop ? t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。') :
+      live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') :
+      state.dirty ? t('请先保存配置，再连接。') : changing ? t('连接选项尚未应用，请先确认选择。') :
+      !authenticated && hasTailnet ? t('先登录 Tailscale，再选择出口并连接。') : t('连接和设备登录分别控制；关闭窗口后仍保留在托盘。');
+    setStatusText('#desktop-hint', hint);
+    for (const button of document.querySelectorAll('[data-routing-mode]')) {
+      const selected = button.dataset.routingMode === mode;
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-pressed', String(selected));
+      button.disabled = locked || discovering || !state.loaded;
+    }
+    $('#mode-description').textContent = mode === 'global' ? t('接管整机流量；出口不可用时阻断，手动断开后恢复系统网络。') : t('按分流规则选择直连或出口。');
+    $('#connection-apply').hidden = !changing && !quickBusy;
+    const name = chosenNode?.name || chosen || t('尚未选择出口');
+    $('#connection-selection').textContent = t('已选：{name} · {mode}', { name, mode: mode === 'global' ? t('全局代理') : t('规则分流') });
+    $('#connection-consequence').textContent = connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
+    $('#apply-connection-change').textContent = quickBusy ? t('正在应用…') : !connected ? t('保存选择') :
+      selectedExit !== null && selectedMode !== null ? t('应用连接更改') : selectedExit !== null ? t('切换出口') : t('应用模式');
+    $('#apply-connection-change').disabled = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && Boolean(chosenNode && !chosenNode.online);
+    $('#cancel-connection-change').disabled = quickBusy;
+    $('#connection-draft-warning').hidden = !state.dirty;
+    $('#select-manual-exit').disabled = locked || discovering || !$('#exit-node').value.trim();
+    $('#exit-node').disabled = locked || discovering;
+    renderExitList(nodes, locked || discovering);
+    renderConnection(live);
+  }
+  function renderExitList(nodes, locked) {
+    const query = $('#exit-search').value.trim().toLocaleLowerCase();
+    const visible = nodes.filter((node) => `${node.name} ${node.id}`.toLocaleLowerCase().includes(query));
+    const signature = JSON.stringify([visible, selectedExit, locked, locale.language]);
+    if (signature !== exitListSignature) {
+      exitListSignature = signature;
+      const focused = document.activeElement?.name === 'exit-selection' ? document.activeElement.value : null;
+      let restoreFocus = null;
+      const fragment = document.createDocumentFragment();
+      for (const node of visible) {
+        const selected = selectedExit === null ? node.configured : node.id === selectedExit;
+        const row = document.createElement('label');
+        row.className = `exit-row${selected ? ' selected' : ''}${!node.online ? ' unavailable' : ''}`;
+        const radio = document.createElement('input');
+        radio.type = 'radio'; radio.name = 'exit-selection'; radio.value = node.id;
+        radio.checked = Boolean(selected); radio.disabled = locked || !node.online;
+        if (node.id === focused && !radio.disabled) restoreFocus = radio;
+        radio.addEventListener('change', () => { selectedExit = node.configured ? null : node.id; renderConnectionCenter(); });
+        const info = document.createElement('span'); info.className = 'exit-info';
+        const name = document.createElement('span'); name.className = 'exit-name'; name.textContent = node.name; name.title = node.name;
+        const address = document.createElement('span'); address.className = 'exit-address'; address.textContent = node.id;
+        info.append(name, address);
+        const status = document.createElement('span');
+        status.className = `exit-state${node.configured ? ' current' : selected ? ' pending' : ''}`;
+        status.textContent = node.missing ? t('已保存 · 未发现') : !node.online ? (node.configured ? t('已选 · 不可用') : t('离线或已过期')) :
+          node.configured ? t('当前选择') : selected ? t('待切换') : t('在线');
+        row.append(radio, info, status); fragment.append(row);
+      }
+      $('#exit-list').replaceChildren(fragment);
+      if (restoreFocus) restoreFocus.focus();
+    }
+    $('#exit-count').textContent = t('可用出口数量', { count: nodes.filter((node) => node.online).length });
+    $('#exit-empty').hidden = visible.length > 0;
+    $('#exit-empty-title').textContent = query ? t('没有匹配的出口') : signedIn() ? t('未发现可用出口') : t('尚未读取出口');
+    $('#exit-empty-detail').textContent = query ? t('试试其他名称或 Tailscale IP。') : signedIn() ? t('确认设备已在 Tailnet 中提供出口，并获准使用，然后刷新。') : t('登录 Tailscale 后，刷新可用出口。');
+  }
+  $('#exit-search').addEventListener('input', () => renderConnectionCenter());
+  $('#exit-node').addEventListener('input', () => renderConnectionCenter());
+  $('#select-manual-exit').addEventListener('click', () => {
+    const value = $('#exit-node').value.trim();
+    if (!value || isLocked() || quickBusy) return;
+    const node = exitNodes().find((node) => node.id === value || node.name === value);
+    if (node && !node.online) { notice(t('出口不可用'), t('请选择在线出口，或刷新列表后重试。')); return; }
+    selectedExit = node?.configured || value === savedExit() ? null : node?.id || value;
+    renderConnectionCenter();
+  });
+  for (const button of document.querySelectorAll('[data-routing-mode]')) button.addEventListener('click', () => {
+    selectedMode = button.dataset.routingMode === savedMode() ? null : button.dataset.routingMode;
+    renderConnectionCenter();
+  });
+  $('#cancel-connection-change').addEventListener('click', () => { selectedExit = selectedMode = null; renderConnectionCenter(); });
+  $('#apply-connection-change').addEventListener('click', async () => {
+    if (quickBusy || desktopBusy || isLocked() || state.dirty || state.external || connectionLost) return;
+    const changes = connectionChanges();
+    if (!Object.keys(changes).length) return;
+    stateRequest++;
+    quickBusy = true; state.busy = true; updateActions();
+    try {
+      const doc = await api('config', { yaml: state.saved, changes, revision: state.revision });
+      selectedExit = selectedMode = null;
+      useDocument(doc);
+      toast(t('连接选项已保存'));
+    } catch (error) {
+      if (error.code === 'conflict') state.external = true;
+      notice(error.code === 'conflict' ? t('配置文件已更新') : t('无法应用连接更改'), error, 'error', error.code === 'conflict');
+    } finally { quickBusy = false; state.busy = false; await refreshState(); updateActions(); }
+  });
   async function desktopAction(action) {
-    if (desktopBusy) return;
-    desktopBusy = true;
-    if (desktopLive) updateDesktop(desktopLive);
-    $('#desktop-hint').textContent = t('正在处理…');
-    try { await api('action', { action }); }
-    catch (error) { notice(t('操作未完成'), error); }
-    finally { desktopBusy = false; await refreshState(); }
+    if (desktopBusy || quickBusy || connectionLost || !desktopLive?.desktop) return;
+    stateRequest++;
+    desktopBusy = true; desktopPending = action;
+    renderConnectionCenter();
+    try {
+      await api('action', { action });
+      if (action === 'logout') selectedExit = selectedMode = null;
+    } catch (error) { notice(t('操作未完成'), error); }
+    finally { desktopBusy = false; desktopPending = ''; await refreshState(); renderConnectionCenter(); }
   }
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
   $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
+  $('#desktop-logout').addEventListener('click', async () => {
+    const dialog = $('#logout-dialog');
+    dialog.returnValue = 'cancel'; dialog.showModal();
+    const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
+    if (answer === 'logout') { $('#account-menu').open = false; await desktopAction('logout'); }
+  });
   let logsError = null;
   let logsEmpty = false;
+  let logsBusy = false;
   async function refreshDesktopLogs() {
+    if (logsBusy) return;
+    if (!desktopLive?.logs_available) { $('#desktop-log-text').textContent = t('此页面无法读取日志，请从桌面应用打开。'); return; }
+    logsBusy = true; $('#desktop-log-refresh').disabled = true;
     try {
       const text = (await api('logs')).text;
       logsError = null; logsEmpty = !text;
@@ -441,9 +633,8 @@
     } catch (error) {
       logsError = error; logsEmpty = false;
       $('#desktop-log-text').textContent = message(error);
-    }
+    } finally { logsBusy = false; $('#desktop-log-refresh').disabled = false; }
   }
-  $('#desktop-logs').addEventListener('click', async () => { $('#desktop-log-dialog').showModal(); await refreshDesktopLogs(); });
   $('#desktop-log-refresh').addEventListener('click', refreshDesktopLogs);
 
   let updateLive = null;
@@ -524,7 +715,6 @@
   $('#update-pill').addEventListener('click', () => appUpdateAction(updateLive?.updates?.available ? 'install' : 'check'));
   $('#update-automatic').addEventListener('change', (event) => appUpdateAction(event.target.checked ? 'automatic-on' : 'automatic-off'));
 
-  let connectionLost = false;
   function renderConnection(live) {
     const labels = {
       starting: live.mode === 'discovery' ? t('正在读取设备') : t('正在连接'), connecting: t('正在连接'),
@@ -539,6 +729,10 @@
     $('#connection-status').classList.toggle('error', connectionLost || live.state === 'failed');
     setStatusText('#connection-status span', connectionLost ? t('页面连接中断') : live.preview ? t('预览环境') : connected ? t('已连接') : labels[live.state] || t('未连接'));
     $('#connection-status').title = $('#connection-status span').textContent;
+    const connectionState = connectionLost ? t('页面连接中断') : connected ? t('已连接') :
+      ['authenticated', 'stopped', undefined].includes(live.state) ? t('未连接') : labels[live.state] || t('未连接');
+    setStatusText('#connection-state', connectionState);
+    for (const kind of ['connected', 'attention', 'error']) $('#connection-state').classList.toggle(kind, $('#connection-status').classList.contains(kind));
     setStatusText('#exit-label', connectionLost ? t('请确认 TailSplit 仍在运行') : live.exit || (live.preview ? t('更改仅保存到预览副本') : t('本机配置')));
     $('#exit-label').title = $('#exit-label').textContent;
   }
@@ -546,19 +740,15 @@
   async function refreshState() {
     if (!state.loaded || document.hidden) return;
     const generation = updateGeneration;
+    const request = ++stateRequest;
     try {
       const live = await api('state');
+      if (request !== stateRequest) return;
       connectionLost = false;
       updateDesktop(live);
       if (generation === updateGeneration) updateAppUpdates(live);
       renderConnection(live);
-      const nodes = Array.isArray(live.exit_nodes) ? live.exit_nodes : [];
-      $('#exit-nodes').replaceChildren(...nodes.map((node) => {
-        const option = document.createElement('option');
-        option.value = node.id || node.ID || '';
-        option.label = node.name || node.Name || option.value;
-        return option;
-      }));
+      renderConnectionCenter();
       if (live.revision && live.revision !== state.revision && !isLocked()) {
         const generation = state.generation;
         if (!state.dirty) {
@@ -572,8 +762,9 @@
         state.external = true; clearNotice(); updateActions();
       }
     } catch (_) {
+      if (request !== stateRequest) return;
       connectionLost = true;
-      renderConnection(desktopLive || {});
+      renderConnectionCenter();
     }
   }
 
@@ -605,8 +796,7 @@
     } finally { languageBusy = false; event.target.disabled = false; }
   });
   locale.subscribe(() => {
-    const current = document.querySelector('[data-section][aria-current="page"]');
-    if (current) $('#crumb-section').textContent = current.textContent.trim();
+    renderPageTitle();
     updateActions();
     if (state.loaded) {
       paintPreview();
@@ -624,9 +814,9 @@
     else if (logsEmpty) $('#desktop-log-text').textContent = t('暂无日志。');
   });
 
-  window.addEventListener('beforeunload', (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('beforeunload', (event) => { if (state.dirty || Object.keys(connectionChanges()).length) { event.preventDefault(); event.returnValue = ''; } });
   document.addEventListener('visibilitychange', refreshState);
-  $('.brand').addEventListener('click', (event) => { event.preventDefault(); document.querySelector('[data-section="connection"]').click(); });
+  $('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('connection'); });
   if (!token) {
     $('#loading').hidden = true;
     notice(t('从 TailSplit 打开配置页面'), t('请点击菜单栏中的 TailSplit，再选择“设置与工具 → 配置面板…”。'));

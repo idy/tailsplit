@@ -4,11 +4,15 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
+	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/tray"
 )
 
@@ -66,6 +70,167 @@ func TestTemplateIconIsValid(t *testing.T) {
 		icon, err := png.Decode(bytes.NewReader(trayIcon(connected)))
 		if err != nil || icon.Bounds().Dx() != 32 {
 			t.Fatal("invalid tray icon")
+		}
+	}
+}
+
+type desktopActionFixture struct {
+	snapshot tray.Snapshot
+	calls    []string
+	err      error
+}
+
+func (c *desktopActionFixture) Snapshot() tray.Snapshot { return c.snapshot }
+func (c *desktopActionFixture) Start() error            { return c.record("connect") }
+func (c *desktopActionFixture) StartLogin() error       { return c.record("start-login") }
+func (c *desktopActionFixture) Stop() error             { return c.record("disconnect") }
+func (c *desktopActionFixture) Logout() error           { return c.record("logout") }
+func (c *desktopActionFixture) RefreshExitNodes() error { return c.record("refresh-exits") }
+func (c *desktopActionFixture) record(action string) error {
+	c.calls = append(c.calls, action)
+	return c.err
+}
+
+func TestDesktopLoginUsesNativeLoginFlow(t *testing.T) {
+	const link = "https://login.tailscale.com/a/window-test"
+	for _, action := range []string{"login", "connect"} {
+		t.Run(action, func(t *testing.T) {
+			controller := &desktopActionFixture{snapshot: tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}}
+			var flow tray.LoginFlow
+			operation, err := desktopActionOperation(action, controller, &flow, nil)
+			if err != nil || operation != nil || !slices.Equal(controller.calls, []string{"start-login"}) {
+				t.Fatalf("login was not prepared on the event loop: calls %v, error %v", controller.calls, err)
+			}
+			if next := flow.Next(controller.snapshot); next != "" {
+				t.Fatal("login opened before a fresh device link was ready")
+			}
+			controller.snapshot.LoginURL = link
+			if next := flow.Next(controller.snapshot); next != link || !flow.Opening() {
+				t.Fatal("window login did not use the existing default-browser flow")
+			}
+		})
+	}
+	controller := &desktopActionFixture{snapshot: tray.Snapshot{Active: true, State: "login", LoginURL: link}}
+	var flow tray.LoginFlow
+	operation, err := desktopActionOperation("login", controller, &flow, nil)
+	if err != nil || operation != nil || len(controller.calls) != 0 || flow.Next(controller.snapshot) != link {
+		t.Fatal("login did not reuse the active device session")
+	}
+}
+
+func TestDesktopLoginFailureKeepsPrivateDetailsOutOfActionError(t *testing.T) {
+	controller := &desktopActionFixture{err: errors.New("https://login.tailscale.com/a/private tskey-auth-private")}
+	var flow tray.LoginFlow
+	operation, err := desktopActionOperation("login", controller, &flow, nil)
+	if operation != nil || err == nil || strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "tskey-") {
+		t.Fatalf("login error exposed helper details: %v", err)
+	}
+	if !flow.ShowMessage() || flow.Next(tray.Snapshot{LoginURL: "https://login.tailscale.com/a/stale"}) != "" {
+		t.Fatal("failed login left a browser request pending")
+	}
+}
+
+func TestDesktopActionsDeferWorkAndCancelLoginBeforeWorker(t *testing.T) {
+	for _, action := range []string{"connect", "disconnect", "logout", "refresh-exits", "startup-on", "startup-off"} {
+		t.Run(action, func(t *testing.T) {
+			controller := &desktopActionFixture{}
+			var flow tray.LoginFlow
+			flow.Request()
+			var startupCalls []bool
+			operation, err := desktopActionOperation(action, controller, &flow, func(enabled bool) error {
+				startupCalls = append(startupCalls, enabled)
+				return nil
+			})
+			if err != nil || operation == nil {
+				t.Fatalf("no serialized operation: %v", err)
+			}
+			if len(controller.calls) != 0 || len(startupCalls) != 0 {
+				t.Fatal("a blocking operation ran on the event loop")
+			}
+			if action == "disconnect" || action == "logout" {
+				if next := flow.Next(tray.Snapshot{LoginURL: "https://login.tailscale.com/a/stale"}); next != "" {
+					t.Fatal("login intent was not canceled before dispatching the worker")
+				}
+			}
+			if err := operation(); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(action, "startup-") {
+				if !slices.Equal(startupCalls, []bool{action == "startup-on"}) || len(controller.calls) != 0 {
+					t.Fatal("startup changed the connection")
+				}
+			} else if !slices.Equal(controller.calls, []string{action}) {
+				t.Fatalf("unexpected controller operations: %v", controller.calls)
+			}
+			if action == "logout" && flow.Next(tray.Snapshot{LoginURL: "https://login.tailscale.com/a/new"}) != "" {
+				t.Fatal("window logout automatically requested another browser login")
+			}
+		})
+	}
+}
+
+func TestDesktopConnectIsIdempotentWhileActiveAndUnknownActionsAreRejected(t *testing.T) {
+	controller := &desktopActionFixture{snapshot: tray.Snapshot{Active: true}}
+	var flow tray.LoginFlow
+	if operation, err := desktopActionOperation("connect", controller, &flow, nil); operation != nil || err != nil {
+		t.Fatal("connect tried to replace an active session")
+	}
+	if operation, err := desktopActionOperation("open-shell", controller, &flow, nil); operation != nil || err == nil {
+		t.Fatal("unknown desktop action was accepted")
+	}
+	if len(controller.calls) != 0 {
+		t.Fatal("an invalid action reached the controller")
+	}
+}
+
+func TestDesktopStartupHandlesApprovalAndRegistrationErrors(t *testing.T) {
+	old := uiLanguage
+	t.Cleanup(func() { uiLanguage = old })
+	uiLanguage = locale.NewStore(filepath.Join(t.TempDir(), "config.yaml"))
+	for _, language := range []string{"en", "zh"} {
+		if err := uiLanguage.Set(language); err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name    string
+			enabled bool
+			status  tray.LoginItemStatus
+			setErr  error
+			approve bool
+		}{
+			{"enabled", true, tray.LoginItemEnabled, nil, false},
+			{"approval", true, tray.LoginItemNeedsApproval, nil, true},
+			{"cancel-approval", false, tray.LoginItemNeedsApproval, nil, false},
+			{"disabled", false, tray.LoginItemDisabled, nil, false},
+			{"registration-error", true, tray.LoginItemUnavailable, errors.New("fixture unavailable"), false},
+		} {
+			t.Run(language+"/"+test.name, func(t *testing.T) {
+				sets, opens, reads := 0, 0, 0
+				err := setDesktopStartup(test.enabled, func(enabled bool) error {
+					sets++
+					if enabled != test.enabled {
+						t.Fatal("wrong registration request")
+					}
+					return test.setErr
+				}, func() tray.LoginItemStatus {
+					reads++
+					return test.status
+				}, func() { opens++ })
+				if sets != 1 {
+					t.Fatal("login item was not updated once")
+				}
+				if test.approve {
+					want := "System Settings"
+					if language == "zh" {
+						want = "系统设置"
+					}
+					if err == nil || !strings.Contains(err.Error(), want) || opens != 1 || reads != 1 {
+						t.Fatalf("missing localized approval instruction: %v, opened %d, read %d", err, opens, reads)
+					}
+				} else if !errors.Is(err, test.setErr) || opens != 0 || test.setErr != nil && reads != 0 {
+					t.Fatalf("unexpected startup result: %v, opened %d, read %d", err, opens, reads)
+				}
+			})
 		}
 	}
 }
