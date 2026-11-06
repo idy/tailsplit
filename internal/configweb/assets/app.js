@@ -4,6 +4,13 @@
   const $ = (selector) => document.querySelector(selector);
   const locale = window.TailSplitI18n;
   const t = (key, values) => locale.t(key, values);
+  function backendError(value) {
+    return value?.error_i18n ? { messages: value.error_i18n, message: value.error || '' } : value?.error || '';
+  }
+  function message(value) {
+    const text = value && typeof value === 'object' ? value.messages?.[locale.language] ?? value.message ?? '' : value || '';
+    return t(text);
+  }
   // Polling should announce a status only when its text actually changes.
   function setStatusText(selector, text) {
     const element = $(selector);
@@ -80,6 +87,7 @@
     if (!response.ok) {
       const error = new Error(value.error || t('请求未完成，请重试。'));
       error.code = value.code;
+      error.messages = value.error_i18n;
       throw error;
     }
     return value;
@@ -90,7 +98,7 @@
   function notice(title, detail, kind = 'error', canReload = false) {
     activeNotice = { title, detail };
     $('#notice-title').textContent = t(title);
-    $('#notice-detail').textContent = t(detail);
+    $('#notice-detail').textContent = message(detail);
     $('#notice').classList.toggle('error', kind === 'error');
     $('#notice-reload').hidden = !canReload;
     $('#notice').hidden = false;
@@ -198,7 +206,7 @@
     paintPreview();
     $('#loading').hidden = true; $('#editor-layout').hidden = false; $('#actionbar').hidden = false;
     if (!doc.parsed) showMode('yaml');
-    if (!doc.valid) notice(t('配置需要修正'), doc.error || t('请检查 YAML 内容。'));
+    if (!doc.valid) notice(t('配置需要修正'), backendError(doc) || t('请检查 YAML 内容。'));
     else clearNotice();
     updateActions();
   }
@@ -209,7 +217,7 @@
       useDocument(await api('config'));
     } catch (error) {
       $('#loading').hidden = true;
-      notice(t('无法读取本机配置'), error.message || t('请从 TailSplit 菜单重新打开页面。'));
+      notice(t('无法读取本机配置'), error.message ? error : t('请从 TailSplit 菜单重新打开页面。'));
     } finally { state.loading = false; updateActions(); }
     await refreshState();
   }
@@ -243,11 +251,11 @@
       state.dirty = state.draft !== state.saved;
       paintPreview();
       if (doc.valid) clearNotice();
-      else notice(t('配置需要修正'), doc.error || t('请检查字段内容。'));
+      else notice(t('配置需要修正'), backendError(doc) || t('请检查字段内容。'));
     } catch (error) {
       if (generation !== state.generation) return;
       state.valid = false;
-      notice(t('暂时无法检查配置'), error.message || t('请确认 TailSplit 仍在运行。'));
+      notice(t('暂时无法检查配置'), error.message ? error : t('请确认 TailSplit 仍在运行。'));
     } finally {
       if (generation === state.generation) {
         state.previewing = false;
@@ -372,7 +380,7 @@
       state.valid = true; clearNotice(); toast(t('配置校验通过'));
     } catch (error) {
       if (generation !== state.generation) return;
-      state.valid = false; notice(t('配置未通过校验'), error.message);
+      state.valid = false; notice(t('配置未通过校验'), error);
     } finally { state.validating = false; updateActions(); }
   });
 
@@ -387,7 +395,7 @@
       await refreshState();
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
-      notice(error.code === 'conflict' ? t('配置文件已更新') : t('配置未能应用'), error.message, 'error', error.code === 'conflict');
+      notice(error.code === 'conflict' ? t('配置文件已更新') : t('配置未能应用'), error, 'error', error.code === 'conflict');
     } finally { state.busy = false; updateActions(); }
   });
 
@@ -410,7 +418,7 @@
     $('#desktop-disconnect').disabled = desktopBusy || !live.active;
     $('#desktop-startup').disabled = desktopBusy;
     $('#desktop-startup').checked = live.startup === true;
-    $('#desktop-hint').textContent = live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') : live.error || (state.dirty ? t('请先保存配置，再连接。') : t('连接和设备登录分别控制；关闭窗口后仍保留在托盘。'));
+    $('#desktop-hint').textContent = live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') : live.error ? message(backendError(live)) : (state.dirty ? t('请先保存配置，再连接。') : t('连接和设备登录分别控制；关闭窗口后仍保留在托盘。'));
   }
   async function desktopAction(action) {
     if (desktopBusy) return;
@@ -418,14 +426,22 @@
     if (desktopLive) updateDesktop(desktopLive);
     $('#desktop-hint').textContent = t('正在处理…');
     try { await api('action', { action }); }
-    catch (error) { notice(t('操作未完成'), error.message); }
+    catch (error) { notice(t('操作未完成'), error); }
     finally { desktopBusy = false; await refreshState(); }
   }
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
   $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
+  let logsError = null;
+  let logsEmpty = false;
   async function refreshDesktopLogs() {
-    try { $('#desktop-log-text').textContent = (await api('logs')).text || t('暂无日志。'); }
-    catch (error) { $('#desktop-log-text').textContent = error.message; }
+    try {
+      const text = (await api('logs')).text;
+      logsError = null; logsEmpty = !text;
+      $('#desktop-log-text').textContent = text || t('暂无日志。');
+    } catch (error) {
+      logsError = error; logsEmpty = false;
+      $('#desktop-log-text').textContent = message(error);
+    }
   }
   $('#desktop-logs').addEventListener('click', async () => { $('#desktop-log-dialog').showModal(); await refreshDesktopLogs(); });
   $('#desktop-log-refresh').addEventListener('click', refreshDesktopLogs);
@@ -478,10 +494,10 @@
     setStatusText('#update-pill-version', label);
     updateButton.title = updates.downloading ?
       `${label} · ${updateBytes(downloaded)}${total > 0 ? ` / ${updateBytes(total)}` : ` · ${t('总大小待确定')}`}` :
-      updates.installing ? t('正在准备安装更新，请完成系统确认或安装向导。') : updateError || updates.error ||
+      updates.installing ? t('正在准备安装更新，请完成系统确认或安装向导。') : message(updateError || backendError(updates)) ||
       (updates.available ? t('更新至 {version}，安装前会请求确认。', { version: updates.latest_version || t('最新版本') }) : t('检查应用更新'));
     updateButton.setAttribute('aria-label', updates.downloading ? updateButton.title : `${label}. ${updateButton.title}`);
-    $('#update-error').textContent = updateError || updates.error || '';
+    $('#update-error').textContent = message(updateError || backendError(updates));
     $('#update-error').hidden = !$('#update-error').textContent;
     const notes = String(updates.release_notes || '');
     $('#update-notes').hidden = !notes;
@@ -496,7 +512,7 @@
     try {
       await api('update-action', { action });
     } catch (error) {
-      updateError = error.message;
+      updateError = error;
     } finally {
       updateGeneration++;
       await refreshState();
@@ -585,22 +601,27 @@
     try { useLanguage(await api('language', { preference })); }
     catch (error) {
       event.target.value = languagePreference;
-      notice(t('无法保存语言偏好'), error.message || t('语言设置未更改，请重试。'));
+      notice(t('无法保存语言偏好'), error.message ? error : t('语言设置未更改，请重试。'));
     } finally { languageBusy = false; event.target.disabled = false; }
   });
   locale.subscribe(() => {
     const current = document.querySelector('[data-section][aria-current="page"]');
     if (current) $('#crumb-section').textContent = current.textContent.trim();
     updateActions();
-    if (state.loaded) paintPreview();
+    if (state.loaded) {
+      paintPreview();
+      $('#file-location').textContent = t('当前设备');
+    }
     if (desktopLive) updateDesktop(desktopLive);
     if (desktopLive || connectionLost) renderConnection(desktopLive || {});
     if (updateLive) updateAppUpdates(updateLive);
     if (activeNotice && !$('#notice').hidden) {
       $('#notice-title').textContent = t(activeNotice.title);
-      $('#notice-detail').textContent = t(activeNotice.detail);
+      $('#notice-detail').textContent = message(activeNotice.detail);
     }
     if (!$('#toast').hidden) $('#toast').textContent = t(activeToast);
+    if (logsError) $('#desktop-log-text').textContent = message(logsError);
+    else if (logsEmpty) $('#desktop-log-text').textContent = t('暂无日志。');
   });
 
   window.addEventListener('beforeunload', (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });

@@ -111,7 +111,7 @@ func TestEnglishErrorsPreserveDiagnosticsAndOtherContent(t *testing.T) {
 		if status != 400 || !bytes.Contains(body, []byte(`unknown field`)) {
 			t.Fatal(status, string(body))
 		}
-		var response map[string]string
+		var response map[string]any
 		if err := json.Unmarshal(body, &response); err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +119,7 @@ func TestEnglishErrorsPreserveDiagnosticsAndOtherContent(t *testing.T) {
 		if language == "en" {
 			prefix = "Could not read the edits: "
 		}
-		if !strings.HasPrefix(response["error"], prefix) {
+		if !strings.HasPrefix(response["error"].(string), prefix) {
 			t.Fatal(response)
 		}
 		status, body = request(t, server, "POST", "/api/preview", map[string]string{"yaml": "value: .nan\n"}, map[string]string{"Accept-Language": language})
@@ -139,7 +139,7 @@ func TestEnglishErrorsPreserveDiagnosticsAndOtherContent(t *testing.T) {
 	}
 	source := []byte(`{"error":"启动失败，请查看日志","state":"failed","updates":{"error":"无法应用配置：detail 文件.yaml","notes":"启动失败，请查看日志"},"text":"无法读取日志。","values":{"error":"启动失败，请查看日志"}}`)
 	var got map[string]any
-	if err := json.Unmarshal(localizeErrors(source), &got); err != nil {
+	if err := json.Unmarshal(localizeErrors(source, true), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got["error"] != "Could not start; view logs" || got["state"] != "failed" || got["text"] != "无法读取日志。" {
@@ -188,6 +188,31 @@ func TestStateEnglishErrorsKeepKeysAndReleaseNotes(t *testing.T) {
 		update := state["updates"].(map[string]any)
 		if state["state"] != "failed" || state["error"] != wantError || update["error"] != wantUpdate || update["release_notes"] != "启动失败，请查看日志" || strings.Contains(response.Body.String(), "secret.example") {
 			t.Fatal(state)
+		}
+	}
+}
+
+func TestErrorsRetainBothLanguagesForLiveSwitching(t *testing.T) {
+	const diagnostic = "disk full: user/config.yaml"
+	source, _ := json.Marshal(map[string]any{
+		"code": "apply", "error": "无法应用配置：" + diagnostic,
+		"yaml": "# 无法应用配置：keep this comment", "release_notes": "无法应用配置：keep these notes",
+	})
+	for _, english := range []bool{false, true} {
+		var got map[string]any
+		if err := json.Unmarshal(localizeErrors(source, english), &got); err != nil {
+			t.Fatal(err)
+		}
+		messages := got["error_i18n"].(map[string]any)
+		if messages["en"] != "Could not apply the configuration: "+diagnostic || messages["zh"] != "无法应用配置："+diagnostic {
+			t.Fatal(messages)
+		}
+		want := messages["zh"]
+		if english {
+			want = messages["en"]
+		}
+		if got["error"] != want || got["code"] != "apply" || got["yaml"] != "# 无法应用配置：keep this comment" || got["release_notes"] != "无法应用配置：keep these notes" {
+			t.Fatal(got)
 		}
 	}
 }

@@ -30,12 +30,9 @@ type Store struct {
 }
 
 func NewStore(configPath string) *Store {
-	// Resolve existing parent aliases (including macOS /var) once, without
-	// resolving the preference file itself. Subsequent symlink substitutions fail.
-	path := configPath + ".ui.json"
-	if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
-		path = filepath.Join(parent, filepath.Base(path))
-	}
+	// Resolve existing parent aliases once, including when initialization has
+	// not yet created the config directory. Never resolve the preference file.
+	path := resolveParentAliases(configPath + ".ui.json")
 	s := &Store{path: path, preference: "auto", hostLanguage: detectLanguage()}
 	if safePath(s.path) != nil {
 		return s
@@ -59,6 +56,35 @@ func NewStore(configPath string) *Store {
 		s.preference = saved.Preference
 	}
 	return s
+}
+
+// resolveParentAliases canonicalizes the nearest existing ancestor and retains
+// missing trailing directories. Later-created symlinks still fail safePath.
+func resolveParentAliases(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	parent := filepath.Dir(absolute)
+	suffix := []string{filepath.Base(absolute)}
+	for {
+		_, err := os.Lstat(parent)
+		if err == nil {
+			resolved, err := filepath.EvalSymlinks(parent)
+			if err != nil {
+				return absolute
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved
+		}
+		if !errors.Is(err, os.ErrNotExist) || filepath.Dir(parent) == parent {
+			return absolute
+		}
+		suffix = append(suffix, filepath.Base(parent))
+		parent = filepath.Dir(parent)
+	}
 }
 
 func (s *Store) Get() State {

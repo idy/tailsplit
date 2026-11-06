@@ -80,6 +80,44 @@ func TestMalformedPreferencesFallback(t *testing.T) {
 	}
 }
 
+func TestMissingDirectoriesUnderExistingAlias(t *testing.T) {
+	root := t.TempDir()
+	actual := filepath.Join(root, "actual")
+	alias := filepath.Join(root, "alias")
+	if err := os.Mkdir(actual, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(actual, alias); err != nil {
+		t.Skip(err)
+	}
+	path := filepath.Join(alias, "new-dir", "nested", "config.yaml")
+	store := NewStore(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("zh"); err != nil {
+		t.Fatal("save after config initialization:", err)
+	}
+	if got := NewStore(path).Get(); got != (State{Preference: "zh", Language: "zh"}) {
+		t.Fatal("preferences did not survive relaunch", got)
+	}
+
+	// A directory absent at construction must not become a redirect later.
+	redirectedPath := filepath.Join(alias, "later", "config.yaml")
+	redirected := NewStore(redirectedPath)
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Dir(redirectedPath)); err != nil {
+		t.Fatal(err)
+	}
+	before := redirected.Get()
+	if redirected.Set("en") == nil || redirected.Get() != before {
+		t.Fatal("accepted post-start directory symlink")
+	}
+	if _, err := os.Stat(filepath.Join(target, "config.yaml.ui.json")); !os.IsNotExist(err) {
+		t.Fatal("wrote through post-start symlink", err)
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewStore(filepath.Join(t.TempDir(), "config.yaml"))
 	var wg sync.WaitGroup

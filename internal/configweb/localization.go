@@ -111,20 +111,28 @@ func translateError(message string) string {
 
 // Only error fields in the response envelope and its known state/update objects
 // are eligible. Raw JSON preserves YAML, logs, release notes and numeric values.
-func localizeErrors(data []byte) []byte {
+func localizeErrors(data []byte, english bool) []byte {
 	var object map[string]json.RawMessage
 	if json.Unmarshal(data, &object) != nil || object == nil {
 		return data
 	}
 	if raw, ok := object["error"]; ok {
 		var message string
-		if json.Unmarshal(raw, &message) == nil {
-			object["error"], _ = json.Marshal(translateError(message))
+		if json.Unmarshal(raw, &message) == nil && message != "" {
+			translated := translateError(message)
+			// Keep both presentations with the original diagnostic. A client can
+			// change language without repeating a failed save or other operation.
+			if translated != message {
+				object["error_i18n"], _ = json.Marshal(map[string]string{"en": translated, "zh": message})
+			}
+			if english {
+				object["error"], _ = json.Marshal(translated)
+			}
 		}
 	}
 	for _, key := range []string{"state", "updates"} {
 		if raw, ok := object[key]; ok && strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
-			object[key] = localizeErrors(raw)
+			object[key] = localizeErrors(raw, english)
 		}
 	}
 	result, err := json.Marshal(object)

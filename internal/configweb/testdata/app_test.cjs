@@ -561,3 +561,24 @@ test('changing language cannot restore a stale connected indicator after a faile
   assert.equal(app.$('#connection-status').classList.contains('connected'), false);
   assert.equal(app.$('#connection-status span').textContent, 'Page connection lost');
 });
+
+test('visible backend errors and location labels switch languages without retrying a save', async () => {
+  const app = await page({}, '', { preference: 'en', language: 'en' });
+  await app.input('#level', 'debug');
+  await app.$('#yaml-tab').emit('click');
+  const diagnostic = 'disk full: user/config.yaml';
+  app.override = r => r.path === '/api/config' && r.method === 'POST' ? response({
+    code: 'apply', error: 'Could not apply the configuration: ' + diagnostic,
+    error_i18n: { en: 'Could not apply the configuration: ' + diagnostic, zh: '无法应用配置：' + diagnostic },
+  }, false) : undefined;
+  await app.$('#save').emit('click');
+  assert.equal(app.$('#notice-detail').textContent, 'Could not apply the configuration: ' + diagnostic);
+  for (const language of ['zh', 'en']) {
+    app.$('#ui-language').value = language;
+    await app.$('#ui-language').emit('change');
+    assert.equal(app.$('#notice-detail').textContent, (language === 'zh' ? '无法应用配置：' : 'Could not apply the configuration: ') + diagnostic);
+    assert.equal(app.$('#file-location').textContent, language === 'zh' ? '当前设备' : 'This device');
+    assert.match(app.$('#raw-yaml').value, /log_level: debug/);
+  }
+  assert.equal(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').length, 1);
+});

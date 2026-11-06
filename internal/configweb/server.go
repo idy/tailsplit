@@ -378,8 +378,8 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 		status = http.StatusInternalServerError
 		data = []byte(`{"code":"encoding","error":"无法生成配置响应。"}`)
 	}
-	if localized, ok := w.(languageResponseWriter); ok && localized.english {
-		data = localizeErrors(data)
+	if localized, ok := w.(languageResponseWriter); ok {
+		data = localizeErrors(data, localized.english)
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
