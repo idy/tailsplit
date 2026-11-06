@@ -699,7 +699,7 @@ test('visible backend errors and location labels switch languages without retryi
 });
 
 test('active sessions needing authentication can request sign-in without disconnecting', async () => {
-  for (const mode of ['proxy', 'tun']) {
+  for (const mode of ['proxy', 'tun', 'login']) {
     for (const [state, backend_state] of [['login', 'NeedsLogin'], ['blocked', 'NeedsLogin'], ['login', 'Running']]) {
       const app = await page({ desktop: true, active: true, mode, state, backend_state });
       assert.equal(app.$('#desktop-login').hidden, false, `${mode}/${state}`);

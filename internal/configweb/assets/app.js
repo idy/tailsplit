@@ -520,7 +520,8 @@
     $('#desktop-disconnect').textContent = connected ? t('断开') : t('取消');
     for (const button of document.querySelectorAll('[data-desktop-action]')) {
       if (['connect', 'disconnect'].includes(button.dataset.desktopAction)) continue;
-      button.disabled = !live.desktop || locked || discovering || button.dataset.desktopAction === 'login' && connected && !needsAuthentication(live);
+      const loginRecovery = button.dataset.desktopAction === 'login' && live.mode === 'login' && needsAuthentication(live);
+      button.disabled = !live.desktop || locked || discovering && !loginRecovery || button.dataset.desktopAction === 'login' && connected && !needsAuthentication(live);
     }
     $('#desktop-login').hidden = authenticated;
     $('#account-menu').hidden = !authenticated;
@@ -536,7 +537,7 @@
     setStatusText('#desktop-network-name', network);
     $('#desktop-network-name').title = network;
     const identity = authenticated ? live.hostname || t('已登录') :
-      discovering ? t('正在读取设备') : t('未登录 Tailscale');
+      needsAuthentication(live) ? t('未登录 Tailscale') : discovering ? t('正在读取设备') : t('未登录 Tailscale');
     setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : identity);
     const current = connected ? live.exit || savedExit() : savedExit();
     setStatusText('#current-exit', current ? t(connected ? '当前出口：{name}' : '已保存出口：{name}', { name: current }) : t('尚未选择出口'));
