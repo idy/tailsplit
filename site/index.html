@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="TailSplit is a desktop app for Windows and macOS with domain and IP routing rules: direct connections, a selected proxy exit, and configured Tailnet destinations.">
+  <meta name="description" content="TailSplit is a routing client based on sing-box rule lists. Switch between multiple Tailscale networks and access the internet through your chosen Tailscale exit node.">
   <meta name="theme-color" content="#f3f7fc">
   <meta property="og:title" content="TailSplit — your device, your routing rules">
-  <meta property="og:description" content="Keep local traffic direct. Send selected connections through your chosen exit. Manage routing from a desktop window, the macOS menu bar or the Windows tray.">
+  <meta property="og:description" content="Routing with sing-box rule lists, support for multiple Tailscale networks, and internet access through your chosen Tailscale exit node.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://tailsplit.idy.dev/">
   <link rel="canonical" href="https://tailsplit.idy.dev/">
@@ -56,7 +56,7 @@
           <h1 id="hero-title" data-i18n-html="splitHeroTitle">Your device.<br>Your routing rules.</h1>
         </div>
         <div class="hero-intro">
-          <p data-i18n="splitHeroDescription">A desktop app for Windows and macOS with domain and IP rules. Keep direct traffic on your network, send selected connections through a proxy exit, and reach your Tailnet when configured.</p>
+          <p data-i18n="splitHeroDescription">A routing client based on sing-box rule lists. Switch between multiple Tailscale networks and access the internet through your chosen Tailscale exit node.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="#install" data-i18n="splitGet">Get TailSplit</a>
             <a class="text-link" href="https://github.com/idy/tailsplit#readme"><span data-i18n="splitDocs">Read the docs</span> <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
@@ -110,15 +110,15 @@
     <section class="routing-section wrap" id="routing" aria-labelledby="routing-title">
       <div class="routing-intro">
         <h2 id="routing-title" data-i18n-html="splitRoutingTitle">Keep the route<br> in your hands.</h2>
-        <p data-i18n="splitRoutingDescription">Manage domain lists, IP ranges, and GFWList rules in the configuration panel or YAML editor.</p>
+        <p data-i18n="splitRoutingDescription">Use sing-box rule lists to choose which connections stay direct and which use your Tailscale exit node.</p>
         <p data-i18n="splitRoutingModes">Use an application’s HTTP/SOCKS proxy settings, or enable TUN routing for captured system traffic. Both modes use the same routing rules.</p>
       </div>
       <div class="rule-ledger">
         <p class="ledger-intro" data-i18n="splitRuleOrder">In rule mode, connections are matched in this order:</p>
         <ol class="rule-order">
           <li><div><h3 data-i18n="splitTailnetHeading">Configured Tailnet destinations</h3><p data-i18n="splitTailnetDescription">MagicDNS names, configured Tailnet domains, and Tailnet addresses use the embedded Tailscale connection.</p></div></li>
-          <li><div><h3 data-i18n="splitDirectHeading">Your direct exceptions</h3><p data-i18n="splitDirectDescription">Direct domains, GFWList exceptions, and direct IP ranges stay on your network.</p></div></li>
-          <li><div><h3 data-i18n="splitProxyHeading">Your proxy rules</h3><p data-i18n="splitProxyDescription">Proxy IP ranges, proxy domains, and GFWList proxy matches use the selected exit.</p></div></li>
+          <li><div><h3 data-i18n="splitDirectHeading">Your direct exceptions</h3><p data-i18n="splitDirectDescription">Matching direct domains and IP ranges stay on your current network.</p></div></li>
+          <li><div><h3 data-i18n="splitProxyHeading">Your proxy rules</h3><p data-i18n="splitProxyDescription">Matching proxy domains and IP ranges use your selected Tailscale exit node.</p></div></li>
           <li><div><h3 data-i18n="splitRemainingHeading">The remaining traffic</h3><p data-i18n="splitRemainingDescription">Other private destinations go direct. Everything else follows your configured default.</p></div></li>
         </ol>
         <p class="dns-note" data-i18n="splitDnsNote">DNS is part of the route. Proxy-domain lookups use the proxy exit; Tailnet names use the appropriate Tailnet resolver.</p>

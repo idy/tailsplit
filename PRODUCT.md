@@ -24,7 +24,9 @@ Success means a user can install TailSplit, authorize their device, choose an av
 
 ## Positioning
 
-TailSplit combines embedded sing-box, GFWList projection and userspace Tailscale in a local routing client. Domain and IP rules choose among direct traffic, a selected proxy exit and configured, authorized Tailnet destinations. DNS behavior follows the routing policy.
+TailSplit is an open-source routing client based on sing-box rule lists. It supports switching between multiple Tailscale networks and accessing the internet through the selected network's exit node. DNS behavior follows the routing policy.
+
+Public introductions focus on sing-box rule lists, multiple Tailscale networks and Tailscale exit nodes. Describe network switching without implying simultaneous connections to multiple networks.
 
 The user chooses their exit and controls their configuration. TailRelay is the separately linked companion for providing a SOCKS5-backed Tailnet exit; keep the two products' roles distinct.
 
@@ -39,7 +41,7 @@ The user chooses their exit and controls their configuration. TailRelay is the s
 
 ## Capabilities and Constraints
 
-- **Routing:** domain lists, IP/CIDR lists, GFWList rules, a configurable final route, and configured Tailnet destinations. Split mode respects rule priority; global mode sends captured traffic through the selected exit and retains the saved split rules.
+- **Routing:** sing-box rule lists with domain and IP/CIDR matching, a configurable final route, and configured Tailnet destinations. Split mode respects rule priority; global mode sends captured traffic through the selected Tailscale exit node and retains the saved split rules.
 - **Connection modes:** application proxy exposes local HTTP/SOCKS listeners for applications that opt in. System routing adds broader TUN traffic capture and system DNS changes. Both connected modes require a DNS TUN and the network service or equivalent CLI privileges; `tun.enabled: false` does not remove the DNS TUN.
 - **Exit behavior:** unavailable selected exits block their traffic while the relevant TUN is active. TailSplit does not silently select a different exit. Disconnecting, quitting or a service crash removes the managed TUN and temporary DNS state; the global-mode protection is not a persistent system-wide firewall kill switch.
 - **Tailnet switching:** an explicitly confirmed desktop action stops the current connection, signs the device out, clears the previous Tailnet restriction, exit selection and automatic authorization setting, and requests browser authorization for the new network. Other configuration remains intact. The user selects an exit and connects explicitly afterward.

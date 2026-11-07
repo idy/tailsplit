@@ -1,9 +1,9 @@
 # TailSplit
 
-An open-source desktop app for macOS and Windows, with a cross-platform CLI for
-domain and IP routing. TailSplit embeds sing-box, GFWList projection and userspace
-Tailscale. Choose which traffic goes direct, through a proxy exit, or to authorized
-Tailnet peers.
+TailSplit is an open-source routing client based on sing-box rule lists. It
+supports multiple Tailscale networks: switch between networks and access the
+internet through your chosen Tailscale exit node. Available as a desktop app for
+macOS and Windows, with a cross-platform CLI.
 
 [Project page](https://tailsplit.idy.dev) · [Releases](https://github.com/idy/tailsplit/releases) · [Source](https://github.com/idy/tailsplit)
 
@@ -265,8 +265,8 @@ controls whole-system traffic capture and system DNS publishing. DNS listener
 addresses and ports are fixed. `dns.listen` is unsupported and fails validation;
 remove that field from older YAML files.
 
-Edit routing and DNS rules in the YAML. GFWList and the separately documented
-supplemental rules are bundled; rule refresh remains an explicit operation.
+Edit routing and DNS rules in the YAML. Rule lists are bundled; rule refresh
+remains an explicit operation.
 Credentials and persistent device state belong in user-controlled files, not in
 this repository. Keep existing configuration/state directories during upgrades.
 
