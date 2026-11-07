@@ -56,19 +56,37 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 	done := make(chan struct{})
 	c.pingCancel, c.pingDone = cancel, done
 	c.mu.Unlock()
-	defer func() {
-		cancel()
+	type response struct {
+		result tailsplit.ExitPingResult
+		err    error
+	}
+	responseCh := make(chan response, 1)
+	go func() {
+		result, err := c.runPingHelper(ctx, id)
 		c.mu.Lock()
 		c.pingCancel, c.pingDone = nil, nil
 		close(done)
 		c.mu.Unlock()
+		responseCh <- response{result: result, err: err}
+		cancel()
 	}()
+	select {
+	case reply := <-responseCh:
+		return reply.result, reply.err
+	case <-ctx.Done():
+		// The caller may stop waiting, but the helper retains the device lease
+		// and keeps new operations blocked until service cleanup completes.
+		return tailsplit.ExitPingResult{}, ctx.Err()
+	}
+}
+
+func (c *Controller) runPingHelper(ctx context.Context, id string) (tailsplit.ExitPingResult, error) {
 	operation := "ping"
 	if len(c.options.HelperArgs) == 0 && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
 		operation = "app-ping"
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), operation, "--id", id, "--parent-pid", fmt.Sprint(os.Getpid()), "-c", c.options.ConfigPath)
-	command := exec.CommandContext(ctx, c.options.Helper, args...)
+	command := exec.Command(c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = pingenv.WithoutAuthentication(append(os.Environ(), c.options.ExtraEnv...))
 	command.Stderr = c.log
@@ -81,7 +99,17 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 	}
 	var output bytes.Buffer
 	command.Stdout = &limitedPingWriter{buffer: &output, remaining: 4096}
-	err = command.Run()
+	if err := ctx.Err(); err != nil {
+		return tailsplit.ExitPingResult{}, err
+	}
+	if err := command.Start(); err != nil {
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
+	}
+	// Let the helper forward cancellation and wait for service cleanup before
+	// it exits and releases its Windows saved-state lease.
+	stop := context.AfterFunc(ctx, func() { _ = requestProcessStop(command, lease) })
+	err = command.Wait()
+	stop()
 	if ctx.Err() != nil {
 		return tailsplit.ExitPingResult{}, ctx.Err()
 	}

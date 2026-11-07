@@ -258,7 +258,16 @@ func (c *Controller) Stop() error {
 		c.pingCancel()
 		done := c.pingDone
 		c.mu.Unlock()
-		<-done
+		select {
+		case <-done:
+		case <-time.After(c.stopWait):
+			// Keep the helper alive and its lease held while the service finishes
+			// cleanup; a later operation can retry once pingDone closes.
+			c.mu.Lock()
+			c.stopping = false
+			c.mu.Unlock()
+			return tailsplit.ErrPingBusy
+		}
 		c.mu.Lock()
 	}
 	command, done, input := c.command, c.done, c.input

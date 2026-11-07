@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -191,11 +192,78 @@ func TestExitPingServiceJoinsPingBeforeReleasingActiveEngine(t *testing.T) {
 	}
 }
 
+func TestExitPingClientWaitsForIdleCleanupBeforeClosing(t *testing.T) {
+	started, canceled, finishCleanup := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseCleanup := sync.OnceFunc(func() { close(finishCleanup) })
+	defer releaseCleanup()
+	path, server, stopServer, serverDone := testServer(t, os.Getuid(), func(context.Context, tailsplit.Config, io.Writer) error { return nil })
+	server.Ping = func(ctx context.Context, _ tailsplit.Config, _ string) (tailsplit.ExitPingResult, error) {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-finishCleanup
+		return tailsplit.ExitPingResult{}, ctx.Err()
+	}
+	connection, _ := session(t, path, Request{Protocol: Protocol, Op: "ping", Target: "100.64.0.10", Config: &tailsplit.Config{}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := readPingReply(ctx, connection)
+		_ = connection.Close() // The Windows connection releases its state lease here.
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("idle ping did not start")
+	}
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("service did not receive the cancellation request")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("client released the connection before cleanup: %v", err)
+	default:
+	}
+	if server.active.TryLock() {
+		server.active.Unlock()
+		t.Fatal("service released its device gate before cleanup")
+	}
+	releaseCleanup()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation was lost after cleanup: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client did not finish after cleanup")
+	}
+	if !server.active.TryLock() {
+		t.Fatal("service retained its device gate after acknowledging cleanup")
+	}
+	server.active.Unlock()
+	stopServer()
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExitPingClientCancellationAndErrorCodes(t *testing.T) {
 	client, server := net.Pipe()
+	defer client.Close()
 	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	canceled := make(chan error, 1)
+	go func() {
+		var command [5]byte
+		if _, err := io.ReadFull(server, command[:]); err == nil && string(command[:]) == "stop\n" {
+			_ = json.NewEncoder(server).Encode(tailsplit.ExitPingReply{Error: "ping_canceled"})
+		}
+	}()
 	go func() { _, err := readPingReply(ctx, client); canceled <- err }()
 	cancel()
 	select {
