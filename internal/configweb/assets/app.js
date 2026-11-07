@@ -163,7 +163,7 @@
   }
 
   function ruleSourceMissing() {
-    return $('#rule-source-type').value === 'custom' && !$('#rule-source').value.trim();
+    return state.mode === 'form' && $('#rule-source-type').value === 'custom' && !$('#rule-source').value.trim();
   }
 
   function updateRuleSourceMode() {

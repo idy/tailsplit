@@ -202,6 +202,29 @@ test('switching rule sources retains a custom URL and writes the chosen source',
   assert.match(app.$('#raw-yaml').value, /source: ""/);
 });
 
+test('an empty custom source can be repaired and saved in the YAML editor', async () => {
+  const app = await page({}, '', {}, ruleDocument('builtin'));
+  const selector = app.$('#rule-source-type');
+  app.override = (request) => {
+    if (request.path !== '/api/preview') return undefined;
+    return response(ruleDocument(request.data.changes?.['rules.source'] ?? 'https://rules.example/repaired.txt'));
+  };
+  selector.value = 'custom'; await selector.emit('change');
+  assert.equal(app.$('#save').disabled, true);
+  await app.$('#yaml-tab').emit('click');
+  assert.equal(app.$('#validate').disabled, false, 'a hidden empty form must not block valid YAML');
+  const repaired = ruleDocument('https://rules.example/repaired.txt');
+  await app.input('#raw-yaml', repaired.yaml);
+  await app.$('#form-tab').emit('click');
+  await app.$('#yaml-tab').emit('click');
+  await app.$('#validate').emit('click');
+  assert.equal(app.requests.some((request) => request.path === '/api/validate' && request.data.yaml === repaired.yaml), true);
+  assert.equal(app.$('#save').disabled, false);
+  await app.$('#form-tab').emit('click');
+  assert.equal(app.$('#rule-source').value, 'https://rules.example/repaired.txt');
+  assert.equal(app.$('#rule-source-error').hidden, true);
+});
+
 test('rule source selection follows raw YAML edits when returning to the form', async () => {
   const app = await page({}, '', {}, ruleDocument('builtin'));
   await app.$('#yaml-tab').emit('click');
