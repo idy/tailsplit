@@ -25,8 +25,8 @@ type Compiled struct {
 	GFWSource string
 }
 
-// Compile loads local or cached rules, downloading a remote source when its
-// cache is missing. Use CompileContext to cancel that first download.
+// Compile loads local or cached rules, downloading missing remote rules or
+// upgrading an older official cache. Use CompileContext to cancel a download.
 func Compile(config Config) (Compiled, error) {
 	return CompileContext(context.Background(), config)
 }
@@ -360,22 +360,27 @@ func loadProjection(ctx context.Context, config Config) (*domainrules.Projection
 		}
 		source = filepath.Join(config.StateDir, "gfwlist.txt")
 	}
+	projection, err := readProjection(source)
+	return projection, source, err
+}
+
+func readProjection(source string) (*domainrules.Projection, error) {
 	stream, err := os.Open(source)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	defer stream.Close()
 	stat, err := stream.Stat()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if stat.Size() > 2<<20 {
-		return nil, "", fmt.Errorf("GFWList exceeds 2 MiB")
+		return nil, fmt.Errorf("GFWList exceeds 2 MiB")
 	}
 	data, err := io.ReadAll(io.LimitReader(stream, (2<<20)+1))
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	projection, err := domainrules.ProjectActiveRules(data)
-	return &projection, source, err
+	return &projection, err
 }

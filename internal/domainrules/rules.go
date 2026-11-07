@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
+	"time"
 
 	"golang.org/x/net/idna"
 )
@@ -25,6 +26,7 @@ var supplementalRules []byte
 // RulesInfo keeps GFWList and supplemental diagnostics separate.
 type RulesInfo struct {
 	SHA256             string
+	LastModified       time.Time
 	Proxy              int
 	Direct             int
 	Skipped            int
@@ -111,6 +113,9 @@ func parseRules(data []byte) (*rules, []byte, error) {
 	}
 	for _, line := range lines[1:] {
 		line = strings.TrimSpace(line)
+		if value, ok := strings.CutPrefix(line, "! Last Modified:"); ok {
+			r.info.LastModified, _ = time.Parse(time.RFC1123Z, strings.TrimSpace(value))
+		}
 		if line == "" || strings.HasPrefix(line, "!") {
 			continue
 		}

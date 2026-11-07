@@ -272,8 +272,9 @@ Edit routing and DNS rules in the YAML. The default GFWList source is the
 downloaded from its raw HTTPS URL. TailSplit downloads and validates it when the
 cache is missing, then atomically stores the original bytes in
 `<state_dir>/gfwlist.txt`. Later checks and connections reuse that disk cache,
-including offline. No upstream GFWList snapshot is stored in the repository or
-embedded in the app. The legacy `gfwlist: builtin` value selects the same official
+including offline. Official caches older than the supplemental-rule cleanup are
+refreshed before use; a failed upgrade keeps the old file and stops startup.
+No upstream GFWList snapshot is stored in the repository or embedded in the app. The legacy `gfwlist: builtin` value selects the same official
 source; local files and other HTTPS subscriptions are also supported.
 
 To update the cache explicitly:

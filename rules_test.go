@@ -125,6 +125,96 @@ func TestRuleCacheDownloadsOnceAndWorksOffline(t *testing.T) {
 	}
 }
 
+func TestOlderOfficialCacheUpgradesBeforeUse(t *testing.T) {
+	legacy := "[AutoProxy 0.2.9]\n! Last Modified: Mon, 21 Sep 2026 12:27:46 +0000\n||fixture.example\n"
+	updated := "[AutoProxy 0.2.9]\n! Last Modified: Fri, 06 Nov 2026 02:29:19 +0000\n||fixture.example\n||claude.app\n||claudeusercontent.com\n||claudemcpcontent.com\n"
+	for _, source := range []string{"builtin", domainrules.DefaultRulesURL} {
+		for _, test := range []struct {
+			name   string
+			status int
+			data   string
+			fail   bool
+		}{
+			{"fresh response", http.StatusOK, updated, false},
+			{"unavailable source", http.StatusServiceUnavailable, "offline", true},
+			{"stale response", http.StatusOK, legacy, true},
+		} {
+			t.Run(source+"/"+test.name, func(t *testing.T) {
+				config, err := loadTestConfig(t, "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: "+source+"\nstate_dir: ./state\n")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := privateState(config.StateDir); err != nil {
+					t.Fatal(err)
+				}
+				cache := filepath.Join(config.StateDir, "gfwlist.txt")
+				before := base64.StdEncoding.EncodeToString([]byte(legacy))
+				if err := os.WriteFile(cache, []byte(before), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				var requests atomic.Int32
+				transport := http.DefaultTransport
+				t.Cleanup(func() { http.DefaultTransport = transport })
+				http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					if request.URL.String() != domainrules.DefaultRulesURL {
+						t.Error("legacy upgrade did not use the official source")
+					}
+					return &http.Response{StatusCode: test.status, Body: io.NopCloser(strings.NewReader(test.data)), Header: make(http.Header)}, nil
+				})
+				compiled, err := CompileContext(context.Background(), config)
+				if requests.Load() != 1 {
+					t.Fatal("legacy official cache was not refreshed:", requests.Load())
+				}
+				after, readErr := os.ReadFile(cache)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if test.fail {
+					if err == nil || !strings.Contains(err.Error(), "needs an update") || len(compiled.JSON) != 0 || string(after) != before {
+						t.Fatalf("failed upgrade used or replaced the old policy: %v", err)
+					}
+					return
+				}
+				if err != nil || string(after) != updated {
+					t.Fatal("fresh official cache was not installed:", err)
+				}
+				for _, domain := range []string{"claude.app", "claudeusercontent.com", "claudemcpcontent.com"} {
+					if !strings.Contains(string(compiled.JSON), `"`+domain+`"`) {
+						t.Fatal("upgraded cache lost prior proxy coverage:", domain)
+					}
+				}
+				again, err := Compile(config)
+				if err != nil || requests.Load() != 1 || string(again.JSON) != string(compiled.JSON) {
+					t.Fatal("upgraded cache was not reused offline:", err)
+				}
+			})
+		}
+	}
+}
+
+func TestOlderCustomCacheDoesNotRequireAnOfficialUpgrade(t *testing.T) {
+	config, err := loadTestConfig(t, "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: https://rules.example/subscription\nstate_dir: ./state\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := privateState(config.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config.StateDir, "gfwlist.txt"), []byte("[AutoProxy 0.2.9]\n! Last Modified: Mon, 21 Sep 2026 12:27:46 +0000\n||fixture.example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+		t.Error("custom cached policy triggered an official-source migration")
+		return nil, errors.New("offline")
+	})
+	if _, err := Compile(config); err != nil {
+		t.Fatal("explicit custom policy could not compile offline:", err)
+	}
+}
+
 func TestMissingRuleCacheRejectsFailedOrInvalidDownloads(t *testing.T) {
 	for _, test := range []struct {
 		name   string

@@ -12,6 +12,9 @@
 - Rename the parser package to `domainrules`, keep supplemental application
   rules in one flat file and remove eight entries already covered by upstream.
   Preserve direct exceptions and keep supplemental rules out of the disk cache.
+- Refresh older official caches before applying the supplemental cleanup, and
+  stop startup if that upgrade fails. Keep service-side rule loading restricted
+  to transferred contents, and retain offline Debian and Windows smoke tests.
 
 ## 0.7.11
 

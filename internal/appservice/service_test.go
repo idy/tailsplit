@@ -325,6 +325,36 @@ func TestServicePolicyCannotReadUserPathsOrBindReservedPorts(t *testing.T) {
 	}
 }
 
+func TestServiceRulesUseOnlyTransferredCache(t *testing.T) {
+	for _, source := range []string{"builtin", "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt", "https://rules.example/subscription"} {
+		t.Run(source, func(t *testing.T) {
+			directory := privateTestDirectory(t)
+			config, err := serviceConfig(tailsplit.Config{
+				Tailscale: &tailsplit.TailscaleConfig{ExitNode: "100.64.0.10"},
+				Rules:     tailsplit.RulesConfig{GFWList: source},
+			}, directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cache := filepath.Join(directory, "gfwlist.txt")
+			if config.Rules.GFWList != cache {
+				t.Fatal("the service retained authority to download remote rules:", config.Rules.GFWList)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err := tailsplit.CompileContext(ctx, config); !os.IsNotExist(err) {
+				t.Fatal("missing service cache must fail locally without a download:", err)
+			}
+			if err := os.WriteFile(cache, []byte("[AutoProxy 0.2.9]\n||fixture.example\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tailsplit.CompileContext(ctx, config); err != nil {
+				t.Fatal("transferred rules could not compile without network access:", err)
+			}
+		})
+	}
+}
+
 func TestSavedLoginIsImportedOnceAndCannotReappearAfterLogout(t *testing.T) {
 	base := privateTestDirectory(t)
 	uid := os.Getuid()
@@ -375,7 +405,7 @@ func TestMissingLocalRulesDoNotSilentlySelectBuiltin(t *testing.T) {
 	}
 	config.Rules.GFWList = "builtin"
 	if _, err := userFiles(&config, false); err != nil {
-		t.Fatal("the bundled policy incorrectly required a user cache")
+		t.Fatal("device login and discovery must allow a missing user rules cache")
 	}
 }
 
