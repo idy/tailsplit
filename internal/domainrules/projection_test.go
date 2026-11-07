@@ -222,6 +222,24 @@ func TestRuleListFormatsHaveEquivalentProjections(t *testing.T) {
 	}
 }
 
+func TestUnsupportedFiltersWithAngleBracketsRemainSkippable(t *testing.T) {
+	for _, filter := range []string{
+		`/(?<host>example\.com)/`, `/(?<!foo)example\.com/`, `/foo[<>]bar/`,
+		`@@/(?<host>example\.com)/`, `||example.com/path?q=<value>`,
+		`https://example.com/<path>`,
+	} {
+		for _, header := range []string{"", "[AutoProxy 0.2.9]\n"} {
+			data := []byte(header + "||example.com\n" + filter + "\n")
+			for _, source := range [][]byte{data, []byte(base64.StdEncoding.EncodeToString(data))} {
+				projection, err := ProjectRules(source)
+				if err != nil || projection.Info.Proxy != 1 || projection.Info.Skipped != 1 {
+					t.Fatalf("unsupported filter invalidated usable domains: %q, %+v, %v", filter, projection, err)
+				}
+			}
+		}
+	}
+}
+
 func TestHeaderlessRuleListKeepsFirstException(t *testing.T) {
 	projection, err := ProjectRules([]byte("@@||safe.example.com\n||example.com\n"))
 	if err != nil {

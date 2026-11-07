@@ -106,6 +106,31 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 				}
 			}
 		}
+		if change.Section == "rules" && change.Key == "source" {
+			// Renaming a direct key can also reveal a legacy value inherited
+			// through <<. Override it locally without changing shared anchors.
+			var inherited struct {
+				GFWList string `yaml:"gfwlist"`
+			}
+			if err := nested.Decode(&inherited); err != nil {
+				return nil, err
+			}
+			if inherited.GFWList != "" {
+				var legacy *yaml.Node
+				for i := 0; i < len(nested.Content); i += 2 {
+					if nested.Content[i].Value == "gfwlist" {
+						legacy = nested.Content[i+1]
+						break
+					}
+				}
+				if legacy == nil {
+					legacy = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str"}
+					nested.Content = append(nested.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "gfwlist"}, legacy)
+				}
+				// This changes only the local scalar, retaining its comments.
+				legacy.Kind, legacy.Tag, legacy.Value, legacy.Alias = yaml.ScalarNode, "!!str", "", nil
+			}
+		}
 		if scalar == nil {
 			scalar = &yaml.Node{}
 			nested.Content = append(nested.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: change.Key}, scalar)

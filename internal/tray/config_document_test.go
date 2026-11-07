@@ -40,6 +40,36 @@ func TestConfigDocumentSaveChecksRevisionAndRetainsLiteralYAML(t *testing.T) {
 	}
 }
 
+func TestRuleSourcePatchOverridesMergedLegacyValues(t *testing.T) {
+	for name, rules := range map[string]string{
+		"inline merge":    "  <<: {gfwlist: builtin, direct_domains: [example.com]}\n",
+		"anchored merge":  "  <<: &defaults\n    gfwlist: builtin # Keep inherited source\n    direct_domains: [example.com]\n",
+		"merge sequence":  "  <<: [{gfwlist: builtin}, {direct_domains: [example.com]}]\n",
+		"direct override": "  <<: {gfwlist: builtin, direct_domains: [example.com]}\n  gfwlist: https://rules.example/old.txt\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			original := []byte("tailscale: {}\nrules:\n" + rules)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if _, err := ValidateConfigDocument(path, original); err != nil {
+				t.Fatal("invalid legacy fixture:", err)
+			}
+			for _, source := range []string{"https://rules.example/new.txt", "builtin", ""} {
+				updated, err := PatchConfigDocument(original, ConfigChange{"rules", "source", source})
+				if err != nil {
+					t.Fatal(err)
+				}
+				config, err := ValidateConfigDocument(path, updated)
+				if err != nil || config.Rules.GFWList != source || len(config.Rules.DirectDomains) != 1 || config.Rules.DirectDomains[0] != "example.com" {
+					t.Fatalf("merged source edit failed: %+v, %v\n%s", config.Rules, err, updated)
+				}
+				if !strings.Contains(string(updated), "<<:") || name == "anchored merge" && (!strings.Contains(string(updated), "&defaults") || !strings.Contains(string(updated), "# Keep inherited source")) {
+					t.Fatalf("source edit replaced the merge or its comments: %s", updated)
+				}
+			}
+		})
+	}
+}
+
 func TestConfigValidationKeepsRelativePathsAndCleansTemporaryFiles(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.yaml")

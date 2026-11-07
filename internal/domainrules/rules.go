@@ -151,9 +151,9 @@ func parseRules(data []byte) (*rules, []byte, error) {
 		if line == "" || strings.HasPrefix(line, "!") || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Reject markup anywhere in the response, even if an error page also has
-		// standalone domain lines that would otherwise project successfully.
-		if strings.ContainsAny(line, "<>") {
+		// Reject markup lines even when an error page includes standalone domains.
+		// Angle brackets inside regex or URL filters remain skippable syntax.
+		if strings.HasPrefix(line, "<") {
 			return nil, nil, fmt.Errorf("domainrules: HTML is not a rule list")
 		}
 		if strings.HasPrefix(line, "[AutoProxy ") {

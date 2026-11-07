@@ -108,11 +108,11 @@ def verify(directory, arch):
             raise ValueError("init changed existing configuration")
         local_rules = work / "fixture-gfwlist.txt"
         local_rules.write_text("[AutoProxy 0.2.9]\n||fixture.example\n@@||safe.fixture.example\n", encoding="utf-8")
-        source = "  gfwlist: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
+        source = "  source: builtin"
         text = saved.decode("utf-8")
         if text.count(source) != 1:
-            raise ValueError("Example configuration has an unexpected GFWList source")
-        config.write_bytes(text.replace(source, "  gfwlist: " + json.dumps(str(local_rules))).encode("utf-8"))
+            raise ValueError("Example configuration has an unexpected rule source")
+        config.write_bytes(text.replace(source, "  source: " + json.dumps(str(local_rules))).encode("utf-8"))
         execute("check", "-c", str(config))
         json.loads(execute("render", "-c", str(config)))
         if hashlib.sha256(sentinel.read_bytes()).hexdigest() != before:
