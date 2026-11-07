@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.10 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.11 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -53,8 +53,7 @@ work from 0.7.1 onward; Windows 0.7.0 is unaffected.
 
 Packaged macOS and Windows apps check the stable GitHub Release ten seconds after
 startup and every six hours while running. Choose **Check for updates…** in the
-tray menu (under **Settings and Tools** on macOS), or open **Device and Startup →
-App Updates** in the configuration panel. The title-row update button shows
+tray menu (under **Settings and Tools** on macOS), or open **Settings → About & updates** in the configuration panel. The title-row update button shows
 download percentage and installation state without adding a second row. The panel's App Updates settings show the installed
 version, release notes, last check and errors. Development builds skip
 automatic checks; prereleases and older versions are never offered.
@@ -188,10 +187,21 @@ their percentage inside that button; installation shows its current phase in
 the same place. The title row supports window dragging and double-click zoom,
 with native macOS window buttons and Windows minimize, maximize/restore and
 close controls. Closing still hides the window to the menu bar or tray.
-The panel groups connection, DNS, routing and startup settings in a compact
-layout. The panel and native window follow the system's light or dark appearance
-and update immediately when it changes, preserving unsaved edits. The local page
-also follows the browser's color preference when opened outside the app.
+The sidebar puts **Connection** and **Logs** at the top and pins **Settings** at
+the bottom. The connection page combines Tailscale sign-in, connection controls,
+split/global routing mode and a searchable exit list. Select an exit or mode,
+then confirm the change: a running session reconnects, while a disconnected app
+only saves the selection. Unavailable and missing saved exits remain visible;
+TailSplit never automatically chooses a replacement. Save or discard any settings
+draft before applying connection changes.
+
+Settings groups general preferences, network options, DNS, routing rules, advanced
+parameters and app updates. Logs has its own page with bounded, redacted output
+and a log-level control. Moving between these pages preserves unsaved form and
+YAML drafts, including incomplete source edits. The panel and native window follow
+the system's light or dark appearance and update immediately when it changes,
+preserving unsaved edits. The local page also follows the browser's color
+preference when opened outside the app.
 Wide windows add a live YAML preview, and a full source editor is always
 available. Validate or save/apply changes from either view. Saving reconnects an
 active proxy; an idle app stays idle. Existing comments and unrelated settings are preserved. External edits
@@ -200,7 +210,7 @@ checks run before saving: the application proxy port must be at least 1024, the
 system chooses the TUN name, and the app uses interactive or saved login rather
 than environment authentication keys.
 
-The **Language** control in the editor toolbar offers **Follow system**,
+The **Language** control under **Settings → General** offers **Follow system**,
 **English** and **简体中文**. The panel and application-owned native menus and
 dialogs share this choice; unsupported system languages use English. Changes take
 effect without reconnecting or replacing unsaved form/YAML drafts. The preference

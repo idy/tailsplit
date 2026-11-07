@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.11
+
+- Put Connection and Logs at the top of the desktop sidebar and pin Settings at
+  the bottom. Keep Tailscale sign-in, connect/disconnect, split/global routing
+  mode and exit selection together on one connection page.
+- Add searchable exit lists with online, unavailable and saved-but-missing
+  states. Stage exit and mode choices until explicitly confirmed; reconnect an
+  active session while keeping a disconnected app disconnected.
+- Preserve unsaved form and YAML drafts across pages, and require settings drafts
+  to be saved or discarded before applying connection changes. Keep unavailable
+  selected exits visible instead of silently choosing another node.
+- Add a dedicated log page, grouped settings and complete in-window connection
+  controls on macOS. Share bounded, redacted diagnostic logs across macOS and
+  Windows while keeping device authorization in the default browser.
+- Align the sidebar Settings divider with the settings actionbar, including
+  window resizing and wrapped English actions. Retain system appearance and
+  English/Simplified Chinese support.
+
+## 0.7.10
+
+- Add explicit Tailnet switching from the desktop window and tray, with a
+  confirmation before disconnecting and signing the device out.
+- Clear the previous Tailnet restriction, exit selection and automatic
+  authorization setting while preserving unrelated configuration. Request fresh
+  browser authorization and leave exit selection and connection explicit.
+- Preserve network-switch errors across configuration reloads, bound native
+  browser requests, and handle macOS login-item approval accurately.
+
 ## 0.7.9
 
 - Follow the system's light or dark appearance in the desktop configuration panel

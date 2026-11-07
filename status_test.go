@@ -1,6 +1,7 @@
 package tailsplit
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -55,6 +56,37 @@ func TestExitPickerListsOnlyApprovedExitsAndTracksExpiry(t *testing.T) {
 	}
 	if status.ExitNodes[1].Online || status.ExitNodes[2].Online {
 		t.Fatal("expired or offline exit can be selected")
+	}
+}
+
+func TestExitSelectionMetadataNamesTheConfigurationItMatches(t *testing.T) {
+	peer := &adapter.TailscalePeer{
+		HostName: "home", DNSName: "home.example.ts.net", StableID: "node-home",
+		TailscaleIPs: []string{"100.64.0.10"}, Online: true, ExitNodeOption: true,
+	}
+	current := &adapter.TailscaleEndpointStatus{
+		BackendState: "Running", ExitNode: peer,
+		UserGroups: []*adapter.TailscaleUserGroup{{Peers: []*adapter.TailscalePeer{peer}}},
+	}
+	for _, identifier := range []string{peer.HostName, peer.DNSName, peer.StableID, peer.TailscaleIPs[0], "100.64.0.99"} {
+		t.Run(identifier, func(t *testing.T) {
+			status := connectionStatus(current, identifier)
+			data, err := json.Marshal(status.ExitNodes[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(data, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if identifier == "100.64.0.99" {
+				if status.ExitNodes[0].Selected || wire["selected_for"] != nil {
+					t.Fatalf("a different saved exit inherited a cached selection: %s", data)
+				}
+			} else if !status.ExitNodes[0].Selected || wire["selected_for"] != identifier {
+				t.Fatalf("selection metadata is not bound to its configured alias: %s", data)
+			}
+		})
 	}
 }
 

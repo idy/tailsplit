@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"image/png"
-	"io"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -36,8 +35,74 @@ type configurationApply struct {
 	done   chan error
 }
 
+type desktopActionController interface {
+	Snapshot() tray.Snapshot
+	Start() error
+	StartLogin() error
+	Stop() error
+	Logout() error
+	SwitchNetwork() error
+	RefreshExitNodes() error
+}
+
+func desktopConfigurationBusy(action string, snapshot tray.Snapshot, editing, loggingOut, opening bool) bool {
+	return editing || loggingOut || opening || snapshot.State == "authorizing" && action != "disconnect"
+}
+
 func (request configurationApply) blocked(editing, loggingOut, browserOpening bool, snapshot tray.Snapshot) bool {
-	return editing || loggingOut || browserOpening || snapshot.State == "authorizing" && request.action != "disconnect"
+	return desktopConfigurationBusy(request.action, snapshot, editing, loggingOut, browserOpening)
+}
+
+// LoginFlow and action preparation belong to the menu's event loop. Only the
+// returned controller or login-item operation may run on the settings worker.
+func desktopActionOperation(action string, controller desktopActionController, flow *tray.LoginFlow, startup func(bool) error) (func() error, error) {
+	switch action {
+	case "connect":
+		snapshot := controller.Snapshot()
+		if snapshot.Active {
+			return nil, nil
+		}
+		if snapshot.BackendState == "NeedsLogin" {
+			return nil, requestDesktopLogin(controller, flow)
+		}
+		flow.Cancel()
+		return controller.Start, nil
+	case "disconnect":
+		flow.Cancel()
+		return controller.Stop, nil
+	case "login":
+		return nil, requestDesktopLogin(controller, flow)
+	case "logout":
+		flow.Cancel()
+		// Signing out never opens a browser; only an explicit network switch
+		// requests authorization after its serialized operation completes.
+		return controller.Logout, nil
+	case "switch-network":
+		flow.Cancel()
+		return controller.SwitchNetwork, nil
+	case "refresh-exits":
+		return controller.RefreshExitNodes, nil
+	case "startup-on", "startup-off":
+		return func() error { return startup(action == "startup-on") }, nil
+	default:
+		return nil, errors.New("unknown desktop action")
+	}
+}
+
+func setDesktopStartup(enabled bool, set func(bool) error, status func() tray.LoginItemStatus, openSettings func()) error {
+	if err := set(enabled); err != nil {
+		return err
+	}
+	if enabled && status() == tray.LoginItemNeedsApproval {
+		finishPanelStartup("startup-on", tray.LoginItemNeedsApproval, openSettings)
+		// Startup is a boolean in the window API: pending approval must not be
+		// presented as enabled. The native menu also shows the pending status.
+		if currentLanguage() == "zh" {
+			return errors.New("请在“系统设置 → 通用 → 登录项”中允许 TailSplit，完成登录时启动设置。")
+		}
+		return errors.New("Allow TailSplit in System Settings → General → Login Items to finish enabling Open at Login.")
+	}
+	return nil
 }
 
 // Report actual startup availability, not just a registration awaiting approval.
@@ -153,7 +218,10 @@ func main() {
 		Action: func(ctx context.Context, action string) error {
 			return submit(configurationApply{ctx: ctx, action: action})
 		},
-		Logs: func() (string, error) { return desktopLogTail(*logPath) }, Startup: startupEnabled.Load,
+		Logs: func() (string, error) { return desktopLogTail(*logPath) },
+		// Read the event loop's cached status from browser requests. A login
+		// item awaiting system approval must not be reported as enabled.
+		Startup: startupEnabled.Load,
 	})
 	showConfiguration := func() {
 		if configurationPage != nil {
@@ -266,16 +334,7 @@ func main() {
 				flow.Cancel()
 				go func() { settingsDone <- controller.Reconfigure(update) }()
 			}
-			requestLogin := func() {
-				snapshot := controller.Snapshot()
-				if !snapshot.Active {
-					if controller.StartLogin() != nil {
-						flow.Fail("无法准备登录，请查看日志")
-						return
-					}
-				}
-				flow.Request()
-			}
+			requestLogin := func() error { return requestDesktopLogin(controller, &flow) }
 			loginItemStatus := tray.LoginItemUnavailable
 			refreshLoginItem := func() {
 				loginItemStatus = tray.LoginItem()
@@ -428,41 +487,26 @@ func main() {
 						continue
 					}
 					var operation func() error
-					switch request.action {
-					case "":
+					if request.action != "" {
+						var err error
+						operation, err = desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
+							return setDesktopStartup(enabled, tray.SetLoginItem, tray.LoginItem, tray.OpenLoginItemSettings)
+						})
+						if err != nil || operation == nil {
+							if err == nil {
+								openReadyLogin(controller.Snapshot())
+							}
+							request.done <- err
+							continue
+						}
+					} else {
+						flow.Cancel()
 						operation = request.update
 						if !request.direct {
 							operation = func() error { return controller.Reconfigure(request.update) }
 						}
-					case "connect":
-						operation = controller.Start
-					case "disconnect":
-						operation = controller.Stop
-					case "login":
-						operation = func() error {
-							if err := controller.Stop(); err != nil {
-								return err
-							}
-							return controller.StartLogin()
-						}
-					case "logout":
-						operation = controller.Logout
-					case "switch-network":
-						operation = controller.SwitchNetwork
-					case "refresh-exits":
-						operation = controller.RefreshExitNodes
-					case "startup-on", "startup-off":
-						operation = func() error { return tray.SetLoginItem(request.action == "startup-on") }
-					default:
-						request.done <- errors.New("unknown desktop action")
-						continue
 					}
 					pendingRequest, pendingAction = request.done, request.action
-					switch request.action {
-					case "startup-on", "startup-off", "refresh-exits":
-					default:
-						flow.Cancel()
-					}
 					if request.action == "logout" || request.action == "switch-network" {
 						loggingOut = true
 						switchingNetwork = request.action == "switch-network"
@@ -474,19 +518,10 @@ func main() {
 				case err := <-settingsDone:
 					editing = false
 					reloadPreferences()
-					if pendingAction == "login" {
-						if err == nil {
-							flow.Request()
-							openReadyLogin(controller.Snapshot())
-						} else {
-							flow.Fail("无法准备登录，请查看日志")
-						}
-					}
 					if pendingAction == "startup-on" || pendingAction == "startup-off" {
+						// Refresh even after a registration or approval error so the
+						// panel sees the actual status before its request completes.
 						refreshLoginItem()
-						if err == nil {
-							startupEnabled.Store(finishPanelStartup(pendingAction, loginItemStatus, tray.OpenLoginItemSettings))
-						}
 					}
 					// Return errors to the panel after clearing the busy state.
 					if !completeRequest(err) && err != nil {
@@ -701,25 +736,6 @@ func main() {
 
 func openPath(arguments ...string) {
 	go func() { _ = exec.Command("/usr/bin/open", arguments...).Run() }()
-}
-
-func desktopLogTail(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	if info.Size() > 128<<10 {
-		if _, err := file.Seek(-(128 << 10), io.SeekEnd); err != nil {
-			return "", err
-		}
-	}
-	data, err := io.ReadAll(io.LimitReader(file, 128<<10))
-	return strings.ToValidUTF8(string(data), "�"), err
 }
 
 func setEnabled(item *systray.MenuItem, enabled bool) {

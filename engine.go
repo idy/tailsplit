@@ -226,6 +226,8 @@ type ExitNode struct {
 	Name     string `json:"name"`
 	Online   bool   `json:"online"`
 	Selected bool   `json:"selected"`
+	// Bind cached selection metadata to the configuration that produced it.
+	SelectedFor string `json:"selected_for,omitempty"`
 }
 
 func (e *Engine) WatchStatus(ctx context.Context, callback func(Status)) error {
@@ -279,10 +281,14 @@ func connectionStatus(current *adapter.TailscaleEndpointStatus, configuredExit s
 					if name == "" {
 						name = id
 					}
-					status.ExitNodes = append(status.ExitNodes, ExitNode{
+					node := ExitNode{
 						ID: id, Name: name, Online: peer.Online && !peer.Expired,
 						Selected: configuredExit != "" && matchesExit(peer, configuredExit),
-					})
+					}
+					if node.Selected {
+						node.SelectedFor = configuredExit
+					}
+					status.ExitNodes = append(status.ExitNodes, node)
 				}
 			}
 			if configuredExit != "" && matchesExit(peer, configuredExit) {

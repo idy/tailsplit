@@ -60,6 +60,13 @@ func desktopPipeDescriptor(sid string) string {
 	return "O:" + sid + "D:P(A;;GA;;;SY)(A;;0x12019b;;;BA)(A;;GA;;;" + sid + ")"
 }
 
+func windowsStartupAction(connectOnStart, noConnect bool) string {
+	if connectOnStart && !noConnect {
+		return "connect"
+	}
+	return "refresh-exits"
+}
+
 func main() {
 	if err := runWindowsDesktop(); err != nil {
 		maintenance := false
@@ -253,9 +260,8 @@ func runWindowsDesktop() (runErr error) {
 			go hideInitialWindowsWindow("TailSplit.Window."+sid, ctx)
 		}
 		preferences, _ := tray.ReadPreferences(*config)
-		if preferences.ConnectOnStart && !*noConnect {
-			go func() { _ = app.action(ctx, "connect") }()
-		}
+		// Load the saved device's login and exits even when startup must stay disconnected.
+		go func() { _ = app.action(ctx, windowsStartupAction(preferences.ConnectOnStart, *noConnect)) }()
 		for {
 			select {
 			case <-ctx.Done():
@@ -408,15 +414,7 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			a.login.Cancel()
 			return a.controller.Stop()
 		case "login":
-			a.login.Cancel()
-			if err := a.controller.Stop(); err != nil {
-				return err
-			}
-			if err := a.controller.StartLogin(); err != nil {
-				return err
-			}
-			a.login.Request()
-			return nil
+			return requestDesktopLogin(a.controller, &a.login)
 		case "logout":
 			a.login.Cancel()
 			return a.controller.Logout()
@@ -564,25 +562,6 @@ func initializeWindowsConfig(path string) error {
 	}
 	_, writeErr := file.Write(tailsplit.ExampleYAML)
 	return errors.Join(writeErr, file.Sync(), file.Close())
-}
-
-func desktopLogTail(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	if info.Size() > 128<<10 {
-		if _, err := file.Seek(-(128 << 10), io.SeekEnd); err != nil {
-			return "", err
-		}
-	}
-	data, err := io.ReadAll(io.LimitReader(file, 128<<10))
-	return strings.ToValidUTF8(string(data), "�"), err
 }
 
 func hideInitialWindowsWindow(class string, ctx context.Context) {

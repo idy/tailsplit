@@ -111,24 +111,58 @@ function Test-NativeCanvas([IntPtr]$Window, [int]$Light) {
         return $pixel.ToArgb() -eq $expected.ToArgb()
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
-# Both the previous Chinese release (upgrade fixture) and the current localized
-# release run here. Match application-owned controls in either supported locale.
+# Both the 0.7.9 upgrade baseline and the current page navigation run here.
+# Match application-owned controls in either supported locale. The new Chinese
+# Connection nav is also named 连接, so it must never be used as a connect action.
 $UiNames = @{
-    '连接'='Connect'; '断开'='Disconnect'; '登录 Tailnet…'='Sign in to Tailnet…';
-    '退出设备登录'='Sign out of device'; '刷新出口'='Refresh exits'; '查看日志'='View logs';
+    '连接'='Connect'; '连接 TailSplit'='Connect TailSplit'; '断开'='Disconnect';
+    '连接页面'=@('连接','Connection'); '日志'='Logs'; '设置'='Settings'; '网络'='Network';
+    '登录 Tailscale'='Sign in to Tailscale'; 'Tailscale 设备操作'='Tailscale device actions';
+    '退出登录…'='Sign out…'; '刷新'='Refresh'; '代理监听地址'='Proxy listen address';
+    '登录 Tailnet…'='Sign in to Tailnet…'; '退出设备登录'='Sign out of device';
+    '刷新出口'='Refresh exits'; '查看日志'='View logs';
     '保存并应用'='Save & apply'; '最大化或还原'='Maximize or restore';
     '刷新日志'='Refresh logs'; '关闭'='Close'
 }
-function Find-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
-    foreach ($candidate in @($Name, $UiNames[$Name])) {
+function Find-Control([System.Windows.Automation.AutomationElement]$Root, [string]$Name, [System.Windows.Automation.ControlType]$Type) {
+    foreach ($candidate in (@($Name) + @($UiNames[$Name]))) {
         if (-not $candidate) { continue }
         $condition = New-Object System.Windows.Automation.AndCondition(
-            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)),
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,$Type)),
             (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$candidate)))
         $found = $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
         if ($found) { return $found }
     }
     return $null
+}
+function Find-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
+    return Find-Control $Root $Name ([System.Windows.Automation.ControlType]::Button)
+}
+function Read-WindowText([System.Windows.Automation.AutomationElement]$Root) {
+    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Document)
+    foreach ($document in $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$condition)) {
+        $pattern = $null
+        if ($document.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern,[ref]$pattern)) {
+            return $pattern.DocumentRange.GetText(-1)
+        }
+    }
+    return ''
+}
+function Add-FixtureLog([string]$Text) {
+    # Append through a shared handle without replacing the standard user's log
+    # or its ACL while the real desktop controller also has it open.
+    $stream = [IO.File]::Open($Log,[IO.FileMode]::Append,[IO.FileAccess]::Write,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+        $data = [Text.Encoding]::UTF8.GetBytes($Text)
+        $stream.Write($data,0,$data.Length)
+    } finally { $stream.Dispose() }
+}
+function Assert-BoundedLogs([string]$Text, [string]$OldMarker, [string]$LatestMarker) {
+    if (-not $Text.Contains($LatestMarker)) { throw 'The native log view did not display the latest entry.' }
+    if ($Text.Contains($OldMarker)) { throw 'The native log view included entries outside the bounded tail.' }
+    # The document TextPattern includes page chrome as well as the 128 KiB log
+    # tail. Both UI generations fit comfortably within this extra 8 KiB budget.
+    if ($Text.Length -gt ((128 -shl 10) + 8192)) { throw 'The native log view exceeded its bounded tail and page chrome budget.' }
 }
 function Wait-Connected([System.Windows.Automation.AutomationElement]$Root, [string]$Failure) {
     # Disconnect is enabled as soon as a session starts; only the page's
@@ -174,9 +208,26 @@ try {
     $stage = 'native window visible; waiting for WebView2'
     Wait-Until { [TailSplitDesktopFixture]::GetProp($window,'TailSplit.WebView2.Ready') -ne [IntPtr]::Zero } 'WebView2 did not load its local document.' | Out-Null
     $automation = [System.Windows.Automation.AutomationElement]::FromHandle($window)
-    Wait-Until { Find-Button $automation '连接' } 'The native window has no desktop controls.' | Out-Null
-    foreach ($name in @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用','最大化或还原')) {
+    Wait-Until {
+        (Find-Button $automation '连接 TailSplit') -or (Find-Button $automation '设置') -or (Find-Button $automation '连接')
+    } 'The native window has no desktop controls.' | Out-Null
+    # Detect the navigation contract from real controls, including builds used
+    # by upgrade tests; a version string cannot identify a fixture build's UI.
+    $pageNavigation = [bool]((Find-Button $automation '连接 TailSplit') -or (Find-Button $automation '设置'))
+    $connectName = if ($pageNavigation) { '连接 TailSplit' } else { '连接' }
+    Wait-Until { $button=Find-Button $automation $connectName; $button -and $button.Current.IsEnabled } 'The direct-config connect action is unavailable.' | Out-Null
+    $initialControls = if ($pageNavigation) {
+        @('登录 Tailscale','刷新','连接页面','日志','设置','最大化或还原')
+    } else {
+        @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用','最大化或还原')
+    }
+    foreach ($name in $initialControls) {
         if (-not (Find-Button $automation $name)) { throw "Missing actual window control: $name" }
+    }
+    if ($pageNavigation) {
+        foreach ($name in @('断开','Tailscale 设备操作','退出登录…','保存并应用')) {
+            if (Find-Button $automation $name) { throw "Unexpected signed-out connection-page control: $name" }
+        }
     }
     $stage = 'checking initial and live system app appearance'
     # Only this fixture's fresh account is changed; its Windows/system mode is
@@ -242,15 +293,73 @@ try {
         $bitmap.Save($Screenshot,[Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
     if ((Get-Item $Screenshot).Length -lt 10000) { throw 'Native screenshot is empty or unavailable.' }
-    Invoke-Button $automation '查看日志'
-    Wait-Until { Find-Button $automation '刷新日志' } 'The log dialog did not open.' | Out-Null
-    Invoke-Button $automation '关闭'
+    $stage = 'saving configuration from native window'
+    if ($pageNavigation) {
+        Invoke-Button $automation '设置'
+        Invoke-Button $automation '网络'
+    }
+    $listen = Wait-Until {
+        $field=Find-Control $automation '代理监听地址' ([System.Windows.Automation.ControlType]::Edit)
+        if ($field -and $field.Current.IsEnabled) { $field }
+    } 'The proxy listener setting is unavailable.'
+    $listenPattern = $listen.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    $originalListen = $listenPattern.Current.Value
+    # Change only the local listener, leaving the direct-only fixture free of
+    # Tailnet configuration or browser authorization in both release versions.
+    $savedListen = Wait-Until {
+        $probe = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
+        try {
+            $probe.Start()
+            $candidate = '127.0.0.1:' + $probe.LocalEndpoint.Port
+            if ($candidate -ne $originalListen) { $candidate }
+        } finally { $probe.Stop() }
+    } 'Cannot select a different local proxy listener.'
+    $listen.SetFocus()
+    $listenPattern.SetValue($savedListen)
+    Invoke-Button $automation '保存并应用'
+    Wait-Until {
+        $button=Find-Button $automation '保存并应用'
+        $button -and -not $button.Current.IsEnabled -and (Get-Content -LiteralPath $Config -Raw).Contains($savedListen)
+    } 'Save & apply did not persist the listener and clear the draft.' | Out-Null
+    if ($pageNavigation) { Invoke-Button $automation '连接页面' }
     $stage = 'connecting from native window'
-    Invoke-Button $automation '连接'
+    Invoke-Button $automation $connectName
     Wait-Connected $automation 'Connect did not reach a running service session.'
+    if ($pageNavigation -and (Find-Button $automation '连接 TailSplit')) { throw 'The connect action remained visible while connected.' }
+    Wait-Until { $button=Find-Button $automation '断开'; $button -and $button.Current.IsEnabled } 'The running session has no disconnect action.' | Out-Null
+    $stage = 'reading and refreshing bounded native logs'
+    $logToken = [Guid]::NewGuid().ToString('N')
+    $oldLogMarker = 'TailSplit fixture old entry ' + $logToken
+    $latestLogMarker = 'TailSplit fixture latest entry ' + $logToken
+    Add-FixtureLog ($oldLogMarker + "`n" + ("TailSplit fixture log padding`n" * 8192) + $latestLogMarker + "`n")
+    if ($pageNavigation) { Invoke-Button $automation '日志' }
+    else { Invoke-Button $automation '查看日志' }
+    Wait-Until { $button=Find-Button $automation '刷新日志'; $button -and $button.Current.IsEnabled } 'The native log view did not open.' | Out-Null
+    $logText = Wait-Until {
+        $text=Read-WindowText $automation
+        if ($text.Contains($latestLogMarker)) { $text }
+    } 'The native log view did not load the current log tail.'
+    Assert-BoundedLogs $logText $oldLogMarker $latestLogMarker
+    $refreshedLogMarker = 'TailSplit fixture refreshed entry ' + $logToken
+    Add-FixtureLog ($refreshedLogMarker + "`n")
+    Invoke-Button $automation '刷新日志'
+    $logText = Wait-Until {
+        $text=Read-WindowText $automation
+        if ($text.Contains($refreshedLogMarker)) { $text }
+    } 'Refresh logs did not display a newly appended entry.'
+    Assert-BoundedLogs $logText $oldLogMarker $refreshedLogMarker
+    if ($pageNavigation) { Invoke-Button $automation '连接页面' }
+    else { Invoke-Button $automation '关闭' }
     $stage = 'disconnecting from native window'
     Invoke-Button $automation '断开'
-    Wait-Until { $button=Find-Button $automation '连接'; $button -and $button.Current.IsEnabled } 'Disconnect did not finish.' | Out-Null
+    $disconnected = New-Object System.Windows.Automation.OrCondition(
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'未连接')),
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Disconnected')))
+    Wait-Until {
+        $button=Find-Button $automation $connectName
+        $button -and $button.Current.IsEnabled -and $automation.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$disconnected)
+    } 'Disconnect did not finish.' | Out-Null
+    if ($pageNavigation -and (Find-Button $automation '断开')) { throw 'The disconnect action remained visible after disconnecting.' }
     [TailSplitDesktopFixture]::PostMessage($window,0x10,[IntPtr]::Zero,[IntPtr]::Zero) | Out-Null
     Wait-Until { -not [TailSplitDesktopFixture]::IsWindowVisible($window) } 'Window close did not hide to tray.' | Out-Null
     if (-not (Get-Process -Id $guiProcess -ErrorAction SilentlyContinue)) { throw 'Closing the window terminated the tray app.' }
@@ -260,10 +369,10 @@ try {
     if ($KeepRunning) {
         # Users usually update while connected; Setup must end this session.
         $stage = 'reconnecting before the caller upgrades the running app'
-        Invoke-Button $automation '连接'
+        Invoke-Button $automation $connectName
         Wait-Connected $automation 'Reconnect before upgrade did not reach a running service session.'
     }
-    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; system_appearance=$true; maximize_restore=$true; screenshot=$Screenshot; logs=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
+    @{ startup_ms=$startupMilliseconds; startup_phases=$nativePhases.ToArray(); token_source=[TailSplitDesktopFixture]::TokenSource; medium_integrity=$true; actual_native_window=$true; webview2_loaded=$true; controls=$true; page_navigation=$pageNavigation; system_appearance=$true; maximize_restore=$true; screenshot=$Screenshot; config_save=$true; logs=$true; bounded_logs=$true; log_refresh=$true; connect_disconnect=$true; close_to_tray=$true; single_instance=$true; process=$guiProcess; left_connected=[bool]$KeepRunning } | ConvertTo-Json -Depth 4 -Compress
 } catch {
     $primaryFailure = $_
     $failure = @{ stage=$stage; error=$_.Exception.Message; process=$guiProcess; integrity=$integrity; token_source=[TailSplitDesktopFixture]::TokenSource; elapsed_ms=$startupClock.ElapsedMilliseconds; startup_phases=$nativePhases.ToArray() }
