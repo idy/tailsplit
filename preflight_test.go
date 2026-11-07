@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/sagernet/bbolt"
 	"github.com/sagernet/sing-box/adapter"
+	singlog "github.com/sagernet/sing-box/log"
 )
 
 func TestPreflightHasNoListenersOrTUNEvenWhenConfigured(t *testing.T) {
@@ -65,7 +67,32 @@ tun:
 	}
 }
 
+type preflightLogWriter struct{}
+
+func (preflightLogWriter) WriteMessage(singlog.Level, string) {}
+
 func TestListenerFreePreflightDoesNotOpenOrChangeFakeIPCache(t *testing.T) {
+	// A service's working directory may be read-only. A directory at the core's
+	// default cache pathname reliably rejects fallback writes on every platform.
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("cache.db", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		writer singlog.PlatformWriter
+	}{
+		{name: "CLI"},
+		{name: "desktop", writer: preflightLogWriter{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testPreflightPreservesFakeIPCache(t, test.writer)
+		})
+	}
+}
+
+func testPreflightPreservesFakeIPCache(t *testing.T, writer singlog.PlatformWriter) {
+	t.Helper()
 	config, err := loadTestConfig(t, "version: 1\n")
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +134,7 @@ func TestListenerFreePreflightDoesNotOpenOrChangeFakeIPCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine, err := Open(context.Background(), config, compiled)
+	engine, err := OpenWithLogWriter(context.Background(), config, compiled, writer)
 	if err != nil {
 		t.Fatal(err)
 	}
