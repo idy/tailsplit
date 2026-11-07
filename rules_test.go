@@ -59,6 +59,9 @@ func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
 		{"invalid text", "not a rule list"},
 		{"exceptions only", "@@||safe.example.com\n"},
 		{"HTML with domain", html},
+		{"text-prefixed HTML", "Service unavailable<br>\nexample.com\n"},
+		{"Base64 text-prefixed HTML", base64.StdEncoding.EncodeToString([]byte("Service unavailable<br>\nexample.com\n"))},
+		{"unpadded text-prefixed HTML", base64.RawStdEncoding.EncodeToString([]byte("Service unavailable<br>\nexample.com\n"))},
 		{"Base64 HTML with domain", base64.StdEncoding.EncodeToString([]byte(html))},
 		{"unpadded Base64 HTML", base64.RawStdEncoding.EncodeToString([]byte(html))},
 	} {

@@ -226,7 +226,9 @@ func TestUnsupportedFiltersWithAngleBracketsRemainSkippable(t *testing.T) {
 	for _, filter := range []string{
 		`/(?<host>example\.com)/`, `/(?<!foo)example\.com/`, `/foo[<>]bar/`,
 		`@@/(?<host>example\.com)/`, `||example.com/path?q=<value>`,
-		`https://example.com/<path>`,
+		`https://example.com/<path>`, `|https://example.com/<path>`, `example.com/<path>`,
+		`@@||safe.example.com/path?q=<value>`, `||example.com^$removeparam=<value>`,
+		`Notes: 1 < 2 and 3 > 1`,
 	} {
 		for _, header := range []string{"", "[AutoProxy 0.2.9]\n"} {
 			data := []byte(header + "||example.com\n" + filter + "\n")
@@ -263,6 +265,10 @@ func TestRuleListsRejectInvalidResponses(t *testing.T) {
 		{"malformed header", "[AutoProxy 0.2.9\n||example.com\n"},
 		{"HTML error with domain", "<!DOCTYPE html>\n<html><body>\nexample.com\n</body></html>"},
 		{"HTML after domain", "example.com\n<BR>\n"},
+		{"text-prefixed HTML", "Service unavailable<br>\nexample.com\n"},
+		{"text-prefixed attributed HTML", "Error: <span class='status'>unavailable</span>\nexample.com\n"},
+		{"text-prefixed HTML comment", "Error <!-- try later -->\nexample.com\n"},
+		{"URL-prefixed HTML text", "status.example.com/error <br>\nexample.com\n"},
 		{"HTML with header", "[AutoProxy 0.2.9]\n||example.com\n</html>"},
 		{"hosts", "0.0.0.0 example.com\n127.0.0.1 safe.example.com\n"},
 		{"Clash", "payload:\n  - DOMAIN-SUFFIX,example.com\n"},

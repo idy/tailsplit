@@ -137,7 +137,7 @@
 
   function fieldValue(values, path) {
     // Read existing YAML without rewriting it until the source is edited.
-    if (path === 'rules.source' && values.rules && !Object.hasOwn(values.rules, 'source')) {
+    if (path === 'rules.source' && values.rules && values.rules.source == null) {
       return values.rules.gfwlist ?? defaults[path];
     }
     let value = values;

@@ -177,6 +177,22 @@ test('rule source form reads new and legacy source selections without changing Y
   }
 });
 
+test('null rule sources use the effective legacy source in the form', async () => {
+  for (const [source, mode] of [['builtin', 'builtin'], ['https://rules.example/list.txt', 'custom'], ['./rules.txt', 'custom'], ['', '']]) {
+    for (const scalar of ['null', '']) {
+      const initial = ruleDocument(source, 'gfwlist');
+      initial.yaml += `  source: ${scalar}\n`;
+      initial.values.rules.source = null;
+      const app = await page({}, '', {}, initial);
+      assert.equal(app.$('#rule-source-type').value, mode);
+      assert.equal(app.$('#rule-source').value, source);
+      assert.equal(app.$('#custom-rule-source').hidden, mode !== 'custom');
+      assert.equal(app.$('#save').disabled, true);
+      assert.equal(app.requests.some((request) => request.path === '/api/preview'), false);
+    }
+  }
+});
+
 test('switching rule sources retains a custom URL and writes the chosen source', async () => {
   const app = await page({}, '', {}, ruleDocument('builtin'));
   app.override = (request) => request.path === '/api/preview'

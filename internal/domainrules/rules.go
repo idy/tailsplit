@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/net/html"
 	"golang.org/x/net/idna"
 )
 
@@ -121,6 +122,36 @@ func parseActiveRules(data []byte) (*rules, []byte, error) {
 	return r, text, nil
 }
 
+// containsHTMLMarkup distinguishes error-page markup from AutoProxy filters
+// whose regex or URL syntax can legitimately contain angle brackets.
+func containsHTMLMarkup(line string) bool {
+	if !strings.ContainsAny(line, "<>") {
+		return false
+	}
+	filter := strings.TrimLeft(strings.TrimPrefix(line, "@@"), "|")
+	if strings.HasPrefix(filter, "/") {
+		end := strings.LastIndex(filter, "/")
+		if end > 0 && (end == len(filter)-1 || strings.HasPrefix(filter[end+1:], "$")) {
+			return false
+		}
+	}
+	filter = strings.TrimPrefix(strings.TrimPrefix(filter, "https://"), "http://")
+	if end := strings.IndexAny(filter, "/?$#"); end >= 0 && !strings.ContainsAny(filter, " \t\r\n") {
+		if _, _, ok := projectRule(filter[:end]); ok {
+			return false
+		}
+	}
+	tokens := html.NewTokenizer(strings.NewReader(line))
+	for {
+		switch tokens.Next() {
+		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken, html.DoctypeToken, html.CommentToken:
+			return true
+		case html.ErrorToken:
+			return false
+		}
+	}
+}
+
 func parseRules(data []byte) (*rules, []byte, error) {
 	if len(data) > maxRulesSize {
 		return nil, nil, fmt.Errorf("domainrules: rule list exceeds %d bytes", maxRulesSize)
@@ -151,9 +182,8 @@ func parseRules(data []byte) (*rules, []byte, error) {
 		if line == "" || strings.HasPrefix(line, "!") || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Reject markup lines even when an error page includes standalone domains.
-		// Angle brackets inside regex or URL filters remain skippable syntax.
-		if strings.HasPrefix(line, "<") {
+		// Error pages may prefix their tags with text and include bare domains.
+		if containsHTMLMarkup(line) {
 			return nil, nil, fmt.Errorf("domainrules: HTML is not a rule list")
 		}
 		if strings.HasPrefix(line, "[AutoProxy ") {

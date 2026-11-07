@@ -94,6 +94,12 @@ func TestRuleSourceSupportsNewAndLegacyConfiguration(t *testing.T) {
 			})
 		}
 	}
+	for _, scalar := range []string{"null", ""} {
+		config, err := loadTestConfig(t, "state_dir: ./state\ntailscale: {}\nrules:\n  gfwlist: builtin\n  source: "+scalar+"\n")
+		if err != nil || config.Rules.GFWList != "builtin" || config.Rules.Source != nil {
+			t.Fatalf("null source must retain the legacy subscription: %+v, %v", config.Rules, err)
+		}
+	}
 	for _, text := range []string{
 		"tailscale: {}\nrules:\n  source: builtin\n  gfwlist: https://rules.example/list.txt\n",
 		"tailscale: {}\nrules:\n  source: ''\n  gfwlist: builtin\n",
