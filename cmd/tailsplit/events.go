@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/appservice"
 
 	singlog "github.com/sagernet/sing-box/log"
 )
@@ -58,7 +60,7 @@ func runDiscoveryEvents(ctx context.Context, config tailsplit.Config, stream *ev
 	return stream.send(map[string]string{"event": "discovered", "mode": "discovery"})
 }
 
-func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.Compiled, stream *eventStream) error {
+func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.Compiled, stream *eventStream) (err error) {
 	var logWriter singlog.PlatformWriter
 	if stream.captureLogs {
 		logWriter = stream
@@ -77,7 +79,11 @@ func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.
 	if err := engine.Start(); err != nil {
 		return err
 	}
-	defer engine.Close()
+	// The later unregister defer joins in-flight pings before Close releases
+	// the embedded client and state lock, including on early stream failures.
+	defer func() { err = errors.Join(err, engine.Close()) }()
+	unregisterPing := appservice.RegisterExitPing(ctx, engine.PingExitNode)
+	defer unregisterPing()
 	mode := "proxy"
 	if config.TUN.Enabled {
 		mode = "tun"
@@ -93,5 +99,5 @@ func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.
 		})
 	}()
 	<-ctx.Done()
-	return engine.Close()
+	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/idy/tailsplit"
@@ -40,6 +41,7 @@ type Options struct {
 	Snapshot     func() tray.Snapshot
 	Apply        func(context.Context, func() error) error
 	Action       func(context.Context, string) error
+	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)
 	Logs         func() (string, error)
 	Startup      func() bool
 	UpdateState  func() appupdate.State
@@ -51,6 +53,7 @@ type Server struct {
 	server  *http.Server
 	address string
 	token   string
+	ping    sync.Mutex
 }
 
 type document struct {
@@ -121,6 +124,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/validate", s.validate)
 	mux.HandleFunc("POST /api/config", s.save)
 	mux.HandleFunc("POST /api/action", s.desktopAction)
+	mux.HandleFunc("POST /api/exit-ping", s.exitPing)
 	mux.HandleFunc("POST /api/update-action", s.updateAction)
 	mux.HandleFunc("GET /api/logs", s.desktopLogs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +132,7 @@ func (s *Server) handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		_, port, _ := net.SplitHostPort(s.address)
 		hostOK := r.Host == s.address || s.options.Preview && r.Host == "localhost:"+port
 		if !hostOK || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+r.Host) {
@@ -148,11 +152,19 @@ func (s *Server) handler() http.Handler {
 			mux.ServeHTTP(w, r)
 			return
 		}
-		if r.Method != http.MethodGet || (r.URL.Path != "/" && r.URL.Path != "/app.js" && r.URL.Path != "/i18n.js" && r.URL.Path != "/style.css") {
+		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
 		}
-		static.ServeHTTP(w, r)
+		switch r.URL.Path {
+		case "/", "/app.js", "/i18n.js", "/style.css",
+			"/fonts/montserrat-latin.woff2", "/fonts/monda-latin.woff2",
+			"/fonts/lato-regular-latin.woff2", "/fonts/lato-bold-latin.woff2",
+			"/fonts/Montserrat-OFL.txt", "/fonts/Monda-OFL.txt", "/fonts/Lato-OFL.txt":
+			static.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
 	})
 }
 
@@ -208,7 +220,8 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		"routing_mode": snapshot.RoutingMode, "logs_available": s.options.Logs != nil,
 		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
-		"startup": s.options.Startup != nil && s.options.Startup(),
+		"ping_available": s.options.PingExit != nil && snapshot.PingAvailable,
+		"startup":        s.options.Startup != nil && s.options.Startup(),
 	}
 	if s.options.UpdateState != nil {
 		state["updates"] = s.options.UpdateState()

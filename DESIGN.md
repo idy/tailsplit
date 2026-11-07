@@ -24,6 +24,9 @@ colors:
   good-ink: "#16652f"
   warn: "#855700"
   error: "#b42318"
+  latency-fast: "#3a8154"
+  latency-medium: "#906d29"
+  latency-slow: "#bd524b"
   selected: "#0000000e"
   hover: "#00000006"
   wash: "#00000003"
@@ -58,6 +61,9 @@ colors:
   good-ink-dark: "#d7f7df"
   warn-dark: "#f0c46b"
   error-dark: "#ff8a80"
+  latency-fast-dark: "#7ab58b"
+  latency-medium-dark: "#c9b17c"
+  latency-slow-dark: "#d49a94"
   selected-dark: "#ffffff14"
   hover-dark: "#ffffff0a"
   wash-dark: "#ffffff06"
@@ -72,38 +78,38 @@ colors:
   actionbar-dark: "#1c1c1ef0"
 typography:
   headline:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Montserrat, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
     fontSize: "1.5rem"
     fontWeight: 600
     lineHeight: 1.35
     letterSpacing: "-.02em"
   title:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Montserrat, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
     fontSize: "1rem"
     fontWeight: 600
     lineHeight: 1.4
   body:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Monda, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
     fontSize: "0.875rem"
     fontWeight: 400
     lineHeight: 1.5
   label:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Monda, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
     fontSize: "0.875rem"
     fontWeight: 500
     lineHeight: 1.5
   note:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Lato, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 400
     lineHeight: 1.55
   button:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Montserrat, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 500
     lineHeight: 1.5
   caption:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Lato, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
     fontSize: "0.75rem"
     fontWeight: 400
     lineHeight: 1.5
@@ -187,7 +193,7 @@ components:
 
 **Creative North Star: "The Desktop Configuration Panel"**
 
-TailSplit uses a compact, neutral desktop configuration panel with system typography, blue actions, and semantic connection states. This system applies to the embedded configuration UI in macOS WKWebView and Windows WebView2. It preserves the incumbent desktop world selected by the user.
+TailSplit uses a compact, neutral desktop configuration panel with the website's Montserrat/Monda/Lato typography, blue actions, and semantic connection states. This system applies to the embedded configuration UI in macOS WKWebView and Windows WebView2. It preserves the incumbent desktop world selected by the user.
 
 System appearance changes the surfaces, text, borders, and state treatments through CSS media queries. Density supports repeated local configuration tasks; clear labels, separate draft states, and explicit actions carry the hierarchy.
 
@@ -206,9 +212,9 @@ Neutral gray surfaces carry the interface; blue identifies actions and selected 
 
 ### Primary
 
-- **Action blue:** `accent` fills primary buttons, checked switches, and radio choices; `on-accent` provides their button text.
+- **Action blue:** `accent` fills primary buttons and checked switches; `on-accent` provides their button text. The card-list checkmark is gray when unselected and `good` green when selected; no radio control is rendered.
 - **Action blue hover and ink:** `accent-hover` handles primary hover; `accent-ink` handles focus outlines, links, current exit labels, and proxy-route markers.
-- **Selection wash:** `update-bg` lightly marks a selected exit without representing connection success.
+- **Selection wash:** the picker uses the neutral `wash` surface for the selected row without representing connection success; `update-bg` continues to serve update indicators.
 
 ### Neutral
 
@@ -227,27 +233,29 @@ Green (`good`, `good-ink`) means connected/saved or direct routing; amber (`warn
 
 ## Typography
 
-The frontmatter records the full system interface and mono stacks, including Chinese fallbacks. There is no dedicated display face. At the root font size (100%), body is 14px, note/button/code 13px, caption 12px, section title 16px, and connection state 24px. The hierarchy is compact rather than a proportional marketing scale.
+The panel shares the website's font pairing: Montserrat for headings and actions, Monda for body text and node names, and Lato for small/supporting text. Each role retains the system stack as a fallback for Chinese and other uncovered characters. At the root font size (100%), body is 14px, note/button/code 13px, caption 12px, section title 16px, and connection state 24px. The hierarchy stays compact, including the 44px node rows.
 
-- **Headline:** the connection state, semibold and slightly tightened.
-- **Title:** section headings, semibold with a compact line height.
-- **Body and label:** ordinary text and medium-weight field labels. Navigation uses the body size with a tighter line height (1.4); active navigation is medium weight.
-- **Note:** secondary explanation and hints, commonly limited to 60–75ch depending on context.
-- **Button:** medium-weight compact action text.
-- **Caption:** status, file metadata, and exit addresses; addresses use the mono family.
-- **Code:** YAML preview/raw editor line height (1.65). Logs use the same size and family with a roomier line height (1.7).
+- **Headline:** Montserrat for the connection state, semibold and slightly tightened.
+- **Title:** Montserrat section headings, semibold with a compact line height; the brand and visual preview heading use the same family.
+- **Body and label:** Monda for ordinary text, form labels, fields, and node names, including names inside selectable row buttons.
+- **Note:** Lato for secondary explanations, hints, warnings, and other small supporting text, commonly limited to 60–75ch.
+- **Button:** Montserrat for action text, navigation, tabs, routing segments, and disclosure controls. Ping is a text-only action in Montserrat 400 (normal) and `accent-ink` link color, with an underline on hover and muted disabled text.
+- **Caption:** Lato for status and metadata. Latency values and ordinary supporting text use the bundled 400 weight; latency keeps tabular numbers and softened semantic colors. Emphasized summaries may use the bundled 700 weight.
+- **Code:** the existing mono stack for YAML, diagnostic logs, filenames, and explicitly code-like inputs. YAML uses line height 1.65 and logs 1.7.
+
+The local WOFF2 files are unmodified copies from `site/shared/`, embedded under `internal/configweb/assets/fonts/` with their SIL OFL notices. Montserrat covers weights 400–800, Monda 400–700, and Lato has separate 400/700 files. All faces use `font-display: swap`; the body and heading variable faces are preloaded, while Lato weights load when used. No CDN is required, and the local server permits only the named font/license assets under its existing Host/Origin rules.
 
 Dialog titles use an observed local step (1.125rem); the brand uses a local step (0.9375rem, weight 650). These are component exceptions, not a second display system.
 
-**The Desktop Type Rule.** Use the incumbent system text stack for interface text and the mono stack for configuration and diagnostic content.
+**The Desktop Type Rule.** Use Montserrat, Monda, and Lato by their heading/action, body, and small-text roles. Keep system fallbacks for Chinese and the mono stack for configuration and diagnostics. These families are explicitly selected by the user from the website; generic font-popularity advisories do not supersede that choice.
 
 ## Layout
 
 A persistent sidebar and flexible workspace share a sticky titlebar. The default sidebar is (176px) and titlebar (48px); macOS reserves traffic-light space with a wider sidebar (216px), shorter titlebar (40px), and brand left inset (88px). Windows controls fill the titlebar height with square-edged buttons (44px wide). The source comment explicitly identifies this fixed-height native chrome; its flush control edges do not establish a general content-spacing rule.
 
-Workspace gutters, field gaps, and section gaps use the frontmatter spacing tokens. Pages have vertical padding (24px). Connection content centers within a maximum width (1000px). Connection and Logs occupy the upper sidebar; Settings is pinned below by the flexible sidebar layout. The connection page places identity, state/actions, routing selector, exit search/list, and staged confirmation together. This composition belongs to the desktop connection surface, not a universal page template.
+Workspace gutters, field gaps, and section gaps use the frontmatter spacing tokens. Pages have vertical padding (24px). Connection content centers within a maximum width (1000px). Connection, Exit nodes, and Logs occupy the upper sidebar; Settings is pinned below by the flexible sidebar layout. Connection places identity, state/actions, a clickable current-exit row, and the routing selector together. The exit list lives in a modal picker and in the independent Exit nodes page; it never appears inline on Connection.
 
-Settings use a form/preview grid (2fr/1fr, preview minimum 320px) and label/control rows (150–190px label column). Exit rows have a minimum height (62px); their list scrolls within `min(36vh, 360px)`. Confirmation and settings actions stay near the bottom through sticky footers. The sidebar Settings footer follows the visible settings actionbar's measured height so their full-width dividers align, including when localized actions wrap.
+Settings use a form/preview grid (2fr/1fr, preview minimum 320px) and label/control rows (150–190px label column). The exit picker is at most 640px wide with 16px viewport clearance and a bounded scrollable card list, `min(42vh, 380px)`. Both card lists use compact 44px minimum rows and keep every item on a single line: an always-visible leading checkmark, the node name, an 88px right-aligned latency column, and a dedicated Ping text button at the far right, with no border or background. IP addresses, server icons, separate status/path columns, and radio controls are omitted. Names truncate with native titles instead of wrapping, so both lists fit narrow windows without horizontal scrolling. The dedicated Ping button tests or retries independently; clicking the name or leading checkmark selects the node through the existing confirmation flow. Relay details and error reasons remain available in native titles and accessible descriptions. Confirmation stays inside the picker; staged mode changes and settings retain their existing page footers. The sidebar Settings footer follows the visible settings actionbar's measured height so their full-width dividers align, including when localized actions wrap.
 
 - At (1199px) and below, hide the live YAML preview while retaining the full-width form and YAML editor tab.
 - At (960px) and below, hide the header exit label.
@@ -268,7 +276,7 @@ Field border/shadow transitions last (.12s); switch background and thumb transit
 
 ## Shapes
 
-Controls and navigation use modest rounded corners; grouped panels are gently rounder. The frontmatter records the reused radius steps. Mode segments use their tighter radius inside a rounded container. Pills, dots, and switch tracks remain fully rounded. Borders are ordinarily (1px). Titlebar window controls retain square edges. Interface icons are inline SVG strokes, normally (16px) with stroke width (1.7); compact action icons are commonly (14px).
+Controls and navigation use modest rounded corners; grouped panels are gently rounder. The frontmatter records the reused radius steps. Mode segments use their tighter radius inside a rounded container. Pills, dots, and switch tracks remain fully rounded. Borders are ordinarily (1px). Titlebar window controls retain square edges. Functional interface icons use vendored Phosphor Icons 2.1.1 regular SVG paths, normally (16px); compact actions and window controls use (14px), and node selection marks use (18px). The paths encode their own regular stroke geometry and render with `fill: currentColor; stroke: none`. Side navigation, search, refresh, close, disclosure, select, loading, and custom window-control icons share this family. The TailSplit brand mark remains its own artwork. Source names are recorded on the inline symbols, with the upstream MIT notice in THIRD_PARTY_NOTICES.md.
 
 ## Components
 
@@ -290,7 +298,11 @@ Grouped settings share a surface and panel radius, with internal row dividers an
 
 ### Status and Exit Selection
 
-Header connection state pairs a small colored dot (7px) with text. Exit rows pair radio selection, device name, mono address, and a readable status. Blue current-state text and amber pending-state text remain distinct from the selected-row wash. Unavailable exits use disabled choices, not a fictional success treatment. A sticky confirmation footer identifies a staged change and its consequence; settings drafts have their own amber warning and sidebar dot.
+Header connection state pairs a small colored dot (7px) with text. The Connection page's full-width exit control shows the saved/current node name and mono address, with a Choose action. It opens a native dialog; no exit rows appear on the home page.
+
+Both node surfaces use the reference's **card list**: one rounded surface, internal hairline dividers, a leading checkmark and name, then right-aligned latency and a separate Ping button. Native buttons with pressed state expose the selection to assistive technology; no radio is rendered. Selection marks remain visible: unselected rows show the faint-gray Phosphor Check, while selected rows show the `good`-green Phosphor CheckCircle, with a neutral selected-row wash. Its canvas is subtly distinct from the card surface. Unavailable exits remain visible with disabled selection. The modal footer identifies the staged choice and reconnect consequence; Cancel and Escape discard that choice. Settings drafts block applying and have their own warning and navigation action inside the dialog.
+
+The fixed-width latency readout uses right-aligned tabular numbers; the adjacent explicit Ping button handles testing and retry. Values at or below 500ms use softened `latency-fast` green; values above 500ms through 1000ms use `latency-medium` amber; values above 1000ms use `latency-slow` red, with matching muted dark-theme tokens. These readouts use regular 400 weight. Failed pings retain the standard error color. Numeric labels preserve meaning without relying on color. Untested latency cells show a dash, pending cells say Testing, and unavailable cells show Offline or Not found. The Ping action remains a separate labeled button. Failure details and direct/relay paths are exposed in titles and accessible descriptions. Ping never changes selection, and results are shared by the picker and node page. One polite live region announces the requested result. Preview latency is explicitly labeled simulated. Network or device-login changes invalidate remembered results. Staged routing-mode changes retain the Connection page's confirmation footer.
 
 ### Switches and Overlays
 

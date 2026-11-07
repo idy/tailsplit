@@ -1,0 +1,106 @@
+package tray
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+
+	"github.com/idy/tailsplit"
+)
+
+func (c *Controller) pingAvailableLocked() bool {
+	if c.closed || c.stopping || c.loggingOut || !c.snapshot.PingAvailable || c.snapshot.BackendState != "Running" {
+		return false
+	}
+	if c.command == nil {
+		return true
+	}
+	// The native desktops use the service, whose active engine accepts ping
+	// requests. A standalone non-service CLI engine has no control channel.
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		return false
+	}
+	switch c.snapshot.State {
+	case "running", "blocked", "missing-exit", "waiting-exit":
+		return c.snapshot.Mode == "proxy" || c.snapshot.Mode == "tun"
+	default:
+		return false
+	}
+}
+
+// PingExitNode is independent of Start/Stop and never reconnects the proxy.
+// The helper contacts the installed service's active engine or, when idle,
+// opens a scoped session for that same saved device. Its output is bounded.
+func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.ExitPingResult, error) {
+	c.mu.Lock()
+	if c.pingCancel != nil {
+		c.mu.Unlock()
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingBusy
+	}
+	if !c.pingAvailableLocked() {
+		c.mu.Unlock()
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
+	}
+	if err := tailsplit.ValidateExitPingTarget(c.snapshot.ExitNodes, id); err != nil {
+		c.mu.Unlock()
+		return tailsplit.ExitPingResult{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, tailsplit.ExitPingTimeout)
+	done := make(chan struct{})
+	c.pingCancel, c.pingDone = cancel, done
+	c.mu.Unlock()
+	defer func() {
+		cancel()
+		c.mu.Lock()
+		c.pingCancel, c.pingDone = nil, nil
+		close(done)
+		c.mu.Unlock()
+	}()
+	operation := "ping"
+	if len(c.options.HelperArgs) == 0 && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
+		operation = "app-ping"
+	}
+	args := append(append([]string{}, c.options.HelperArgs...), operation, "--id", id, "-c", c.options.ConfigPath)
+	command := exec.CommandContext(ctx, c.options.Helper, args...)
+	command.Dir = filepath.Dir(c.options.ConfigPath)
+	command.Env = append(os.Environ(), c.options.ExtraEnv...)
+	command.Stderr = c.log
+	if _, err := prepareProcess(command, false); err != nil {
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
+	}
+	var output bytes.Buffer
+	command.Stdout = &limitedPingWriter{buffer: &output, remaining: 4096}
+	err := command.Run()
+	if ctx.Err() != nil {
+		return tailsplit.ExitPingResult{}, ctx.Err()
+	}
+	var reply tailsplit.ExitPingReply
+	if json.Unmarshal(output.Bytes(), &reply) != nil {
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingFailed
+	}
+	if reply.Error != "" {
+		return tailsplit.ExitPingResult{}, tailsplit.PingError(reply.Error)
+	}
+	if err != nil || reply.Result == nil || reply.Result.ID != id {
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingFailed
+	}
+	return *reply.Result, nil
+}
+
+type limitedPingWriter struct {
+	buffer    *bytes.Buffer
+	remaining int
+}
+
+func (w *limitedPingWriter) Write(data []byte) (int, error) {
+	if len(data) > w.remaining {
+		return 0, io.ErrShortBuffer
+	}
+	w.remaining -= len(data)
+	return w.buffer.Write(data)
+}

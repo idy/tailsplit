@@ -44,16 +44,18 @@ type Files struct {
 type Request struct {
 	Protocol int               `json:"protocol"`
 	Op       string            `json:"op"`
+	Target   string            `json:"target,omitempty"`
 	Config   *tailsplit.Config `json:"config,omitempty"`
 	Files    Files             `json:"files,omitempty"`
 }
 
 type Info struct {
-	Event       string `json:"event"`
-	Protocol    int    `json:"protocol"`
-	Version     string `json:"version"`
-	BuildID     string `json:"build_id"`
-	Initialized bool   `json:"initialized"`
+	Event         string `json:"event"`
+	Protocol      int    `json:"protocol"`
+	Version       string `json:"version"`
+	BuildID       string `json:"build_id"`
+	Initialized   bool   `json:"initialized"`
+	PingAvailable bool   `json:"ping_available"`
 }
 
 func executableID(path string) (string, error) {

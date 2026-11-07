@@ -37,16 +37,19 @@ const CoreVersion = "1.14.4"
 // and Close without launching a sing-box subprocess. A connected core always
 // owns a DNS TUN; only traffic-capture mode changes the system DNS resolver.
 type Engine struct {
-	box         *box.Box
-	cancel      context.CancelFunc
-	unlock      func() error
-	once        sync.Once
-	closeErr    error
-	exitNode    string
-	routingMode string
-	hasTUN      bool
-	dnsListen   string
-	closeDNS    func() error
+	ctx             context.Context
+	ping            sync.Mutex
+	expectedTailnet string
+	box             *box.Box
+	cancel          context.CancelFunc
+	unlock          func() error
+	once            sync.Once
+	closeErr        error
+	exitNode        string
+	routingMode     string
+	hasTUN          bool
+	dnsListen       string
+	closeDNS        func() error
 }
 
 func engineContext(ctx context.Context) context.Context {
@@ -160,7 +163,7 @@ func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 		return nil, errors.New("could not initialize the embedded sing-box engine")
 	}
 	release = false
-	engine := &Engine{box: instance, cancel: cancel, unlock: unlock, routingMode: config.Rules.Mode}
+	engine := &Engine{ctx: ctx, box: instance, cancel: cancel, unlock: unlock, routingMode: config.Rules.Mode}
 	for _, in := range options.Inbounds {
 		if in.Type == "tun" {
 			engine.hasTUN = true
@@ -171,6 +174,7 @@ func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 	}
 	if config.Tailscale != nil {
 		engine.exitNode = config.Tailscale.ExitNode
+		engine.expectedTailnet = config.Tailscale.Tailnet
 	}
 	return engine, nil
 }
@@ -217,6 +221,7 @@ type Status struct {
 	ExitVisible    bool       `json:"exit_visible"`
 	Hostname       string     `json:"hostname,omitempty"`
 	ExitNodes      []ExitNode `json:"exit_nodes"`
+	PingAvailable  bool       `json:"ping_available"`
 }
 
 // ExitNode is the bounded, credential-free metadata used by the local picker.
@@ -243,6 +248,8 @@ func (e *Engine) WatchStatus(ctx context.Context, callback func(Status)) error {
 	return tailnet.SubscribeTailscaleStatus(ctx, func(current *adapter.TailscaleEndpointStatus) {
 		status := connectionStatus(current, e.exitNode)
 		status.RoutingMode = e.routingMode
+		_, supportsPing := endpoint.(exitPingEndpoint)
+		status.PingAvailable = supportsPing && status.BackendState == "Running"
 		callback(status)
 	})
 }

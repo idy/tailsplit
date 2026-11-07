@@ -187,13 +187,32 @@ their percentage inside that button; installation shows its current phase in
 the same place. The title row supports window dragging and double-click zoom,
 with native macOS window buttons and Windows minimize, maximize/restore and
 close controls. Closing still hides the window to the menu bar or tray.
-The sidebar puts **Connection** and **Logs** at the top and pins **Settings** at
-the bottom. The connection page combines Tailscale sign-in, connection controls,
-split/global routing mode and a searchable exit list. Select an exit or mode,
-then confirm the change: a running session reconnects, while a disconnected app
-only saves the selection. Unavailable and missing saved exits remain visible;
-TailSplit never automatically chooses a replacement. Save or discard any settings
-draft before applying connection changes.
+The sidebar puts **Connection**, **Exit nodes** and **Logs** at the top and pins
+**Settings** at the bottom. Connection combines Tailscale sign-in, connection
+controls, the current exit and split/global routing. Click the exit row to open a
+searchable picker; confirm to save the choice, or cancel/press Escape to keep the
+previous selection. A running session reconnects after confirmation, while a
+disconnected app only saves the selection. Unavailable and missing saved exits
+remain visible; TailSplit never automatically chooses a replacement. Save or
+discard any settings draft before applying connection changes.
+
+**Exit nodes** has a searchable list with availability, current selection and a
+**Ping** action for each online exit. Ping uses the embedded Tailscale device's
+discovery ping to show round-trip latency and a direct or relay path; it does not
+measure download speed or change the selected exit. Connected desktop sessions
+reuse their running engine. When disconnected, the saved device performs a short
+listener-free check without creating a TUN or changing system DNS. Pings run one
+at a time with a 15-second overall deadline; sign-in and other device transitions
+must finish first. Failures can be retried, and results clear when the network or
+device login changes. The desktop helper and network service must support this
+operation; update an older network service if Ping is unavailable.
+
+Both node lists show a leading Phosphor icon (a gray check when unselected, a
+green circle check when selected), the node name, right-aligned latency, and a dedicated **Ping** button
+at the far right. Tailscale IPs and radio controls are not shown. Click **Ping**
+to test or retry independently, and click the name or checkmark to select.
+Latency is green through 500 ms, amber above 500 ms through 1000 ms, and red above
+1000 ms. The path and any error details remain available on hover.
 
 Settings groups general preferences, network options, DNS, routing rules, advanced
 parameters and app updates. Logs has its own page with bounded, redacted output
@@ -201,7 +220,10 @@ and a log-level control. Moving between these pages preserves unsaved form and
 YAML drafts, including incomplete source edits. The panel and native window follow
 the system's light or dark appearance and update immediately when it changes,
 preserving unsaved edits. The local page also follows the browser's color
-preference when opened outside the app.
+preference when opened outside the app. Its typography matches the website:
+Montserrat for headings and actions, Monda for body text, and Lato for supporting
+text. The font files and their SIL OFL notices are embedded locally; Chinese uses
+system fallbacks, while YAML, diagnostic logs and code-like fields stay monospace.
 Wide windows add a live YAML preview, and a full source editor is always
 available. Validate or save/apply changes from either view. Saving reconnects an
 active proxy; an idle app stays idle. Existing comments and unrelated settings are preserved. External edits

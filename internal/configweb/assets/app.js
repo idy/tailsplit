@@ -398,7 +398,7 @@
     if (name === 'logs') refreshDesktopLogs();
   }
   function renderPageTitle() {
-    const labels = { connection: t('连接页面'), logs: t('日志'), settings: t('设置') };
+    const labels = { connection: t('连接页面'), nodes: t('出口节点列表'), logs: t('日志'), settings: t('设置') };
     $('#crumb-section').textContent = labels[state.page];
   }
   for (const nav of document.querySelectorAll('[data-page]')) nav.addEventListener('click', () => showPage(nav.dataset.page));
@@ -475,6 +475,15 @@
   let selectedExit = null;
   let selectedMode = null;
   let exitListSignature = '';
+  let nodesListSignature = '';
+  let pickerOriginalExit = null;
+  let pickerCommitted = false;
+  let pickerOpener = null;
+  let pickerValidationError = '';
+  let pingBusy = '';
+  let pingGeneration = 0;
+  const pingResults = new Map();
+  const exitDialog = $('#exit-picker-dialog');
   const networkActive = (live = desktopLive) => Boolean(live?.active && ['tun', 'proxy'].includes(live.mode));
   const needsAuthentication = (live = desktopLive) => live?.backend_state === 'NeedsLogin' || live?.state === 'login';
   const signedIn = (live = desktopLive) => !needsAuthentication(live) && (live?.backend_state === 'Running' || live?.state === 'authenticated');
@@ -496,8 +505,17 @@
     if (configured && !nodes.some((node) => node.configured)) nodes.unshift({ id: configured, name: configured, online: false, configured: true, missing: true });
     return nodes;
   }
+  function clearPingResults() {
+    pingGeneration++;
+    pingResults.clear();
+    setStatusText('#ping-announcement', '');
+  }
   function updateDesktop(live) {
+    if (desktopLive && (live.network !== desktopLive.network || live.hostname !== desktopLive.hostname || signedIn(live) !== signedIn())) clearPingResults();
     desktopLive = live;
+    for (const [id] of pingResults) {
+      if (!exitNodes().some((node) => node.id === id && node.online)) pingResults.delete(id);
+    }
     renderConnectionCenter();
   }
   function renderConnectionCenter() {
@@ -540,7 +558,12 @@
       needsAuthentication(live) ? t('未登录 Tailscale') : discovering ? t('正在读取设备') : t('未登录 Tailscale');
     setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : identity);
     const current = connected ? live.exit || savedExit() : savedExit();
-    setStatusText('#current-exit', current ? t(connected ? '当前出口：{name}' : '已保存出口：{name}', { name: current }) : t('尚未选择出口'));
+    const currentNode = nodes.find((node) => node.id === current || node.name === current) || nodes.find((node) => node.configured);
+    setStatusText('#current-exit', currentNode?.name || current || t('尚未选择出口'));
+    const currentDetail = currentNode ? !currentNode.online ? t(currentNode.missing ? '已保存 · 未发现' : '已选 · 不可用') : '' : t('选择已获准使用的设备。');
+    setStatusText('#current-exit-detail', currentDetail);
+    $('#current-exit-detail').hidden = !currentDetail;
+    $('#choose-exit').disabled = locked || !state.loaded;
     const hint = connectionLost ? t('请确认 TailSplit 仍在运行') : live.error ? message(backendError(live)) :
       desktopPending ? t('正在处理…') : quickBusy ? t('正在应用连接更改…') :
       !live.desktop ? t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。') :
@@ -555,63 +578,189 @@
       button.disabled = locked || discovering || !state.loaded;
     }
     $('#mode-description').textContent = mode === 'global' ? t('接管整机流量；出口不可用时阻断，手动断开后恢复系统网络。') : t('按分流规则选择直连或出口。');
-    $('#connection-apply').hidden = !changing && !quickBusy;
+    $('#connection-apply').hidden = exitDialog.open || !changing && !quickBusy;
     const name = chosenNode?.name || chosen || t('尚未选择出口');
-    $('#connection-selection').textContent = t('已选：{name} · {mode}', { name, mode: mode === 'global' ? t('全局代理') : t('规则分流') });
-    $('#connection-consequence').textContent = connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
-    $('#apply-connection-change').textContent = quickBusy ? t('正在应用…') : !connected ? t('保存选择') :
+    const selection = t('已选：{name} · {mode}', { name, mode: mode === 'global' ? t('全局代理') : t('规则分流') });
+    const consequence = connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
+    const applyLabel = quickBusy ? t('正在应用…') : !connected ? t('保存选择') :
       selectedExit !== null && selectedMode !== null ? t('应用连接更改') : selectedExit !== null ? t('切换出口') : t('应用模式');
-    $('#apply-connection-change').disabled = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && Boolean(chosenNode && !chosenNode.online);
-    $('#cancel-connection-change').disabled = quickBusy;
+    const cannotApply = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && Boolean(chosenNode && !chosenNode.online);
+    for (const prefix of ['connection', 'exit-dialog']) {
+      setStatusText(`#${prefix}-selection`, selection);
+      setStatusText(`#${prefix}-consequence`, consequence);
+    }
+    for (const id of ['apply-connection-change', 'apply-exit-picker']) {
+      $(`#${id}`).textContent = id === 'apply-exit-picker' && !changing && !quickBusy ? t(connected ? '切换出口' : '保存选择') : applyLabel;
+      $(`#${id}`).disabled = cannotApply;
+    }
+    for (const id of ['cancel-connection-change', 'close-exit-picker', 'cancel-exit-picker', 'picker-view-settings', 'picker-go-connection']) $(`#${id}`).disabled = quickBusy;
     $('#connection-draft-warning').hidden = !state.dirty;
+    $('#exit-dialog-draft-warning').hidden = !state.dirty;
+    const pickerError = pickerValidationError ? t(pickerValidationError) : operationError ? message(operationError.detail) : state.external ? t('当前草稿仍保留。重新读取最新配置后再保存，避免覆盖其他更改。') : '';
+    setStatusText('#exit-dialog-error', pickerError);
+    $('#exit-dialog-error').hidden = !pickerError;
     $('#select-manual-exit').disabled = locked || discovering || !$('#exit-node').value.trim();
     $('#exit-node').disabled = locked || discovering;
     renderExitList(nodes, locked || discovering);
+    renderNodesPage(nodes, locked || transitioning);
     renderConnection(live);
   }
   function renderExitList(nodes, locked) {
     const query = $('#exit-search').value.trim().toLocaleLowerCase();
     const visible = nodes.filter((node) => `${node.name} ${node.id}`.toLocaleLowerCase().includes(query));
-    const signature = JSON.stringify([visible, selectedExit, locked, locale.language]);
+    const signature = JSON.stringify([visible, selectedExit, locked, desktopLive?.ping_available === true && signedIn(), pingBusy, [...pingResults], locale.language]);
     if (signature !== exitListSignature) {
       exitListSignature = signature;
-      const focused = document.activeElement?.name === 'exit-selection' ? document.activeElement.value : null;
+      const focused = document.activeElement?.dataset;
       let restoreFocus = null;
       const fragment = document.createDocumentFragment();
       for (const node of visible) {
         const selected = selectedExit === null ? node.configured : node.id === selectedExit;
-        const row = document.createElement('label');
-        row.className = `exit-row${selected ? ' selected' : ''}${!node.online ? ' unavailable' : ''}`;
-        const radio = document.createElement('input');
-        radio.type = 'radio'; radio.name = 'exit-selection'; radio.value = node.id;
-        radio.checked = Boolean(selected); radio.disabled = locked || !node.online;
-        if (node.id === focused && !radio.disabled) restoreFocus = radio;
-        radio.addEventListener('change', () => { selectedExit = node.configured ? null : node.id; renderConnectionCenter(); });
-        const info = document.createElement('span'); info.className = 'exit-info';
-        const name = document.createElement('span'); name.className = 'exit-name'; name.textContent = node.name; name.title = node.name;
-        const address = document.createElement('span'); address.className = 'exit-address'; address.textContent = node.id;
-        info.append(name, address);
-        const status = document.createElement('span');
-        status.className = `exit-state${node.configured ? ' current' : selected ? ' pending' : ''}`;
-        status.textContent = node.missing ? t('已保存 · 未发现') : !node.online ? (node.configured ? t('已选 · 不可用') : t('离线或已过期')) :
-          node.configured ? t('当前选择') : selected ? t('待切换') : t('在线');
-        row.append(radio, info, status); fragment.append(row);
+        const row = document.createElement('div');
+        row.className = `exit-row${selected ? ' selected' : ''}`;
+        const { latency, ping } = nodePingControls(node, locked, 'picker');
+        const choice = nodeChoiceButton(node, selected, locked, 'picker');
+        choice.addEventListener('click', () => { pickerValidationError = ''; selectedExit = node.configured ? null : node.id; renderConnectionCenter(); });
+        if (focused?.exitChoice === node.id && !choice.disabled) restoreFocus = choice;
+        if (focused?.pingSurface === 'picker' && focused.nodePing === node.id && !ping.disabled) restoreFocus = ping;
+        row.append(choice, latency, ping); fragment.append(row);
       }
       $('#exit-list').replaceChildren(fragment);
       if (restoreFocus) restoreFocus.focus();
     }
     $('#exit-count').textContent = t('可用出口数量', { count: nodes.filter((node) => node.online).length });
-    $('#exit-empty').hidden = visible.length > 0;
-    $('#exit-empty-title').textContent = query ? t('没有匹配的出口') : signedIn() ? t('未发现可用出口') : t('尚未读取出口');
-    $('#exit-empty-detail').textContent = query ? t('试试其他名称或 Tailscale IP。') : signedIn() ? t('确认设备已在 Tailnet 中提供出口，并获准使用，然后刷新。') : t('登录 Tailscale 后，刷新可用出口。');
+    renderExitEmpty('exit', visible, query);
+    $('#picker-go-connection').hidden = signedIn() || Boolean(query);
   }
+  function renderExitEmpty(prefix, visible, query) {
+    const discovering = desktopPending === 'refresh-exits' || desktopLive?.mode === 'discovery' && desktopLive.active;
+    $(`#${prefix}-empty`).hidden = visible.length > 0;
+    setStatusText(`#${prefix}-empty-title`, discovering ? t('正在读取出口') : query ? t('没有匹配的出口') : signedIn() ? t('未发现可用出口') : t('尚未读取出口'));
+    setStatusText(`#${prefix}-empty-detail`, query ? t('试试其他名称或 Tailscale IP。') : signedIn() ? t('确认设备已在 Tailnet 中提供出口，并获准使用，然后刷新。') : t('登录 Tailscale 后，刷新可用出口。'));
+  }
+  function nodeIcon(symbol) {
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('class', 'icon'); icon.setAttribute('aria-hidden', 'true');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', `#i-${symbol}`); icon.append(use);
+    return icon;
+  }
+  function pingLabel(result) {
+    return `${new Intl.NumberFormat(locale.language, { maximumFractionDigits: 1 }).format(result.latency_ms)} ms`;
+  }
+  function nodeChoiceButton(node, selected, locked, surface) {
+    const choice = document.createElement('button'); choice.type = 'button'; choice.className = 'node-choice';
+    choice.dataset[surface === 'picker' ? 'exitChoice' : 'nodeSelect'] = node.id;
+    choice.disabled = locked || !node.online;
+    choice.setAttribute('aria-pressed', String(Boolean(selected)));
+    choice.setAttribute('aria-label', t('选择 {name}', { name: node.name }));
+    const name = document.createElement('span'); name.className = 'exit-name'; name.textContent = node.name; name.title = node.name;
+    const check = document.createElement('span'); check.className = 'node-check';
+    check.append(nodeIcon(selected ? 'check-circle' : 'check')); choice.append(check, name);
+    return choice;
+  }
+  function nodePingControls(node, locked, surface) {
+    const result = pingResults.get(node.id);
+    const pending = pingBusy === node.id;
+    const canPing = desktopLive?.ping_available === true && signedIn();
+    const band = result && !result.error && !pending ? result.latency_ms <= 500 ? 'fast' : result.latency_ms <= 1000 ? 'medium' : 'slow' : '';
+    const latency = document.createElement('span');
+    latency.className = `node-latency${band ? ` ${band}` : ''}${result?.error && !pending ? ' failed' : ''}`;
+    const value = document.createElement('strong');
+    value.textContent = pending ? t('正在测试…') : !node.online ? t(node.missing ? '未发现' : '离线') : result?.error ? t('测试失败') : result ? pingLabel(result) : '—';
+    latency.append(value);
+    const route = result?.relay ? t('中继 · {name}', { name: result.relay }) : t(result?.direct ? '直连' : '中继');
+    latency.title = result?.error ? message(result.error) : pending ? t('正在测试…') : result ? `${pingLabel(result)} · ${route}` : t(node.online ? '尚未测试' : '节点不可用');
+    const ping = document.createElement('button'); ping.type = 'button'; ping.className = 'link-button node-ping';
+    ping.dataset.nodePing = node.id; ping.dataset.pingSurface = surface; ping.textContent = 'Ping';
+    ping.title = result?.error ? message(result.error) : t('使用 Tailscale Ping 测试延迟');
+    ping.setAttribute('aria-label', t('Ping {name}', { name: node.name }));
+    ping.setAttribute('aria-description', latency.title);
+    ping.setAttribute('aria-busy', String(pending));
+    // Keep the active ping focusable while its request is in flight.
+    ping.disabled = locked || !canPing || !node.online || Boolean(pingBusy && !pending);
+    ping.setAttribute('aria-disabled', String(ping.disabled || pending));
+    ping.addEventListener('click', () => pingNode(node.id));
+    return { latency, ping };
+  }
+  function renderNodesPage(nodes, locked) {
+    const query = $('#nodes-search').value.trim().toLocaleLowerCase();
+    const visible = nodes.filter((node) => `${node.name} ${node.id}`.toLocaleLowerCase().includes(query));
+    const canPing = desktopLive?.ping_available === true && signedIn();
+    const signature = JSON.stringify([visible, locked, canPing, pingBusy, [...pingResults], locale.language]);
+    if (signature !== nodesListSignature) {
+      nodesListSignature = signature;
+      const focused = document.activeElement?.dataset;
+      let restoreFocus = null;
+      const fragment = document.createDocumentFragment();
+      for (const node of visible) {
+        const row = document.createElement('li'); row.className = `node-row${node.configured ? ' selected' : ''}`;
+        const { latency, ping } = nodePingControls(node, locked, 'nodes');
+        const choice = nodeChoiceButton(node, node.configured, locked, 'nodes');
+        choice.addEventListener('click', () => openExitPicker(node.id, choice));
+        if (focused?.nodeSelect === node.id && !choice.disabled) restoreFocus = choice;
+        if (focused?.pingSurface === 'nodes' && focused.nodePing === node.id && !ping.disabled) restoreFocus = ping;
+        row.append(choice, latency, ping); fragment.append(row);
+      }
+      $('#nodes-list').replaceChildren(fragment);
+      if (restoreFocus) restoreFocus.focus();
+    }
+    setStatusText('#nodes-count', t('可用出口数量', { count: nodes.filter((node) => node.online).length }));
+    setStatusText('#nodes-hint', desktopLive?.preview ? t('界面预览：节点与延迟均为模拟数据。') : connectionLost ? t('请确认 TailSplit 仍在运行。') : !signedIn() ? t('登录 Tailscale 后可测试延迟。') : !canPing ? t('当前无法 Ping，请等待设备就绪或更新网络服务。') : t('Ping 测量到节点的往返延迟，不代表下载速度。'));
+    renderExitEmpty('nodes', visible, query);
+    $('#nodes-go-connection').hidden = signedIn() || Boolean(query);
+  }
+  async function pingNode(id) {
+    const node = exitNodes().find((node) => node.id === id);
+    if (pingBusy || !node?.online || !signedIn() || !desktopLive?.ping_available || desktopBusy || quickBusy || isLocked() || connectionLost) return;
+    const generation = pingGeneration;
+    pingBusy = id; pingResults.delete(id); renderConnectionCenter();
+    setStatusText('#ping-announcement', t('正在 Ping {name}', { name: node.name }));
+    try {
+      const result = await api('exit-ping', { id });
+      if (generation !== pingGeneration || !exitNodes().some((node) => node.id === id && node.online)) return;
+      if (result.id !== id || !Number.isFinite(result.latency_ms) || result.latency_ms < 0 || typeof result.direct !== 'boolean') throw new Error(t('未收到有效的 Ping 结果，请重试。'));
+      pingResults.set(id, result);
+      setStatusText('#ping-announcement', t('{name}：{latency}', { name: node.name, latency: pingLabel(result) }));
+    } catch (error) {
+      if (generation !== pingGeneration) return;
+      pingResults.set(id, { error });
+      setStatusText('#ping-announcement', `${t('{name}：测试失败，可重新 Ping。', { name: node.name })} ${message(error)}`);
+    } finally { pingBusy = ''; renderConnectionCenter(); }
+  }
+  function openExitPicker(id, opener = $('#choose-exit')) {
+    if (isLocked() || desktopBusy || quickBusy || connectionLost || !state.loaded) return;
+    pickerOriginalExit = selectedExit; pickerCommitted = false; pickerOpener = opener; pickerValidationError = '';
+    if (id) {
+      const node = exitNodes().find((node) => node.id === id && node.online);
+      if (!node) return;
+      selectedExit = node.configured ? null : node.id;
+    }
+    $('#exit-search').value = ''; $('#exit-node').value = ''; $('#manual-exit').open = false;
+    exitDialog.showModal(); renderConnectionCenter(); $('#exit-search').focus();
+  }
+  $('#choose-exit').addEventListener('click', () => openExitPicker());
+  for (const id of ['close-exit-picker', 'cancel-exit-picker']) $(`#${id}`).addEventListener('click', () => { if (!quickBusy) exitDialog.close(); });
+  exitDialog.addEventListener('cancel', (event) => { if (quickBusy) event.preventDefault(); });
+  exitDialog.addEventListener('close', () => {
+    if (!pickerCommitted) selectedExit = pickerOriginalExit;
+    renderConnectionCenter();
+    if (!['connection', 'nodes'].includes(state.page)) return;
+    if (pickerOpener?.isConnected && !pickerOpener.disabled) pickerOpener.focus();
+    else $(state.page === 'nodes' ? '#nodes-search' : '#choose-exit').focus();
+  });
+  $('#nodes-go-connection').addEventListener('click', () => showPage('connection'));
+  $('#picker-go-connection').addEventListener('click', () => { exitDialog.close(); showPage('connection'); });
+  $('#picker-view-settings').addEventListener('click', () => { exitDialog.close(); showPage('settings'); });
+  $('#nodes-search').addEventListener('input', () => renderConnectionCenter());
   $('#exit-search').addEventListener('input', () => renderConnectionCenter());
   $('#exit-node').addEventListener('input', () => renderConnectionCenter());
   $('#select-manual-exit').addEventListener('click', () => {
     const value = $('#exit-node').value.trim();
     if (!value || isLocked() || quickBusy) return;
     const node = exitNodes().find((node) => node.id === value || node.name === value);
-    if (node && !node.online) { notice(t('出口不可用'), t('请选择在线出口，或刷新列表后重试。')); return; }
+    if (node && !node.online) { pickerValidationError = '请选择在线出口，或刷新列表后重试。'; renderConnectionCenter(); return; }
+    pickerValidationError = '';
     selectedExit = node?.configured || value === savedExit() ? null : node?.id || value;
     renderConnectionCenter();
   });
@@ -620,24 +769,31 @@
     renderConnectionCenter();
   });
   $('#cancel-connection-change').addEventListener('click', () => { selectedExit = selectedMode = null; renderConnectionCenter(); });
-  $('#apply-connection-change').addEventListener('click', async () => {
-    if (quickBusy || desktopBusy || isLocked() || state.dirty || state.external || connectionLost) return;
+  async function applyConnectionChanges() {
+    if (quickBusy || desktopBusy || isLocked() || state.dirty || state.external || connectionLost || $('#apply-connection-change').disabled) return;
     const changes = connectionChanges();
     if (!Object.keys(changes).length) return;
     operationError = null; clearNotice();
     stateRequest++;
     quickBusy = true; state.busy = true; updateActions();
+    let applied = false;
     try {
       const doc = await api('config', { yaml: state.saved, changes, revision: state.revision });
       selectedExit = selectedMode = null;
       useDocument(doc);
+      applied = true;
       toast(t('连接选项已保存'));
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
       operationError = { title: error.code === 'conflict' ? '配置文件已更新' : '无法应用连接更改', detail: error, canReload: error.code === 'conflict' };
       clearNotice();
-    } finally { quickBusy = false; state.busy = false; await refreshState(); updateActions(); }
-  });
+    } finally {
+      quickBusy = false; state.busy = false; await refreshState(); updateActions();
+      if (applied && exitDialog.open) { pickerCommitted = true; exitDialog.close(); }
+    }
+  }
+  $('#apply-connection-change').addEventListener('click', applyConnectionChanges);
+  $('#apply-exit-picker').addEventListener('click', applyConnectionChanges);
   async function desktopAction(action, confirmed = false) {
     if (desktopBusy || quickBusy || connectionLost || !desktopLive?.desktop) return;
     if (action === 'switch-network') {
@@ -656,6 +812,8 @@
       await api('action', { action });
       if (action === 'logout' || action === 'switch-network') {
         selectedExit = selectedMode = null;
+        clearPingResults();
+        $('#nodes-search').value = '';
         $('#exit-node').value = ''; $('#exit-search').value = '';
         $('#account-menu').open = false;
       }

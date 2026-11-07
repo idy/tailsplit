@@ -30,17 +30,18 @@ type Options struct {
 }
 
 type Snapshot struct {
-	State        string
-	LoginURL     string
-	ExitNode     string
-	NetworkName  string
-	Mode         string
-	RoutingMode  string
-	BackendState string
-	Error        string
-	Hostname     string
-	ExitNodes    []tailsplit.ExitNode
-	Active       bool
+	State         string
+	LoginURL      string
+	ExitNode      string
+	NetworkName   string
+	Mode          string
+	RoutingMode   string
+	BackendState  string
+	Error         string
+	Hostname      string
+	ExitNodes     []tailsplit.ExitNode
+	Active        bool
+	PingAvailable bool
 }
 
 // Controller owns only its bundled helper process, never a system sing-box or
@@ -59,6 +60,8 @@ type Controller struct {
 	close      sync.Once
 	closeErr   error
 	stopWait   time.Duration
+	pingCancel context.CancelFunc
+	pingDone   chan struct{}
 }
 
 func New(options Options) (*Controller, error) {
@@ -78,6 +81,7 @@ func (c *Controller) Snapshot() Snapshot {
 	snapshot := c.snapshot
 	snapshot.ExitNodes = append([]tailsplit.ExitNode(nil), snapshot.ExitNodes...)
 	snapshot.Active = c.command != nil || c.loggingOut
+	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
 }
 
@@ -147,6 +151,9 @@ func (c *Controller) start(mode string) error {
 	}
 	if c.command != nil {
 		return errors.New("proxy is already running")
+	}
+	if c.pingCancel != nil {
+		return tailsplit.ErrPingBusy
 	}
 	if c.loggingOut {
 		return errors.New("embedded Tailscale logout is in progress")
@@ -236,6 +243,7 @@ func (c *Controller) start(mode string) error {
 			} else {
 				c.snapshot.State, c.snapshot.Mode, c.snapshot.LoginURL = "stopped", "", ""
 			}
+			c.stopping = false
 		}
 		close(done)
 		c.mu.Unlock()
@@ -245,12 +253,20 @@ func (c *Controller) start(mode string) error {
 
 func (c *Controller) Stop() error {
 	c.mu.Lock()
+	c.stopping = true
+	if c.pingCancel != nil {
+		c.pingCancel()
+		done := c.pingDone
+		c.mu.Unlock()
+		<-done
+		c.mu.Lock()
+	}
 	command, done, input := c.command, c.done, c.input
 	if command == nil {
+		c.stopping = false
 		c.mu.Unlock()
 		return nil
 	}
-	c.stopping = true
 	c.snapshot.State = "stopping"
 	c.mu.Unlock()
 	if err := requestProcessStop(command, input); err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -345,19 +361,20 @@ func (c *Controller) Close() error {
 
 func (c *Controller) onEvent(data []byte) {
 	var event struct {
-		Event        string               `json:"event"`
-		BackendState string               `json:"backend_state"`
-		AuthURL      string               `json:"auth_url"`
-		ExitNode     string               `json:"exit_node"`
-		ExitOnline   bool                 `json:"exit_online"`
-		ExitVisible  bool                 `json:"exit_visible"`
-		NetworkName  string               `json:"network_name"`
-		Mode         string               `json:"mode"`
-		RoutingMode  string               `json:"routing_mode"`
-		Message      string               `json:"message"`
-		Phase        string               `json:"phase"`
-		Hostname     string               `json:"hostname"`
-		ExitNodes    []tailsplit.ExitNode `json:"exit_nodes"`
+		Event         string               `json:"event"`
+		BackendState  string               `json:"backend_state"`
+		AuthURL       string               `json:"auth_url"`
+		ExitNode      string               `json:"exit_node"`
+		ExitOnline    bool                 `json:"exit_online"`
+		ExitVisible   bool                 `json:"exit_visible"`
+		NetworkName   string               `json:"network_name"`
+		Mode          string               `json:"mode"`
+		RoutingMode   string               `json:"routing_mode"`
+		Message       string               `json:"message"`
+		Phase         string               `json:"phase"`
+		Hostname      string               `json:"hostname"`
+		ExitNodes     []tailsplit.ExitNode `json:"exit_nodes"`
+		PingAvailable bool                 `json:"ping_available"`
 	}
 	if json.Unmarshal(data, &event) != nil {
 		return
@@ -422,6 +439,7 @@ func (c *Controller) onEvent(data []byte) {
 	c.snapshot.Hostname = event.Hostname
 	c.snapshot.ExitNodes = event.ExitNodes
 	c.snapshot.BackendState = event.BackendState
+	c.snapshot.PingAvailable = event.PingAvailable
 	c.snapshot.NetworkName = event.NetworkName
 	switch {
 	case c.snapshot.Mode == "discovery":

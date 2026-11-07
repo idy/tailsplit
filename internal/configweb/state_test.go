@@ -55,7 +55,7 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 				"backend_state": "Running", "hostname": "preview-laptop",
 				"exit": "preview-exit", "network": "preview-tailnet.example",
 				"error": "", "revision": revision, "preview": false,
-				"desktop": false, "startup": false, "logs_available": logsAvailable,
+				"desktop": false, "startup": false, "logs_available": logsAvailable, "ping_available": false,
 				"exit_nodes": []any{map[string]any{
 					"id": "100.64.0.10", "name": "preview-exit", "online": true, "selected": true,
 				}},

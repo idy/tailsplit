@@ -25,6 +25,10 @@ type Server struct {
 	Login    Runner
 	Logout   Runner
 	Discover Runner
+	Ping     func(context.Context, tailsplit.Config, string) (tailsplit.ExitPingResult, error)
+	pingMu   sync.Mutex
+	pingGate sync.Mutex
+	pingLive func(context.Context, string) (tailsplit.ExitPingResult, error)
 	active   sync.Mutex
 	requests sync.WaitGroup
 }
@@ -90,7 +94,12 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 	_ = connection.SetReadDeadline(time.Time{})
 	if request.Op == "hello" {
 		_ = stream.send(Info{Event: "service", Protocol: Protocol, Version: Version,
-			BuildID: s.BuildID, Initialized: runtimeInitialized(runtimeUserDirectory(s.Base, s.userKey()))})
+			BuildID: s.BuildID, Initialized: runtimeInitialized(runtimeUserDirectory(s.Base, s.userKey())),
+			PingAvailable: s.Ping != nil})
+		return
+	}
+	if request.Op == "ping" {
+		s.handlePing(ctx, connection, reader, request, stream)
 		return
 	}
 	if request.Op != "start" && request.Op != "login" && request.Op != "logout" && request.Op != "discover" || request.Config == nil {
@@ -145,7 +154,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 			return
 		}
 	}
-	if err := run(ctx, config, stream); err != nil && ctx.Err() == nil {
+	if err := run(s.pingContext(ctx), config, stream); err != nil && ctx.Err() == nil {
 		fail(err.Error())
 	} else {
 		_ = stream.send(map[string]string{"event": "stopped", "mode": "tun"})
@@ -174,6 +183,7 @@ func RunInstalled(ctx context.Context, uid int, run, login, logout, discover Run
 		return err
 	}
 	defer listener.Close()
-	server := &Server{UID: uid, Base: SupportPath, BuildID: buildID, Run: run, Login: login, Logout: logout, Discover: discover}
+	server := &Server{UID: uid, Base: SupportPath, BuildID: buildID, Run: run, Login: login, Logout: logout, Discover: discover,
+		Ping: tailsplit.PingSavedExitNode}
 	return server.Serve(ctx, listener)
 }

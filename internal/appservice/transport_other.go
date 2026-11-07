@@ -10,6 +10,6 @@ import (
 	"github.com/idy/tailsplit"
 )
 
-func openWindowsSession(context.Context, string, string, tailsplit.Config) (net.Conn, error) {
+func openWindowsSession(context.Context, string, string, tailsplit.Config, string) (net.Conn, error) {
 	return nil, errors.New("Windows network sessions require Windows")
 }

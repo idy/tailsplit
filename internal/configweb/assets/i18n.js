@@ -54,6 +54,32 @@
     'HTTP 与 SOCKS 共用此入口。': 'HTTP and SOCKS share this listener.',
     '仅支持本机回环地址。': 'Only local loopback addresses are supported.',
     '出口节点': 'Exit node',
+    '出口节点列表': 'Exit nodes',
+    '选择出口节点': 'Choose an exit node',
+    '搜索出口节点列表': 'Search exit nodes',
+    '选择…': 'Choose…',
+    '选择 {name}': 'Choose {name}',
+    '前往连接页面': 'Go to Connection',
+    '未发现': 'Not found',
+    '离线': 'Offline',
+    '搜索节点名称': 'Search node names',
+    '尚未测试': 'Not tested',
+    '节点不可用': 'Unavailable',
+    '正在测试…': 'Testing…',
+    '测试失败': 'Ping failed',
+    '已选择': 'Selected',
+    'Ping {name}': 'Ping {name}',
+    '正在 Ping {name}': 'Pinging {name}',
+    '{name}：{latency}': '{name}: {latency}',
+    '{name}：测试失败，可重新 Ping。': '{name}: ping failed. You can retry.',
+    '中继': 'Relay',
+    '中继 · {name}': 'Relay · {name}',
+    '使用 Tailscale Ping 测试延迟': 'Test latency with Tailscale Ping',
+    'Ping 测量到节点的往返延迟，不代表下载速度。': 'Tailscale Ping measures round-trip latency, not download speed.',
+    '登录 Tailscale 后可测试延迟。': 'Sign in to Tailscale to test latency.',
+    '当前无法 Ping，请等待设备就绪或更新网络服务。': 'Ping is unavailable. Wait for the device to be ready or update the network service.',
+    '界面预览：节点与延迟均为模拟数据。': 'UI preview: nodes and latency results are simulated.',
+    '未收到有效的 Ping 结果，请重试。': 'No valid ping result was received. Try again.',
     '选择已获准使用的设备。': 'Choose a device you are authorized to use.',
     '节点名称或 Tailscale IP': 'Node name or Tailscale IP',
     '可填节点名称或 IP；登录状态保持不变。': 'Enter a node name or IP. Your device stays signed in.',
@@ -305,7 +331,7 @@
     '此页面无法读取日志，请从桌面应用打开。': 'Logs are unavailable here. Open this page from the desktop app.',
     '行数': { one: '{count} line', other: '{count} lines' },
   };
-  const zh = { '行数': '{count} 行', '可用出口数量': '{count} 个在线出口', '连接页面': '连接' };
+  const zh = { '行数': '{count} 行', '可用出口数量': '{count} 个在线出口', '连接页面': '连接', '出口节点列表': '出口节点' };
   const reverse = new Map(Object.entries(en).filter(([, value]) => typeof value === 'string').map(([key, value]) => [value, key]));
   const preferred = (navigator.languages || [navigator.language || 'en'])[0] || 'en';
   let language = /^zh(?:[-_]|$)/i.test(preferred) ? 'zh' : 'en';

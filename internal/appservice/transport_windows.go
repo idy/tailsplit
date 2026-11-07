@@ -290,7 +290,7 @@ func windowsProbe(ctx context.Context) (Info, error) {
 	return info, nil
 }
 
-func openWindowsSession(ctx context.Context, executable, operation string, config tailsplit.Config) (net.Conn, error) {
+func openWindowsSession(ctx context.Context, executable, operation string, config tailsplit.Config, target string) (net.Conn, error) {
 	installed, err := windowsCorePath()
 	if err != nil || !strings.EqualFold(filepath.Clean(executable), installed) {
 		return nil, errors.New("open the installed TailSplit desktop app")
@@ -308,11 +308,19 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 	if info.BuildID != expected {
 		return nil, errors.New("the desktop app and network service builds differ; complete the TailSplit upgrade")
 	}
-	// Hold the legacy CLI lock for the entire service session, including after
-	// migration. Closing/crashing the broker releases it only after pipe teardown.
-	unlock, err := tailsplit.LockSavedState(config.StateDir)
-	if err != nil {
-		return nil, err
+	if operation == "ping" && !info.PingAvailable {
+		return nil, tailsplit.ErrPingUnavailable
+	}
+	// The active broker already holds the legacy CLI lease. After migration a
+	// ping only uses service-owned state, serialized inside the service, so it
+	// must not compete with that broker for the legacy lease. First migration
+	// still requires the lock before reading any device state.
+	unlock := func() error { return nil }
+	if operation != "ping" || !info.Initialized {
+		unlock, err = tailsplit.LockSavedState(config.StateDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 	keep := false
 	defer func() {
@@ -335,7 +343,7 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 		return nil, err
 	}
 	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Config: &config, Files: files}); err != nil {
+	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, Config: &config, Files: files}); err != nil {
 		connection.Close()
 		return nil, err
 	}
