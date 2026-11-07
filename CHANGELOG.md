@@ -17,8 +17,9 @@
   offline without duplicating current upstream coverage.
 - Keep service-side rule loading restricted to transferred contents, and retain
   offline Debian and Windows smoke tests.
-- Isolate caches by subscription URL so validating an unsaved draft cannot
-  replace the saved subscription's rules.
+- Isolate all caches by subscription URL and migrate legacy shared caches only
+  for their saved configuration, retaining offline upgrades. Unsaved drafts
+  cannot adopt another source's cache or replace its rules.
 
 ## 0.7.11
 

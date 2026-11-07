@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/privatefs"
 )
 
 func TestDraftSubscriptionValidationDoesNotReplaceSavedRules(t *testing.T) {
@@ -42,6 +43,15 @@ func TestDraftSubscriptionValidationDoesNotReplaceSavedRules(t *testing.T) {
 	if err := os.WriteFile(path, []byte(saved), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	state := filepath.Join(filepath.Dir(path), "state")
+	if err := privatefs.EnsureDir(state); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(state, "gfwlist.txt")
+	legacyData := "[AutoProxy 0.2.9]\n||saved.fixture.example\n"
+	if err := os.WriteFile(legacy, []byte(legacyData), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	draft := strings.Replace(saved, upstream.URL+"/a", upstream.URL+"/b", 1)
 	status, body := request(t, server, "POST", "/api/validate", map[string]string{"yaml": draft}, nil)
 	if status != http.StatusOK || applied.Load() != 0 || requestsB.Load() != 1 || requestsA.Load() != 0 {
@@ -59,14 +69,22 @@ func TestDraftSubscriptionValidationDoesNotReplaceSavedRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(tailsplit.RulesCachePath(config)); !os.IsNotExist(err) {
-		t.Fatal("draft validation populated the saved subscription's cache:", err)
+	migrated, err := os.ReadFile(tailsplit.RulesCachePath(config))
+	if err != nil || string(migrated) != legacyData {
+		t.Fatal("saved legacy subscription did not retain its own cache bytes:", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatal("legacy shared cache remained available for another source:", err)
+	}
+	status, body = request(t, server, "POST", "/api/validate", map[string]string{"yaml": saved}, nil)
+	if status != http.StatusOK || applied.Load() != 0 {
+		t.Fatalf("migrated saved source could not validate offline: status=%d, body=%s", status, body)
 	}
 	compiled, err := tailsplit.Compile(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requestsA.Load() != 1 || requestsB.Load() != 1 ||
+	if requestsA.Load() != 0 || requestsB.Load() != 1 ||
 		!strings.Contains(string(compiled.JSON), `"saved.fixture.example"`) ||
 		strings.Contains(string(compiled.JSON), `"draft.fixture.example"`) {
 		t.Fatal("saved subscription reused an unsaved draft's routing policy")
@@ -79,7 +97,7 @@ func TestConfiguredTailnetCanBeValidatedWithoutStartingIt(t *testing.T) {
 	if err := os.Mkdir(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state, "gfwlist.txt"), []byte("[AutoProxy 0.2.9]\n||fixture.example\n"), 0o600); err != nil {
+	if err := os.WriteFile(tailsplit.RulesCachePath(tailsplit.Config{StateDir: state, Rules: tailsplit.RulesConfig{GFWList: "builtin"}}), []byte("[AutoProxy 0.2.9]\n||fixture.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config := "version: 1\nstate_dir: ./preview-state\ntailscale:\n  exit_node: 100.64.0.10\ndns:\n  direct_ipv6: false\nrules:\n  gfwlist: builtin\ntun:\n  enabled: true\n"

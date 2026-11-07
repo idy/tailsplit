@@ -270,10 +270,10 @@ remove that field from older YAML files.
 Edit routing and DNS rules in the YAML. The default GFWList source is the
 [official subscription](https://github.com/gfwlist/gfwlist/blob/master/gfwlist.txt),
 downloaded from its raw HTTPS URL. TailSplit downloads and validates it when the
-cache is missing, then atomically stores the original bytes in
-`<state_dir>/gfwlist.txt`. Custom HTTPS subscriptions use separate caches keyed
-by their URLs, so validating an unsaved source cannot replace another source's
-policy. Later checks and connections reuse the matching disk cache,
+cache is missing, then atomically stores the original bytes in a source-specific
+file under `<state_dir>`. Existing `gfwlist.txt` caches are migrated only for the
+saved subscription that owns them. Subscription URLs are hashed into cache
+filenames, so validating an unsaved source cannot replace another source's policy. Later checks and connections reuse the matching disk cache,
 including offline. Compatibility coverage is added only when the selected list
 lacks previously supported application domains; older local and custom lists
 retain that coverage without a forced refresh.

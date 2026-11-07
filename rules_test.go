@@ -125,6 +125,105 @@ func TestRuleCacheDownloadsOnceAndWorksOffline(t *testing.T) {
 	}
 }
 
+func TestLegacyRulesCacheMigratesForSavedSourceOffline(t *testing.T) {
+	for _, test := range []struct{ name, source string }{
+		{"builtin", "builtin"},
+		{"official", domainrules.DefaultRulesURL},
+		{"custom", "https://rules.example/legacy?token=fake-secret"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			state := filepath.Join(directory, "state")
+			if err := privateState(state); err != nil {
+				t.Fatal(err)
+			}
+			legacy := filepath.Join(state, "gfwlist.txt")
+			data := []byte(base64.StdEncoding.EncodeToString([]byte("[AutoProxy 0.2.9]\n||saved.fixture.example\n")))
+			if err := os.WriteFile(legacy, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(directory, "config.yaml")
+			text := "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: " + test.source + "\n"
+			if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			transport := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = transport })
+			http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+				t.Error("a saved legacy cache required network access")
+				return nil, errors.New("offline")
+			})
+			config, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cache := RulesCachePath(config)
+			after, err := os.ReadFile(cache)
+			if err != nil || string(after) != string(data) {
+				t.Fatal("legacy cache bytes were not preserved in the source-bound cache:", err)
+			}
+			if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+				t.Fatal("unbound legacy cache could be claimed by a later source:", err)
+			}
+			if strings.Contains(filepath.Base(cache), "fake-secret") {
+				t.Fatal("cache filename exposes subscription credentials")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			compiled, err := CompileContext(ctx, config)
+			if err != nil || !strings.Contains(string(compiled.JSON), `"saved.fixture.example"`) {
+				t.Fatal("migrated cache could not be used offline:", err)
+			}
+		})
+	}
+}
+
+func TestDraftCannotClaimSavedLegacyCache(t *testing.T) {
+	for _, test := range []struct{ name, saved, draft string }{
+		{"custom to official", "https://rules.example/a", domainrules.DefaultRulesURL},
+		{"official to custom", "builtin", "https://rules.example/b"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			saved, err := loadTestConfig(t, "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: "+test.saved+"\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := privateState(saved.StateDir); err != nil {
+				t.Fatal(err)
+			}
+			legacy := filepath.Join(saved.StateDir, "gfwlist.txt")
+			data := "[AutoProxy 0.2.9]\n||saved.fixture.example\n"
+			if err := os.WriteFile(legacy, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var requests atomic.Int32
+			transport := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = transport })
+			http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+				requests.Add(1)
+				if request.URL.String() != rulesSubscriptionSource(test.draft) {
+					t.Error("the saved source unexpectedly required a download")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("[AutoProxy 0.2.9]\n||draft.fixture.example\n")), Header: make(http.Header)}, nil
+			})
+			draft := saved
+			draft.Rules.GFWList = test.draft
+			compiled, err := Compile(draft)
+			if err != nil || requests.Load() != 1 || !strings.Contains(string(compiled.JSON), `"draft.fixture.example"`) {
+				t.Fatal("draft adopted a legacy cache instead of its own source:", err)
+			}
+			beforeMigration, err := os.ReadFile(legacy)
+			if err != nil || string(beforeMigration) != data {
+				t.Fatal("draft changed the saved source's legacy cache:", err)
+			}
+			compiled, err = Compile(saved)
+			if err != nil || requests.Load() != 1 || !strings.Contains(string(compiled.JSON), `"saved.fixture.example"`) || strings.Contains(string(compiled.JSON), `"draft.fixture.example"`) {
+				t.Fatal("saved source could not migrate and retain its own policy offline:", err)
+			}
+		})
+	}
+}
+
 func TestOlderRuleSourcesKeepApplicationCoverageOffline(t *testing.T) {
 	legacy := "[AutoProxy 0.2.9]\n! Last Modified: Mon, 21 Sep 2026 12:27:46 +0000\n||fixture.example\n||openai.com\n||chatgpt.com\n||anthropic.com\n||claude.ai\n||claude.com\n@@||safe.claude.app\n"
 	for _, source := range []string{"builtin", domainrules.DefaultRulesURL, "https://rules.example/subscription", "./older-rules.txt"} {
