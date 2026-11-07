@@ -26,6 +26,9 @@ type Config struct {
 	DNS       DNSConfig        `yaml:"dns"`
 	Rules     RulesConfig      `yaml:"rules"`
 	TUN       TUNConfig        `yaml:"tun"`
+
+	rulesCacheSource   string
+	rulesCacheStateDir string
 }
 
 type AppConfig struct {
@@ -88,7 +91,24 @@ func Normalize(config Config, base string) (Config, error) {
 	return config, err
 }
 
+// WithRulesCacheOrigin keeps a draft's legacy-cache ownership tied to the saved
+// configuration. A zero origin prevents a draft from claiming a shared cache.
+func (c Config) WithRulesCacheOrigin(origin Config) Config {
+	c.rulesCacheSource = origin.rulesCacheSource
+	c.rulesCacheStateDir = origin.rulesCacheStateDir
+	return c
+}
+
 func Load(path string) (Config, error) {
+	return loadConfig(path, true)
+}
+
+// LoadDraft validates a candidate without granting it ownership of a legacy cache.
+func LoadDraft(path string) (Config, error) {
+	return loadConfig(path, false)
+}
+
+func loadConfig(path string, saved bool) (Config, error) {
 	stream, err := os.Open(path)
 	if err != nil {
 		return Config{}, err
@@ -117,6 +137,13 @@ func Load(path string) (Config, error) {
 	}
 	if err := config.normalize(base); err != nil {
 		return Config{}, err
+	}
+	if saved {
+		config.rulesCacheSource = rulesSubscriptionSource(config.Rules.GFWList)
+		config.rulesCacheStateDir = config.StateDir
+		// Loading must not fail login or ignored-rule operations. Compilation
+		// retries and reports migration errors when the rules are needed.
+		_, _ = migrateLegacyRules(config)
 	}
 	return config, nil
 }

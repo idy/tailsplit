@@ -1,4 +1,5 @@
-package gfwlistdns
+// Package domainrules parses AutoProxy lists and projects domain routing rules.
+package domainrules
 
 import (
 	"bytes"
@@ -13,23 +14,22 @@ import (
 	"golang.org/x/net/idna"
 )
 
-// BuiltinRevision identifies the upstream snapshot shipped with this package.
-const BuiltinRevision = "3fd14db3df72cbc2ed3bbd51310927dfd45893f9"
-
 // DefaultRulesURL is the official, base64-encoded GFWList subscription.
 const DefaultRulesURL = "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
 
 const maxRulesSize = 2 << 20
 
-//go:embed data/list.txt
-var builtinRules []byte
-
-//go:embed data/supplemental.txt
+//go:embed supplemental.txt
 var supplementalRules []byte
 
-// RulesInfo describes the GFWList projection and the bundled supplement.
-// SHA256, Proxy, Direct and Skipped describe only GFWList; supplemental fields
-// describe the separately maintained application dependency rules.
+// These domains moved upstream. Preserve prior coverage only when the selected
+// list does not already cover the whole domain and its subdomains.
+var upstreamApplicationDomains = [...]string{
+	"openai.com", "chatgpt.com", "anthropic.com", "claude.ai", "claude.com",
+	"claude.app", "claudeusercontent.com", "claudemcpcontent.com",
+}
+
+// RulesInfo keeps GFWList and effective supplemental diagnostics separate.
 type RulesInfo struct {
 	SHA256             string
 	Proxy              int
@@ -74,23 +74,46 @@ func (r domainRules) match(domain string) bool {
 	return false
 }
 
+func (r domainRules) coversSuffix(domain string) bool {
+	for rest := domain; ; {
+		if r.suffix[rest] {
+			return true
+		}
+		i := strings.IndexByte(rest, '.')
+		if i < 0 {
+			break
+		}
+		rest = rest[i+1:]
+	}
+	for _, pattern := range r.wildcard {
+		if strings.HasPrefix(pattern.String(), `^(?:[^.]+\.)*`) && pattern.MatchString(domain) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *rules) match(domain string) bool {
 	return !r.direct.match(domain) && (r.proxy.match(domain) || r.supplemental.match(domain))
 }
 
-// parseActiveRules keeps downloaded/cached GFWList bytes and diagnostics intact.
-// Every install includes the supplement, but GFWList exceptions still win.
 func parseActiveRules(data []byte) (*rules, []byte, error) {
 	r, text, err := parseRules(data)
 	if err != nil {
 		return nil, nil, err
 	}
-	supplement, _, err := parseRules(supplementalRules)
+	extra := bytes.Clone(supplementalRules)
+	for _, domain := range upstreamApplicationDomains {
+		if !r.proxy.coversSuffix(domain) && !r.direct.coversSuffix(domain) {
+			extra = fmt.Appendf(extra, "\n||%s", domain)
+		}
+	}
+	supplement, _, err := parseRules(extra)
 	if err != nil {
-		return nil, nil, fmt.Errorf("gfwlistdns: bundled supplement: %w", err)
+		return nil, nil, fmt.Errorf("domainrules: bundled supplement: %w", err)
 	}
 	if supplement.info.Direct != 0 || supplement.info.Skipped != 0 {
-		return nil, nil, fmt.Errorf("gfwlistdns: bundled supplement must contain only supported proxy rules")
+		return nil, nil, fmt.Errorf("domainrules: bundled supplement must contain only supported proxy rules")
 	}
 	r.supplemental = supplement.proxy
 	r.info.SupplementalSHA256 = supplement.info.SHA256
@@ -100,19 +123,19 @@ func parseActiveRules(data []byte) (*rules, []byte, error) {
 
 func parseRules(data []byte) (*rules, []byte, error) {
 	if len(data) > maxRulesSize {
-		return nil, nil, fmt.Errorf("gfwlistdns: rules exceed %d bytes", maxRulesSize)
+		return nil, nil, fmt.Errorf("domainrules: rules exceed %d bytes", maxRulesSize)
 	}
 	data = bytes.TrimSpace(data)
 	if !bytes.HasPrefix(data, []byte("[AutoProxy ")) {
 		decoded, err := base64.StdEncoding.DecodeString(string(bytes.Join(bytes.Fields(data), nil)))
 		if err != nil {
-			return nil, nil, fmt.Errorf("gfwlistdns: decode GFWList: %w", err)
+			return nil, nil, fmt.Errorf("domainrules: decode GFWList: %w", err)
 		}
 		data = bytes.TrimSpace(decoded)
 	}
 	lines := strings.Split(string(data), "\n")
 	if len(lines) == 0 || !strings.HasPrefix(strings.TrimSpace(lines[0]), "[AutoProxy ") || !strings.HasSuffix(strings.TrimSpace(lines[0]), "]") {
-		return nil, nil, fmt.Errorf("gfwlistdns: missing AutoProxy header")
+		return nil, nil, fmt.Errorf("domainrules: missing AutoProxy header")
 	}
 	r := &rules{
 		proxy:  domainRules{exact: map[string]bool{}, suffix: map[string]bool{}},
@@ -151,7 +174,7 @@ func parseRules(data []byte) (*rules, []byte, error) {
 		}
 	}
 	if r.info.Proxy == 0 {
-		return nil, nil, fmt.Errorf("gfwlistdns: no usable proxy domains in GFWList")
+		return nil, nil, fmt.Errorf("domainrules: no usable proxy domains in GFWList")
 	}
 	r.info.SHA256 = fmt.Sprintf("%x", sha256.Sum256(data))
 	return r, bytes.Clone(data), nil

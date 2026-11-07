@@ -299,7 +299,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.describe(data))
 }
 
-func (s *Server) validateRuntime(data []byte) error {
+func (s *Server) validateRuntime(ctx context.Context, data []byte) error {
 	config, err := tray.ValidateConfigDocument(s.options.ConfigPath, data)
 	if err != nil {
 		return err
@@ -311,7 +311,7 @@ func (s *Server) validateRuntime(data []byte) error {
 	if config.Tailscale != nil && config.Tailscale.ExitNode == "" {
 		return nil
 	}
-	compiled, err := tailsplit.Compile(config)
+	compiled, err := tailsplit.CompileContext(ctx, config)
 	if err != nil {
 		return err
 	}
@@ -325,7 +325,7 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := applyChanges(edit)
 	if err == nil {
-		err = s.validateRuntime(data)
+		err = s.validateRuntime(r.Context(), data)
 	}
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "validation", err.Error())
@@ -341,7 +341,7 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := applyChanges(edit)
 	if err == nil {
-		err = s.validateRuntime(data)
+		err = s.validateRuntime(r.Context(), data)
 	}
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "validation", err.Error())

@@ -140,10 +140,12 @@ func configCandidate(path string, data []byte) (string, tailsplit.Config, error)
 	if err := errors.Join(tmp.Sync(), tmp.Close()); err != nil {
 		return "", tailsplit.Config{}, err
 	}
-	config, err := tailsplit.Load(tmp.Name())
+	config, err := tailsplit.LoadDraft(tmp.Name())
 	if err != nil {
 		return "", tailsplit.Config{}, err
 	}
+	origin, _ := tailsplit.Load(path)
+	config = config.WithRulesCacheOrigin(origin)
 	keep = true
 	return tmp.Name(), config, nil
 }

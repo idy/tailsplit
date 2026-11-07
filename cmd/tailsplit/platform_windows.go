@@ -55,7 +55,7 @@ func platformInstalledService(args []string) (bool, error) {
 	}
 	return true, appservice.RunWindowsInstalled(
 		func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-			compiled, err := tailsplit.Compile(config)
+			compiled, err := tailsplit.CompileContext(ctx, config)
 			if err != nil {
 				return err
 			}

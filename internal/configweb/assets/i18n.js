@@ -95,7 +95,7 @@
     '直连': 'Direct',
     '通过代理': 'Proxy',
     '代理域名规则来源。': 'Source of proxy-domain rules.',
-    'builtin 使用内置规则；也支持本地文件或 HTTPS 地址。': 'Use builtin for bundled rules, or enter a local file or HTTPS URL.',
+    'HTTPS 规则首次下载后缓存在本机；也支持本地文件，builtin 指向官方源。': 'HTTPS rules are downloaded once and cached locally. Local files are also supported; builtin selects the official source.',
     '代理域名': 'Proxy domains',
     '直连域名': 'Direct domains',
     '包含域名本身及其子域名。显式直连规则优先。': 'Rules include the domain and its subdomains. Explicit direct rules take priority.',

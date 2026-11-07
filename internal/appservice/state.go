@@ -129,6 +129,11 @@ func serviceConfig(config tailsplit.Config, directory string) (tailsplit.Config,
 	if address.Port() < 1024 {
 		return config, errors.New("app proxy port must be 1024 or above")
 	}
+	if config.Rules.GFWList != "" {
+		// The app transfers rule contents. The service never downloads a URL or
+		// falls back to a remote source when the transferred cache is missing.
+		config.Rules.GFWList = filepath.Join(directory, "gfwlist.txt")
+	}
 	return config, nil
 }
 
@@ -180,7 +185,7 @@ func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
 	}
 	local := rules != "builtin" && !strings.HasPrefix(rules, "https://")
 	if !local {
-		rules = filepath.Join(config.StateDir, "gfwlist.txt")
+		rules = tailsplit.RulesCachePath(*config)
 	}
 	files.Rules, err = readUserFile(rules, maxRules)
 	if err != nil {

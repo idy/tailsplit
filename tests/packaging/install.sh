@@ -58,12 +58,25 @@ from pathlib import Path
 metadata = json.loads(Path('/usr/share/doc/tailsplit/build.json').read_text())
 assert metadata == dict(zip(('version', 'commit', 'architecture'), sys.argv[1:]))
 notices = Path('/usr/share/doc/tailsplit/THIRD_PARTY_NOTICES.md').read_text()
-for expected in ('github.com/sagernet/sing-box', 'github.com/sagernet/tailscale', 'Go standard library', 'Embedded GFWList'):
+for expected in ('github.com/sagernet/sing-box', 'github.com/sagernet/tailscale', 'Go standard library'):
     assert expected in notices, expected
+assert '## Embedded GFWList' not in notices
 PY
 /usr/bin/tailsplit init -c "$work/generated.yaml"
 [ "$(stat -c %a "$work/generated.yaml")" = 600 ]
-/usr/bin/tailsplit check -c "$work/generated.yaml"
+python3 -I - "$work/generated.yaml" "$work/fixture-gfwlist.txt" <<'PY'
+import json
+import sys
+from pathlib import Path
+config, rules = map(Path, sys.argv[1:])
+rules.write_text('[AutoProxy 0.2.9]\n||fixture.example\n@@||safe.fixture.example\n', encoding='utf-8')
+source = '  gfwlist: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt'
+text = config.read_text(encoding='utf-8')
+assert text.count(source) == 1, 'Unexpected example GFWList source'
+config.write_text(text.replace(source, '  gfwlist: ' + json.dumps(str(rules))), encoding='utf-8')
+PY
+HTTP_PROXY=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 NO_PROXY= \
+  /usr/bin/tailsplit check -c "$work/generated.yaml"
 if /usr/bin/tailsplit init -c "$work/generated.yaml"; then
   printf 'init overwrote an existing file\n' >&2
   exit 1

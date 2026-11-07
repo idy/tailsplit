@@ -1,11 +1,11 @@
-package gfwlistdns
+package domainrules
 
 import (
 	"slices"
 	"sort"
 )
 
-// DomainProjection is a DNS-level view of AutoProxy rules. Exact, Suffix and
+// DomainProjection is a domain-level view of AutoProxy rules. Exact, Suffix and
 // Regex use whole-domain matching; they never represent URL paths or schemes.
 type DomainProjection struct {
 	Exact  []string
@@ -13,7 +13,7 @@ type DomainProjection struct {
 	Regex  []string
 }
 
-// Projection describes a GFWList without changing any running DNS server.
+// Projection contains domain rules and diagnostics from an AutoProxy list.
 // Direct exceptions must be matched before Proxy. Info reports skipped URL
 // rules; this is a domain projection, not a full AutoProxy interpreter.
 type Projection struct {
@@ -22,14 +22,8 @@ type Projection struct {
 	Info   RulesInfo
 }
 
-// BuiltinProjection returns the bundled, provenance-tracked GFWList snapshot.
-func BuiltinProjection() (Projection, error) {
-	return ProjectActiveRules(builtinRules)
-}
-
-// ProjectActiveRules includes the same bundled application supplement used by
-// the running DNS server. It keeps GFWList diagnostics separate and preserves
-// direct exception precedence, including for downloaded or local rule files.
+// ProjectActiveRules includes the supplement while preserving direct exceptions
+// and keeping its diagnostics separate from the supplied list.
 func ProjectActiveRules(data []byte) (Projection, error) {
 	parsed, _, err := parseActiveRules(data)
 	if err != nil {
@@ -48,9 +42,8 @@ func ProjectActiveRules(data []byte) (Projection, error) {
 	return Projection{Proxy: proxy, Direct: projectDomains(parsed.direct), Info: parsed.info}, nil
 }
 
-// ProjectRules exposes the same conservative, exception-aware parser used by
-// the DNS server so embedded routing engines can share its semantics. It does
-// not add the separately maintained application supplement.
+// ProjectRules conservatively projects the supplied AutoProxy list into domain
+// rules, preserving direct exceptions.
 func ProjectRules(data []byte) (Projection, error) {
 	parsed, _, err := parseRules(data)
 	if err != nil {

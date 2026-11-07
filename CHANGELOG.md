@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.12
+
+- Download the official GFWList subscription when its disk cache is missing,
+  validate it and atomically save it under the state directory. Reuse the cache
+  for later checks and connections; failed refreshes retain the last good copy.
+- Remove the upstream snapshot from the repository and application packages.
+  Keep legacy `gfwlist: builtin` configurations compatible with the official
+  download source. Login, logout, exit discovery and global mode do not require
+  a GFWList download.
+- Rename the parser package to `domainrules`, keep supplemental application
+  rules in one flat file and remove eight entries already covered by upstream.
+  Preserve direct exceptions and keep supplemental rules out of the disk cache.
+- Add compatibility coverage only when the selected list lacks previously
+  supported application domains, preserving older local and custom sources
+  offline without duplicating current upstream coverage.
+- Keep service-side rule loading restricted to transferred contents, and retain
+  offline Debian and Windows smoke tests.
+- Isolate all caches by subscription URL and migrate legacy shared caches only
+  for their saved configuration, retaining offline upgrades. Unsaved drafts
+  cannot adopt another source's cache or replace its rules.
+
 ## 0.7.11
 
 - Put Connection and Logs at the top of the desktop sidebar and pin Settings at

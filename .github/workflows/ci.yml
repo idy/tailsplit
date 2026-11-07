@@ -41,7 +41,7 @@ jobs:
         run: |
           test -z "$(gofmt -l .)"
           sh -n install.sh
-      - name: Race tests, vet and offline configuration check
+      - name: Race tests, vet and configuration check
         run: make test check
       - name: Installer execution tests
         run: python3 -B -m unittest discover -s tests/installer
@@ -88,9 +88,9 @@ jobs:
       - name: Native CLI, state ACL and process-lock tests
         shell: pwsh
         run: |
-          go test -mod=readonly -tags with_gvisor -timeout 5m . ./cmd/tailsplit ./internal/privatefs ./internal/gfwlistdns
+          go test -mod=readonly -tags with_gvisor -timeout 5m . ./cmd/tailsplit ./internal/privatefs ./internal/domainrules
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet -mod=readonly -tags with_gvisor . ./cmd/tailsplit ./internal/privatefs ./internal/gfwlistdns
+          go vet -mod=readonly -tags with_gvisor . ./cmd/tailsplit ./internal/privatefs ./internal/domainrules
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B -m unittest discover -s tests/packaging
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -70,7 +70,7 @@ jobs:
         with:
           python-version: '3.13'
           architecture: ${{ matrix.python_arch }}
-      - name: Validate source, race tests and offline configuration
+      - name: Validate source, race tests and configuration
         if: matrix.goos != 'windows'
         run: |
           test -z "$(gofmt -l .)"
@@ -85,9 +85,9 @@ jobs:
           GOWORK: 'off'
           PYTHONUTF8: '1'
         run: |
-          go test -mod=readonly -tags with_gvisor -timeout 5m . ./cmd/tailsplit ./internal/privatefs ./internal/gfwlistdns
+          go test -mod=readonly -tags with_gvisor -timeout 5m . ./cmd/tailsplit ./internal/privatefs ./internal/domainrules
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet -mod=readonly -tags with_gvisor . ./cmd/tailsplit ./internal/privatefs ./internal/gfwlistdns
+          go vet -mod=readonly -tags with_gvisor . ./cmd/tailsplit ./internal/privatefs ./internal/domainrules
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B -m unittest discover -s tests/packaging
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
