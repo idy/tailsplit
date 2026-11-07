@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -72,7 +71,7 @@ func TestListenerFreePreflightDoesNotOpenOrChangeFakeIPCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	config.StateDir = filepath.Join(t.TempDir(), "state")
-	if err := os.Mkdir(config.StateDir, 0o700); err != nil {
+	if err := privateState(config.StateDir); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(config.StateDir, "cache.db")
