@@ -20,6 +20,7 @@ var (
 	ErrPingTarget      = errors.New("select a discovered, authorized exit node to ping")
 	ErrPingOffline     = errors.New("this exit node is offline or its authorization has expired")
 	ErrPingFailed      = errors.New("the exit node did not answer the Tailscale ping; check its connection and retry")
+	errPingPeerMissing = errors.New("exit node has not appeared in the current network map")
 )
 
 // ExitPingResult contains no authentication material or physical endpoint IP.
@@ -142,6 +143,9 @@ func pingExitEndpoint(ctx context.Context, endpoint exitPingEndpoint, expectedTa
 		case <-ctx.Done():
 			return ExitPingResult{}, ctx.Err()
 		case <-watchDone:
+			if err := ctx.Err(); err != nil {
+				return ExitPingResult{}, err
+			}
 			return ExitPingResult{}, ErrPingUnavailable
 		case status := <-updates:
 			if status == nil {
@@ -159,6 +163,11 @@ func pingExitEndpoint(ctx context.Context, endpoint exitPingEndpoint, expectedTa
 				continue
 			}
 			ip, err = authorizedExitPingIP(status, id)
+			if errors.Is(err, errPingPeerMissing) {
+				// Running may be reported before the peer map has arrived. Wait
+				// for another status rather than rejecting a discovered exit.
+				continue
+			}
 			if err != nil {
 				return ExitPingResult{}, err
 			}
@@ -204,12 +213,17 @@ func pingExitEndpoint(ctx context.Context, endpoint exitPingEndpoint, expectedTa
 }
 
 func authorizedExitPingIP(status *adapter.TailscaleEndpointStatus, id string) (string, error) {
+	found := false
 	for _, group := range status.UserGroups {
 		if group == nil {
 			continue
 		}
 		for _, peer := range group.Peers {
-			if peer == nil || !peer.ExitNodeOption || !matchesExit(peer, id) {
+			if peer == nil || !matchesExit(peer, id) {
+				continue
+			}
+			found = true
+			if !peer.ExitNodeOption {
 				continue
 			}
 			if !peer.Online || peer.Expired {
@@ -231,7 +245,10 @@ func authorizedExitPingIP(status *adapter.TailscaleEndpointStatus, id string) (s
 			}
 		}
 	}
-	return "", ErrPingTarget
+	if found {
+		return "", ErrPingTarget
+	}
+	return "", errPingPeerMissing
 }
 
 // Scoped pings report only their bounded result/error. Core logs must neither

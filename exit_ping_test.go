@@ -13,6 +13,7 @@ import (
 
 type fakeExitPingEndpoint struct {
 	status       *adapter.TailscaleEndpointStatus
+	watch        func(context.Context, func(*adapter.TailscaleEndpointStatus)) error
 	ping         func(context.Context, string, func(*adapter.TailscalePingResult)) error
 	watchStopped chan struct{}
 }
@@ -20,6 +21,9 @@ type fakeExitPingEndpoint struct {
 func (f *fakeExitPingEndpoint) SubscribeTailscaleStatus(ctx context.Context, callback func(*adapter.TailscaleEndpointStatus)) error {
 	if f.watchStopped != nil {
 		defer close(f.watchStopped)
+	}
+	if f.watch != nil {
+		return f.watch(ctx, callback)
 	}
 	if f.status != nil {
 		callback(f.status)
@@ -78,14 +82,53 @@ func TestExitPingUsesAuthorizedNetmapIPAndStopsAfterOneReply(t *testing.T) {
 	}
 }
 
+func TestExitPingWaitsForPeerInLaterStatus(t *testing.T) {
+	endpoint := &fakeExitPingEndpoint{
+		watch: func(ctx context.Context, callback func(*adapter.TailscaleEndpointStatus)) error {
+			callback(&adapter.TailscaleEndpointStatus{BackendState: "Running", NetworkName: "fixture.ts.net"})
+			callback(pingFixtureStatus())
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		ping: func(_ context.Context, ip string, callback func(*adapter.TailscalePingResult)) error {
+			if ip != "100.64.0.10" {
+				t.Fatalf("ping used an unauthorized address: %q", ip)
+			}
+			callback(&adapter.TailscalePingResult{LatencyMs: 12, IsDirect: true})
+			return nil
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := pingExitEndpoint(ctx, endpoint, "fixture.ts.net", "n-fixture")
+	if err != nil || result.ID != "n-fixture" || result.LatencyMS != 12 {
+		t.Fatalf("ping did not wait for the authorized peer: %+v %v", result, err)
+	}
+}
+
+func TestExitPingPreservesCancellationWhenStatusWatchStops(t *testing.T) {
+	for i := 0; i < 250; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		endpoint := &fakeExitPingEndpoint{watch: func(context.Context, func(*adapter.TailscaleEndpointStatus)) error {
+			cancel()
+			return context.Canceled
+		}}
+		_, err := pingExitEndpoint(ctx, endpoint, "", "n-fixture")
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("iteration %d: cancellation was reported as %v", i, err)
+		}
+	}
+}
+
 func TestExitPingRejectsUnauthorizedOfflineAndWrongNetworkTargets(t *testing.T) {
 	for _, test := range []struct {
 		name, id string
 		change   func(*adapter.TailscaleEndpointStatus)
 		want     error
 	}{
-		{"arbitrary IP", "203.0.113.1", nil, ErrPingTarget},
-		{"untrusted host", "elsewhere.example", nil, ErrPingTarget},
+		{"arbitrary IP", "203.0.113.1", nil, context.DeadlineExceeded},
+		{"untrusted host", "elsewhere.example", nil, context.DeadlineExceeded},
 		{"empty", "", nil, ErrPingTarget},
 		{"unbounded", strings.Repeat("x", 257), nil, ErrPingTarget},
 		{"offline", "100.64.0.10", func(s *adapter.TailscaleEndpointStatus) { s.UserGroups[0].Peers[0].Online = false }, ErrPingOffline},
@@ -103,7 +146,11 @@ func TestExitPingRejectsUnauthorizedOfflineAndWrongNetworkTargets(t *testing.T) 
 				t.Fatal("invalid target reached the Tailscale ping API")
 				return nil
 			}}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			timeout := time.Second
+			if errors.Is(test.want, context.DeadlineExceeded) {
+				timeout = 20 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			if _, err := pingExitEndpoint(ctx, endpoint, "fixture.ts.net", test.id); !errors.Is(err, test.want) {
 				t.Fatalf("error=%v, want %v", err, test.want)
