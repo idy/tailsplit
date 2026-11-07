@@ -872,6 +872,69 @@ test('an exit selection requires confirmation and saves only its field while dis
   assert.equal(app.requests.filter((r) => r.path === '/api/action').length, 0);
 });
 
+test('quick-apply conflicts survive automatic document reloads and clear after a successful retry', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  const failure = { zh: '配置在其他位置更新，请重试。', en: 'Configuration changed elsewhere. Try again.' };
+  let first = true;
+  app.override = (request) => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    if (first) {
+      first = false;
+      app.config = exitDocument('100.64.0.10', 'split', 'external');
+      app.config.yaml += '# External edit\n';
+      app.snapshot.revision = 'external';
+      return response({ code: 'conflict', error: failure.en, error_i18n: failure }, false);
+    }
+    assert.equal(request.data.revision, 'external');
+    assert.match(request.data.yaml, /# External edit/);
+    app.config = { ...exitDocument('100.64.0.20', 'split', 'recovered'), yaml: request.data.yaml.replace('exit_node: 100.64.0.10', 'exit_node: 100.64.0.20') };
+    app.snapshot.revision = 'recovered';
+    app.snapshot.exit_nodes.forEach(node => { node.selected = node.id === '100.64.0.20'; });
+    return response(app.config);
+  };
+  await exitRadio(app, '100.64.0.20').emit('change');
+  await app.$('#apply-connection-change').emit('click');
+  assert.match(app.$('#raw-yaml').value, /# External edit/);
+  assert.equal(app.$('#notice').hidden, false);
+  assert.equal(app.$('#notice-title').textContent, '配置文件已更新');
+  assert.equal(app.$('#notice-detail').textContent, failure.zh);
+  assert.equal(app.$('#notice-reload').hidden, false);
+  await app.poll();
+  app.i18n.setLanguage('en');
+  assert.equal(app.$('#notice').hidden, false);
+  assert.equal(app.$('#notice-detail').textContent, failure.en);
+  assert.equal(app.$('#apply-connection-change').disabled, false);
+  await app.$('#apply-connection-change').emit('click');
+  assert.equal(app.$('#notice').hidden, true);
+  assert.equal(app.requests.filter(request => request.path === '/api/config' && request.method === 'POST').length, 2);
+});
+
+test('a reconnect failure remains visible after its saved configuration is automatically reloaded', async () => {
+  const app = await page(exitsSnapshot({ active: true, mode: 'proxy', state: 'running' }), '', {}, exitDocument());
+  const failure = 'Configuration saved, but reconnect failed';
+  app.override = (request) => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    app.config = exitDocument('100.64.0.10', 'global', 'saved-before-failure');
+    app.config.values.tun.enabled = true;
+    app.config.yaml = app.config.yaml.replace('enabled: false', 'enabled: true');
+    Object.assign(app.snapshot, { active: false, mode: '', state: 'failed', error: failure, revision: 'saved-before-failure' });
+    return response({ code: 'apply', error: failure }, false);
+  };
+  await app.$('[data-routing-mode="global"]').emit('click');
+  await app.$('#apply-connection-change').emit('click');
+  assert.match(app.$('#raw-yaml').value, /mode: global/);
+  assert.equal(app.$('#connection-apply').hidden, true);
+  assert.equal(app.$('#notice').hidden, false);
+  assert.equal(app.$('#notice-title').textContent, '无法应用连接更改');
+  assert.equal(app.$('#notice-detail').textContent, failure);
+  await app.poll();
+  assert.equal(app.$('#notice').hidden, false);
+  await app.$('[data-page="settings"]').emit('click');
+  await app.$('#reload').emit('click');
+  assert.equal(app.$('#notice').hidden, true);
+  assert.equal(app.$('#connection-state').textContent, '连接异常');
+});
+
 test('mode selection is confirmed with the exit and enables system routing only for global mode', async () => {
   const app = await page(exitsSnapshot({ active: true, mode: 'proxy', state: 'running' }), '', {}, exitDocument());
   await exitRadio(app, '100.64.0.20').emit('change');

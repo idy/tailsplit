@@ -103,8 +103,8 @@
   }
 
   let activeNotice = null;
-  // A desktop failure survives automatic reloads until a retry or explicit reload.
-  let desktopError = null;
+  // Operation failures survive automatic document reloads until a retry or explicit reload.
+  let operationError = null;
   let activeToast = '';
   function notice(title, detail, kind = 'error', canReload = false) {
     activeNotice = { title, detail };
@@ -116,8 +116,8 @@
   }
 
   function clearNotice() {
-    if (desktopError) {
-      notice(t('操作未完成'), desktopError, 'error', state.external);
+    if (operationError) {
+      notice(operationError.title, operationError.detail, 'error', operationError.canReload || state.external);
     } else if (state.external) {
       notice(t('磁盘中的配置已更新'), t('当前草稿仍保留。重新读取最新配置后再保存，避免覆盖其他更改。'), 'warning', true);
     } else {
@@ -232,7 +232,7 @@
   }
 
   async function load() {
-    desktopError = null;
+    operationError = null;
     state.loading = true; updateActions();
     try {
       useDocument(await api('config'));
@@ -624,6 +624,7 @@
     if (quickBusy || desktopBusy || isLocked() || state.dirty || state.external || connectionLost) return;
     const changes = connectionChanges();
     if (!Object.keys(changes).length) return;
+    operationError = null; clearNotice();
     stateRequest++;
     quickBusy = true; state.busy = true; updateActions();
     try {
@@ -633,7 +634,8 @@
       toast(t('连接选项已保存'));
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
-      notice(error.code === 'conflict' ? t('配置文件已更新') : t('无法应用连接更改'), error, 'error', error.code === 'conflict');
+      operationError = { title: error.code === 'conflict' ? '配置文件已更新' : '无法应用连接更改', detail: error, canReload: error.code === 'conflict' };
+      clearNotice();
     } finally { quickBusy = false; state.busy = false; await refreshState(); updateActions(); }
   });
   async function desktopAction(action, confirmed = false) {
@@ -646,7 +648,7 @@
         return;
       }
     }
-    desktopError = null; clearNotice();
+    operationError = null; clearNotice();
     stateRequest++;
     desktopBusy = true; desktopPending = action;
     renderConnectionCenter();
@@ -657,7 +659,7 @@
         $('#exit-node').value = ''; $('#exit-search').value = '';
         $('#account-menu').open = false;
       }
-    } catch (error) { desktopError = error; clearNotice(); }
+    } catch (error) { operationError = { title: '操作未完成', detail: error }; clearNotice(); }
     finally { desktopBusy = false; desktopPending = ''; await refreshState(); renderConnectionCenter(); }
   }
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () => desktopAction(button.dataset.desktopAction)));
