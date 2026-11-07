@@ -202,8 +202,12 @@ text in both system appearances. Terminal foreground colors render with a readab
 bright palette; other terminal commands are discarded, and log content remains
 plain text. The log viewport fills the remaining window height and scrolls internally.
 While visible, Logs reads the latest file tail every four seconds and follows new
-entries at the bottom. Scrolling up pauses following; returning to the bottom
-resumes it. Unchanged output is retained so reading and text selection are preserved.
+entries at the bottom. Scrolling up retains the displayed snapshot while newer
+entries are fetched in the background, so trimming the bounded tail cannot move
+the entry being read. Returning to the bottom or refreshing displays the latest
+entries and resumes following. Reopening Logs also follows the latest entry.
+Read errors appear separately and preserve the last successful output. Unchanged
+output retains its existing text nodes and selection.
 
 Desktop logs are saved to `~/Library/Application Support/TailSplit/logs/tailsplit.log`
 on macOS and `%APPDATA%\TailSplit\logs\tailsplit.log` on Windows unless overridden

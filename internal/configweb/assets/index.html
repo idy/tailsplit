@@ -82,6 +82,7 @@
     <section class="app-page logs-page" id="page-logs" aria-labelledby="heading-logs" hidden>
       <div class="page-heading"><div><h2 id="heading-logs">诊断日志</h2><p>最近的本机日志；设备授权链接和认证密钥会被隐藏。</p></div><button class="button" id="desktop-log-refresh"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>刷新日志</span></button></div>
       <div class="log-level-row"><label for="log-level">日志级别</label><select id="log-level" data-field="log_level"><option value="info">普通（Info）</option><option value="debug">详细（Debug）</option><option value="trace">完整跟踪（Trace）</option><option value="warn">仅警告（Warn）</option><option value="error">仅错误（Error）</option><option value="fatal">严重错误（Fatal）</option><option value="panic">致命错误（Panic）</option></select><span class="field-hint">更改后需保存并应用。</span></div>
+      <p class="log-error" id="desktop-log-error" role="status" hidden></p>
       <pre class="log-output" id="desktop-log-text" tabindex="0" aria-label="诊断日志"></pre>
     </section>
 

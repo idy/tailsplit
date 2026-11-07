@@ -217,7 +217,9 @@ test('desktop log refresh replaces old styling and handles empty and failed read
   assert.equal(app.$('#desktop-log-text').textContent, 'No logs yet.');
   app.override = (request) => request.path === '/api/logs' ? response({ error: 'Could not read logs.' }, false) : undefined;
   await app.$('#desktop-log-refresh').emit('click');
-  assert.equal(app.$('#desktop-log-text').textContent, 'Could not read logs.');
+  assert.equal(app.$('#desktop-log-error').textContent, 'Could not read logs.');
+  assert.equal(app.$('#desktop-log-error').hidden, false);
+  assert.equal(app.$('#desktop-log-text').textContent, 'No logs yet.');
   assert.equal(app.$('#desktop-log-refresh').disabled, false);
 });
 
@@ -258,12 +260,15 @@ test('desktop logs preserve a reader position and resume following at the bottom
   assert.equal(output.scrollTop, 800);
   output.scrollTop = 120;
   await output.emit('scroll');
-  text += 'second entry\n'; output.scrollHeight = 1200;
+  const pausedSpan = output.children[0];
+  text += 'second entry\n';
   await app.poll();
   assert.equal(output.scrollTop, 120, 'new entries must not pull a reader back down');
-  assert.match(output.children.map((span) => span.textContent).join(''), /second entry/);
-  output.scrollTop = 1000;
+  assert.equal(output.children[0], pausedSpan, 'paused snapshots must keep their text and selection');
+  assert.doesNotMatch(output.children.map((span) => span.textContent).join(''), /second entry/);
+  output.scrollTop = output.scrollHeight;
   await output.emit('scroll');
+  assert.match(output.children.map((span) => span.textContent).join(''), /second entry/);
   text += 'third entry\n'; output.scrollHeight = 1400;
   await app.poll();
   assert.equal(output.scrollTop, 1200);
@@ -286,6 +291,87 @@ test('desktop logs respect scrolling that happens while a refresh is in flight',
   pending.resolve(response({ text: 'first entry\nsecond entry\n' }));
   await polling;
   assert.equal(output.scrollTop, 90);
+});
+
+test('paused log snapshots survive a bounded tail that drops leading entries', async () => {
+  const app = await page({ logs_available: true });
+  const output = app.$('#desktop-log-text');
+  output.clientHeight = 200; output.scrollHeight = 1000;
+  const original = 'oldest entry\nretained entry\nlatest entry\n';
+  let text = original;
+  app.override = (request) => request.path === '/api/logs' ? response({ text }) : undefined;
+  await app.$('[data-page="logs"]').emit('click');
+  await settle();
+  output.scrollTop = 120; await output.emit('scroll');
+  const pausedSpan = output.children[0];
+  text = 'retained entry\nlatest entry\nnew entry\n';
+  await app.poll();
+  assert.equal(output.children[0], pausedSpan);
+  assert.equal(output.children.map((span) => span.textContent).join(''), original);
+  assert.equal(output.scrollTop, 120);
+  const reads = app.requests.filter((request) => request.path === '/api/logs').length;
+  output.scrollTop = output.scrollHeight; await output.emit('scroll');
+  assert.equal(output.children.map((span) => span.textContent).join(''), text);
+  assert.equal(app.requests.filter((request) => request.path === '/api/logs').length, reads);
+});
+
+test('failed log refreshes preserve the last output and paused following state', async () => {
+  const app = await page({ logs_available: true });
+  const output = app.$('#desktop-log-text');
+  output.clientHeight = 200; output.scrollHeight = 1000;
+  app.override = (request) => request.path === '/api/logs' ? response({ text: 'original entry\n' }) : undefined;
+  await app.$('[data-page="logs"]').emit('click');
+  await settle();
+  output.scrollTop = 120; await output.emit('scroll');
+  const pausedSpan = output.children[0];
+  app.override = (request) => request.path === '/api/logs' ? response({ error: 'Could not read logs.' }, false) : undefined;
+  await app.poll();
+  assert.equal(app.$('#desktop-log-error').hidden, false);
+  assert.equal(app.$('#desktop-log-error').textContent, 'Could not read logs.');
+  assert.equal(output.children[0], pausedSpan);
+  assert.equal(output.scrollTop, 120);
+  app.i18n.setLanguage('en');
+  assert.equal(output.children[0], pausedSpan, 'error translation must not replace the paused snapshot');
+  app.override = (request) => request.path === '/api/logs' ? response({ text: 'original entry\nrecovered entry\n' }) : undefined;
+  await app.poll();
+  assert.equal(app.$('#desktop-log-error').hidden, true);
+  assert.equal(output.children[0], pausedSpan);
+  assert.equal(output.scrollTop, 120);
+  output.scrollTop = output.scrollHeight; await output.emit('scroll');
+  assert.match(output.children.map((span) => span.textContent).join(''), /recovered entry/);
+});
+
+test('reopening Logs resets paused following and displays the latest file contents', async () => {
+  const app = await page({ logs_available: true });
+  const output = app.$('#desktop-log-text');
+  output.clientHeight = 200; output.scrollHeight = 1000;
+  let text = 'first entry\n';
+  app.override = (request) => request.path === '/api/logs' ? response({ text }) : undefined;
+  await app.$('[data-page="logs"]').emit('click'); await settle();
+  output.scrollTop = 120; await output.emit('scroll');
+  await app.$('[data-page="settings"]').emit('click');
+  output.scrollTop = 0; // Hidden web views can drop their scroll offset.
+  text += 'second entry\n';
+  await app.$('[data-page="logs"]').emit('click'); await settle();
+  assert.match(output.children.map((span) => span.textContent).join(''), /second entry/);
+  assert.equal(output.scrollTop, 800);
+  text += 'third entry\n'; output.scrollHeight = 1200;
+  await app.poll();
+  assert.equal(output.scrollTop, 1000);
+});
+
+test('unsupported terminal commands and control strings leave no visible fragments', async () => {
+  const app = await page({ logs_available: true });
+  for (const text of [
+    '\x1b7INFO\x1b8', '\x1b(BINFO\x1b#8',
+    '\x1bP1;2|hidden payload\x1b\\INFO', '\x1b_hidden payload\x1b\\INFO',
+    '\x901;2|hidden payload\x9cINFO', '\x9b36mINFO\x9b0m',
+    'INFO\x1bPunfinished payload',
+  ]) {
+    app.override = (request) => request.path === '/api/logs' ? response({ text }) : undefined;
+    await app.$('#desktop-log-refresh').emit('click');
+    assert.equal(app.$('#desktop-log-text').children.map((span) => span.textContent).join(''), 'INFO');
+  }
 });
 
 test('native titlebar gestures exclude controls and keep platform window buttons separate', async () => {

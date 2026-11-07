@@ -257,6 +257,7 @@ code { padding: 1px 5px; border-radius: 4px; background: var(--inline-code); col
 .log-level-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-block: 20px 14px; }
 .log-level-row select { width: auto; min-width: 160px; }
 .log-level-row .field-hint { margin: 0; }
+.log-error { flex-shrink: 0; margin-bottom: 12px; color: var(--error); font-size: var(--type-note); overflow-wrap: anywhere; }
 .log-output {
   /* The diagnostic terminal keeps its own dark palette in either app theme. */
   --code: #272a32;

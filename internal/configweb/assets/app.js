@@ -385,6 +385,7 @@
     if (await switchMode(mode)) $(`#${mode}-tab`).focus();
   });
   function showPage(name) {
+    const enteringLogs = name === 'logs' && state.page !== name;
     state.page = name;
     for (const nav of document.querySelectorAll('[data-page]')) {
       const active = nav.dataset.page === name;
@@ -395,7 +396,10 @@
     for (const page of document.querySelectorAll('.app-page')) page.hidden = page.id !== `page-${name}`;
     renderPageTitle();
     updateActions();
-    if (name === 'logs') refreshDesktopLogs();
+    if (name === 'logs') {
+      if (enteringLogs) logsFollow = true;
+      showLatestDesktopLogs(); refreshDesktopLogs();
+    }
   }
   function renderPageTitle() {
     const labels = { connection: t('连接页面'), logs: t('日志'), settings: t('设置') };
@@ -708,7 +712,7 @@
     };
     // Interpret foreground SGR only. Discard other terminal commands, including
     // OSC hyperlinks, and keep all log content as text under the existing CSP.
-    const controls = /\x1b(?:\[([0-?]*)([ -/]*)([@-~])|\][^\x07\x1b]*(?:\x07|\x1b\\|$)|\[[0-?]*$|[@-_])|[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+    const controls = /(?:\x1b\[|\x9b)([0-?]*)([ -/]*)([@-~])|(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)|(?:\x1b[P^_X]|\x90|\x98|\x9e|\x9f)[\s\S]*?(?:\x1b\\|\x9c|$)|(?:\x1b\[|\x9b)[0-?]*$|\x1b[ -/]*[0-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
     for (const match of text.matchAll(controls)) {
       append(text.slice(cursor, match.index));
       cursor = match.index + match[0].length;
@@ -744,35 +748,52 @@
   let logsEmpty = false;
   let logsBusy = false;
   let logsText = null;
+  let logsLatest = null;
   let logsFollow = true;
+  function renderDesktopLogError() {
+    setStatusText('#desktop-log-error', logsError ? message(logsError) : '');
+    $('#desktop-log-error').hidden = !logsError;
+  }
+  function showLatestDesktopLogs() {
+    const output = $('#desktop-log-text');
+    // Retain the paused snapshot: a bounded tail can discard the entry being read.
+    if (logsLatest !== null && (logsFollow || logsText === null) && logsLatest !== logsText) {
+      logsEmpty = !renderDesktopLogs(logsLatest);
+      logsText = logsLatest;
+    }
+    if (logsFollow && state.page === 'logs' && !document.hidden && output.clientHeight > 0) {
+      output.scrollTop = output.scrollHeight;
+    }
+  }
   $('#desktop-log-text').addEventListener('scroll', (event) => {
     const output = event.target;
     if (state.page === 'logs' && !document.hidden && output.clientHeight > 0) {
-      logsFollow = output.scrollHeight - output.clientHeight - output.scrollTop <= 8;
+      const following = output.scrollHeight - output.clientHeight - output.scrollTop <= 8;
+      const resumed = following && !logsFollow;
+      logsFollow = following;
+      if (resumed) showLatestDesktopLogs();
     }
   });
   async function refreshDesktopLogs() {
     if (logsBusy) return;
-    if (!desktopLive?.logs_available) { logsText = null; $('#desktop-log-text').textContent = t('此页面无法读取日志，请从桌面应用打开。'); return; }
+    if (!desktopLive?.logs_available) {
+      logsText = logsLatest = logsError = null;
+      renderDesktopLogError();
+      $('#desktop-log-text').textContent = t('此页面无法读取日志，请从桌面应用打开。');
+      return;
+    }
     logsBusy = true; $('#desktop-log-refresh').disabled = true;
     try {
-      const text = (await api('logs')).text || '';
-      const output = $('#desktop-log-text');
-      const scrollTop = output.scrollTop;
-      if (text !== logsText) {
-        logsEmpty = !renderDesktopLogs(text);
-        logsText = text;
-      }
-      logsError = null;
-      if (state.page === 'logs' && !document.hidden && output.clientHeight > 0) {
-        output.scrollTop = logsFollow ? output.scrollHeight : scrollTop;
-      }
+      logsLatest = (await api('logs')).text || '';
+      logsError = null; renderDesktopLogError();
+      showLatestDesktopLogs();
     } catch (error) {
-      logsError = error; logsEmpty = false; logsText = null;
-      $('#desktop-log-text').textContent = message(error);
+      logsError = error; renderDesktopLogError();
     } finally { logsBusy = false; $('#desktop-log-refresh').disabled = false; }
   }
-  $('#desktop-log-refresh').addEventListener('click', refreshDesktopLogs);
+  $('#desktop-log-refresh').addEventListener('click', () => {
+    logsFollow = true; showLatestDesktopLogs(); return refreshDesktopLogs();
+  });
 
   let updateLive = null;
   let updatePending = '';
@@ -947,8 +968,8 @@
       $('#notice-detail').textContent = message(activeNotice.detail);
     }
     if (!$('#toast').hidden) $('#toast').textContent = t(activeToast);
-    if (logsError) $('#desktop-log-text').textContent = message(logsError);
-    else if (logsEmpty) $('#desktop-log-text').textContent = t('暂无日志。');
+    renderDesktopLogError();
+    if (logsEmpty) $('#desktop-log-text').textContent = t('暂无日志。');
   });
 
   async function refreshPage() {

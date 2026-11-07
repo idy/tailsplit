@@ -10,8 +10,10 @@
 - Refresh the latest bounded file tail every four seconds while Logs is visible.
   Follow new entries at the bottom, pause following while reading older entries,
   and resume when the reader returns to the bottom.
-- Preserve unchanged log nodes and reader scroll positions during refreshes, with
-  regression coverage for in-flight reads and background-page polling.
+- Retain paused reading snapshots when the bounded tail advances, preserve them
+  across read failures and resume live following when Logs is reopened. Keep
+  unchanged log nodes and text selection intact, with regression coverage for
+  shifted tails, in-flight reads, background-page polling and control strings.
 
 ## 0.7.12
 

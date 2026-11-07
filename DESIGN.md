@@ -314,7 +314,10 @@ notice consumes workspace height before the log viewport. Overflow scrolls insid
 the viewport instead of growing the window; the other app pages retain their
 existing scrolling behavior. While the Logs page is visible, the file tail refreshes
 every four seconds. Initial display and updates follow the latest entry at the
-bottom; scrolling up pauses following until the user returns to the bottom.
+bottom. Scrolling up retains the displayed snapshot and selection while background
+reads cache the latest bounded tail. Returning to the bottom, refreshing, or
+reopening Logs resumes live following. Read errors appear in a separate status
+without replacing the last successful content or changing the following state.
 Unchanged output keeps its existing DOM nodes to preserve reading and selection.
 
 ### Status and Exit Selection
