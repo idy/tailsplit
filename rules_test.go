@@ -18,8 +18,9 @@ import (
 )
 
 func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
+	original := "\xef\xbb\xbf# custom rule list\r\nexample.com\r\n@@||safe.example.com\r\n"
 	var answer atomic.Value
-	answer.Store("[AutoProxy 0.2.9]\n||example.com\n@@||safe.example.com\n")
+	answer.Store(original)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(answer.Load().(string)))
 	}))
@@ -37,32 +38,60 @@ func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if string(before) != original {
+		t.Fatal("original headerless bytes, comments, BOM or line endings were changed in the cache")
+	}
 	if err := privatefs.CheckFile(cache); err != nil {
 		t.Fatal("rule cache is not owner-only:", err)
 	}
-	if _, err := Compile(config); err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	compiled, err := CompileContext(ctx, config)
+	if err != nil {
+		t.Fatal("headerless cached rules could not compile offline:", err)
 	}
-	answer.Store("not an AutoProxy list")
-	if _, err := RefreshRules(context.Background(), config, server.Client()); err == nil {
-		t.Fatal("accepted invalid upstream rules")
+	if compiled.GFWSource != cache || compiled.GFWList == nil || compiled.GFWList.Proxy != 1 || compiled.GFWList.Direct != 1 ||
+		!strings.Contains(string(compiled.JSON), `"example.com"`) || !strings.Contains(string(compiled.JSON), `"safe.example.com"`) {
+		t.Fatalf("headerless cached rules were not projected: %+v", compiled)
 	}
-	after, _ := os.ReadFile(cache)
-	if string(after) != string(before) {
-		t.Fatal("failed refresh replaced the working rule cache")
+	html := "<!DOCTYPE html>\n<html><body>\nexample.com\n</body></html>"
+	for _, test := range []struct{ name, data string }{
+		{"invalid text", "not a rule list"},
+		{"exceptions only", "@@||safe.example.com\n"},
+		{"HTML with domain", html},
+		{"Base64 HTML with domain", base64.StdEncoding.EncodeToString([]byte(html))},
+		{"unpadded Base64 HTML", base64.RawStdEncoding.EncodeToString([]byte(html))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			answer.Store(test.data)
+			if _, err := RefreshRules(context.Background(), config, server.Client()); err == nil {
+				t.Fatal("accepted invalid upstream rules")
+			}
+			after, err := os.ReadFile(cache)
+			if err != nil || string(after) != string(before) {
+				t.Fatal("failed refresh replaced the working rule cache:", err)
+			}
+		})
+	}
+	again, err := CompileContext(ctx, config)
+	if err != nil || string(again.JSON) != string(compiled.JSON) {
+		t.Fatalf("invalid refresh changed the offline policy: %v", err)
 	}
 	answer.Store(base64.StdEncoding.EncodeToString([]byte("[AutoProxy 0.2.9]\n||next.example\n")))
 	if _, err := RefreshRules(context.Background(), config, server.Client()); err != nil {
 		t.Fatal(err)
 	}
 	answer.Store(strings.Repeat("x", (2<<20)+1))
-	good, _ := os.ReadFile(cache)
+	good, err := os.ReadFile(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := RefreshRules(context.Background(), config, server.Client()); err == nil {
 		t.Fatal("accepted oversized upstream")
 	}
-	after, _ = os.ReadFile(cache)
-	if string(after) != string(good) {
-		t.Fatal("oversized refresh replaced the working rule cache")
+	after, err := os.ReadFile(cache)
+	if err != nil || string(after) != string(good) {
+		t.Fatal("oversized refresh replaced the working rule cache:", err)
 	}
 }
 
@@ -118,7 +147,7 @@ func TestRuleCacheDownloadsOnceAndWorksOffline(t *testing.T) {
 			if err := os.Remove(cache); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Compile(config); err == nil || !strings.Contains(err.Error(), "no cached GFWList") {
+			if _, err := Compile(config); err == nil || !strings.Contains(err.Error(), "no cached rule list") {
 				t.Fatalf("offline startup without a cache did not fail: %v", err)
 			}
 		})

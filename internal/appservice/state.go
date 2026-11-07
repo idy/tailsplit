@@ -193,7 +193,7 @@ func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
 	}
 	if local {
 		if len(files.Rules) == 0 {
-			return files, errors.New("the local GFWList file is missing or empty")
+			return files, errors.New("the local rule list is missing or empty")
 		}
 		// Resolve local rule files as the ordinary user, then send their bounded
 		// contents. The privileged process sees only its own fixed cache path.

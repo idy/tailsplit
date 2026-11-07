@@ -123,27 +123,43 @@ func parseActiveRules(data []byte) (*rules, []byte, error) {
 
 func parseRules(data []byte) (*rules, []byte, error) {
 	if len(data) > maxRulesSize {
-		return nil, nil, fmt.Errorf("domainrules: rules exceed %d bytes", maxRulesSize)
+		return nil, nil, fmt.Errorf("domainrules: rule list exceeds %d bytes", maxRulesSize)
 	}
-	data = bytes.TrimSpace(data)
-	if !bytes.HasPrefix(data, []byte("[AutoProxy ")) {
-		decoded, err := base64.StdEncoding.DecodeString(string(bytes.Join(bytes.Fields(data), nil)))
-		if err != nil {
-			return nil, nil, fmt.Errorf("domainrules: decode GFWList: %w", err)
-		}
-		data = bytes.TrimSpace(decoded)
+	trim := func(text []byte) []byte {
+		return bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(text), []byte("\xef\xbb\xbf")))
 	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) == 0 || !strings.HasPrefix(strings.TrimSpace(lines[0]), "[AutoProxy ") || !strings.HasSuffix(strings.TrimSpace(lines[0]), "]") {
-		return nil, nil, fmt.Errorf("domainrules: missing AutoProxy header")
+	data = trim(data)
+	if len(data) == 0 {
+		return nil, nil, fmt.Errorf("domainrules: empty rule list")
+	}
+	// Domain and AutoProxy text contains punctuation outside the standard Base64
+	// alphabet. Decode only complete Base64 input; otherwise parse it as text.
+	encoded := string(bytes.Join(bytes.Fields(data), nil))
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(encoded)
+	}
+	if err == nil {
+		data = trim(decoded)
 	}
 	r := &rules{
 		proxy:  domainRules{exact: map[string]bool{}, suffix: map[string]bool{}},
 		direct: domainRules{exact: map[string]bool{}, suffix: map[string]bool{}},
 	}
-	for _, line := range lines[1:] {
+	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "!") {
+		if line == "" || strings.HasPrefix(line, "!") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Reject markup anywhere in the response, even if an error page also has
+		// standalone domain lines that would otherwise project successfully.
+		if strings.ContainsAny(line, "<>") {
+			return nil, nil, fmt.Errorf("domainrules: HTML is not a rule list")
+		}
+		if strings.HasPrefix(line, "[AutoProxy ") {
+			if !strings.HasSuffix(line, "]") {
+				return nil, nil, fmt.Errorf("domainrules: invalid rule list header")
+			}
 			continue
 		}
 		exception := strings.HasPrefix(line, "@@")
@@ -174,7 +190,7 @@ func parseRules(data []byte) (*rules, []byte, error) {
 		}
 	}
 	if r.info.Proxy == 0 {
-		return nil, nil, fmt.Errorf("domainrules: no usable proxy domains in GFWList")
+		return nil, nil, fmt.Errorf("domainrules: no usable proxy domains in rule list")
 	}
 	r.info.SHA256 = fmt.Sprintf("%x", sha256.Sum256(data))
 	return r, bytes.Clone(data), nil

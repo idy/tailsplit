@@ -166,6 +166,109 @@ func TestCompatibilityOnlyFillsMissingCoverage(t *testing.T) {
 	}
 }
 
+func TestRuleListFormatsHaveEquivalentProjections(t *testing.T) {
+	body := "first.example\n||fixture.example\n|https://exact.example.net/\n||*.wild.example.net\n@@||safe.fixture.example\n@@direct.example.net\n@@||safe.stripe.com\n||path.example.org/private\n! comment\n"
+	plain := "[AutoProxy 0.2.9]\n" + body
+	encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+	encodedBody := base64.StdEncoding.EncodeToString([]byte(body))
+	if !strings.HasSuffix(encoded, "=") || !strings.HasSuffix(encodedBody, "=") {
+		t.Fatal("fixtures must exercise omitted Base64 padding")
+	}
+	formats := []struct{ name, data string }{
+		{"header", plain},
+		{"headerless", body},
+		{"headerless CRLF", strings.ReplaceAll(body, "\n", "\r\n")},
+		{"BOM header", "\xef\xbb\xbf" + plain},
+		{"BOM headerless", "\xef\xbb\xbf" + body},
+		{"comments before header", "# custom rule list\n! metadata\n" + plain},
+		{"Base64", encoded},
+		{"wrapped Base64", encoded[:64] + "\r\n" + encoded[64:] + "\r\n"},
+		{"unpadded Base64", strings.TrimRight(encoded, "=")},
+		{"Base64 headerless", encodedBody},
+		{"wrapped unpadded headerless", "\xef\xbb\xbf \n" + encodedBody[:64] + "\r\n" + strings.TrimRight(encodedBody[64:], "=")},
+		{"Base64 decoded BOM", base64.StdEncoding.EncodeToString([]byte("\xef\xbb\xbf" + plain))},
+		{"Base64 decoded BOM headerless", base64.StdEncoding.EncodeToString([]byte("\xef\xbb\xbf# custom rule list\n" + body))},
+	}
+	for _, projector := range []struct {
+		name    string
+		project func([]byte) (Projection, error)
+	}{
+		{"supplied", ProjectRules},
+		{"active", ProjectActiveRules},
+	} {
+		want, err := projector.project([]byte(plain))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want.Info.Proxy != 4 || want.Info.Direct != 3 || want.Info.Skipped != 1 {
+			t.Fatalf("unexpected fixture policy: %+v", want)
+		}
+		want.Info.SHA256 = "" // The digest identifies the decoded source text, including its optional header.
+		for _, format := range formats {
+			t.Run(projector.name+"/"+format.name, func(t *testing.T) {
+				got, err := projector.project([]byte(format.data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Info.SHA256 == "" {
+					t.Fatal("missing source digest")
+				}
+				got.Info.SHA256 = ""
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("format changed rule projection: got=%+v, want=%+v", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestHeaderlessRuleListKeepsFirstException(t *testing.T) {
+	projection, err := ProjectRules([]byte("@@||safe.example.com\n||example.com\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Info.Proxy != 1 || projection.Info.Direct != 1 ||
+		!reflect.DeepEqual(projection.Direct.Suffix, []string{"safe.example.com"}) {
+		t.Fatalf("first headerless rule was lost: %+v", projection)
+	}
+}
+
+func TestRuleListsRejectInvalidResponses(t *testing.T) {
+	for _, test := range []struct{ name, data string }{
+		{"empty", ""},
+		{"whitespace", " \t\r\n"},
+		{"BOM only", "\xef\xbb\xbf"},
+		{"comments only", "! example.com\n# example.net\n"},
+		{"exceptions only", "@@||direct.example\n"},
+		{"nonsense", "upstream unavailable\nretry later\n"},
+		{"malformed Base64", "W0F1dG9Qcm94eSAwLjIuOV0=%%"},
+		{"malformed header", "[AutoProxy 0.2.9\n||example.com\n"},
+		{"HTML error with domain", "<!DOCTYPE html>\n<html><body>\nexample.com\n</body></html>"},
+		{"HTML after domain", "example.com\n<BR>\n"},
+		{"HTML with header", "[AutoProxy 0.2.9]\n||example.com\n</html>"},
+		{"hosts", "0.0.0.0 example.com\n127.0.0.1 safe.example.com\n"},
+		{"Clash", "payload:\n  - DOMAIN-SUFFIX,example.com\n"},
+		{"JSON", "{\"rules\": [\"example.com\"]}"},
+		{"unsupported only", "[AutoProxy 0.2.9]\n||example.com/private\n@@||safe.example.com\n"},
+	} {
+		for _, format := range []struct{ name, data string }{
+			{"text", test.data},
+			{"Base64", base64.StdEncoding.EncodeToString([]byte(test.data))},
+			{"unpadded Base64", base64.RawStdEncoding.EncodeToString([]byte(test.data))},
+		} {
+			t.Run(test.name+"/"+format.name, func(t *testing.T) {
+				for _, project := range []func([]byte) (Projection, error){ProjectRules, ProjectActiveRules} {
+					if _, err := project([]byte(format.data)); err == nil {
+						t.Fatal("accepted an invalid rule list")
+					} else if !strings.Contains(err.Error(), "rule list") {
+						t.Fatalf("error does not describe a generic rule list: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func projectionMatches(projected DomainProjection, domain string) bool {
 	if slices.Contains(projected.Exact, domain) {
 		return true

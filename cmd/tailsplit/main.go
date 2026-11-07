@@ -179,7 +179,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return err
 	}
 	if compiled.GFWList != nil {
-		fmt.Fprintf(diagnostic, "GFWList: %d proxy, %d direct, %d skipped URL/regex rules\n",
+		fmt.Fprintf(diagnostic, "Rule list: %d proxy, %d direct, %d skipped URL/regex rules\n",
 			compiled.GFWList.Proxy, compiled.GFWList.Direct, compiled.GFWList.Skipped)
 	}
 	switch command {

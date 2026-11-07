@@ -64,7 +64,7 @@
     'tailscale.hostname': '', 'tailscale.exit_node': '', 'tailscale.tailnet': '', 'tailscale.domains': [],
     'dns.direct': 'system', 'dns.proxy': '8.8.8.8', 'dns.direct_ipv6': true,
     'dns.fake_ip': true, 'dns.magic_domains': [], 'rules.mode': 'split',
-    'rules.final': 'direct', 'rules.gfwlist': '', 'rules.proxy_domains': [],
+    'rules.final': 'direct', 'rules.source': '', 'rules.proxy_domains': [],
     'rules.direct_domains': [], 'rules.proxy_ips': [], 'rules.direct_ips': [],
     'tun.enabled': false, 'tun.mtu': 1400, 'app.connect_on_start': false,
   };
@@ -74,6 +74,7 @@
     dirty: false, busy: false, loading: false, switching: false, validating: false,
     previewing: false, external: false,
     generation: 0, previewed: 0, pending: null, timer: null, toastTimer: null,
+    customRuleSource: '',
   };
   const isLocked = () => state.busy || state.loading || state.switching;
 
@@ -135,6 +136,10 @@
   }
 
   function fieldValue(values, path) {
+    // Read existing YAML without rewriting it until the source is edited.
+    if (path === 'rules.source' && values.rules && !Object.hasOwn(values.rules, 'source')) {
+      return values.rules.gfwlist ?? defaults[path];
+    }
     let value = values;
     for (const key of path.split('.')) {
       if (value === null || typeof value !== 'object' || !Object.hasOwn(value, key)) return defaults[path];
@@ -150,7 +155,24 @@
       else if (control.dataset.kind === 'list') control.value = Array.isArray(value) ? value.join('\n') : '';
       else control.value = String(value ?? '');
     }
+    const source = $('#rule-source').value;
+    $('#rule-source-type').value = source === 'builtin' ? 'builtin' : source ? 'custom' : '';
+    if (source && source !== 'builtin') state.customRuleSource = source;
+    updateRuleSourceMode();
     updateGlobalMode();
+  }
+
+  function ruleSourceMissing() {
+    return $('#rule-source-type').value === 'custom' && !$('#rule-source').value.trim();
+  }
+
+  function updateRuleSourceMode() {
+    const mode = $('#rule-source-type').value;
+    $('#custom-rule-source').hidden = mode !== 'custom';
+    $('#builtin-rule-hint').hidden = mode !== 'builtin';
+    $('#rule-source-type').disabled = isLocked();
+    $('#rule-source-error').hidden = !ruleSourceMissing();
+    $('#rule-source').setAttribute('aria-invalid', String(ruleSourceMissing()));
   }
 
   function updateGlobalMode() {
@@ -161,15 +183,16 @@
 
   function updateActions() {
     const locked = isLocked();
-    $('#save').disabled = !state.loaded || !state.dirty || !state.valid || locked || state.previewing || state.external;
+    const sourceMissing = ruleSourceMissing();
+    $('#save').disabled = !state.loaded || !state.dirty || !state.valid || sourceMissing || locked || state.previewing || state.external;
     $('#discard').disabled = !state.dirty || locked;
-    $('#validate').disabled = !state.loaded || locked || state.validating || state.previewing;
+    $('#validate').disabled = !state.loaded || sourceMissing || locked || state.validating || state.previewing;
     $('#reload').disabled = locked;
     $('#save').textContent = state.busy ? t('正在应用…') : t('保存并应用');
     $('#save-state').classList.toggle('dirty', state.dirty);
-    $('#save-state').classList.toggle('invalid', !state.valid && state.loaded && !state.previewing);
+    $('#save-state').classList.toggle('invalid', (!state.valid || sourceMissing) && state.loaded && !state.previewing);
     $('#save-state span:last-child').textContent = state.busy ? t('正在保存并应用配置') :
-      state.previewing ? t('正在检查更改…') : !state.valid && state.loaded ? t('配置需要修正') :
+      state.previewing ? t('正在检查更改…') : (!state.valid || sourceMissing) && state.loaded ? t('配置需要修正') :
       state.dirty ? t('有未保存的更改') : t('所有更改已保存');
     $('#preview-draft').textContent = state.dirty ? t('草稿') : t('已保存');
     $('#preview-draft').classList.toggle('dirty', state.dirty);
@@ -179,6 +202,7 @@
     for (const button of document.querySelectorAll('.editor-tabs button, [data-section]')) button.disabled = locked;
     $('#settings-draft').hidden = !state.dirty;
     $('#actionbar').hidden = !state.loaded || (state.page !== 'settings' && !state.dirty);
+    updateRuleSourceMode();
     updateGlobalMode();
     if (state.loaded) renderConnectionCenter();
   }
@@ -315,36 +339,45 @@
     return true;
   }
 
-  for (const control of controls) {
-    control.addEventListener('input', async () => {
-      if (isLocked()) return;
-      const previous = fieldValue(state.values, control.dataset.field);
-      let value;
-      if (control.type === 'checkbox') value = control.checked;
-      else if (control.dataset.kind === 'list') value = control.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      else if (control.dataset.kind === 'int') value = control.value === '' ? 0 : Number(control.value);
-      else value = control.value;
-      state.changes[control.dataset.field] = value;
-      if (control.dataset.field === 'rules.mode' && value === 'global') {
-        state.changes['tun.enabled'] = true;
-        $('#tun-enabled').checked = true;
-      }
-      updateGlobalMode(); schedulePreview();
-      if (state.mode === 'yaml') {
-        // Logs remains editable outside Settings; patch the latest source before
-        // allowing further raw edits, rather than silently dropping the field.
-        state.switching = true; updateActions();
-        try {
-          if (!(await flushPreview())) {
-            state.changes = Object.create(null);
-            if (control.type === 'checkbox') control.checked = previous === true;
-            else control.value = Array.isArray(previous) ? previous.join('\n') : String(previous ?? '');
-            state.dirty = state.draft !== state.saved;
-          }
-        } finally { state.switching = false; updateActions(); }
-      }
-    });
+  async function editField(control) {
+    if (isLocked()) return;
+    const previous = fieldValue(state.values, control.dataset.field);
+    let value;
+    if (control.type === 'checkbox') value = control.checked;
+    else if (control.dataset.kind === 'list') value = control.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    else if (control.dataset.kind === 'int') value = control.value === '' ? 0 : Number(control.value);
+    else value = control.value;
+    state.changes[control.dataset.field] = value;
+    if (control.dataset.field === 'rules.source' && $('#rule-source-type').value === 'custom') {
+      state.customRuleSource = value;
+    }
+    if (control.dataset.field === 'rules.mode' && value === 'global') {
+      state.changes['tun.enabled'] = true;
+      $('#tun-enabled').checked = true;
+    }
+    updateGlobalMode(); schedulePreview();
+    if (state.mode === 'yaml') {
+      // Logs remains editable outside Settings; patch the latest source before
+      // allowing further raw edits, rather than silently dropping the field.
+      state.switching = true; updateActions();
+      try {
+        if (!(await flushPreview())) {
+          state.changes = Object.create(null);
+          if (control.type === 'checkbox') control.checked = previous === true;
+          else control.value = Array.isArray(previous) ? previous.join('\n') : String(previous ?? '');
+          state.dirty = state.draft !== state.saved;
+        }
+      } finally { state.switching = false; updateActions(); }
+    }
   }
+  for (const control of controls) control.addEventListener('input', () => editField(control));
+  $('#rule-source-type').addEventListener('change', async () => {
+    if (isLocked()) return;
+    const mode = $('#rule-source-type').value;
+    $('#rule-source').value = mode === 'custom' ? state.customRuleSource : mode;
+    updateRuleSourceMode();
+    await editField($('#rule-source'));
+  });
   $('#raw-yaml').addEventListener('input', (event) => {
     if (isLocked()) return;
     state.draft = event.target.value; schedulePreview();

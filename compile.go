@@ -375,7 +375,7 @@ func readProjection(source string) (*domainrules.Projection, error) {
 		return nil, err
 	}
 	if stat.Size() > 2<<20 {
-		return nil, fmt.Errorf("GFWList exceeds 2 MiB")
+		return nil, fmt.Errorf("rule list exceeds 2 MiB")
 	}
 	data, err := io.ReadAll(io.LimitReader(stream, (2<<20)+1))
 	if err != nil {

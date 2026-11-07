@@ -95,6 +95,17 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 				break
 			}
 		}
+		// Migrate the old source key only when the user edits this field,
+		// retaining its position and comments instead of adding a second source.
+		if scalar == nil && change.Section == "rules" && change.Key == "source" {
+			for i := 0; i < len(nested.Content); i += 2 {
+				if nested.Content[i].Value == "gfwlist" {
+					nested.Content[i].Value = change.Key
+					scalar = nested.Content[i+1]
+					break
+				}
+			}
+		}
 		if scalar == nil {
 			scalar = &yaml.Node{}
 			nested.Content = append(nested.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: change.Key}, scalar)
