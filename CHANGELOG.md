@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.16
+
+- Fix desktop login, network switching, exit discovery and connection preflight
+  failing in a read-only service working directory. Keep the core's required
+  desktop log cache in private state, separate from saved FakeIP mappings.
+
 ## 0.7.15
 
 - Replace the inline exit list with a compact selection dialog and add a

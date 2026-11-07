@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -142,13 +143,15 @@ func compilePreflight(config Config) (Compiled, error) {
 		return Compiled{}, err
 	}
 	delete(native, "inbounds")
-	// A listener-free device session never serves client DNS. Opening the
-	// persistent cache consumes FakeIP metadata until a clean shutdown, so an
-	// interrupted preflight must use the core's in-memory store instead.
+	// A listener-free device session must not consume saved FakeIP metadata.
+	// sing-box still opens a cache when a desktop log writer is attached, even
+	// with caching disabled. Give that cache a separate absolute state path so
+	// services never fall back to cache.db in their read-only working directory.
 	if experimental, ok := native["experimental"].(map[string]any); ok {
-		delete(experimental, "cache_file")
-		if len(experimental) == 0 {
-			delete(native, "experimental")
+		if cache, ok := experimental["cache_file"].(map[string]any); ok {
+			cache["enabled"] = false
+			cache["store_fakeip"] = false
+			cache["path"] = filepath.Join(filepath.Dir(cache["path"].(string)), "preflight-cache.db")
 		}
 	}
 	compiled.JSON, err = json.Marshal(native)
