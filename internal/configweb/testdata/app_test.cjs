@@ -29,7 +29,7 @@ const updateState = (changes = {}) => ({
 class Element {
   constructor() {
     this.value = ''; this.type = ''; this.dataset = {}; this.hidden = false; this.disabled = false;
-    this.textContent = ''; this.listeners = {}; this.attributes = new Map(); this.classes = new Set();
+    this.textContent = ''; this.listeners = {}; this.attributes = new Map(); this.classes = new Set(); this.children = [];
     this.classList = {
       toggle: (name, enabled) => enabled ? this.classes.add(name) : this.classes.delete(name),
       contains: (name) => this.classes.has(name), remove: (name) => this.classes.delete(name),
@@ -38,8 +38,8 @@ class Element {
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
   setAttribute(name, value) { this.attributes.set(name, value); }
   removeAttribute(name) { this.attributes.delete(name); }
-  append() {}
-  replaceChildren(...children) { this.children = children; }
+  append(...children) { this.children.push(...children.flatMap((child) => child.fragment ? child.children : [child])); }
+  replaceChildren(...children) { this.children = []; this.append(...children); }
   showModal() { this.open = true; }
   focus() {}
   async emit(name, event = {}) {
@@ -50,23 +50,37 @@ class Element {
   }
 }
 
-async function page(snapshot = {}, native = '', localeOptions = {}) {
+async function page(snapshot = {}, native = '', localeOptions = {}, initialDocument = doc()) {
   const nodes = new Map();
   const $ = (selector) => {
     if (!nodes.has(selector)) nodes.set(selector, new Element());
     return nodes.get(selector);
   };
-  const level = $('#level'); level.dataset.field = 'log_level';
+  const level = $('#log-level'); nodes.set('#level', level); level.dataset.field = 'log_level';
   const mtu = $('#mtu'); mtu.dataset = { field: 'tun.mtu', kind: 'int' };
-  const routing = $('#routing-mode'); routing.dataset.field = 'rules.mode';
   const tun = $('#tun-enabled'); tun.type = 'checkbox'; tun.dataset.field = 'tun.enabled';
-  const fields = [level, mtu, routing, tun];
+  const fields = [level, mtu, tun];
+  const pages = ['connection', 'logs', 'settings'].map((name) => {
+    const nav = $(`[data-page="${name}"]`); nav.dataset.page = name; return nav;
+  });
+  const sections = ['general', 'network', 'dns', 'routing', 'advanced', 'about'].map((name) => {
+    const nav = $(`[data-section="${name}"]`); nav.dataset.section = name; return nav;
+  });
+  const modes = ['split', 'global'].map((mode) => {
+    const button = $(`[data-routing-mode="${mode}"]`); button.dataset.routingMode = mode; return button;
+  });
+  const desktopActions = ['connect', 'disconnect', 'login', 'switch-network', 'refresh-exits'].map((action) => {
+    const selector = action === 'refresh-exits' ? '#refresh-exits' : `#desktop-${action}`;
+    const button = $(selector); button.dataset.desktopAction = action; return button;
+  });
+  const appPages = ['connection', 'logs', 'settings'].map((name) => { const element = $(`#page-${name}`); element.id = `page-${name}`; return element; });
+  const settingsPages = sections.map((nav) => { const element = $(`#section-${nav.dataset.section}`); element.id = `section-${nav.dataset.section}`; return element; });
   $('#form-tab').setAttribute('aria-selected', 'true');
   $('#yaml-tab').setAttribute('aria-selected', 'false');
   $('#form-tab').tabIndex = 0;
   $('#yaml-tab').tabIndex = -1;
   $('#yaml-editor').hidden = true;
-  const navigation = $('[data-section="connection"]'); navigation.dataset.section = 'connection';
+  const navigation = sections[0];
   const events = new Element();
   const requests = [];
   const timers = new Map();
@@ -82,22 +96,18 @@ async function page(snapshot = {}, native = '', localeOptions = {}) {
     button.dataset.windowAction = action;
     return button;
   });
-  const desktopButtons = ['connect', 'disconnect', 'login', 'logout', 'switch-network', 'refresh-exits'].map((action) => {
-    const button = $(action === 'switch-network' ? '#desktop-switch-network' : `#desktop-${action}`);
-    button.dataset.desktopAction = action;
-    return button;
-  });
   $('#window-controls').hidden = true;
-  const app = { $, requests, messages, windowEvents: window, snapshot: { state: 'stopped', revision: 'original', ...snapshot },
+  const app = { $, requests, messages, windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', ...snapshot },
     language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: () => undefined };
   const document = {
-    documentElement: new Element(), hidden: false, querySelector: $, createElement: () => new Element(),
-    createTextNode: () => new Element(), createDocumentFragment: () => new Element(),
+    documentElement: new Element(), hidden: false, querySelector: $, createElement: (tag) => { const element = new Element(); element.tagName = tag; return element; },
+    createTextNode: () => new Element(), createDocumentFragment: () => { const fragment = new Element(); fragment.fragment = true; return fragment; },
     querySelectorAll: (selector) => selector === '[data-field]' ? fields :
       selector === '[data-window-action]' ? windowButtons :
-      selector === '[data-desktop-action]' ? desktopButtons :
-      selector === '[data-section]' ? [navigation] :
-      selector === '.editor-tabs button, [data-section]' ? [$('#form-tab'), $('#yaml-tab'), navigation] : [],
+      selector === '[data-section]' ? sections :
+      selector === '[data-page]' ? pages : selector === '.app-page' ? appPages : selector === '.settings-page' ? settingsPages :
+      selector === '[data-routing-mode]' ? modes : selector === '[data-desktop-action]' ? desktopActions :
+      selector === '.editor-tabs button, [data-section]' ? [$('#form-tab'), $('#yaml-tab'), ...sections] : [],
     addEventListener: (...args) => events.addEventListener(...args),
   };
   const sandbox = {
@@ -116,7 +126,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}) {
         return response(app.language);
       }
       if (path === '/api/state') return response(app.snapshot);
-      if (path === '/api/config') return response(doc());
+      if (path === '/api/config') return response(app.config);
       if (path === '/api/preview') {
         let text = request.data.yaml;
         if (request.data.changes?.log_level) text = text.replace(/log_level: \w+/, `log_level: ${request.data.changes.log_level}`);
@@ -308,7 +318,8 @@ test('current network follows authentication and keeps user names literal across
 });
 
 test('changing network requires confirmation and refreshes the network and exits', async () => {
-  const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running' });
+  const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running',
+    exit_nodes: [{ id: 'old-exit', name: 'Old exit', online: true }] });
   const dialog = app.$('#switch-network-dialog');
   const button = app.$('#desktop-switch-network');
   await button.emit('click');
@@ -321,7 +332,7 @@ test('changing network requires confirmation and refreshes the network and exits
     if (request.path !== '/api/action') return undefined;
     assert.equal(request.data.action, 'switch-network');
     app.snapshot.network = 'new.ts.net';
-    app.snapshot.exit_nodes = [{ id: 'new-exit', name: 'New exit' }];
+    app.snapshot.exit_nodes = [{ id: 'new-exit', name: 'New exit', online: true }];
     return response({ ok: true });
   };
   await button.emit('click');
@@ -329,7 +340,9 @@ test('changing network requires confirmation and refreshes the network and exits
   await dialog.emit('close');
   await settle();
   assert.equal(app.$('#desktop-network-name').textContent, 'new.ts.net');
-  assert.equal(app.$('#exit-nodes').children[0].value, 'new-exit');
+  assert.equal(exitRadio(app, 'new-exit').disabled, false);
+  assert.equal(app.$('#exit-list').children[0].children[1].children[0].textContent, 'New exit');
+  assert.equal(exitRadio(app, 'old-exit'), undefined);
   assert.equal(app.requests.filter((r) => r.path === '/api/action').length, 1);
 });
 
@@ -683,4 +696,339 @@ test('visible backend errors and location labels switch languages without retryi
     assert.match(app.$('#raw-yaml').value, /log_level: debug/);
   }
   assert.equal(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').length, 1);
+});
+
+test('active sessions needing authentication can request sign-in without disconnecting', async () => {
+  for (const mode of ['proxy', 'tun', 'login']) {
+    for (const [state, backend_state] of [['login', 'NeedsLogin'], ['blocked', 'NeedsLogin'], ['login', 'Running']]) {
+      const app = await page({ desktop: true, active: true, mode, state, backend_state });
+      assert.equal(app.$('#desktop-login').hidden, false, `${mode}/${state}`);
+      assert.equal(app.$('#desktop-login').disabled, false, `${mode}/${state}`);
+      await app.$('#desktop-login').emit('click');
+      assert.deepEqual(app.requests.filter(request => request.path === '/api/action').map(request => request.data.action), ['login']);
+      assert.equal(app.snapshot.active, true);
+      assert.equal(app.snapshot.mode, mode);
+    }
+  }
+  const starting = await page({ desktop: true, active: true, mode: 'tun', state: 'starting', backend_state: '' });
+  assert.equal(starting.$('#desktop-login').disabled, true);
+});
+
+test('log-level changes in YAML mode update the source and saved payload without losing other edits', async () => {
+  const edited = '# Keep this comment\n' + yaml.replace('1400', '1500');
+  const app = await page({}, '', {}, doc(edited));
+  await app.$('[data-page="settings"]').emit('click');
+  await app.$('#yaml-tab').emit('click');
+  await app.$('[data-page="logs"]').emit('click');
+  await app.input('#level', 'debug');
+  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.$('#raw-yaml').value, edited.replace('info', 'debug'));
+  app.override = (request) => request.path === '/api/config' && request.method === 'POST'
+    ? response(doc(request.data.yaml, 'updated')) : undefined;
+  await app.$('#save').emit('click');
+  const save = app.requests.find((request) => request.path === '/api/config' && request.method === 'POST');
+  assert.equal(save.data.yaml, edited.replace('info', 'debug'));
+});
+
+test('an unparseable YAML draft disables log-level edits until the source is repaired', async () => {
+  const app = await page();
+  await app.$('#yaml-tab').emit('click');
+  app.override = (request) => request.path === '/api/preview' && request.data.yaml === 'unfinished: ['
+    ? response({ ...doc('unfinished: ['), valid: false, parsed: false, values: {}, error: 'Invalid YAML' }) : undefined;
+  await app.input('#raw-yaml', 'unfinished: [');
+  await app.$('#form-tab').emit('click');
+  await app.$('[data-page="logs"]').emit('click');
+  assert.equal(app.$('#level').disabled, true);
+  await app.input('#level', 'debug');
+  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+  assert.equal(app.requests.some((request) => request.path === '/api/config' && request.method === 'POST'), false);
+  await app.input('#raw-yaml', yaml);
+  await app.$('#form-tab').emit('click');
+  await app.$('#yaml-tab').emit('click');
+  assert.equal(app.$('#level').disabled, false);
+});
+
+test('a pending YAML log-level patch protects raw input and a failed request restores the control', async () => {
+  const app = await page();
+  await app.$('#yaml-tab').emit('click');
+  const pending = deferred();
+  app.override = (request) => request.path === '/api/preview' && request.data.changes?.log_level === 'debug'
+    ? pending.promise : undefined;
+  const change = app.input('#level', 'debug');
+  assert.equal(app.$('#raw-yaml').disabled, true);
+  await app.input('#raw-yaml', '# newer edit\n' + yaml);
+  pending.resolve(response({ error: 'Preview unavailable' }, false));
+  await change;
+  assert.equal(app.$('#raw-yaml').value, yaml);
+  assert.equal(app.$('#level').value, 'info');
+  assert.equal(app.$('#raw-yaml').disabled, false);
+  await app.input('#level', 'warn');
+  assert.match(app.$('#raw-yaml').value, /log_level: warn/);
+});
+
+const exitDocument = (exit = '100.64.0.10', mode = 'split', revision = 'original') => ({
+  ...doc(`tailscale:\n  exit_node: ${exit}\nrules:\n  mode: ${mode}\ntun:\n  enabled: false\n`, revision),
+  values: { log_level: 'info', tailscale: { exit_node: exit }, rules: { mode }, tun: { enabled: false, mtu: 1400 } },
+});
+const exitsSnapshot = (changes = {}) => ({
+  desktop: true, backend_state: 'Running', hostname: 'my-device', network: 'example.ts.net',
+  exit_nodes: [
+    { id: '100.64.0.10', name: 'home', online: true, selected: true },
+    { id: '100.64.0.20', name: 'travel', online: true },
+    { id: '100.64.0.30', name: 'backup', online: false },
+  ], ...changes,
+});
+const exitRadio = (app, id) => app.$('#exit-list').children.find((row) => row.children[0].value === id)?.children[0];
+
+test('pending exit and mode selections block network switching until canceled', async () => {
+  for (const selection of ['exit', 'mode']) {
+    const app = await page(exitsSnapshot(), '', {}, exitDocument());
+    const button = app.$('#desktop-switch-network');
+    assert.equal(button.hidden, false);
+    assert.equal(button.disabled, false);
+    if (selection === 'exit') await exitRadio(app, '100.64.0.20').emit('change');
+    else await app.$('[data-routing-mode="global"]').emit('click');
+    assert.equal(button.disabled, true, selection);
+    await button.emit('click');
+    assert.equal(app.$('#switch-network-dialog').open, undefined);
+    assert.equal(app.$('#connection-apply').hidden, false);
+    assert.equal(app.requests.some((r) => r.method === 'POST'), false);
+    await app.$('#cancel-connection-change').emit('click');
+    assert.equal(button.disabled, false);
+    assert.equal(app.$('#connection-apply').hidden, true);
+  }
+});
+
+test('network confirmation rechecks drafts and pending connection choices', async () => {
+  for (const change of ['draft', 'exit', 'mode']) {
+    const app = await page(exitsSnapshot(), '', {}, exitDocument());
+    const dialog = app.$('#switch-network-dialog');
+    await app.$('#desktop-switch-network').emit('click');
+    assert.equal(dialog.open, true);
+    if (change === 'draft') {
+      await app.$('#yaml-tab').emit('click');
+      await app.input('#raw-yaml', 'unfinished: [');
+    } else if (change === 'exit') await exitRadio(app, '100.64.0.20').emit('change');
+    else await app.$('[data-routing-mode="global"]').emit('click');
+    dialog.returnValue = 'switch-network';
+    await dialog.emit('close');
+    await settle();
+    assert.equal(app.requests.some((r) => r.path === '/api/action'), false, change);
+    assert.equal(app.requests.some((r) => r.path === '/api/config' && r.method === 'POST'), false, change);
+    if (change === 'draft') assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+    else assert.equal(app.$('#connection-apply').hidden, false);
+  }
+});
+
+test('backend transition states block network switching until the device settles', async () => {
+  for (const transition of [
+    { state: 'starting' }, { state: 'stopping' }, { state: 'logging-out' },
+    { active: true, state: 'checking-exit', mode: '' },
+  ]) {
+    const app = await page(exitsSnapshot(transition), '', {}, exitDocument());
+    const button = app.$('#desktop-switch-network');
+    assert.equal(button.disabled, true, transition.state);
+    if (transition.state === 'logging-out') assert.equal(app.$('#desktop-network-name').textContent, '正在退出登录');
+    await button.emit('click');
+    assert.equal(app.$('#switch-network-dialog').open, undefined);
+    assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
+    app.snapshot = { ...app.snapshot, active: false, state: 'stopped', mode: '' };
+    await app.poll();
+    assert.equal(button.disabled, false);
+  }
+});
+
+test('page navigation preserves incomplete YAML and keeps settings at a separate destination', async () => {
+  const app = await page(exitsSnapshot());
+  await app.$('[data-page="settings"]').emit('click');
+  await app.$('#yaml-tab').emit('click');
+  await app.input('#raw-yaml', 'unfinished: [');
+  for (const name of ['logs', 'connection', 'settings']) {
+    await app.$(`[data-page="${name}"]`).emit('click');
+    assert.equal(app.$(`#page-${name}`).hidden, false);
+    assert.equal(app.$('[data-page="settings"]').classes.has('active'), name === 'settings');
+    assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
+  }
+  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.requests.some((r) => r.method === 'POST' && r.path === '/api/config'), false);
+});
+
+test('an exit selection requires confirmation and saves only its field while disconnected', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  await exitRadio(app, '100.64.0.20').emit('change');
+  assert.equal(app.requests.some((r) => r.method === 'POST'), false);
+  assert.equal(app.$('#connection-apply').hidden, false);
+  assert.equal(app.$('#apply-connection-change').textContent, '保存选择');
+  app.override = (request) => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.deepEqual(request.data.changes, { 'tailscale.exit_node': '100.64.0.20' });
+    assert.equal(request.data.revision, 'original');
+    app.config = exitDocument('100.64.0.20', 'split', 'new'); app.snapshot.revision = 'new';
+    app.snapshot.exit_nodes.forEach((node) => { node.selected = node.id === '100.64.0.20'; });
+    return response(app.config);
+  };
+  await app.$('#apply-connection-change').emit('click');
+  assert.equal(app.$('#connection-apply').hidden, true);
+  assert.equal(app.requests.filter((r) => r.path === '/api/action').length, 0);
+});
+
+test('quick-apply conflicts survive automatic document reloads and clear after a successful retry', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  const failure = { zh: '配置在其他位置更新，请重试。', en: 'Configuration changed elsewhere. Try again.' };
+  let first = true;
+  app.override = (request) => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    if (first) {
+      first = false;
+      app.config = exitDocument('100.64.0.10', 'split', 'external');
+      app.config.yaml += '# External edit\n';
+      app.snapshot.revision = 'external';
+      return response({ code: 'conflict', error: failure.en, error_i18n: failure }, false);
+    }
+    assert.equal(request.data.revision, 'external');
+    assert.match(request.data.yaml, /# External edit/);
+    app.config = { ...exitDocument('100.64.0.20', 'split', 'recovered'), yaml: request.data.yaml.replace('exit_node: 100.64.0.10', 'exit_node: 100.64.0.20') };
+    app.snapshot.revision = 'recovered';
+    app.snapshot.exit_nodes.forEach(node => { node.selected = node.id === '100.64.0.20'; });
+    return response(app.config);
+  };
+  await exitRadio(app, '100.64.0.20').emit('change');
+  await app.$('#apply-connection-change').emit('click');
+  assert.match(app.$('#raw-yaml').value, /# External edit/);
+  assert.equal(app.$('#notice').hidden, false);
+  assert.equal(app.$('#notice-title').textContent, '配置文件已更新');
+  assert.equal(app.$('#notice-detail').textContent, failure.zh);
+  assert.equal(app.$('#notice-reload').hidden, false);
+  await app.poll();
+  app.i18n.setLanguage('en');
+  assert.equal(app.$('#notice').hidden, false);
+  assert.equal(app.$('#notice-detail').textContent, failure.en);
+  assert.equal(app.$('#apply-connection-change').disabled, false);
+  await app.$('#apply-connection-change').emit('click');
+  assert.equal(app.$('#notice').hidden, true);
+  assert.equal(app.requests.filter(request => request.path === '/api/config' && request.method === 'POST').length, 2);
+});
+
+test('a reconnect failure remains visible after its saved configuration is automatically reloaded', async () => {
+  const app = await page(exitsSnapshot({ active: true, mode: 'proxy', state: 'running' }), '', {}, exitDocument());
+  const failure = 'Configuration saved, but reconnect failed';
+  app.override = (request) => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    app.config = exitDocument('100.64.0.10', 'global', 'saved-before-failure');
+    app.config.values.tun.enabled = true;
+    app.config.yaml = app.config.yaml.replace('enabled: false', 'enabled: true');
+    Object.assign(app.snapshot, { active: false, mode: '', state: 'failed', error: failure, revision: 'saved-before-failure' });
+    return response({ code: 'apply', error: failure }, false);
+  };
+  await app.$('[data-routing-mode="global"]').emit('click');
+  await app.$('#apply-connection-change').emit('click');
+  assert.match(app.$('#raw-yaml').value, /mode: global/);
+  assert.equal(app.$('#connection-apply').hidden, true);
+  assert.equal(app.$('#notice').hidden, false);
+  assert.equal(app.$('#notice-title').textContent, '无法应用连接更改');
+  assert.equal(app.$('#notice-detail').textContent, failure);
+  await app.poll();
+  assert.equal(app.$('#notice').hidden, false);
+  await app.$('[data-page="settings"]').emit('click');
+  await app.$('#reload').emit('click');
+  assert.equal(app.$('#notice').hidden, true);
+  assert.equal(app.$('#connection-state').textContent, '连接异常');
+});
+
+test('mode selection is confirmed with the exit and enables system routing only for global mode', async () => {
+  const app = await page(exitsSnapshot({ active: true, mode: 'proxy', state: 'running' }), '', {}, exitDocument());
+  await exitRadio(app, '100.64.0.20').emit('change');
+  await app.$('[data-routing-mode="global"]').emit('click');
+  assert.match(app.$('#connection-consequence').textContent, /网络会短暂中断/);
+  assert.equal(app.$('#apply-connection-change').textContent, '应用连接更改');
+  app.override = (request) => request.path === '/api/config' && request.method === 'POST'
+    ? response({ code: 'apply', error: 'Reconnect failed' }, false) : undefined;
+  await app.$('#apply-connection-change').emit('click');
+  const saved = app.requests.find((r) => r.path === '/api/config' && r.method === 'POST');
+  assert.deepEqual(saved.data.changes, { 'tailscale.exit_node': '100.64.0.20', 'rules.mode': 'global', 'tun.enabled': true });
+  assert.equal(app.$('#connection-apply').hidden, false);
+  assert.match(app.$('#connection-selection').textContent, /travel/);
+  assert.equal(app.$('#notice-detail').textContent, 'Reconnect failed');
+});
+
+test('settings drafts block quick apply without being saved or replaced', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  await exitRadio(app, '100.64.0.20').emit('change');
+  await app.input('#level', 'debug');
+  assert.equal(app.$('#apply-connection-change').disabled, true);
+  assert.equal(app.$('#connection-draft-warning').hidden, false);
+  await app.$('#apply-connection-change').emit('click');
+  assert.equal(app.requests.some((r) => r.method === 'POST' && r.path === '/api/config'), false);
+  assert.equal(app.$('#level').value, 'debug');
+  await app.$('[data-page="logs"]').emit('click');
+  await app.$('[data-page="connection"]').emit('click');
+  assert.equal(app.$('#level').value, 'debug');
+  assert.match(app.$('#connection-selection').textContent, /travel/);
+});
+
+test('missing configured exits remain visible and offline exits cannot be selected', async () => {
+  const snapshot = exitsSnapshot(); snapshot.exit_nodes.forEach((node) => { node.selected = false; });
+  const app = await page(snapshot, '', {}, exitDocument('100.64.0.99'));
+  const missing = exitRadio(app, '100.64.0.99');
+  assert.equal(missing.checked, true);
+  assert.equal(missing.disabled, true);
+  assert.equal(exitRadio(app, '100.64.0.30').disabled, true);
+  // A saved manual address can still run the backend availability preflight.
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  await app.input('#exit-search', 'TRAVEL');
+  assert.deepEqual(app.$('#exit-list').children.map((row) => row.children[0].value), ['100.64.0.20']);
+  await app.input('#exit-search', 'nonexistent');
+  assert.equal(app.$('#exit-empty').hidden, false);
+  assert.equal(app.$('#exit-empty-title').textContent, '没有匹配的出口');
+  assert.equal(app.requests.some((r) => r.method === 'POST'), false);
+});
+
+test('a stale selected flag cannot hide a manually saved exit or block restoring the prior exit', async () => {
+  const snapshot = exitsSnapshot(); snapshot.exit_nodes[0].selected_for = '100.64.0.10';
+  const app = await page(snapshot, '', {}, exitDocument());
+  app.override = (request) => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    const chosen = request.data.changes['tailscale.exit_node'];
+    app.config = exitDocument(chosen, 'split', chosen); app.snapshot.revision = chosen;
+    // Idle reconfiguration deliberately retains the old discovery snapshot.
+    return response(app.config);
+  };
+  await app.input('#exit-node', '100.64.0.99');
+  await app.$('#select-manual-exit').emit('click');
+  await app.$('#apply-connection-change').emit('click');
+  assert.equal(exitRadio(app, '100.64.0.99').checked, true);
+  assert.equal(exitRadio(app, '100.64.0.10').checked, false);
+  await exitRadio(app, '100.64.0.10').emit('change');
+  assert.equal(app.$('#connection-apply').hidden, false);
+  assert.equal(app.$('#apply-connection-change').disabled, false);
+  await app.$('#apply-connection-change').emit('click');
+  assert.deepEqual(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').map(r => r.data.changes['tailscale.exit_node']), ['100.64.0.99', '100.64.0.10']);
+});
+
+test('selection metadata bound to the saved DNS alias identifies its discovered node', async () => {
+  const alias = 'home.example.ts.net';
+  const snapshot = exitsSnapshot(); snapshot.exit_nodes[0].selected_for = alias;
+  const app = await page(snapshot, '', {}, exitDocument(alias));
+  assert.equal(exitRadio(app, '100.64.0.10').checked, true);
+  assert.equal(exitRadio(app, alias), undefined);
+});
+
+test('a stale poll cannot restore old device state after a desktop action', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  const old = deferred(); let delay = true;
+  app.override = (request) => {
+    if (request.path === '/api/state' && delay) { delay = false; return old.promise; }
+    if (request.path === '/api/action' && request.data.action === 'disconnect') {
+      app.snapshot = { ...app.snapshot, active: false, state: 'stopped', backend_state: 'NeedsLogin', hostname: '', network: '', exit_nodes: [] };
+      return response({ ok: true });
+    }
+    return undefined;
+  };
+  const polling = app.poll(); await settle();
+  // Use the disconnect event to drive the shared desktop action machinery.
+  app.snapshot.active = true;
+  await app.poll();
+  await app.$('#desktop-disconnect').emit('click');
+  old.resolve(response(exitsSnapshot({ revision: 'original' }))); await polling;
+  assert.equal(app.$('#tailnet-identity').textContent, '未登录 Tailscale');
 });

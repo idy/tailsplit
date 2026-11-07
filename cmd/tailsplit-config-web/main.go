@@ -27,28 +27,64 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Pass --config with an explicit preview configuration file.")
 		os.Exit(2)
 	}
+	server, err := configweb.Start(previewOptions(*config, *listen, *desktop))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer server.Close()
+	fmt.Println("Local configuration preview:", server.URL())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	<-ctx.Done()
+}
+
+func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 	var mutex sync.Mutex
+	snapshot := tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
 	options := configweb.Options{
-		ConfigPath: *config, Listen: *listen, Preview: true,
+		ConfigPath: configPath, Listen: listen, Preview: true,
 		Apply: func(ctx context.Context, update func() error) error {
 			mutex.Lock()
 			defer mutex.Unlock()
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			return update()
+			if err := update(); err != nil {
+				return err
+			}
+			if desktop {
+				config, err := tailsplit.Load(configPath)
+				if err != nil {
+					return err
+				}
+				// Apply already owns mutex; this only updates the simulated state.
+				updatePreviewSnapshot(&snapshot, config)
+			}
+			return nil
 		},
 	}
-	if *desktop {
-		snapshot := tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
+	if desktop {
+		// A broken configuration must remain editable in the preview.
+		if config, err := tailsplit.Load(configPath); err == nil {
+			updatePreviewSnapshot(&snapshot, config)
+		}
 		previewLogin := func(network string) {
-			exitIP := "100.64.0.10"
-			if network == "preview-work.ts.net" {
-				exitIP = "100.64.0.20"
+			snapshot.BackendState, snapshot.NetworkName = "Running", network
+			if !snapshot.Active {
+				snapshot.State = "authenticated"
 			}
-			snapshot = tray.Snapshot{
-				State: "authenticated", BackendState: "Running", NetworkName: network,
-				ExitNodes: []tailsplit.ExitNode{{ID: exitIP, Name: "preview-exit." + network, Online: true}},
+			snapshot.ExitNodes = []tailsplit.ExitNode{
+				{ID: "100.64.0.10", Name: "preview-singapore-exit", Online: true},
+				{ID: "100.64.0.20", Name: "preview-tokyo-exit", Online: true},
+				{ID: "100.64.0.30", Name: "preview-london-exit-offline", Online: false},
+			}
+			if network == "preview-work.ts.net" {
+				snapshot.ExitNodes = []tailsplit.ExitNode{
+					{ID: "100.64.0.20", Name: "preview-work-exit", Online: true},
+					{ID: "100.64.0.40", Name: "preview-work-backup", Online: true},
+					{ID: "100.64.0.50", Name: "preview-work-offline", Online: false},
+				}
 			}
 		}
 		startup := false
@@ -80,10 +116,16 @@ func main() {
 			}
 			return nil
 		}
-		options.Snapshot = func() tray.Snapshot { mutex.Lock(); defer mutex.Unlock(); return snapshot }
+		options.Snapshot = func() tray.Snapshot {
+			mutex.Lock()
+			defer mutex.Unlock()
+			current := snapshot
+			current.ExitNodes = append([]tailsplit.ExitNode(nil), snapshot.ExitNodes...)
+			return current
+		}
 		options.Startup = func() bool { mutex.Lock(); defer mutex.Unlock(); return startup }
 		options.Logs = func() (string, error) {
-			return "UI preview only. No proxy, TUN, network service or Tailnet connection is started.\n", nil
+			return "UI preview simulation only. Sign-in, exits and connection state are simulated. No proxy, TUN, network service or Tailnet connection is started.\n", nil
 		}
 		options.Action = func(ctx context.Context, action string) error {
 			mutex.Lock()
@@ -92,16 +134,33 @@ func main() {
 				return err
 			}
 			switch action {
-			case "connect":
-				snapshot.State, snapshot.Mode, snapshot.Active = "running", "proxy", true
+			case "connect", "login", "refresh-exits":
+				config, err := tailsplit.Load(configPath)
+				if err != nil {
+					return err
+				}
+				if action != "login" && config.Tailscale != nil && snapshot.BackendState != "Running" {
+					return fmt.Errorf("Preview simulation: sign in before connecting or refreshing exits.")
+				}
+				if action == "connect" {
+					snapshot.State, snapshot.Active = "running", true
+					if config.Tailscale == nil {
+						snapshot.BackendState = "Direct"
+					}
+				} else {
+					network := snapshot.NetworkName
+					if network == "" {
+						network = "preview-tailnet.example"
+					}
+					previewLogin(network)
+				}
+				updatePreviewSnapshot(&snapshot, config)
 			case "disconnect":
 				snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
 			case "logout":
-				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
-			case "login":
-				previewLogin("preview-personal.ts.net")
+				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin", RoutingMode: snapshot.RoutingMode}
 			case "switch-network":
-				original, revision, err := tray.ReadConfigDocument(*config)
+				original, revision, err := tray.ReadConfigDocument(configPath)
 				if err != nil {
 					return err
 				}
@@ -113,14 +172,20 @@ func main() {
 				if err != nil {
 					return err
 				}
-				if err := tray.SaveConfigDocument(*config, revision, updated); err != nil {
+				if err := tray.SaveConfigDocument(configPath, revision, updated); err != nil {
+					return err
+				}
+				updatedConfig, err := tailsplit.Load(configPath)
+				if err != nil {
 					return err
 				}
 				network := "preview-work.ts.net"
 				if snapshot.NetworkName == network {
 					network = "preview-personal.ts.net"
 				}
+				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
 				previewLogin(network)
+				updatePreviewSnapshot(&snapshot, updatedConfig)
 			case "startup-on":
 				startup = true
 			case "startup-off":
@@ -129,14 +194,35 @@ func main() {
 			return nil
 		}
 	}
-	server, err := configweb.Start(options)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	return options
+}
+
+// The caller owns the preview mutex. Reading configuration never starts an
+// engine, resolves a network address, or opens a real device identity.
+func updatePreviewSnapshot(snapshot *tray.Snapshot, config tailsplit.Config) {
+	snapshot.RoutingMode = config.Rules.Mode
+	snapshot.ExitNode = ""
+	if config.Tailscale != nil {
+		snapshot.ExitNode = config.Tailscale.ExitNode
 	}
-	defer server.Close()
-	fmt.Println("Local configuration preview:", server.URL())
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	<-ctx.Done()
+	if snapshot.BackendState == "Running" {
+		snapshot.Hostname = "preview-device"
+		if config.Tailscale != nil {
+			snapshot.Hostname = config.Tailscale.Hostname
+		}
+	}
+	for i := range snapshot.ExitNodes {
+		exit := &snapshot.ExitNodes[i]
+		exit.Selected = snapshot.ExitNode == exit.ID || snapshot.ExitNode == exit.Name
+		exit.SelectedFor = ""
+		if exit.Selected {
+			exit.SelectedFor = snapshot.ExitNode
+		}
+	}
+	if snapshot.Active {
+		snapshot.Mode = "proxy"
+		if config.TUN.Enabled {
+			snapshot.Mode = "tun"
+		}
+	}
 }

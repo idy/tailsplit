@@ -102,6 +102,26 @@ func TestWindowsDesktopPipeOwnerCanAcceptClients(t *testing.T) {
 	}
 }
 
+func TestWindowsDesktopStartupLoadsSavedDeviceWhenNotConnecting(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		connectOnStart bool
+		noConnect      bool
+		wantAction     string
+	}{
+		{"auto-connect-off", false, false, "refresh-exits"},
+		{"auto-connect-on", true, false, "connect"},
+		{"installation-disconnected", false, true, "refresh-exits"},
+		{"installation-overrides-auto-connect", true, true, "refresh-exits"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if action := windowsStartupAction(test.connectOnStart, test.noConnect); action != test.wantAction {
+				t.Fatalf("startup action = %q, want %q", action, test.wantAction)
+			}
+		})
+	}
+}
+
 func TestWindowsTrayIconIncludesEachSystemSize(t *testing.T) {
 	for _, connected := range []bool{false, true} {
 		data := windowsTrayIcon(connected)

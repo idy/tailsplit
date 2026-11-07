@@ -209,6 +209,8 @@ func (c *Controller) start(mode string) error {
 	c.snapshot.State, c.snapshot.Mode = "starting", mode
 	c.snapshot.RoutingMode = routingMode
 	c.snapshot.Error, c.snapshot.LoginURL = "", ""
+	// Authentication state must come from the new helper's events.
+	c.snapshot.BackendState = ""
 	c.command, c.input = command, input
 	c.stopping = false
 	c.done = make(chan struct{})

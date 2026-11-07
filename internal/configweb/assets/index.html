@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>TailSplit · 本地配置</title>
+  <title>TailSplit</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
@@ -12,9 +12,9 @@
 <body>
 <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 3 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 1)"/></symbol>
-  <symbol id="i-dns" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c5 5 5 12 0 17-5-5-5-12 0-17Z"/></symbol>
-  <symbol id="i-route" viewBox="0 0 24 24"><path d="M5 19V8a3 3 0 0 1 3-3h11m-4-4 4 4-4 4M5 16a5 5 0 0 1 5-5h9m-4-4 4 4-4 4" transform="translate(0 1)"/></symbol>
-  <symbol id="i-device" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
   <symbol id="i-reload" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></symbol>
@@ -24,161 +24,136 @@
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
 </defs></svg>
 <header class="titlebar" id="titlebar">
-    <a class="brand" href="/" aria-label="TailSplit 配置首页">
-      <span class="brand-mark"><svg viewBox="7.5 9.2 48 48" aria-hidden="true"><path d="M53.4 21.68C52.9 22.65 51.94 23.25 50.89 23.49C46.01 24.6 43.48 20.21 39.58 18.56C36.94 17.45 34.01 17.28 31.18 17.37C28.78 17.45 26.27 18.1 24.6 19.93C19.47 25.57 30.86 27.54 34.03 28.41C39.04 29.8 45.05 32.06 47.15 37.29C48.15 39.81 47.99 42.69 47.04 45.2C45.28 49.83 40.8 52.56 36.03 53.12C34.32 53.32 32.58 53.24 30.87 53.33C28.75 53.44 26.64 53.64 24.54 53.9C19.38 54.53 14.28 55.52 9.22 56.66C15.21 53.26 21.56 51.11 28.22 49.44C21.03 46.73 14.91 42.28 9.22 37.19C14.49 39.48 19.52 42.29 24.98 44.12C28.28 45.23 32.2 46.35 35.7 45.67C37.15 45.38 38.65 44.68 39.42 43.36C44.7 34.38 14.31 38.99 15.03 22.36C15.19 18.56 17.15 15.03 20.16 12.74C25.74 8.52 33.87 9.15 40.21 11.26C41.74 11.77 43.13 12.62 44.64 13.13C46.06 13.61 47.58 13.49 49 13.95C51.97 14.92 55.06 18.45 53.4 21.68ZM46.8 16.7a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-linejoin="round"/></svg></span>
-      <span class="brand-name">TailSplit</span>
-    </a>
-    <div class="titlebar-content">
-      <div class="crumbs"><h1>配置</h1><span class="crumb-sep" aria-hidden="true">/</span><span id="crumb-section">连接设置</span></div>
-      <div class="header-actions">
-        <div class="connection-status" role="status"><span class="exit-label" id="exit-label"></span><span class="status-pill" id="connection-status"><i aria-hidden="true"></i><span>正在读取</span></span></div>
-        <button class="update-pill" id="update-pill" hidden><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span id="update-pill-version" aria-live="polite" aria-atomic="true">检查更新</span></button>
-      </div>
-      <div class="window-controls" id="window-controls" hidden>
-        <button data-window-action="minimize" aria-label="最小化" title="最小化"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10"/></svg></button>
-        <button data-window-action="zoom" aria-label="最大化或还原" title="最大化或还原"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9"/></svg></button>
-        <button data-window-action="close" aria-label="关闭窗口" title="关闭窗口，保留在托盘"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m1 1 10 10M1 11 11 1"/></svg></button>
-      </div>
+  <a class="brand" href="/" aria-label="TailSplit 首页">
+    <span class="brand-mark"><svg viewBox="7.5 9.2 48 48" aria-hidden="true"><path d="M53.4 21.68C52.9 22.65 51.94 23.25 50.89 23.49C46.01 24.6 43.48 20.21 39.58 18.56C36.94 17.45 34.01 17.28 31.18 17.37C28.78 17.45 26.27 18.1 24.6 19.93C19.47 25.57 30.86 27.54 34.03 28.41C39.04 29.8 45.05 32.06 47.15 37.29C48.15 39.81 47.99 42.69 47.04 45.2C45.28 49.83 40.8 52.56 36.03 53.12C34.32 53.32 32.58 53.24 30.87 53.33C28.75 53.44 26.64 53.64 24.54 53.9C19.38 54.53 14.28 55.52 9.22 56.66C15.21 53.26 21.56 51.11 28.22 49.44C21.03 46.73 14.91 42.28 9.22 37.19C14.49 39.48 19.52 42.29 24.98 44.12C28.28 45.23 32.2 46.35 35.7 45.67C37.15 45.38 38.65 44.68 39.42 43.36C44.7 34.38 14.31 38.99 15.03 22.36C15.19 18.56 17.15 15.03 20.16 12.74C25.74 8.52 33.87 9.15 40.21 11.26C41.74 11.77 43.13 12.62 44.64 13.13C46.06 13.61 47.58 13.49 49 13.95C51.97 14.92 55.06 18.45 53.4 21.68ZM46.8 16.7a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-linejoin="round"/></svg></span>
+    <span class="brand-name">TailSplit</span>
+  </a>
+  <div class="titlebar-content">
+    <h1 id="crumb-section">连接页面</h1>
+    <div class="header-actions">
+      <div class="connection-status" role="status"><span class="exit-label" id="exit-label"></span><span class="status-pill" id="connection-status"><i aria-hidden="true"></i><span>正在读取</span></span></div>
+      <button class="update-pill" id="update-pill" hidden><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span id="update-pill-version" aria-live="polite" aria-atomic="true">检查更新</span></button>
     </div>
+    <div class="window-controls" id="window-controls" hidden>
+      <button data-window-action="minimize" aria-label="最小化" title="最小化"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10"/></svg></button>
+      <button data-window-action="zoom" aria-label="最大化或还原" title="最大化或还原"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9"/></svg></button>
+      <button data-window-action="close" aria-label="关闭窗口" title="关闭窗口，保留在托盘"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m1 1 10 10M1 11 11 1"/></svg></button>
+    </div>
+  </div>
 </header>
 <div class="app-shell">
   <aside class="sidebar">
-    <nav class="section-nav" aria-label="配置分类">
-      <p class="nav-group">网络</p>
-      <button class="nav-item active" data-section="connection" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><span>连接设置</span></button>
-      <button class="nav-item" data-section="dns"><svg class="icon" aria-hidden="true"><use href="#i-dns"/></svg><span>DNS</span></button>
-      <button class="nav-item" data-section="routing"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg><span>分流规则</span></button>
-      <p class="nav-group">本机</p>
-      <button class="nav-item" data-section="device"><svg class="icon" aria-hidden="true"><use href="#i-device"/></svg><span>本机与启动</span></button>
+    <nav class="section-nav" aria-label="主导航">
+      <button class="nav-item active" data-page="connection" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><span>连接页面</span></button>
+      <button class="nav-item" data-page="logs"><svg class="icon" aria-hidden="true"><use href="#i-log"/></svg><span>日志</span></button>
     </nav>
     <div class="sidebar-bottom">
-      <div class="file-label"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><div><strong>config.yaml</strong><span id="file-location">本机配置文件</span></div></div>
-      <div class="local-only"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>仅此设备可访问</div>
+      <button class="nav-item" data-page="settings"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>设置</span><span class="draft-indicator" id="settings-draft" aria-label="设置有未保存的更改" hidden></span></button>
     </div>
   </aside>
-
   <main class="workspace">
-    <section class="desktop-controls" id="desktop-controls" aria-label="连接与设备操作" hidden>
-      <div class="desktop-main">
-        <div class="desktop-copy"><strong>网络连接</strong><p class="desktop-hint" id="desktop-hint" role="status">连接和设备登录分别控制；关闭窗口后仍保留在托盘。</p></div>
-        <div class="desktop-actions">
-          <button class="button primary" data-desktop-action="connect" id="desktop-connect">连接</button>
-          <button class="button" data-desktop-action="disconnect" id="desktop-disconnect">断开</button>
-        </div>
-      </div>
-      <div class="desktop-network">
-        <div class="desktop-network-details"><span>当前网络</span><strong id="desktop-network-name" role="status">尚未读取网络</strong></div>
-        <button class="link-button" data-desktop-action="switch-network" id="desktop-switch-network">更换网络…</button>
-      </div>
-      <div class="desktop-more">
-        <button class="link-button" data-desktop-action="login">登录 Tailnet…</button>
-        <button class="link-button" data-desktop-action="logout">退出设备登录</button>
-        <button class="link-button" data-desktop-action="refresh-exits">刷新出口</button>
-        <button class="link-button" id="desktop-logs">查看日志</button>
-        <label class="desktop-startup"><input type="checkbox" id="desktop-startup">登录系统后启动</label>
-      </div>
-    </section>
-
-    <div class="toolbar">
-      <div class="editor-tabs" role="tablist" aria-label="编辑方式">
-        <button id="form-tab" role="tab" aria-selected="true" aria-controls="form-editor" class="selected">表单编辑</button>
-        <button id="yaml-tab" role="tab" aria-selected="false" aria-controls="yaml-editor" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>YAML 原文</button>
-      </div>
-      <div class="toolbar-actions">
-        <label class="language-control" for="ui-language"><span>语言</span><select id="ui-language" aria-label="界面语言"><option value="auto">跟随系统</option><option value="zh">简体中文</option><option value="en">English</option></select></label>
-        <button class="button subtle" id="reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>重新读取</span></button>
-      </div>
-    </div>
-
     <div class="notice" id="notice" role="alert" hidden><div><strong id="notice-title"></strong><p id="notice-detail"></p></div><button class="button small" id="notice-reload" hidden>重新读取</button></div>
     <div class="loading" id="loading"><span class="spinner"></span>正在读取本机配置…</div>
 
-    <div class="editor-layout" id="editor-layout" hidden>
-      <div id="form-editor" role="tabpanel" aria-labelledby="form-tab" class="form-editor">
-        <section class="settings-page" id="section-connection" aria-labelledby="heading-connection">
-          <div class="section-heading"><div><h2 id="heading-connection">连接设置</h2><p>本地代理入口与 Tailscale 出口。</p></div></div>
-          <div class="settings-group">
-            <div class="field-row"><div class="field-label"><label for="listen">代理监听地址</label><p>HTTP 与 SOCKS 共用此入口。</p></div><div class="field-control"><input id="listen" data-field="listen" class="mono" spellcheck="false" placeholder="127.0.0.1:17890"><span class="field-hint">仅支持本机回环地址。</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="exit-node">出口节点</label><p>选择已获准使用的设备。</p></div><div class="field-control"><input id="exit-node" data-field="tailscale.exit_node" class="mono" list="exit-nodes" spellcheck="false" placeholder="节点名称或 Tailscale IP"><datalist id="exit-nodes"></datalist><span class="field-hint">可填节点名称或 IP；登录状态保持不变。</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="hostname">设备名称</label><p>此设备在 Tailnet 中的名称。</p></div><div class="field-control"><input id="hostname" data-field="tailscale.hostname" spellcheck="false" placeholder="留空，跟随本机名称"><span class="field-hint">支持英文字母、数字和连字符。</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="tailnet">限定 Tailnet<span class="optional">可选</span></label><p>避免连接到其他网络。</p></div><div class="field-control"><input id="tailnet" data-field="tailscale.tailnet" class="mono" spellcheck="false" placeholder="例如 tail12345.ts.net"></div></div>
-            <div class="field-row"><div class="field-label"><label for="tailnet-domains">Tailnet 自有域名</label><p>这些域名通过 Tailnet 连接。</p></div><div class="field-control"><textarea id="tailnet-domains" data-field="tailscale.domains" data-kind="list" class="mono" rows="3" spellcheck="false" placeholder="每行一个域名"></textarea></div></div>
-          </div>
-        </section>
-
-        <section class="settings-page" id="section-dns" aria-labelledby="heading-dns" hidden>
-          <div class="section-heading"><div><h2 id="heading-dns">DNS</h2><p>连接时始终创建 DNS TUN；下方设置仅配置上游解析。</p></div></div>
-          <div class="settings-group">
-            <div class="field-row"><div class="field-label"><label for="direct-dns">直连 DNS</label><p>用于直连域名的解析。</p></div><div class="field-control"><input id="direct-dns" data-field="dns.direct" class="mono" spellcheck="false" placeholder="system"><span class="field-hint">system 跟随物理网络，也可填 IP 或 IP:端口。</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="proxy-dns">代理 DNS</label><p>解析请求经过所选出口。</p></div><div class="field-control"><input id="proxy-dns" data-field="dns.proxy" class="mono" spellcheck="false" placeholder="8.8.8.8"></div></div>
-            <div class="field-row toggle-row"><div class="field-label"><label for="direct-ipv6">直连 IPv6</label><p>允许直连公网请求使用 IPv6。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="direct-ipv6" data-field="dns.direct_ipv6"><span class="switch-track"></span></label><span class="toggle-caption">允许 IPv6</span></div></div>
-            <div class="field-row toggle-row"><div class="field-label"><label for="fake-ip">FakeIP</label><p>用虚拟地址保留代理域名信息。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="fake-ip" data-field="dns.fake_ip"><span class="switch-track"></span></label><span class="toggle-caption">启用映射</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="magic-domains">MagicDNS 域名</label><p>使用 Tailnet 内置 DNS。</p></div><div class="field-control"><textarea id="magic-domains" data-field="dns.magic_domains" data-kind="list" class="mono" rows="3" spellcheck="false" placeholder="例如 tail12345.ts.net"></textarea><span class="field-hint">每行一个后缀，需已在 Tailnet 中开启 MagicDNS。</span></div></div>
-          </div>
-          <p class="section-note">DNS 固定监听 TUN 接口的 <code>172.31.255.2:53</code> 与 <code>[fd74:6169:6c73::2]:53</code>，不受整机流量接管开关影响。</p>
-        </section>
-
-        <section class="settings-page" id="section-routing" aria-labelledby="heading-routing" hidden>
-          <div class="section-heading"><div><h2 id="heading-routing">分流规则</h2><p>按域名与目标地址选择流量出口。</p></div></div>
-          <div class="settings-group">
-            <div class="field-row"><div class="field-label"><label for="routing-mode">运行模式</label></div><div class="field-control"><select id="routing-mode" data-field="rules.mode"><option value="split">规则分流</option><option value="global">全局代理（Kill Switch）</option></select><span class="field-hint" id="global-hint" hidden>全局模式会启用整机流量接管，并保留但暂不使用下方分流规则。</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="final-route">未匹配的流量</label><p>不命中规则时的默认行为。</p></div><div class="field-control"><select id="final-route" data-field="rules.final"><option value="direct">直连</option><option value="proxy">通过代理</option></select></div></div>
-            <div class="field-row"><div class="field-label"><label for="gfwlist">GFWList</label><p>代理域名规则来源。</p></div><div class="field-control"><input id="gfwlist" data-field="rules.gfwlist" class="mono" spellcheck="false" placeholder="builtin"><span class="field-hint">builtin 使用内置规则；也支持本地文件或 HTTPS 地址。</span></div></div>
-          </div>
-          <div class="rule-pair"><div><label for="proxy-domains"><span class="rule-dot proxy"></span>代理域名</label><textarea id="proxy-domains" data-field="rules.proxy_domains" data-kind="list" class="mono" rows="5" spellcheck="false" placeholder="github.com&#10;youtube.com"></textarea></div><div><label for="direct-domains"><span class="rule-dot direct"></span>直连域名</label><textarea id="direct-domains" data-field="rules.direct_domains" data-kind="list" class="mono" rows="5" spellcheck="false" placeholder="每行一个域名"></textarea></div></div>
-          <p class="section-note">包含域名本身及其子域名。显式直连规则优先。</p>
-          <div class="rule-pair"><div><label for="proxy-ips">代理 CIDR</label><textarea id="proxy-ips" data-field="rules.proxy_ips" data-kind="list" class="mono" rows="4" spellcheck="false" placeholder="1.1.1.1/32"></textarea></div><div><label for="direct-ips">直连 CIDR</label><textarea id="direct-ips" data-field="rules.direct_ips" data-kind="list" class="mono" rows="4" spellcheck="false" placeholder="192.168.0.0/16"></textarea></div></div>
-          <p class="section-note">每行一个规范网段。默认流量请用“未匹配的流量”设置。</p>
-        </section>
-
-        <section class="settings-page" id="section-device" aria-labelledby="heading-device" hidden>
-          <div class="section-heading"><div><h2 id="heading-device">本机与启动</h2><p>流量接管、物理网卡与诊断选项。</p></div></div>
-          <div class="settings-group">
-            <div class="field-row toggle-row"><div class="field-label"><label for="tun-enabled">整机流量接管</label><p>连接时始终创建 DNS TUN。开启后额外接管整机流量与系统 DNS。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="tun-enabled" data-field="tun.enabled"><span class="switch-track"></span></label><span class="toggle-caption">整机代理入口</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="mtu">MTU</label><p>TUN 数据包的最大尺寸。</p></div><div class="field-control"><div class="input-with-unit"><input type="number" id="mtu" data-field="tun.mtu" data-kind="int" min="1280" max="9000" step="1" class="mono"><span>字节</span></div><span class="field-hint">范围 1280–9000，默认 1400。</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="interface">物理网卡<span class="optional">可选</span></label><p>绑定直连流量和隧道传输。</p></div><div class="field-control"><input id="interface" data-field="interface" class="mono" spellcheck="false" placeholder="留空，自动选择"></div></div>
-            <div class="field-row toggle-row"><div class="field-label"><label for="connect-on-start">打开后自动连接</label><p>仅在打开 TailSplit 时自动连接。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="connect-on-start" data-field="app.connect_on_start"><span class="switch-track"></span></label><span class="toggle-caption">自动连接</span></div></div>
-            <div class="field-row"><div class="field-label"><label for="log-level">日志级别</label><p>控制诊断日志的详细程度。</p></div><div class="field-control"><select id="log-level" data-field="log_level"><option value="info">普通（Info）</option><option value="debug">详细（Debug）</option><option value="trace">完整跟踪（Trace）</option><option value="warn">仅警告（Warn）</option><option value="error">仅错误（Error）</option><option value="fatal">严重错误（Fatal）</option><option value="panic">致命错误（Panic）</option></select><span class="field-hint">排查 DNS、分流和连接问题时使用详细日志。</span></div></div>
-            <div class="field-row" id="app-updates" role="region" aria-labelledby="heading-updates" hidden>
-              <div class="field-label"><h3 id="heading-updates">应用更新</h3><p>更新偏好立即保存。</p></div>
-              <div class="field-control">
-                <div class="update-versions"><span id="update-current"></span><span id="update-latest"></span></div>
-                <label class="desktop-startup update-automatic"><input type="checkbox" id="update-automatic">后台自动检查更新</label>
-                <div class="update-actions"><button class="button small" id="update-check">检查更新</button></div>
-                <p class="field-hint" id="update-install-hint">点按标题栏中的更新按钮安装。安装前会请求确认；当前连接将结束，TailSplit 随后重新启动。</p>
-                <p class="field-hint" id="update-preview" hidden>界面预览：检查与安装仅模拟状态，不会联网下载或运行安装程序。</p>
-                <p class="field-hint update-error" id="update-error" role="status" hidden></p>
-                <p class="field-hint" id="update-last-checked"></p>
-                <details class="update-notes" id="update-notes" hidden><summary>版本说明</summary><pre id="update-release-notes"></pre></details>
-              </div>
-            </div>
-          </div>
-        </section>
+    <section class="app-page connection-page" id="page-connection" aria-label="连接页面" hidden>
+      <div class="tailnet-row">
+        <div class="tailnet-identity"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><div><h2>Tailscale</h2><p id="tailnet-identity">正在读取设备</p><div class="desktop-network-details"><span>当前网络</span><strong id="desktop-network-name" role="status">尚未读取网络</strong></div></div></div>
+        <div class="tailnet-actions"><button class="button small" data-desktop-action="login" id="desktop-login">登录 Tailscale</button><button class="link-button" data-desktop-action="switch-network" id="desktop-switch-network">更换网络…</button><details class="account-menu" id="account-menu" hidden><summary aria-label="Tailscale 设备操作">更多</summary><div><button class="link-button" data-desktop-action="login">重新登录</button><button class="link-button danger" id="desktop-logout">退出登录…</button></div></details></div>
       </div>
-
-      <aside class="yaml-preview" aria-label="配置预览">
-        <div class="preview-heading"><div><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><span>配置预览</span></div><button id="copy-preview" class="icon-button" title="复制 YAML" aria-label="复制 YAML"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button></div>
-        <div class="preview-file"><span>config.yaml</span><span class="preview-draft" id="preview-draft">已保存</span></div>
-        <pre id="yaml-preview" tabindex="0" aria-label="当前 YAML 内容"></pre>
-        <div class="preview-footer"><span id="line-count"></span><span>YAML</span></div>
-      </aside>
-
-      <section id="yaml-editor" role="tabpanel" aria-labelledby="yaml-tab" class="raw-editor" hidden>
-        <div class="raw-heading"><div><h2>YAML 原文</h2><p>直接编辑完整配置，包括表单中未列出的选项。</p></div><button class="button subtle" id="copy-raw"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>复制</button></div>
-        <label class="visually-hidden" for="raw-yaml">完整 YAML 配置</label>
-        <textarea id="raw-yaml" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+      <section class="connection-panel" aria-labelledby="heading-connection">
+        <div class="desktop-main" id="desktop-controls" hidden>
+          <div class="connection-copy"><h2 id="heading-connection">网络连接</h2><p class="connection-state" id="connection-state" role="status">未连接</p><p class="current-exit" id="current-exit"></p></div>
+          <div class="desktop-actions"><button class="button primary" data-desktop-action="connect" id="desktop-connect" aria-label="连接 TailSplit">连接</button><button class="button" data-desktop-action="disconnect" id="desktop-disconnect" hidden>断开</button></div>
+        </div>
+        <p class="desktop-hint" id="desktop-hint" role="status"></p>
+        <div class="routing-control"><div><h3>连接模式</h3><p id="mode-description">按分流规则选择直连或出口。</p></div><div class="mode-options" role="group" aria-label="连接模式"><button class="mode-option selected" data-routing-mode="split" aria-pressed="true">规则分流</button><button class="mode-option" data-routing-mode="global" aria-pressed="false">全局代理</button></div></div>
       </section>
-    </div>
+      <section class="exit-picker" aria-labelledby="heading-exits">
+        <div class="exit-heading"><div><h2 id="heading-exits">出口节点</h2><p id="exit-count">选择已获准使用的设备。</p></div><button class="button subtle small" data-desktop-action="refresh-exits" id="refresh-exits"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>刷新</span></button></div>
+        <label class="exit-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="exit-search" placeholder="搜索名称或 Tailscale IP" aria-label="搜索出口" autocomplete="off" spellcheck="false"></label>
+        <div class="exit-list" id="exit-list" role="group" aria-label="可用出口"></div>
+        <div class="exit-empty" id="exit-empty" role="status"><strong id="exit-empty-title">尚未读取出口</strong><p id="exit-empty-detail">登录 Tailscale 后，刷新可用出口。</p></div>
+        <details class="manual-exit"><summary>手动指定出口</summary><label class="visually-hidden" for="exit-node">节点名称或 Tailscale IP</label><div><input id="exit-node" class="mono" spellcheck="false" placeholder="节点名称或 Tailscale IP"><button class="button small" id="select-manual-exit">选择</button></div><p class="field-hint">用于列表外的已知出口；连接时检查可用性。</p></details>
+      </section>
+      <div class="connection-apply" id="connection-apply" hidden><div><strong id="connection-selection"></strong><p id="connection-consequence"></p></div><div class="connection-apply-actions"><button class="button subtle" id="cancel-connection-change">取消</button><button class="button primary" id="apply-connection-change">保存选择</button></div></div>
+      <div class="draft-warning" id="connection-draft-warning" hidden><p>设置中有未保存的更改，请先保存或放弃，再应用连接更改。</p><button class="link-button" id="view-settings-draft">查看设置草稿</button></div>
+    </section>
 
-    <footer class="actionbar" id="actionbar" hidden>
-      <div class="save-state" id="save-state"><span class="save-dot"></span><span>所有更改已保存</span></div>
-      <div class="action-buttons"><button class="button subtle" id="discard" disabled>放弃更改</button><button class="button" id="validate"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>校验配置</button><button class="button primary" id="save" disabled>保存并应用</button></div>
-    </footer>
+    <section class="app-page logs-page" id="page-logs" aria-labelledby="heading-logs" hidden>
+      <div class="page-heading"><div><h2 id="heading-logs">诊断日志</h2><p>最近的本机日志；设备授权链接和认证密钥会被隐藏。</p></div><button class="button" id="desktop-log-refresh"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>刷新日志</span></button></div>
+      <div class="log-level-row"><label for="log-level">日志级别</label><select id="log-level" data-field="log_level"><option value="info">普通（Info）</option><option value="debug">详细（Debug）</option><option value="trace">完整跟踪（Trace）</option><option value="warn">仅警告（Warn）</option><option value="error">仅错误（Error）</option><option value="fatal">严重错误（Fatal）</option><option value="panic">致命错误（Panic）</option></select><span class="field-hint">更改后需保存并应用。</span></div>
+      <pre class="log-output" id="desktop-log-text" tabindex="0" aria-label="诊断日志"></pre>
+    </section>
+
+    <section class="app-page settings-shell" id="page-settings" aria-label="设置" hidden>
+      <nav class="settings-nav" aria-label="设置分类"><button class="selected" data-section="general" aria-current="page">通用</button><button data-section="network">网络</button><button data-section="dns">DNS</button><button data-section="routing">分流规则</button><button data-section="advanced">高级</button><button data-section="about">关于与更新</button></nav>
+      <div class="toolbar"><div class="editor-tabs" role="tablist" aria-label="编辑方式"><button id="form-tab" role="tab" aria-selected="true" aria-controls="form-editor" class="selected">表单编辑</button><button id="yaml-tab" role="tab" aria-selected="false" aria-controls="yaml-editor" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>YAML 原文</button></div><button class="button subtle" id="reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>重新读取</span></button></div>
+      <div class="editor-layout" id="editor-layout" hidden>
+        <div id="form-editor" role="tabpanel" aria-labelledby="form-tab" class="form-editor">
+          <section class="settings-page" id="section-general" aria-labelledby="heading-general">
+            <div class="section-heading"><div><h2 id="heading-general">通用</h2><p>界面语言与启动偏好。</p></div></div>
+            <div class="settings-group">
+              <div class="field-row"><div class="field-label"><label for="ui-language">语言</label><p>立即生效，不会中断连接。</p></div><div class="field-control"><select id="ui-language" aria-label="界面语言"><option value="auto">跟随系统</option><option value="zh">简体中文</option><option value="en">English</option></select></div></div>
+              <div class="field-row toggle-row" id="startup-setting" hidden><div class="field-label"><label for="desktop-startup">登录系统后启动</label><p>登录这台电脑时打开 TailSplit。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="desktop-startup"><span class="switch-track"></span></label></div></div>
+              <div class="field-row toggle-row"><div class="field-label"><label for="connect-on-start">打开后自动连接</label><p>仅在打开 TailSplit 时自动连接。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="connect-on-start" data-field="app.connect_on_start"><span class="switch-track"></span></label></div></div>
+            </div>
+          </section>
+          <section class="settings-page" id="section-network" aria-labelledby="heading-network" hidden>
+            <div class="section-heading"><div><h2 id="heading-network">网络</h2><p>本地代理入口、流量接管与 Tailnet 参数。</p></div></div>
+            <div class="settings-group">
+              <div class="field-row"><div class="field-label"><label for="listen">代理监听地址</label><p>HTTP 与 SOCKS 共用此入口。</p></div><div class="field-control"><input id="listen" data-field="listen" class="mono" spellcheck="false" placeholder="127.0.0.1:17890"><span class="field-hint">仅支持本机回环地址。</span></div></div>
+              <div class="field-row toggle-row"><div class="field-label"><label for="tun-enabled">整机流量接管</label><p>连接时始终创建 DNS TUN。开启后额外接管整机流量与系统 DNS。</p><p id="global-hint" hidden>全局模式会启用整机流量接管，并保留分流规则。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="tun-enabled" data-field="tun.enabled"><span class="switch-track"></span></label></div></div>
+              <div class="field-row"><div class="field-label"><label for="hostname">设备名称</label><p>此设备在 Tailnet 中的名称。</p></div><div class="field-control"><input id="hostname" data-field="tailscale.hostname" spellcheck="false" placeholder="留空，跟随本机名称"><span class="field-hint">支持英文字母、数字和连字符。</span></div></div>
+              <div class="field-row"><div class="field-label"><label for="tailnet">限定 Tailnet<span class="optional">可选</span></label><p>避免连接到其他网络。</p></div><div class="field-control"><input id="tailnet" data-field="tailscale.tailnet" class="mono" spellcheck="false" placeholder="例如 tail12345.ts.net"></div></div>
+              <div class="field-row"><div class="field-label"><label for="tailnet-domains">Tailnet 自有域名</label><p>这些域名通过 Tailnet 连接。</p></div><div class="field-control"><textarea id="tailnet-domains" data-field="tailscale.domains" data-kind="list" class="mono" rows="3" spellcheck="false" placeholder="每行一个域名"></textarea></div></div>
+            </div>
+          </section>
+          <section class="settings-page" id="section-dns" aria-labelledby="heading-dns" hidden>
+            <div class="section-heading"><div><h2 id="heading-dns">DNS</h2><p>连接时始终创建 DNS TUN；下方设置仅配置上游解析。</p></div></div>
+            <div class="settings-group">
+              <div class="field-row"><div class="field-label"><label for="direct-dns">直连 DNS</label><p>用于直连域名的解析。</p></div><div class="field-control"><input id="direct-dns" data-field="dns.direct" class="mono" spellcheck="false" placeholder="system"><span class="field-hint">system 跟随物理网络，也可填 IP 或 IP:端口。</span></div></div>
+              <div class="field-row"><div class="field-label"><label for="proxy-dns">代理 DNS</label><p>解析请求经过所选出口。</p></div><div class="field-control"><input id="proxy-dns" data-field="dns.proxy" class="mono" spellcheck="false" placeholder="8.8.8.8"></div></div>
+              <div class="field-row toggle-row"><div class="field-label"><label for="direct-ipv6">直连 IPv6</label><p>允许直连公网请求使用 IPv6。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="direct-ipv6" data-field="dns.direct_ipv6"><span class="switch-track"></span></label></div></div>
+              <div class="field-row toggle-row"><div class="field-label"><label for="fake-ip">FakeIP</label><p>用虚拟地址保留代理域名信息。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="fake-ip" data-field="dns.fake_ip"><span class="switch-track"></span></label></div></div>
+              <div class="field-row"><div class="field-label"><label for="magic-domains">MagicDNS 域名</label><p>使用 Tailnet 内置 DNS。</p></div><div class="field-control"><textarea id="magic-domains" data-field="dns.magic_domains" data-kind="list" class="mono" rows="3" spellcheck="false" placeholder="例如 tail12345.ts.net"></textarea><span class="field-hint">每行一个后缀，需已在 Tailnet 中开启 MagicDNS。</span></div></div>
+            </div>
+            <p class="section-note">DNS 固定监听 TUN 接口的 <code>172.31.255.2:53</code> 与 <code>[fd74:6169:6c73::2]:53</code>，不受整机流量接管开关影响。</p>
+          </section>
+          <section class="settings-page" id="section-routing" aria-labelledby="heading-routing" hidden>
+            <div class="section-heading"><div><h2 id="heading-routing">分流规则</h2><p>按域名与目标地址选择流量出口。</p></div></div>
+            <div class="settings-group">
+              <div class="field-row"><div class="field-label"><label for="final-route">未匹配的流量</label><p>不命中规则时的默认行为。</p></div><div class="field-control"><select id="final-route" data-field="rules.final"><option value="direct">直连</option><option value="proxy">通过代理</option></select></div></div>
+              <div class="field-row"><div class="field-label"><label for="gfwlist">GFWList</label><p>代理域名规则来源。</p></div><div class="field-control"><input id="gfwlist" data-field="rules.gfwlist" class="mono" spellcheck="false" placeholder="builtin"><span class="field-hint">builtin 使用内置规则；也支持本地文件或 HTTPS 地址。</span></div></div>
+            </div>
+            <div class="rule-pair"><div><label for="proxy-domains"><span class="rule-dot proxy"></span>代理域名</label><textarea id="proxy-domains" data-field="rules.proxy_domains" data-kind="list" class="mono" rows="5" spellcheck="false" placeholder="github.com&#10;youtube.com"></textarea></div><div><label for="direct-domains"><span class="rule-dot direct"></span>直连域名</label><textarea id="direct-domains" data-field="rules.direct_domains" data-kind="list" class="mono" rows="5" spellcheck="false" placeholder="每行一个域名"></textarea></div></div>
+            <p class="section-note">包含域名本身及其子域名。显式直连规则优先。</p>
+            <div class="rule-pair"><div><label for="proxy-ips">代理 CIDR</label><textarea id="proxy-ips" data-field="rules.proxy_ips" data-kind="list" class="mono" rows="4" spellcheck="false" placeholder="1.1.1.1/32"></textarea></div><div><label for="direct-ips">直连 CIDR</label><textarea id="direct-ips" data-field="rules.direct_ips" data-kind="list" class="mono" rows="4" spellcheck="false" placeholder="192.168.0.0/16"></textarea></div></div>
+            <p class="section-note">每行一个规范网段。默认流量请用“未匹配的流量”设置。</p>
+          </section>
+          <section class="settings-page" id="section-advanced" aria-labelledby="heading-advanced" hidden>
+            <div class="section-heading"><div><h2 id="heading-advanced">高级</h2><p>物理网卡、TUN 参数与完整配置。</p></div></div>
+            <div class="settings-group">
+              <div class="field-row"><div class="field-label"><label for="mtu">MTU</label><p>TUN 数据包的最大尺寸。</p></div><div class="field-control"><div class="input-with-unit"><input type="number" id="mtu" data-field="tun.mtu" data-kind="int" min="1280" max="9000" step="1" class="mono"><span>字节</span></div><span class="field-hint">范围 1280–9000，默认 1400。</span></div></div>
+              <div class="field-row"><div class="field-label"><label for="interface">物理网卡<span class="optional">可选</span></label><p>绑定直连流量和隧道传输。</p></div><div class="field-control"><input id="interface" data-field="interface" class="mono" spellcheck="false" placeholder="留空，自动选择"></div></div>
+            </div>
+            <p class="section-note">使用上方“YAML 原文”编辑完整配置。</p>
+          </section>
+          <section class="settings-page" id="section-about" aria-labelledby="heading-about" hidden>
+            <div class="section-heading"><div><h2 id="heading-about">关于与更新</h2><p>TailSplit</p></div></div>
+            <div class="settings-group" id="app-updates" role="region" aria-labelledby="heading-updates" hidden><div class="field-row"><div class="field-label"><h3 id="heading-updates">应用更新</h3><p>更新偏好立即保存。</p></div><div class="field-control"><div class="update-versions"><span id="update-current"></span><span id="update-latest"></span></div><label class="desktop-startup update-automatic"><input type="checkbox" id="update-automatic">后台自动检查更新</label><div class="update-actions"><button class="button small" id="update-check">检查更新</button></div><p class="field-hint" id="update-install-hint">点按标题栏中的更新按钮安装。安装前会请求确认；当前连接将结束，TailSplit 随后重新启动。</p><p class="field-hint" id="update-preview" hidden>界面预览：检查与安装仅模拟状态，不会联网下载或运行安装程序。</p><p class="field-hint update-error" id="update-error" role="status" hidden></p><p class="field-hint" id="update-last-checked"></p><details class="update-notes" id="update-notes" hidden><summary>版本说明</summary><pre id="update-release-notes"></pre></details></div></div></div>
+          </section>
+        </div>
+        <aside class="yaml-preview" aria-label="配置预览"><div class="preview-heading"><div><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><span>配置预览</span></div><button id="copy-preview" class="icon-button" title="复制 YAML" aria-label="复制 YAML"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div class="preview-file"><span>config.yaml</span><span class="preview-draft" id="preview-draft">已保存</span></div><pre id="yaml-preview" tabindex="0" aria-label="当前 YAML 内容"></pre><div class="preview-footer"><span id="line-count"></span><span>YAML</span></div></aside>
+        <section id="yaml-editor" role="tabpanel" aria-labelledby="yaml-tab" class="raw-editor" hidden><div class="raw-heading"><div><h2>YAML 原文</h2><p>直接编辑完整配置，包括表单中未列出的选项。</p></div><button class="button subtle" id="copy-raw"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>复制</button></div><label class="visually-hidden" for="raw-yaml">完整 YAML 配置</label><textarea id="raw-yaml" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea></section>
+      </div>
+      <div class="settings-file"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><strong>config.yaml</strong><span id="file-location">本机配置文件</span><span class="local-only"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>仅此设备可访问</span></div>
+    </section>
+    <footer class="actionbar" id="actionbar" hidden><div class="save-state" id="save-state"><span class="save-dot"></span><span>所有更改已保存</span></div><div class="action-buttons"><button class="button subtle" id="discard" disabled>放弃更改</button><button class="button" id="validate"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>校验配置</button><button class="button primary" id="save" disabled>保存并应用</button></div></footer>
   </main>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
-<dialog class="desktop-log-dialog" id="desktop-log-dialog"><h2>诊断日志</h2><p>最近的本机日志；设备授权链接和认证密钥会被隐藏。</p><pre id="desktop-log-text" tabindex="0"></pre><form method="dialog"><div class="dialog-actions"><button type="button" class="button" id="desktop-log-refresh">刷新日志</button><button class="button primary" value="close">关闭</button></div></form></dialog>
 <dialog id="switch-network-dialog" aria-labelledby="switch-network-title" aria-describedby="switch-network-detail switch-network-config"><form method="dialog"><h2 id="switch-network-title">更换 Tailscale 网络？</h2><p id="switch-network-detail">当前连接会断开，并退出此设备的 Tailscale 登录。随后请在浏览器中选择要加入的网络。</p><p id="switch-network-config">旧网络限定、出口选择和自动授权设置将清空；授权后请重新选择出口。其他配置会保留。</p><div class="dialog-actions"><button class="button" value="cancel" autofocus>取消</button><button class="button primary" value="switch-network">继续并选择网络</button></div></form></dialog>
 <dialog id="discard-dialog"><form method="dialog"><h2>放弃未保存的更改？</h2><p>重新读取磁盘中的配置，当前草稿将被替换。</p><div class="dialog-actions"><button class="button" value="cancel">继续编辑</button><button class="button primary" value="discard">放弃并重新读取</button></div></form></dialog>
+<dialog id="logout-dialog"><form method="dialog"><h2>退出 Tailscale 登录？</h2><p>当前连接将断开。下次连接前需要重新登录。</p><div class="dialog-actions"><button class="button" value="cancel">取消</button><button class="button primary" value="logout">退出登录</button></div></form></dialog>
 </body>
 </html>
