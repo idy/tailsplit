@@ -385,6 +385,7 @@
     if (await switchMode(mode)) $(`#${mode}-tab`).focus();
   });
   function showPage(name) {
+    const enteringLogs = name === 'logs' && state.page !== name;
     state.page = name;
     for (const nav of document.querySelectorAll('[data-page]')) {
       const active = nav.dataset.page === name;
@@ -395,7 +396,10 @@
     for (const page of document.querySelectorAll('.app-page')) page.hidden = page.id !== `page-${name}`;
     renderPageTitle();
     updateActions();
-    if (name === 'logs') refreshDesktopLogs();
+    if (name === 'logs') {
+      if (enteringLogs) logsFollow = true;
+      showLatestDesktopLogs(); refreshDesktopLogs();
+    }
   }
   function renderPageTitle() {
     const labels = { connection: t('连接页面'), logs: t('日志'), settings: t('设置') };
@@ -673,23 +677,123 @@
     const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
     if (answer === 'logout') { $('#account-menu').open = false; await desktopAction('logout'); }
   });
+  const logColors = ['muted', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'default'];
+  function logRGBColor(red, green, blue) {
+    const max = Math.max(red, green, blue), min = Math.min(red, green, blue), delta = max - min;
+    if (delta < 24) return 'muted';
+    const sector = max === red ? (green - blue) / delta : max === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
+    const hue = ((sector + 6) % 6) * 60;
+    if (hue < 30 || hue >= 345) return 'red';
+    if (hue < 90) return 'yellow';
+    if (hue < 165) return 'green';
+    if (hue < 210) return 'cyan';
+    if (hue < 270) return 'blue';
+    return 'magenta';
+  }
+  function logIndexedColor(index) {
+    if (!Number.isInteger(index) || index < 0 || index > 255) return '';
+    if (index < 16) return logColors[index % 8];
+    if (index >= 232) return 'muted';
+    const cube = index - 16;
+    const channel = (value) => value === 0 ? 0 : 55 + value * 40;
+    return logRGBColor(channel(Math.floor(cube / 36)), channel(Math.floor(cube / 6) % 6), channel(cube % 6));
+  }
+  function renderDesktopLogs(text) {
+    const output = $('#desktop-log-text');
+    const fragment = document.createDocumentFragment();
+    let color = '', bold = false, cursor = 0, visible = false;
+    const append = (value) => {
+      if (!value) return;
+      const span = document.createElement('span');
+      span.className = [color && `log-${color}`, bold && 'log-bold'].filter(Boolean).join(' ');
+      span.textContent = value;
+      fragment.append(span);
+      visible = true;
+    };
+    // Interpret foreground SGR only. Discard other terminal commands, including
+    // OSC hyperlinks, and keep all log content as text under the existing CSP.
+    const controls = /(?:\x1b\[|\x9b)([0-?]*)([ -/]*)([@-~])|(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)|(?:\x1b[P^_X]|\x90|\x98|\x9e|\x9f)[\s\S]*?(?:\x1b\\|\x9c|$)|(?:\x1b\[|\x9b)[0-?]*$|\x1b[ -/]*[0-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+    for (const match of text.matchAll(controls)) {
+      append(text.slice(cursor, match.index));
+      cursor = match.index + match[0].length;
+      if (match[3] !== 'm' || match[2] || !/^[\d;]*$/.test(match[1])) continue;
+      const codes = match[1].split(';').map(Number);
+      for (let i = 0; i < codes.length; i++) {
+        const code = codes[i];
+        if (code === 0) { color = ''; bold = false; }
+        else if (code === 1) bold = true;
+        else if (code === 22) bold = false;
+        else if (code === 39) color = '';
+        else if (code >= 30 && code <= 37) color = logColors[code - 30];
+        else if (code >= 90 && code <= 97) color = logColors[code - 90];
+        else if (code === 38 || code === 48 || code === 58) {
+          const mode = codes[++i];
+          let next = '';
+          if (mode === 5) next = logIndexedColor(codes[++i]);
+          else if (mode === 2) {
+            const rgb = codes.slice(i + 1, i + 4);
+            i += 3;
+            if (rgb.length === 3 && rgb.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) next = logRGBColor(...rgb);
+          } else break;
+          if (code === 38) color = next;
+        }
+      }
+    }
+    append(text.slice(cursor));
+    if (visible) output.replaceChildren(fragment);
+    else output.textContent = t('暂无日志。');
+    return visible;
+  }
   let logsError = null;
   let logsEmpty = false;
   let logsBusy = false;
+  let logsText = null;
+  let logsLatest = null;
+  let logsFollow = true;
+  function renderDesktopLogError() {
+    setStatusText('#desktop-log-error', logsError ? message(logsError) : '');
+    $('#desktop-log-error').hidden = !logsError;
+  }
+  function showLatestDesktopLogs() {
+    const output = $('#desktop-log-text');
+    // Retain the paused snapshot: a bounded tail can discard the entry being read.
+    if (logsLatest !== null && (logsFollow || logsText === null) && logsLatest !== logsText) {
+      logsEmpty = !renderDesktopLogs(logsLatest);
+      logsText = logsLatest;
+    }
+    if (logsFollow && state.page === 'logs' && !document.hidden && output.clientHeight > 0) {
+      output.scrollTop = output.scrollHeight;
+    }
+  }
+  $('#desktop-log-text').addEventListener('scroll', (event) => {
+    const output = event.target;
+    if (state.page === 'logs' && !document.hidden && output.clientHeight > 0) {
+      const following = output.scrollHeight - output.clientHeight - output.scrollTop <= 8;
+      const resumed = following && !logsFollow;
+      logsFollow = following;
+      if (resumed) showLatestDesktopLogs();
+    }
+  });
   async function refreshDesktopLogs() {
     if (logsBusy) return;
-    if (!desktopLive?.logs_available) { $('#desktop-log-text').textContent = t('此页面无法读取日志，请从桌面应用打开。'); return; }
+    if (!desktopLive?.logs_available) {
+      logsText = logsLatest = logsError = null;
+      renderDesktopLogError();
+      $('#desktop-log-text').textContent = t('此页面无法读取日志，请从桌面应用打开。');
+      return;
+    }
     logsBusy = true; $('#desktop-log-refresh').disabled = true;
     try {
-      const text = (await api('logs')).text;
-      logsError = null; logsEmpty = !text;
-      $('#desktop-log-text').textContent = text || t('暂无日志。');
+      logsLatest = (await api('logs')).text || '';
+      logsError = null; renderDesktopLogError();
+      showLatestDesktopLogs();
     } catch (error) {
-      logsError = error; logsEmpty = false;
-      $('#desktop-log-text').textContent = message(error);
+      logsError = error; renderDesktopLogError();
     } finally { logsBusy = false; $('#desktop-log-refresh').disabled = false; }
   }
-  $('#desktop-log-refresh').addEventListener('click', refreshDesktopLogs);
+  $('#desktop-log-refresh').addEventListener('click', () => {
+    logsFollow = true; showLatestDesktopLogs(); return refreshDesktopLogs();
+  });
 
   let updateLive = null;
   let updatePending = '';
@@ -864,18 +968,21 @@
       $('#notice-detail').textContent = message(activeNotice.detail);
     }
     if (!$('#toast').hidden) $('#toast').textContent = t(activeToast);
-    if (logsError) $('#desktop-log-text').textContent = message(logsError);
-    else if (logsEmpty) $('#desktop-log-text').textContent = t('暂无日志。');
+    renderDesktopLogError();
+    if (logsEmpty) $('#desktop-log-text').textContent = t('暂无日志。');
   });
 
+  async function refreshPage() {
+    await Promise.all([refreshState(), state.page === 'logs' && !document.hidden ? refreshDesktopLogs() : null]);
+  }
   window.addEventListener('beforeunload', (event) => { if (state.dirty || Object.keys(connectionChanges()).length) { event.preventDefault(); event.returnValue = ''; } });
-  document.addEventListener('visibilitychange', refreshState);
+  document.addEventListener('visibilitychange', refreshPage);
   $('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('connection'); });
   if (!token) {
     $('#loading').hidden = true;
     notice(t('从 TailSplit 打开配置页面'), t('请点击菜单栏中的 TailSplit，再选择“设置与工具 → 配置面板…”。'));
   } else {
     loadLanguage().then(load).then(refreshState);
-    setInterval(refreshState, 4000);
+    setInterval(refreshPage, 4000);
   }
 })();
