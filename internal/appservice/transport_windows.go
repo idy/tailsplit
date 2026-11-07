@@ -290,7 +290,7 @@ func windowsProbe(ctx context.Context) (Info, error) {
 	return info, nil
 }
 
-func openWindowsSession(ctx context.Context, executable, operation string, config tailsplit.Config) (net.Conn, error) {
+func openWindowsSession(ctx context.Context, executable, operation string, config tailsplit.Config, target string) (net.Conn, error) {
 	installed, err := windowsCorePath()
 	if err != nil || !strings.EqualFold(filepath.Clean(executable), installed) {
 		return nil, errors.New("open the installed TailSplit desktop app")
@@ -308,11 +308,19 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 	if info.BuildID != expected {
 		return nil, errors.New("the desktop app and network service builds differ; complete the TailSplit upgrade")
 	}
-	// Hold the legacy CLI lock for the entire service session, including after
-	// migration. Closing/crashing the broker releases it only after pipe teardown.
+	if operation == "ping" && !info.PingAvailable {
+		return nil, tailsplit.ErrPingUnavailable
+	}
+	// Without the legacy lease, a ping may only use an already active service
+	// engine. The service enforces this after acquiring its own session gate.
 	unlock, err := tailsplit.LockSavedState(config.StateDir)
+	activeOnly := false
 	if err != nil {
-		return nil, err
+		if operation != "ping" || !info.Initialized {
+			return nil, err
+		}
+		activeOnly = true
+		unlock = func() error { return nil }
 	}
 	keep := false
 	defer func() {
@@ -335,7 +343,7 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 		return nil, err
 	}
 	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Config: &config, Files: files}); err != nil {
+	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, ActiveOnly: activeOnly, Config: &config, Files: files}); err != nil {
 		connection.Close()
 		return nil, err
 	}

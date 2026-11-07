@@ -77,6 +77,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			snapshot.ExitNodes = []tailsplit.ExitNode{
 				{ID: "100.64.0.10", Name: "preview-singapore-exit", Online: true},
 				{ID: "100.64.0.20", Name: "preview-tokyo-exit", Online: true},
+				{ID: "100.64.0.40", Name: "preview-frankfurt-exit", Online: true},
 				{ID: "100.64.0.30", Name: "preview-london-exit-offline", Online: false},
 			}
 			if network == "preview-work.ts.net" {
@@ -122,6 +123,28 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			current := snapshot
 			current.ExitNodes = append([]tailsplit.ExitNode(nil), snapshot.ExitNodes...)
 			return current
+		}
+		options.PingExit = func(ctx context.Context, id string) (tailsplit.ExitPingResult, error) {
+			mutex.Lock()
+			defer mutex.Unlock()
+			if err := ctx.Err(); err != nil {
+				return tailsplit.ExitPingResult{}, err
+			}
+			if !snapshot.PingAvailable {
+				return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
+			}
+			if err := tailsplit.ValidateExitPingTarget(snapshot.ExitNodes, id); err != nil {
+				return tailsplit.ExitPingResult{}, err
+			}
+			// Deliberately deterministic simulated values. No network operation,
+			// engine, device state or installed service is used by this preview.
+			switch id {
+			case "100.64.0.20":
+				return tailsplit.ExitPingResult{ID: id, LatencyMS: 740, Relay: "preview-simulated"}, nil
+			case "100.64.0.40":
+				return tailsplit.ExitPingResult{ID: id, LatencyMS: 1250, Relay: "preview-simulated"}, nil
+			}
+			return tailsplit.ExitPingResult{ID: id, LatencyMS: 23.4, Direct: true}, nil
 		}
 		options.Startup = func() bool { mutex.Lock(); defer mutex.Unlock(); return startup }
 		options.Logs = func() (string, error) {
@@ -211,6 +234,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 // engine, resolves a network address, or opens a real device identity.
 func updatePreviewSnapshot(snapshot *tray.Snapshot, config tailsplit.Config) {
 	snapshot.RoutingMode = config.Rules.Mode
+	snapshot.PingAvailable = config.Tailscale != nil && snapshot.BackendState == "Running"
 	snapshot.ExitNode = ""
 	if config.Tailscale != nil {
 		snapshot.ExitNode = config.Tailscale.ExitNode

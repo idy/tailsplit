@@ -5,23 +5,33 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>TailSplit</title>
+  <link rel="preload" href="/fonts/montserrat-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/monda-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
   <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
-<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
-  <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 3 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 1)"/></symbol>
-  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></symbol>
-  <symbol id="i-log" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
-  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
-  <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/></symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
-  <symbol id="i-reload" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
-  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Zm0 0v6h6M8 13h8m-8 4h6"/></symbol>
-  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4m-4 5v2"/></symbol>
-  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+<!-- Phosphor Icons 2.1.1, regular, MIT. See THIRD_PARTY_NOTICES.md. -->
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" data-phosphor-version="2.1.1" aria-hidden="true"><defs>
+  <symbol id="i-link" data-phosphor="link" viewBox="0 0 256 256"><path d="M240,88.23a54.43,54.43,0,0,1-16,37L189.25,160a54.27,54.27,0,0,1-38.63,16h-.05A54.63,54.63,0,0,1,96,119.84a8,8,0,0,1,16,.45A38.62,38.62,0,0,0,150.58,160h0a38.39,38.39,0,0,0,27.31-11.31l34.75-34.75a38.63,38.63,0,0,0-54.63-54.63l-11,11A8,8,0,0,1,135.7,59l11-11A54.65,54.65,0,0,1,224,48,54.86,54.86,0,0,1,240,88.23ZM109,185.66l-11,11A38.41,38.41,0,0,1,70.6,208h0a38.63,38.63,0,0,1-27.29-65.94L78,107.31A38.63,38.63,0,0,1,144,135.71a8,8,0,0,0,16,.45A54.86,54.86,0,0,0,144,96a54.65,54.65,0,0,0-77.27,0L32,130.75A54.62,54.62,0,0,0,70.56,224h0a54.28,54.28,0,0,0,38.64-16l11-11A8,8,0,0,0,109,185.66Z" /></symbol>
+  <symbol id="i-settings" data-phosphor="sliders-horizontal" viewBox="0 0 256 256"><path d="M40,88H73a32,32,0,0,0,62,0h81a8,8,0,0,0,0-16H135a32,32,0,0,0-62,0H40a8,8,0,0,0,0,16Zm64-24A16,16,0,1,1,88,80,16,16,0,0,1,104,64ZM216,168H199a32,32,0,0,0-62,0H40a8,8,0,0,0,0,16h97a32,32,0,0,0,62,0h17a8,8,0,0,0,0-16Zm-48,24a16,16,0,1,1,16-16A16,16,0,0,1,168,192Z" /></symbol>
+  <symbol id="i-log" data-phosphor="file-text" viewBox="0 0 256 256"><path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Zm-32-80a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,136Zm0,32a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,168Z" /></symbol>
+  <symbol id="i-search" data-phosphor="magnifying-glass" viewBox="0 0 256 256"><path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z" /></symbol>
+  <symbol id="i-code" data-phosphor="code" viewBox="0 0 256 256"><path d="M69.12,94.15,28.5,128l40.62,33.85a8,8,0,1,1-10.24,12.29l-48-40a8,8,0,0,1,0-12.29l48-40a8,8,0,0,1,10.24,12.3Zm176,27.7-48-40a8,8,0,1,0-10.24,12.3L227.5,128l-40.62,33.85a8,8,0,1,0,10.24,12.29l48-40a8,8,0,0,0,0-12.29ZM162.73,32.48a8,8,0,0,0-10.25,4.79l-64,176a8,8,0,0,0,4.79,10.26A8.14,8.14,0,0,0,96,224a8,8,0,0,0,7.52-5.27l64-176A8,8,0,0,0,162.73,32.48Z" /></symbol>
+  <symbol id="i-copy" data-phosphor="copy" viewBox="0 0 256 256"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z" /></symbol>
+  <symbol id="i-reload" data-phosphor="arrow-clockwise" viewBox="0 0 256 256"><path d="M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z" /></symbol>
+  <symbol id="i-check" data-phosphor="check" viewBox="0 0 256 256"><path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z" /></symbol>
+  <symbol id="i-check-circle" data-phosphor="check-circle" viewBox="0 0 256 256"><path d="M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z" /></symbol>
+  <symbol id="i-file" data-phosphor="file" viewBox="0 0 256 256"><path d="M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Z" /></symbol>
+  <symbol id="i-lock" data-phosphor="lock" viewBox="0 0 256 256"><path d="M208,80H176V56a48,48,0,0,0-96,0V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80ZM96,56a32,32,0,0,1,64,0V80H96ZM208,208H48V96H208V208Zm-68-56a12,12,0,1,1-12-12A12,12,0,0,1,140,152Z" /></symbol>
+  <symbol id="i-up" data-phosphor="arrow-up" viewBox="0 0 256 256"><path d="M205.66,117.66a8,8,0,0,1-11.32,0L136,59.31V216a8,8,0,0,1-16,0V59.31L61.66,117.66a8,8,0,0,1-11.32-11.32l72-72a8,8,0,0,1,11.32,0l72,72A8,8,0,0,1,205.66,117.66Z" /></symbol>
+  <symbol id="i-server" data-phosphor="hard-drives" viewBox="0 0 256 256"><path d="M208,136H48a16,16,0,0,0-16,16v48a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V152A16,16,0,0,0,208,136Zm0,64H48V152H208v48Zm0-160H48A16,16,0,0,0,32,56v48a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V56A16,16,0,0,0,208,40Zm0,64H48V56H208v48ZM192,80a12,12,0,1,1-12-12A12,12,0,0,1,192,80Zm0,96a12,12,0,1,1-12-12A12,12,0,0,1,192,176Z" /></symbol>
+  <symbol id="i-chevron" data-phosphor="caret-right" viewBox="0 0 256 256"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z" /></symbol>
+  <symbol id="i-close" data-phosphor="x" viewBox="0 0 256 256"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z" /></symbol>
+  <symbol id="i-minus" data-phosphor="minus" viewBox="0 0 256 256"><path d="M224,128a8,8,0,0,1-8,8H40a8,8,0,0,1,0-16H216A8,8,0,0,1,224,128Z" /></symbol>
+  <symbol id="i-square" data-phosphor="square" viewBox="0 0 256 256"><path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,176H48V48H208V208Z" /></symbol>
+  <symbol id="i-spinner" data-phosphor="circle-notch" viewBox="0 0 256 256"><path d="M232,128a104,104,0,0,1-208,0c0-41,23.81-78.36,60.66-95.27a8,8,0,0,1,6.68,14.54C60.15,61.59,40,93.27,40,128a88,88,0,0,0,176,0c0-34.73-20.15-66.41-51.34-80.73a8,8,0,0,1,6.68-14.54C208.19,49.64,232,87,232,128Z" /></symbol>
 </defs></svg>
 <header class="titlebar" id="titlebar">
   <a class="brand" href="/" aria-label="TailSplit 首页">
@@ -35,9 +45,9 @@
       <button class="update-pill" id="update-pill" hidden><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span id="update-pill-version" aria-live="polite" aria-atomic="true">检查更新</span></button>
     </div>
     <div class="window-controls" id="window-controls" hidden>
-      <button data-window-action="minimize" aria-label="最小化" title="最小化"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10"/></svg></button>
-      <button data-window-action="zoom" aria-label="最大化或还原" title="最大化或还原"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9"/></svg></button>
-      <button data-window-action="close" aria-label="关闭窗口" title="关闭窗口，保留在托盘"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m1 1 10 10M1 11 11 1"/></svg></button>
+      <button data-window-action="minimize" aria-label="最小化" title="最小化"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button>
+      <button data-window-action="zoom" aria-label="最大化或还原" title="最大化或还原"><svg class="icon" aria-hidden="true"><use href="#i-square"/></svg></button>
+      <button data-window-action="close" aria-label="关闭窗口" title="关闭窗口，保留在托盘"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
   </div>
 </header>
@@ -45,6 +55,7 @@
   <aside class="sidebar">
     <nav class="section-nav" aria-label="主导航">
       <button class="nav-item active" data-page="connection" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><span>连接页面</span></button>
+      <button class="nav-item" data-page="nodes"><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg><span>出口节点列表</span></button>
       <button class="nav-item" data-page="logs"><svg class="icon" aria-hidden="true"><use href="#i-log"/></svg><span>日志</span></button>
     </nav>
     <div class="sidebar-bottom">
@@ -53,30 +64,32 @@
   </aside>
   <main class="workspace">
     <div class="notice" id="notice" role="alert" hidden><div><strong id="notice-title"></strong><p id="notice-detail"></p></div><button class="button small" id="notice-reload" hidden>重新读取</button></div>
-    <div class="loading" id="loading"><span class="spinner"></span>正在读取本机配置…</div>
+    <div class="loading" id="loading"><svg class="icon spinner" aria-hidden="true"><use href="#i-spinner"/></svg>正在读取本机配置…</div>
 
     <section class="app-page connection-page" id="page-connection" aria-label="连接页面" hidden>
       <div class="tailnet-row">
         <div class="tailnet-identity"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><div><h2>Tailscale</h2><p id="tailnet-identity">正在读取设备</p><div class="desktop-network-details"><span>当前网络</span><strong id="desktop-network-name" role="status">尚未读取网络</strong></div></div></div>
-        <div class="tailnet-actions"><button class="button small" data-desktop-action="login" id="desktop-login">登录 Tailscale</button><button class="link-button" data-desktop-action="switch-network" id="desktop-switch-network">更换网络…</button><details class="account-menu" id="account-menu" hidden><summary aria-label="Tailscale 设备操作">更多</summary><div><button class="link-button" data-desktop-action="login">重新登录</button><button class="link-button danger" id="desktop-logout">退出登录…</button></div></details></div>
+        <div class="tailnet-actions"><button class="button small" data-desktop-action="login" id="desktop-login">登录 Tailscale</button><button class="link-button" data-desktop-action="switch-network" id="desktop-switch-network">更换网络…</button><details class="account-menu" id="account-menu" hidden><summary aria-label="Tailscale 设备操作"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg>更多</summary><div><button class="link-button" data-desktop-action="login">重新登录</button><button class="link-button danger" id="desktop-logout">退出登录…</button></div></details></div>
       </div>
       <section class="connection-panel" aria-labelledby="heading-connection">
         <div class="desktop-main" id="desktop-controls" hidden>
-          <div class="connection-copy"><h2 id="heading-connection">网络连接</h2><p class="connection-state" id="connection-state" role="status">未连接</p><p class="current-exit" id="current-exit"></p></div>
+          <div class="connection-copy"><h2 id="heading-connection">网络连接</h2><p class="connection-state" id="connection-state" role="status">未连接</p></div>
           <div class="desktop-actions"><button class="button primary" data-desktop-action="connect" id="desktop-connect" aria-label="连接 TailSplit">连接</button><button class="button" data-desktop-action="disconnect" id="desktop-disconnect" hidden>断开</button></div>
         </div>
         <p class="desktop-hint" id="desktop-hint" role="status"></p>
+        <button class="exit-trigger" id="choose-exit" aria-haspopup="dialog" aria-controls="exit-picker-dialog"><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg><span class="exit-info"><span class="exit-trigger-label">出口节点</span><strong class="exit-name" id="current-exit">尚未选择出口</strong><span class="exit-address" id="current-exit-detail"></span></span><span class="exit-trigger-action">选择…<svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></span></button>
         <div class="routing-control"><div><h3>连接模式</h3><p id="mode-description">按分流规则选择直连或出口。</p></div><div class="mode-options" role="group" aria-label="连接模式"><button class="mode-option selected" data-routing-mode="split" aria-pressed="true">规则分流</button><button class="mode-option" data-routing-mode="global" aria-pressed="false">全局代理</button></div></div>
-      </section>
-      <section class="exit-picker" aria-labelledby="heading-exits">
-        <div class="exit-heading"><div><h2 id="heading-exits">出口节点</h2><p id="exit-count">选择已获准使用的设备。</p></div><button class="button subtle small" data-desktop-action="refresh-exits" id="refresh-exits"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>刷新</span></button></div>
-        <label class="exit-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="exit-search" placeholder="搜索名称或 Tailscale IP" aria-label="搜索出口" autocomplete="off" spellcheck="false"></label>
-        <div class="exit-list" id="exit-list" role="group" aria-label="可用出口"></div>
-        <div class="exit-empty" id="exit-empty" role="status"><strong id="exit-empty-title">尚未读取出口</strong><p id="exit-empty-detail">登录 Tailscale 后，刷新可用出口。</p></div>
-        <details class="manual-exit"><summary>手动指定出口</summary><label class="visually-hidden" for="exit-node">节点名称或 Tailscale IP</label><div><input id="exit-node" class="mono" spellcheck="false" placeholder="节点名称或 Tailscale IP"><button class="button small" id="select-manual-exit">选择</button></div><p class="field-hint">用于列表外的已知出口；连接时检查可用性。</p></details>
       </section>
       <div class="connection-apply" id="connection-apply" hidden><div><strong id="connection-selection"></strong><p id="connection-consequence"></p></div><div class="connection-apply-actions"><button class="button subtle" id="cancel-connection-change">取消</button><button class="button primary" id="apply-connection-change">保存选择</button></div></div>
       <div class="draft-warning" id="connection-draft-warning" hidden><p>设置中有未保存的更改，请先保存或放弃，再应用连接更改。</p><button class="link-button" id="view-settings-draft">查看设置草稿</button></div>
+    </section>
+
+    <section class="app-page nodes-page" id="page-nodes" aria-labelledby="heading-nodes" hidden>
+      <div class="page-heading"><div><h2 id="heading-nodes">出口节点列表</h2><p id="nodes-count">选择已获准使用的设备。</p></div><button class="button subtle small" data-desktop-action="refresh-exits" id="refresh-exits"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>刷新</span></button></div>
+      <label class="exit-search nodes-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="nodes-search" placeholder="搜索节点名称" aria-label="搜索出口节点列表" autocomplete="off" spellcheck="false"></label>
+      <ul class="nodes-list" id="nodes-list" aria-label="出口节点列表"></ul>
+      <div class="exit-empty" id="nodes-empty" role="status"><strong id="nodes-empty-title">尚未读取出口</strong><p id="nodes-empty-detail">登录 Tailscale 后，刷新可用出口。</p><button class="button small" id="nodes-go-connection">前往连接页面</button></div>
+      <p class="section-note" id="nodes-hint">Ping 测量到节点的往返延迟，不代表下载速度。</p>
     </section>
 
     <section class="app-page logs-page" id="page-logs" aria-labelledby="heading-logs" hidden>
@@ -142,7 +155,7 @@
           </section>
           <section class="settings-page" id="section-about" aria-labelledby="heading-about" hidden>
             <div class="section-heading"><div><h2 id="heading-about">关于与更新</h2><p>TailSplit</p></div></div>
-            <div class="settings-group" id="app-updates" role="region" aria-labelledby="heading-updates" hidden><div class="field-row"><div class="field-label"><h3 id="heading-updates">应用更新</h3><p>更新偏好立即保存。</p></div><div class="field-control"><div class="update-versions"><span id="update-current"></span><span id="update-latest"></span></div><label class="desktop-startup update-automatic"><input type="checkbox" id="update-automatic">后台自动检查更新</label><div class="update-actions"><button class="button small" id="update-check">检查更新</button></div><p class="field-hint" id="update-install-hint">点按标题栏中的更新按钮安装。安装前会请求确认；当前连接将结束，TailSplit 随后重新启动。</p><p class="field-hint" id="update-preview" hidden>界面预览：检查与安装仅模拟状态，不会联网下载或运行安装程序。</p><p class="field-hint update-error" id="update-error" role="status" hidden></p><p class="field-hint" id="update-last-checked"></p><details class="update-notes" id="update-notes" hidden><summary>版本说明</summary><pre id="update-release-notes"></pre></details></div></div></div>
+            <div class="settings-group" id="app-updates" role="region" aria-labelledby="heading-updates" hidden><div class="field-row"><div class="field-label"><h3 id="heading-updates">应用更新</h3><p>更新偏好立即保存。</p></div><div class="field-control"><div class="update-versions"><span id="update-current"></span><span id="update-latest"></span></div><label class="desktop-startup update-automatic"><input type="checkbox" id="update-automatic">后台自动检查更新</label><div class="update-actions"><button class="button small" id="update-check">检查更新</button></div><p class="field-hint" id="update-install-hint">点按标题栏中的更新按钮安装。安装前会请求确认；当前连接将结束，TailSplit 随后重新启动。</p><p class="field-hint" id="update-preview" hidden>界面预览：检查与安装仅模拟状态，不会联网下载或运行安装程序。</p><p class="field-hint update-error" id="update-error" role="status" hidden></p><p class="field-hint" id="update-last-checked"></p><details class="update-notes" id="update-notes" hidden><summary><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg>版本说明</summary><pre id="update-release-notes"></pre></details></div></div></div>
           </section>
         </div>
         <aside class="yaml-preview" aria-label="配置预览"><div class="preview-heading"><div><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><span>配置预览</span></div><button id="copy-preview" class="icon-button" title="复制 YAML" aria-label="复制 YAML"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div class="preview-file"><span>config.yaml</span><span class="preview-draft" id="preview-draft">已保存</span></div><pre id="yaml-preview" tabindex="0" aria-label="当前 YAML 内容"></pre><div class="preview-footer"><span id="line-count"></span><span>YAML</span></div></aside>
@@ -154,6 +167,18 @@
   </main>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="visually-hidden" id="ping-announcement" role="status" aria-atomic="true"></div>
+<dialog class="exit-picker-dialog" id="exit-picker-dialog" aria-labelledby="heading-exits" aria-describedby="exit-dialog-consequence">
+  <div class="exit-dialog-heading"><div><h2 id="heading-exits">选择出口节点</h2><p id="exit-count">选择已获准使用的设备。</p></div><button class="icon-button" id="close-exit-picker" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+  <div class="exit-dialog-toolbar"><label class="exit-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="exit-search" placeholder="搜索节点名称" aria-label="搜索出口" autocomplete="off" spellcheck="false" autofocus></label><button class="button subtle small" data-desktop-action="refresh-exits" id="picker-refresh-exits" aria-label="刷新出口"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>刷新</span></button></div>
+  <div class="exit-list" id="exit-list" role="radiogroup" aria-label="可用出口"></div>
+  <div class="visually-hidden" id="picker-ping-announcement" role="status" aria-atomic="true"></div>
+  <div class="exit-empty" id="exit-empty" role="status"><strong id="exit-empty-title">尚未读取出口</strong><p id="exit-empty-detail">登录 Tailscale 后，刷新可用出口。</p><button class="button small" id="picker-go-connection">前往连接页面</button></div>
+  <details class="manual-exit" id="manual-exit"><summary><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg>手动指定出口</summary><label class="visually-hidden" for="exit-node">节点名称或 Tailscale IP</label><div><input id="exit-node" class="mono" spellcheck="false" placeholder="节点名称或 Tailscale IP"><button class="button small" id="select-manual-exit">选择</button></div><p class="field-hint">用于列表外的已知出口；连接时检查可用性。</p></details>
+  <div class="draft-warning" id="exit-dialog-draft-warning" hidden><p>设置中有未保存的更改，请先保存或放弃，再应用连接更改。</p><button class="link-button" id="picker-view-settings">查看设置草稿</button></div>
+  <p class="exit-dialog-error" id="exit-dialog-error" role="alert" hidden></p>
+  <div class="exit-dialog-footer"><div><strong id="exit-dialog-selection"></strong><p id="exit-dialog-consequence">仅保存选择，保持未连接。</p></div><div class="dialog-actions"><button class="button" id="cancel-exit-picker">取消</button><button class="button primary" id="apply-exit-picker" disabled>保存选择</button></div></div>
+</dialog>
 <dialog id="switch-network-dialog" aria-labelledby="switch-network-title" aria-describedby="switch-network-detail switch-network-config"><form method="dialog"><h2 id="switch-network-title">更换 Tailscale 网络？</h2><p id="switch-network-detail">当前连接会断开，并退出此设备的 Tailscale 登录。随后请在浏览器中选择要加入的网络。</p><p id="switch-network-config">旧网络限定、出口选择和自动授权设置将清空；授权后请重新选择出口。其他配置会保留。</p><div class="dialog-actions"><button class="button" value="cancel" autofocus>取消</button><button class="button primary" value="switch-network">继续并选择网络</button></div></form></dialog>
 <dialog id="discard-dialog"><form method="dialog"><h2>放弃未保存的更改？</h2><p>重新读取磁盘中的配置，当前草稿将被替换。</p><div class="dialog-actions"><button class="button" value="cancel">继续编辑</button><button class="button primary" value="discard">放弃并重新读取</button></div></form></dialog>
 <dialog id="logout-dialog"><form method="dialog"><h2>退出 Tailscale 登录？</h2><p>当前连接将断开。下次连接前需要重新登录。</p><div class="dialog-actions"><button class="button" value="cancel">取消</button><button class="button primary" value="logout">退出登录</button></div></form></dialog>

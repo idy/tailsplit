@@ -33,6 +33,9 @@ Windows executables are unsigned; verify the release checksums before installati
 2. Review your routing rules in the configuration panel.
 3. Connect when ready. Opening the app or signing in does not connect automatically.
 
+Choose an exit in the connection page's picker, or open **Exit nodes** to test
+individual exits with Tailscale Ping. Changing an exit requires confirmation.
+
 **Application proxy** lets individual applications use the local HTTP/SOCKS
 listeners. **System routing** captures system traffic when `tun.enabled` is set.
 Both modes create a DNS TUN and require the privileged network service:

@@ -198,6 +198,7 @@ func runWindowsDesktop() (runErr error) {
 		}, launchWindowsUpdate)
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
+		PingExit: controller.PingExitNode,
 		Apply: func(ctx context.Context, update func() error) error {
 			return app.do(ctx, func() error {
 				err := controller.Reconfigure(update)

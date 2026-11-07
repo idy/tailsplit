@@ -102,7 +102,7 @@ func TestDesktopPreviewIdentityAndExitLifecycle(t *testing.T) {
 	if signedIn.State != "authenticated" || signedIn.Active || signedIn.BackendState != "Running" || signedIn.Hostname != "preview-laptop" || signedIn.NetworkName != "preview-tailnet.example" || signedIn.LoginURL != "" {
 		t.Fatalf("unexpected simulated identity: %+v", signedIn)
 	}
-	if len(signedIn.ExitNodes) != 3 {
+	if len(signedIn.ExitNodes) != 4 {
 		t.Fatalf("unexpected discovery size: %+v", signedIn.ExitNodes)
 	}
 	online, offline, selected := 0, 0, 0
@@ -122,7 +122,7 @@ func TestDesktopPreviewIdentityAndExitLifecycle(t *testing.T) {
 			}
 		}
 	}
-	if online != 2 || offline != 1 || selected != 1 {
+	if online != 3 || offline != 1 || selected != 1 {
 		t.Fatalf("unexpected online/offline/selected counts: %d/%d/%d", online, offline, selected)
 	}
 	if refreshed := previewAction(t, options, "refresh-exits"); !reflect.DeepEqual(refreshed, signedIn) {

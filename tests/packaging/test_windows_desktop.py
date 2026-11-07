@@ -456,6 +456,18 @@ class NativeUIContractTests(unittest.TestCase):
         for required in ("'断开'", "'登录 Tailnet…'", "'退出设备登录'", "'查看日志'", "'保存并应用'"):
             self.assertIn(required, legacy)
 
+    def test_refresh_follows_node_navigation_and_keeps_legacy_fallback(self):
+        html = (ROOT / "internal/configweb/assets/index.html").read_text(encoding="utf-8")
+        translations = (ROOT / "internal/configweb/assets/i18n.js").read_text(encoding="utf-8")
+        self.assertRegex(html, r'<button\b[^>]*data-page="nodes"[^>]*>')
+        self.assertIn("'出口节点列表': 'Exit nodes'", translations)
+        self.assertIn("'出口节点列表': '出口节点'", translations)
+        self.assertIn("'出口节点页面'=@('出口节点','Exit nodes')", self.script)
+        controls = self.script.split("foreach ($name in $initialControls)", 1)[1].split("$stage = 'checking initial", 1)[0]
+        self.assertLess(controls.index("Invoke-Button $automation '出口节点页面'"), controls.index("Find-Button $automation '刷新'"))
+        self.assertIn("elseif (-not (Find-Button $automation '刷新'))", controls)
+        self.assertIn("Invoke-Button $automation '连接页面'", controls)
+
     def test_config_save_navigates_before_editing_and_checks_disk(self):
         save = self.script.split("$stage = 'saving configuration from native window'", 1)[1].split("$stage = 'connecting from native window'", 1)[0]
         self.assertRegex(save, r"(?s)if \(\$pageNavigation\) \{\s*Invoke-Button \$automation '设置'\s*Invoke-Button \$automation '网络'\s*\}")

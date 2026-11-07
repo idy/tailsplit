@@ -116,7 +116,7 @@ function Test-NativeCanvas([IntPtr]$Window, [int]$Light) {
 # Connection nav is also named 连接, so it must never be used as a connect action.
 $UiNames = @{
     '连接'='Connect'; '连接 TailSplit'='Connect TailSplit'; '断开'='Disconnect';
-    '连接页面'=@('连接','Connection'); '日志'='Logs'; '设置'='Settings'; '网络'='Network';
+    '连接页面'=@('连接','Connection'); '出口节点页面'=@('出口节点','Exit nodes'); '日志'='Logs'; '设置'='Settings'; '网络'='Network';
     '登录 Tailscale'='Sign in to Tailscale'; 'Tailscale 设备操作'='Tailscale device actions';
     '退出登录…'='Sign out…'; '刷新'='Refresh'; '代理监听地址'='Proxy listen address';
     '登录 Tailnet…'='Sign in to Tailnet…'; '退出设备登录'='Sign out of device';
@@ -217,7 +217,7 @@ try {
     $connectName = if ($pageNavigation) { '连接 TailSplit' } else { '连接' }
     Wait-Until { $button=Find-Button $automation $connectName; $button -and $button.Current.IsEnabled } 'The direct-config connect action is unavailable.' | Out-Null
     $initialControls = if ($pageNavigation) {
-        @('登录 Tailscale','刷新','连接页面','日志','设置','最大化或还原')
+        @('登录 Tailscale','连接页面','日志','设置','最大化或还原')
     } else {
         @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用','最大化或还原')
     }
@@ -225,6 +225,16 @@ try {
         if (-not (Find-Button $automation $name)) { throw "Missing actual window control: $name" }
     }
     if ($pageNavigation) {
+        # Newer builds moved refresh to a separate node page; older upgrade
+        # fixtures expose it directly on Connection. Check the actual layout.
+        if (Find-Button $automation '出口节点页面') {
+            Invoke-Button $automation '出口节点页面'
+            Wait-Until { Find-Button $automation '刷新' } 'The exit nodes page has no refresh control.' | Out-Null
+            Invoke-Button $automation '连接页面'
+            Wait-Until { Find-Button $automation '登录 Tailscale' } 'The connection page did not reopen.' | Out-Null
+        } elseif (-not (Find-Button $automation '刷新')) {
+            throw 'The connection page has no refresh control.'
+        }
         foreach ($name in @('断开','Tailscale 设备操作','退出登录…','保存并应用')) {
             if (Find-Button $automation $name) { throw "Unexpected signed-out connection-page control: $name" }
         }

@@ -213,6 +213,7 @@ func main() {
 		})
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
+		PingExit:    controller.PingExitNode,
 		Apply:       func(ctx context.Context, update func() error) error { return apply(ctx, update, false) },
 		UpdateState: updates.snapshot, UpdateAction: updates.action,
 		Action: func(ctx context.Context, action string) error {

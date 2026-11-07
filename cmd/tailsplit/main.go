@@ -58,13 +58,14 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		args = args[1:]
 	}
 	switch command {
-	case "init", "check", "render", "run", "app-run", "app-login", "discover", "app-discover", "logout", "app-logout", "refresh":
+	case "init", "check", "render", "run", "app-run", "app-login", "discover", "app-discover", "logout", "app-logout", "refresh", "ping", "app-ping":
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(diagnostic)
 	path := flags.String("c", "config.yaml", "YAML configuration path")
+	target := flags.String("id", "", "discovered exit node ID to ping (ping only)")
 	events := flags.Bool("events", false, "emit private connection events on stdout (run only)")
 	parentPID := flags.Int("parent-pid", 0, "stop if the owning app exits (run only)")
 	if err := flags.Parse(args); err != nil {
@@ -78,7 +79,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	if *events && !isRun {
 		return errors.New("--events is supported only by run")
 	}
-	if *parentPID < 0 || *parentPID != 0 && (!isRun || os.Getppid() != *parentPID) {
+	if *parentPID < 0 || *parentPID != 0 && (!(isRun || command == "ping" || command == "app-ping") || os.Getppid() != *parentPID) {
 		return errors.New("--parent-pid must identify the current parent of a run command")
 	}
 	if command == "init" {
@@ -101,6 +102,12 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	defer stop()
 	if *parentPID != 0 {
 		go watchAppParent(ctx, *parentPID, stop)
+	}
+	if command == "ping" || command == "app-ping" {
+		return runPingCommand(ctx, command == "app-ping", config, *target, out)
+	}
+	if *target != "" {
+		return errors.New("--id is supported only by ping")
 	}
 	if command == "discover" {
 		return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: *events})

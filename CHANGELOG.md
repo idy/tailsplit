@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.15
+
+- Replace the inline exit list with a compact selection dialog and add a
+  dedicated Exit nodes page. Keep exit and routing changes staged until confirmed.
+- Test individual exits with Tailscale Ping from the embedded device, showing
+  latency and connection status without changing the saved selection or starting
+  a proxy connection. Reuse the active device when connected.
+- Bundle the website's Montserrat, Monda and Lato fonts and Phosphor icons for
+  the desktop interface, with local-only assets and their licenses.
+- Preserve device-state locking, parent lifetime and responsive keyboard
+  navigation while testing or selecting exits.
+
 ## 0.7.14
 
 - Add `rules.source` for builtin rules, a custom HTTPS subscription or a local

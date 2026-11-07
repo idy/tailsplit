@@ -11,9 +11,12 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/idy/tailsplit"
 )
 
 func TestHelperProcess(t *testing.T) {
@@ -432,6 +435,51 @@ func TestReconfigurationStopsBeforeEditingAndRestartsAfterFailure(t *testing.T) 
 	}
 	if controller.Snapshot().Active {
 		t.Fatal("editing a disconnected device implicitly started a proxy")
+	}
+}
+
+func TestReconfigureRejectsPingWhileRestartingActiveConnection(t *testing.T) {
+	controller := testController(t, "normal")
+	if err := controller.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, controller, "running")
+	controller.mu.Lock()
+	controller.snapshot.PingAvailable = true
+	controller.snapshot.ExitNodes = []tailsplit.ExitNode{{ID: "100.64.0.10", Online: true}}
+	controller.mu.Unlock()
+	started, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Reconfigure(func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconfiguration did not reach the update")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := controller.PingExitNode(ctx, "100.64.0.10"); !errors.Is(err, tailsplit.ErrPingBusy) {
+		t.Fatalf("Ping interrupted the pending reconnect: %v", err)
+	}
+	unblock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reconfiguration could not reconnect: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconfiguration did not finish")
+	}
+	if snapshot := waitState(t, controller, "running"); !snapshot.Active {
+		t.Fatal("the active connection was not restarted")
 	}
 }
 

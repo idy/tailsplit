@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/idy/tailsplit"
 	"github.com/tailscale/go-winio"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -232,7 +233,8 @@ func RunWindowsInstalled(run, login, logout, discover Runner) error {
 	if err := privateDirectory(base); err != nil {
 		return err
 	}
-	server := &Server{UserID: user, Base: base, BuildID: buildID, Run: run, Login: login, Logout: logout, Discover: discover}
+	server := &Server{UserID: user, Base: base, BuildID: buildID, Run: run, Login: login, Logout: logout, Discover: discover,
+		Ping: tailsplit.PingSavedExitNode}
 	return svc.Run(windowsServiceName, &windowsService{server: server})
 }
 

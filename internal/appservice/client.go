@@ -114,8 +114,12 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 // OpenSession transfers policy and, only during the first migration, a bounded
 // copy of the user's saved login/FakeIP cache. It never transfers path authority.
 func OpenSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer) (net.Conn, error) {
+	return openSession(ctx, executable, operation, config, output, "")
+}
+
+func openSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer, target string) (net.Conn, error) {
 	if runtime.GOOS == "windows" {
-		return openWindowsSession(ctx, executable, operation, config)
+		return openWindowsSession(ctx, executable, operation, config, target)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -140,6 +144,9 @@ func OpenSession(ctx context.Context, executable, operation string, config tails
 	if info.BuildID != expected {
 		return nil, errors.New("update the TailSplit network service from this app before continuing")
 	}
+	if operation == "ping" && !info.PingAvailable {
+		return nil, tailsplit.ErrPingUnavailable
+	}
 	if operation == "start" {
 		if err := tailsplit.EnsureRules(ctx, config, nil); err != nil {
 			return nil, err
@@ -160,7 +167,7 @@ func OpenSession(ctx context.Context, executable, operation string, config tails
 		return nil, err
 	}
 	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err = json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Config: &config, Files: files})
+	err = json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, Config: &config, Files: files})
 	if err != nil {
 		_ = connection.Close()
 		return nil, err
