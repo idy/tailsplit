@@ -42,11 +42,12 @@ type Files struct {
 }
 
 type Request struct {
-	Protocol int               `json:"protocol"`
-	Op       string            `json:"op"`
-	Target   string            `json:"target,omitempty"`
-	Config   *tailsplit.Config `json:"config,omitempty"`
-	Files    Files             `json:"files,omitempty"`
+	Protocol   int               `json:"protocol"`
+	Op         string            `json:"op"`
+	Target     string            `json:"target,omitempty"`
+	ActiveOnly bool              `json:"active_only,omitempty"`
+	Config     *tailsplit.Config `json:"config,omitempty"`
+	Files      Files             `json:"files,omitempty"`
 }
 
 type Info struct {

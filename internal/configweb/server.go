@@ -161,6 +161,9 @@ func (s *Server) handler() http.Handler {
 			"/fonts/montserrat-latin.woff2", "/fonts/monda-latin.woff2",
 			"/fonts/lato-regular-latin.woff2", "/fonts/lato-bold-latin.woff2",
 			"/fonts/Montserrat-OFL.txt", "/fonts/Monda-OFL.txt", "/fonts/Lato-OFL.txt":
+			if strings.HasSuffix(r.URL.Path, ".woff2") {
+				w.Header().Set("Content-Type", "font/woff2")
+			}
 			static.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)

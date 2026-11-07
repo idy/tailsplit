@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -65,17 +66,21 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 	if len(c.options.HelperArgs) == 0 && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
 		operation = "app-ping"
 	}
-	args := append(append([]string{}, c.options.HelperArgs...), operation, "--id", id, "-c", c.options.ConfigPath)
+	args := append(append([]string{}, c.options.HelperArgs...), operation, "--id", id, "--parent-pid", fmt.Sprint(os.Getpid()), "-c", c.options.ConfigPath)
 	command := exec.CommandContext(ctx, c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
 	command.Stderr = c.log
-	if _, err := prepareProcess(command, false); err != nil {
+	lease, err := prepareProcess(command, true)
+	if err != nil {
 		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
+	}
+	if lease != nil {
+		defer lease.Close()
 	}
 	var output bytes.Buffer
 	command.Stdout = &limitedPingWriter{buffer: &output, remaining: 4096}
-	err := command.Run()
+	err = command.Run()
 	if ctx.Err() != nil {
 		return tailsplit.ExitPingResult{}, ctx.Err()
 	}

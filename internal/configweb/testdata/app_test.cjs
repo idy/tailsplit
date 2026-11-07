@@ -43,6 +43,10 @@ class Element {
   removeAttribute(name) { this.attributes.delete(name); }
   append(...children) { this.children.push(...children.flatMap((child) => child.fragment ? child.children : [child])); }
   replaceChildren(...children) { this.children = []; this.append(...children); }
+  querySelectorAll(selector) {
+    const descendants = this.children.flatMap(child => [child, ...child.querySelectorAll(selector)]);
+    return selector === '[data-exit-choice]' ? descendants.filter(child => child.dataset.exitChoice) : [];
+  }
   showModal() { this.open = true; }
   close() { this.open = false; this.emit('close'); }
   focus() {}
@@ -1194,7 +1198,7 @@ test('missing configured exits remain visible and offline exits cannot be select
   const snapshot = exitsSnapshot(); snapshot.exit_nodes.forEach((node) => { node.selected = false; });
   const app = await page(snapshot, '', {}, exitDocument('100.64.0.99'));
   const missing = exitChoice(app, '100.64.0.99');
-  assert.equal(missing.attributes.get('aria-pressed'), 'true');
+  assert.equal(missing.attributes.get('aria-checked'), 'true');
   assert.equal(missing.disabled, true);
   assert.equal(exitChoice(app, '100.64.0.30').disabled, true);
   // A saved manual address can still run the backend availability preflight.
@@ -1220,8 +1224,8 @@ test('a stale selected flag cannot hide a manually saved exit or block restoring
   await app.input('#exit-node', '100.64.0.99');
   await app.$('#select-manual-exit').emit('click');
   await app.$('#apply-connection-change').emit('click');
-  assert.equal(exitChoice(app, '100.64.0.99').attributes.get('aria-pressed') === 'true', true);
-  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-pressed') === 'true', false);
+  assert.equal(exitChoice(app, '100.64.0.99').attributes.get('aria-checked') === 'true', true);
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', false);
   await exitChoice(app, '100.64.0.10').emit('click');
   assert.equal(app.$('#connection-apply').hidden, false);
   assert.equal(app.$('#apply-connection-change').disabled, false);
@@ -1233,7 +1237,7 @@ test('selection metadata bound to the saved DNS alias identifies its discovered 
   const alias = 'home.example.ts.net';
   const snapshot = exitsSnapshot(); snapshot.exit_nodes[0].selected_for = alias;
   const app = await page(snapshot, '', {}, exitDocument(alias));
-  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-pressed') === 'true', true);
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', true);
   assert.equal(exitChoice(app, alias), undefined);
 });
 
@@ -1262,6 +1266,39 @@ const pingButton = (app, id) => nodeRow(app, id)?.children.find(child => child.d
 const selectNodeButton = (app, id) => nodeRow(app, id)?.children.find(child => child.dataset.nodeSelect === id);
 const nodeLatency = (app, id) => nodeRow(app, id)?.children.find(child => child.className?.startsWith('node-latency'));
 
+test('disappeared discovered selection cannot be applied but manual entries remain usable', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  await app.$('#choose-exit').emit('click');
+  await exitChoice(app, '100.64.0.20').emit('click');
+  app.snapshot.exit_nodes = app.snapshot.exit_nodes.filter(node => node.id !== '100.64.0.20');
+  await app.poll();
+  assert.equal(app.$('#apply-exit-picker').disabled, true);
+  await app.input('#exit-node', '100.64.0.99');
+  await app.$('#select-manual-exit').emit('click');
+  assert.equal(app.$('#apply-exit-picker').disabled, false);
+});
+
+test('active exit remains visible when absent from discovered nodes', async () => {
+  const app = await page(exitsSnapshot({ active: true, mode: 'proxy', state: 'running', exit: 'old-exit' }), '', {}, exitDocument());
+  assert.equal(app.$('#current-exit').textContent, 'old-exit');
+});
+
+test('picker radio choices support arrow navigation and skip offline nodes', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  await app.$('#choose-exit').emit('click');
+  const home = exitChoice(app, '100.64.0.10');
+  assert.equal(home.attributes.get('role'), 'radio');
+  assert.equal(home.tabIndex, 0);
+  assert.equal(exitChoice(app, '100.64.0.20').tabIndex, -1);
+  let prevented = false;
+  await home.emit('keydown', { key: 'ArrowDown', preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked'), 'true');
+  assert.equal(exitChoice(app, '100.64.0.20').tabIndex, 0);
+  await exitChoice(app, '100.64.0.20').emit('keydown', { key: 'ArrowDown' });
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked'), 'true');
+});
+
 test('exit picker cancel discards its selection and preserves a pending mode', async () => {
   const app = await page(exitsSnapshot(), '', {}, exitDocument());
   await app.$('[data-routing-mode="global"]').emit('click');
@@ -1273,7 +1310,7 @@ test('exit picker cancel discards its selection and preserves a pending mode', a
   assert.match(app.$('#exit-dialog-selection').textContent, /travel/);
   await app.$('#cancel-exit-picker').emit('click');
   assert.equal(app.$('#exit-picker-dialog').open, false);
-  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-pressed') === 'true', true);
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', true);
   assert.equal(app.$('#connection-apply').hidden, false);
   assert.match(app.$('#connection-selection').textContent, /home.*全局代理/);
   assert.equal(app.requests.some(request => request.method === 'POST'), false);
@@ -1282,7 +1319,7 @@ test('exit picker cancel discards its selection and preserves a pending mode', a
   // Escape's native default closes the dialog and fires the same close event.
   await app.$('#exit-picker-dialog').emit('cancel');
   app.$('#exit-picker-dialog').close();
-  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-pressed') === 'true', true);
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', true);
 });
 
 test('node page opens a staged picker and confirms without starting an idle connection', async () => {
@@ -1292,7 +1329,7 @@ test('node page opens a staged picker and confirms without starting an idle conn
   assert.equal(app.$('#page-connection').hidden, true);
   await selectNodeButton(app, '100.64.0.20').emit('click');
   assert.equal(app.$('#exit-picker-dialog').open, true);
-  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-pressed') === 'true', true);
+  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked') === 'true', true);
   assert.equal(app.requests.some(request => request.method === 'POST'), false);
   app.override = request => {
     if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
@@ -1317,7 +1354,7 @@ test('picker save failures remain inside the dialog with the pending exit and re
   assert.equal(app.$('#exit-picker-dialog').open, true);
   assert.equal(app.$('#exit-dialog-error').hidden, false);
   assert.equal(app.$('#exit-dialog-error').textContent, 'Save failed');
-  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-pressed') === 'true', true);
+  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked') === 'true', true);
   assert.equal(app.$('#apply-exit-picker').disabled, false);
 });
 
@@ -1366,7 +1403,7 @@ test('node pings serialize requests and display real returned latency without ch
   assert.equal(nodeLatency(app, '100.64.0.20').children[0].textContent, '24.7 ms');
   assert.equal(nodeLatency(app, '100.64.0.20').title, '24.7 ms · Relay · sin');
   assert.equal(pingButton(app, '100.64.0.20').disabled, false);
-  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-pressed') === 'true', true);
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', true);
   assert.equal(app.requests.some(request => request.method === 'POST' && request.path !== '/api/exit-ping'), false);
   await app.input('#nodes-search', 'TRAVEL');
   assert.equal(app.$('#nodes-list').children.length, 1);
@@ -1445,8 +1482,8 @@ test('Ping preserves selection and Phosphor CheckCircle follows staged choices a
   assert.equal(pickerPingButton(app, '100.64.0.20').textContent, 'Ping');
   assert.equal(pingButton(app, '100.64.0.20').textContent, 'Ping');
   await pickerPingButton(app, '100.64.0.20').emit('click');
-  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-pressed'), 'true');
-  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-pressed'), 'false');
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked'), 'true');
+  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked'), 'false');
   for (const id of ['100.64.0.10', '100.64.0.20']) {
     assert.equal(exitChoice(app, id).children[0].className, 'node-check');
     assert.equal(exitChoice(app, id).children[0].hidden, false);
@@ -1456,8 +1493,8 @@ test('Ping preserves selection and Phosphor CheckCircle follows staged choices a
   assert.equal(app.$('#apply-exit-picker').disabled, true);
   assert.equal(nodeLatency(app, '100.64.0.20').className, 'node-latency medium');
   await exitChoice(app, '100.64.0.20').emit('click');
-  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-pressed'), 'false');
-  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-pressed'), 'true');
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked'), 'false');
+  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked'), 'true');
   assert.equal(selectNodeButton(app, '100.64.0.10').attributes.get('aria-pressed'), 'true');
   assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check');
   assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check-circle');

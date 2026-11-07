@@ -79,7 +79,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	if *events && !isRun {
 		return errors.New("--events is supported only by run")
 	}
-	if *parentPID < 0 || *parentPID != 0 && (!isRun || os.Getppid() != *parentPID) {
+	if *parentPID < 0 || *parentPID != 0 && (!(isRun || command == "ping" || command == "app-ping") || os.Getppid() != *parentPID) {
 		return errors.New("--parent-pid must identify the current parent of a run command")
 	}
 	if command == "init" {

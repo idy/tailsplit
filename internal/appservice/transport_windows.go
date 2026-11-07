@@ -311,16 +311,16 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 	if operation == "ping" && !info.PingAvailable {
 		return nil, tailsplit.ErrPingUnavailable
 	}
-	// The active broker already holds the legacy CLI lease. After migration a
-	// ping only uses service-owned state, serialized inside the service, so it
-	// must not compete with that broker for the legacy lease. First migration
-	// still requires the lock before reading any device state.
-	unlock := func() error { return nil }
-	if operation != "ping" || !info.Initialized {
-		unlock, err = tailsplit.LockSavedState(config.StateDir)
-		if err != nil {
+	// Without the legacy lease, a ping may only use an already active service
+	// engine. The service enforces this after acquiring its own session gate.
+	unlock, err := tailsplit.LockSavedState(config.StateDir)
+	activeOnly := false
+	if err != nil {
+		if operation != "ping" || !info.Initialized {
 			return nil, err
 		}
+		activeOnly = true
+		unlock = func() error { return nil }
 	}
 	keep := false
 	defer func() {
@@ -343,7 +343,7 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 		return nil, err
 	}
 	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, Config: &config, Files: files}); err != nil {
+	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, ActiveOnly: activeOnly, Config: &config, Files: files}); err != nil {
 		connection.Close()
 		return nil, err
 	}

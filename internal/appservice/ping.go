@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"time"
@@ -88,6 +89,9 @@ func (s *Server) pingExit(ctx context.Context, request Request) (tailsplit.ExitP
 		return s.pingLive(ctx, request.Target)
 	}
 	defer s.active.Unlock()
+	if request.ActiveOnly {
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingBusy
+	}
 	if request.Config == nil {
 		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
 	}
@@ -112,7 +116,13 @@ func PingExitNode(ctx context.Context, executable string, config tailsplit.Confi
 	config.Rules.GFWList = ""
 	connection, err := openSession(ctx, executable, "ping", config, io.Discard, id)
 	if err != nil {
-		return tailsplit.ExitPingResult{}, err
+		if ctx.Err() != nil {
+			return tailsplit.ExitPingResult{}, ctx.Err()
+		}
+		if errors.Is(err, ErrNotInstalled) {
+			return tailsplit.ExitPingResult{}, err
+		}
+		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
 	}
 	defer connection.Close()
 	return readPingReply(ctx, connection)

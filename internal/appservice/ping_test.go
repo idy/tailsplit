@@ -105,6 +105,25 @@ func TestExitPingServiceIdleSessionIsSerializedBoundedAndCanceled(t *testing.T) 
 	}
 }
 
+func TestExitPingActiveOnlyNeverStartsIdleDevice(t *testing.T) {
+	server := &Server{Ping: func(context.Context, tailsplit.Config, string) (tailsplit.ExitPingResult, error) {
+		t.Fatal("active-only ping started an idle device")
+		return tailsplit.ExitPingResult{}, nil
+	}}
+	request := Request{Target: "100.64.0.10", ActiveOnly: true, Config: &tailsplit.Config{}}
+	if _, err := server.pingExit(context.Background(), request); !errors.Is(err, tailsplit.ErrPingBusy) {
+		t.Fatalf("idle active-only ping was not rejected: %v", err)
+	}
+	server.active.Lock()
+	defer server.active.Unlock()
+	server.pingLive = func(_ context.Context, id string) (tailsplit.ExitPingResult, error) {
+		return tailsplit.ExitPingResult{ID: id}, nil
+	}
+	if result, err := server.pingExit(context.Background(), request); err != nil || result.ID != request.Target {
+		t.Fatalf("active-only ping did not use active engine: %+v %v", result, err)
+	}
+}
+
 func TestExitPingServiceRejectsTransitionalOrUnsupportedSessions(t *testing.T) {
 	server := &Server{}
 	request := Request{Target: "100.64.0.10", Config: &tailsplit.Config{}}

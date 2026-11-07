@@ -477,6 +477,8 @@
   let quickBusy = false;
   let stateRequest = 0;
   let selectedExit = null;
+  let selectedExitDiscovered = false;
+  let pickerOriginalDiscovered = false;
   let selectedMode = null;
   let exitListSignature = '';
   let nodesListSignature = '';
@@ -517,8 +519,9 @@
   function updateDesktop(live) {
     if (desktopLive && (live.network !== desktopLive.network || live.hostname !== desktopLive.hostname || signedIn(live) !== signedIn())) clearPingResults();
     desktopLive = live;
+    const onlineIDs = new Set(exitNodes().filter((node) => node.online).map((node) => node.id));
     for (const [id] of pingResults) {
-      if (!exitNodes().some((node) => node.id === id && node.online)) pingResults.delete(id);
+      if (!onlineIDs.has(id)) pingResults.delete(id);
     }
     renderConnectionCenter();
   }
@@ -562,7 +565,7 @@
       needsAuthentication(live) ? t('未登录 Tailscale') : discovering ? t('正在读取设备') : t('未登录 Tailscale');
     setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : identity);
     const current = connected ? live.exit || savedExit() : savedExit();
-    const currentNode = nodes.find((node) => node.id === current || node.name === current) || nodes.find((node) => node.configured);
+    const currentNode = nodes.find((node) => node.id === current || node.name === current) || (!connected || !live.exit ? nodes.find((node) => node.configured) : undefined);
     setStatusText('#current-exit', currentNode?.name || current || t('尚未选择出口'));
     const currentDetail = currentNode ? !currentNode.online ? t(currentNode.missing ? '已保存 · 未发现' : '已选 · 不可用') : '' : t('选择已获准使用的设备。');
     setStatusText('#current-exit-detail', currentDetail);
@@ -588,7 +591,7 @@
     const consequence = connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
     const applyLabel = quickBusy ? t('正在应用…') : !connected ? t('保存选择') :
       selectedExit !== null && selectedMode !== null ? t('应用连接更改') : selectedExit !== null ? t('切换出口') : t('应用模式');
-    const cannotApply = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && Boolean(chosenNode && !chosenNode.online);
+    const cannotApply = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && (chosenNode ? !chosenNode.online : selectedExitDiscovered);
     for (const prefix of ['connection', 'exit-dialog']) {
       setStatusText(`#${prefix}-selection`, selection);
       setStatusText(`#${prefix}-consequence`, consequence);
@@ -618,13 +621,25 @@
       const focused = document.activeElement?.dataset;
       let restoreFocus = null;
       const fragment = document.createDocumentFragment();
+      const available = visible.filter((node) => node.online);
+      const focusable = available.find((node) => selectedExit === null ? node.configured : node.id === selectedExit) || available[0];
       for (const node of visible) {
         const selected = selectedExit === null ? node.configured : node.id === selectedExit;
         const row = document.createElement('div');
         row.className = `exit-row${selected ? ' selected' : ''}`;
         const { latency, ping } = nodePingControls(node, locked, 'picker');
         const choice = nodeChoiceButton(node, selected, locked, 'picker');
-        choice.addEventListener('click', () => { pickerValidationError = ''; selectedExit = node.configured ? null : node.id; renderConnectionCenter(); });
+        choice.tabIndex = !choice.disabled && node === focusable ? 0 : -1;
+        choice.addEventListener('click', () => { pickerValidationError = ''; selectedExit = node.configured ? null : node.id; selectedExitDiscovered = true; renderConnectionCenter(); });
+        choice.addEventListener('keydown', (event) => {
+          const direction = ['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 0;
+          if (!direction || !available.length) return;
+          event.preventDefault();
+          const next = available[(available.indexOf(node) + direction + available.length) % available.length];
+          pickerValidationError = ''; selectedExit = next.configured ? null : next.id; selectedExitDiscovered = true;
+          renderConnectionCenter();
+          [...$('#exit-list').querySelectorAll('[data-exit-choice]')].find((button) => button.dataset.exitChoice === next.id)?.focus();
+        });
         if (focused?.exitChoice === node.id && !choice.disabled) restoreFocus = choice;
         if (focused?.pingSurface === 'picker' && focused.nodePing === node.id && !ping.disabled) restoreFocus = ping;
         row.append(choice, latency, ping); fragment.append(row);
@@ -656,7 +671,12 @@
     const choice = document.createElement('button'); choice.type = 'button'; choice.className = 'node-choice';
     choice.dataset[surface === 'picker' ? 'exitChoice' : 'nodeSelect'] = node.id;
     choice.disabled = locked || !node.online;
-    choice.setAttribute('aria-pressed', String(Boolean(selected)));
+    if (surface === 'picker') {
+      choice.setAttribute('role', 'radio');
+      choice.setAttribute('aria-checked', String(Boolean(selected)));
+    } else {
+      choice.setAttribute('aria-pressed', String(Boolean(selected)));
+    }
     choice.setAttribute('aria-label', t('选择 {name}', { name: node.name }));
     const name = document.createElement('span'); name.className = 'exit-name'; name.textContent = node.name; name.title = node.name;
     const check = document.createElement('span'); check.className = 'node-check';
@@ -734,11 +754,12 @@
   }
   function openExitPicker(id, opener = $('#choose-exit')) {
     if (isLocked() || desktopBusy || quickBusy || connectionLost || !state.loaded) return;
-    pickerOriginalExit = selectedExit; pickerCommitted = false; pickerOpener = opener; pickerValidationError = '';
+    pickerOriginalExit = selectedExit; pickerOriginalDiscovered = selectedExitDiscovered; pickerCommitted = false; pickerOpener = opener; pickerValidationError = '';
     if (id) {
       const node = exitNodes().find((node) => node.id === id && node.online);
       if (!node) return;
       selectedExit = node.configured ? null : node.id;
+      selectedExitDiscovered = true;
     }
     $('#exit-search').value = ''; $('#exit-node').value = ''; $('#manual-exit').open = false;
     exitDialog.showModal(); renderConnectionCenter(); $('#exit-search').focus();
@@ -747,7 +768,7 @@
   for (const id of ['close-exit-picker', 'cancel-exit-picker']) $(`#${id}`).addEventListener('click', () => { if (!quickBusy) exitDialog.close(); });
   exitDialog.addEventListener('cancel', (event) => { if (quickBusy) event.preventDefault(); });
   exitDialog.addEventListener('close', () => {
-    if (!pickerCommitted) selectedExit = pickerOriginalExit;
+    if (!pickerCommitted) { selectedExit = pickerOriginalExit; selectedExitDiscovered = pickerOriginalDiscovered; }
     renderConnectionCenter();
     if (!['connection', 'nodes'].includes(state.page)) return;
     if (pickerOpener?.isConnected && !pickerOpener.disabled) pickerOpener.focus();
@@ -766,6 +787,7 @@
     if (node && !node.online) { pickerValidationError = '请选择在线出口，或刷新列表后重试。'; renderConnectionCenter(); return; }
     pickerValidationError = '';
     selectedExit = node?.configured || value === savedExit() ? null : node?.id || value;
+    selectedExitDiscovered = Boolean(node);
     renderConnectionCenter();
   });
   for (const button of document.querySelectorAll('[data-routing-mode]')) button.addEventListener('click', () => {
