@@ -30,7 +30,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.13 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.14 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -272,7 +272,7 @@ tailsplit version
 
 `init` creates without overwriting an existing file. `check` validates without
 starting the proxy; `render` shows the embedded-core configuration. When a remote
-GFWList cache is missing, both commands download and cache it first. With a cache
+rule-list cache is missing, both commands download and cache it first. With a cache
 or local rule file, validation and rendering work offline. Connecting requires
 appropriate network privileges and a configured proxy or authorized Tailnet destination:
 
@@ -286,20 +286,35 @@ controls whole-system traffic capture and system DNS publishing. DNS listener
 addresses and ports are fixed. `dns.listen` is unsupported and fails validation;
 remove that field from older YAML files.
 
-Edit routing and DNS rules in the YAML. The default GFWList source is the
-[official subscription](https://github.com/gfwlist/gfwlist/blob/master/gfwlist.txt),
-downloaded from its raw HTTPS URL. TailSplit downloads and validates it when the
-cache is missing, then atomically stores the original bytes in a source-specific
-file under `<state_dir>`. Existing `gfwlist.txt` caches are migrated only for the
-saved subscription that owns them. Subscription URLs are hashed into cache
-filenames, so validating an unsaved source cannot replace another source's policy.
-Later checks and connections reuse the matching disk cache,
-including offline. Compatibility coverage is added only when the selected list
-lacks previously supported application domains; older local and custom lists
-retain that coverage without a forced refresh.
-No upstream GFWList snapshot is stored in the repository or embedded in the app.
-The legacy `gfwlist: builtin` value selects the same official source; local files
-and other HTTPS subscriptions are also supported.
+### Rule sources
+
+Edit routing and DNS rules in the YAML. Choose **Settings → Routing rules →
+Rule source** to use **Builtin rules**, a **Custom URL or file**, or **No rule
+list**. The equivalent YAML setting is:
+
+```yaml
+rules:
+  source: builtin
+```
+
+`builtin` selects the maintained default subscription. To use your own rules,
+set `rules.source` to an HTTPS URL such as `https://example.com/rules.txt`, or a
+local file path such as `./rules.txt`. Relative paths resolve beside the YAML
+file. An empty string disables the list while keeping your explicit domain and
+CIDR rules. The legacy `rules.gfwlist` key remains compatible; use only one source
+key in a configuration.
+
+TailSplit automatically detects Base64-encoded and plain-text domain lists.
+Plain text supports one domain per line and AutoProxy-style entries such as
+`||example.com` and direct exceptions such as `@@||safe.example.com`; the
+AutoProxy header is optional.
+
+Remote lists, including builtin rules, are downloaded and validated on first use,
+then atomically cached under `<state_dir>`. Each subscription has a separate
+cache, so checking an unsaved source cannot replace another source's rules.
+Later checks and connections reuse the matching cache, including offline.
+Compatibility rules supplement application domains missing from the selected
+list, without requiring a refresh.
 
 To update the cache explicitly:
 
@@ -310,10 +325,10 @@ tailsplit rules refresh -c config.yaml
 Failed downloads or invalid rules leave the existing cache intact. An initial
 download failure without a cache stops split-mode startup with an error. Downloads
 have a 30-second timeout and a 2 MiB limit. Global mode and device login, logout
-and exit discovery do not require GFWList. The desktop app downloads as the
+and exit discovery do not require a rule list. The desktop app downloads as the
 ordinary user and transfers the cached contents to its network service.
 [Supplemental application rules](../internal/domainrules/supplemental.txt) are added
-when loading the list; explicit GFWList direct exceptions take precedence.
+when loading the list; explicit direct exceptions take precedence.
 
 Credentials and persistent device state belong in user-controlled files, not in
 this repository. Keep existing configuration/state directories during upgrades.
@@ -442,9 +457,8 @@ limit. Diffs over 5,000,000 bytes wait until an admin comments
 ## License and source provenance
 
 TailSplit is GPL-3.0-or-later; see [LICENSE](../LICENSE) and
-[third-party notices](../THIRD_PARTY_NOTICES.md). GFWList is downloaded separately
-from its [official source](https://github.com/gfwlist/gfwlist/blob/master/gfwlist.txt)
-under its upstream LGPL-2.1 license.
+[third-party notices](../THIRD_PARTY_NOTICES.md). Downloaded rule lists retain their
+respective upstream licenses.
 
 The initial public application tree was imported from `letsolo/tailsplit`
 without its private signing files or private credential history. The shared

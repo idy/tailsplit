@@ -55,6 +55,37 @@ func ReadConfigDocument(path string) ([]byte, string, error) {
 	return data, fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
+// detachScalarAliases keeps aliases bound to the old value when a scalar is
+// edited. The first alias owns the preserved anchor; later aliases stay compact.
+func detachScalarAliases(document, scalar *yaml.Node) {
+	if scalar.Kind != yaml.ScalarNode || scalar.Anchor == "" {
+		return
+	}
+	var aliases []*yaml.Node
+	var visit func(*yaml.Node)
+	visit = func(node *yaml.Node) {
+		if node.Kind == yaml.AliasNode && node.Alias == scalar {
+			aliases = append(aliases, node)
+			return
+		}
+		for _, child := range node.Content {
+			visit(child)
+		}
+	}
+	visit(document)
+	if len(aliases) == 0 {
+		return
+	}
+	preserved := aliases[0]
+	head, line, foot := preserved.HeadComment, preserved.LineComment, preserved.FootComment
+	*preserved = *scalar
+	preserved.HeadComment, preserved.LineComment, preserved.FootComment = head, line, foot
+	scalar.Anchor = ""
+	for _, alias := range aliases[1:] {
+		alias.Alias = preserved
+	}
+}
+
 // PatchConfigDocument preserves comments and unrelated values in the document.
 func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, error) {
 	if len(original) > MaxConfigBytes {
@@ -95,10 +126,48 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 				break
 			}
 		}
+		// Migrate the old source key only when the user edits this field,
+		// retaining its position and comments instead of adding a second source.
+		if scalar == nil && change.Section == "rules" && change.Key == "source" {
+			for i := 0; i < len(nested.Content); i += 2 {
+				if nested.Content[i].Value == "gfwlist" {
+					nested.Content[i].Value = change.Key
+					scalar = nested.Content[i+1]
+					break
+				}
+			}
+		}
+		if change.Section == "rules" && change.Key == "source" {
+			// Renaming a direct key can also reveal a legacy value inherited
+			// through <<. Override it locally without changing shared anchors.
+			var inherited struct {
+				GFWList string `yaml:"gfwlist"`
+			}
+			if err := nested.Decode(&inherited); err != nil {
+				return nil, err
+			}
+			if inherited.GFWList != "" {
+				var legacy *yaml.Node
+				for i := 0; i < len(nested.Content); i += 2 {
+					if nested.Content[i].Value == "gfwlist" {
+						legacy = nested.Content[i+1]
+						break
+					}
+				}
+				if legacy == nil {
+					legacy = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str"}
+					nested.Content = append(nested.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "gfwlist"}, legacy)
+				}
+				detachScalarAliases(&document, legacy)
+				// This changes only the local scalar, retaining its comments.
+				legacy.Kind, legacy.Tag, legacy.Value, legacy.Alias = yaml.ScalarNode, "!!str", "", nil
+			}
+		}
 		if scalar == nil {
 			scalar = &yaml.Node{}
 			nested.Content = append(nested.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: change.Key}, scalar)
 		}
+		detachScalarAliases(&document, scalar)
 		head, line, foot := scalar.HeadComment, scalar.LineComment, scalar.FootComment
 		if err := scalar.Encode(change.Value); err != nil {
 			return nil, err

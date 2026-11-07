@@ -244,7 +244,7 @@ func main() {
 		status.Disable()
 		connect := addMenu(nil, "连接", "连接或断开 TailSplit")
 		routing := addMenu(nil, "模式：规则分流", "选择分流策略；已连接时会重新连接")
-		splitMode := addMenu(routing, "规则分流", "按 GFWList 和自定义规则决定直连或出口", preferences.RoutingMode != tailsplit.RoutingGlobal)
+		splitMode := addMenu(routing, "规则分流", "按规则列表和自定义规则决定直连或出口", preferences.RoutingMode != tailsplit.RoutingGlobal)
 		globalMode := addMenu(routing, "全局代理（Kill Switch）", "启用 TUN，忽略直连例外；出口断开后阻断，手动断开后恢复系统网络", preferences.RoutingMode == tailsplit.RoutingGlobal)
 		exitMenu := addMenu(nil, "出口节点", "自动读取当前 Tailnet 的可用出口；选择后重新连接")
 		picker := newExitPicker(exitMenu)

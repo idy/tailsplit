@@ -70,10 +70,10 @@ import sys
 from pathlib import Path
 config, rules = map(Path, sys.argv[1:])
 rules.write_text('[AutoProxy 0.2.9]\n||fixture.example\n@@||safe.fixture.example\n', encoding='utf-8')
-source = '  gfwlist: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt'
+source = '  source: builtin'
 text = config.read_text(encoding='utf-8')
-assert text.count(source) == 1, 'Unexpected example GFWList source'
-config.write_text(text.replace(source, '  gfwlist: ' + json.dumps(str(rules))), encoding='utf-8')
+assert text.count(source) == 1, 'Unexpected example rule source'
+config.write_text(text.replace(source, '  source: ' + json.dumps(str(rules))), encoding='utf-8')
 PY
 HTTP_PROXY=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 NO_PROXY= \
   /usr/bin/tailsplit check -c "$work/generated.yaml"

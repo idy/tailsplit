@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.14
+
+- Add `rules.source` for builtin rules, a custom HTTPS subscription or a local
+  file. Keep existing source configuration, subscription caches and the app-service
+  protocol compatible; migrate the old YAML key when its source is edited.
+- Add a rule-source selector to desktop settings, with English and Chinese labels,
+  a retained custom URL when switching sources and a required-field hint for an
+  empty custom source.
+- Detect Base64 and plain-text domain lists automatically, including lists without
+  an AutoProxy header, UTF-8 BOMs, comments and unpadded or wrapped Base64. Preserve
+  direct exceptions, wildcard rules and supplemental application coverage.
+- Reject invalid lists and HTML error pages without replacing a working cache.
+  Use generic rule-list terminology in the README, settings, menus and diagnostics.
+
 ## 0.7.13
 
 - Render ANSI diagnostic log colors without exposing terminal escape sequences.

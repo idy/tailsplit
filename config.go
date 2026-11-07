@@ -58,8 +58,11 @@ type DNSConfig struct {
 }
 
 type RulesConfig struct {
+	// Source is the preferred YAML field. Normalize resolves it into GFWList
+	// to preserve the existing app-service wire format and cache ownership.
+	Source        *string  `yaml:"source,omitempty" json:"-"`
 	Mode          string   `yaml:"mode"`
-	GFWList       string   `yaml:"gfwlist"`
+	GFWList       string   `yaml:"gfwlist,omitempty"`
 	ProxyDomains  []string `yaml:"proxy_domains"`
 	ProxyIPs      []string `yaml:"proxy_ips"`
 	DirectDomains []string `yaml:"direct_domains"`
@@ -154,6 +157,13 @@ func (c *Config) normalize(base string) error {
 	}
 	if c.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", c.Version)
+	}
+	if c.Rules.Source != nil {
+		if c.Rules.GFWList != "" {
+			return errors.New("use rules.source or the legacy rules.gfwlist field, not both")
+		}
+		c.Rules.GFWList = *c.Rules.Source
+		c.Rules.Source = nil
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:17890"
@@ -268,7 +278,7 @@ func (c *Config) normalize(base string) error {
 	if c.Rules.GFWList != "" && c.Rules.GFWList != "builtin" &&
 		!strings.HasPrefix(c.Rules.GFWList, "https://") {
 		if strings.Contains(c.Rules.GFWList, "://") {
-			return errors.New("remote GFWList must use HTTPS")
+			return errors.New("remote rule sources must use HTTPS")
 		}
 		c.Rules.GFWList, err = resolvePath(base, c.Rules.GFWList)
 		if err != nil {

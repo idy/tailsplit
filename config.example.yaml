@@ -53,12 +53,13 @@ rules:
   mode: split
   # Download when the source cache is missing in state_dir; reuse it offline.
   # Update explicitly with: tailsplit rules refresh -c config.yaml
-  # Also accepts a local file. Legacy "builtin" selects this same official URL.
-  gfwlist: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+  # Use builtin, a custom HTTPS URL, or a local file path.
+  # Base64-encoded and plain-text domain rules are detected automatically.
+  source: builtin
   proxy_domains:
     - github.com
     - youtube.com
-    # Keep this exit-IP checker proxied independently of upstream GFWList.
+    # Keep this exit-IP checker proxied independently of the rule list.
     - myexternalip.com
   proxy_ips:
     - 8.8.8.8/32

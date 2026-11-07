@@ -161,6 +161,36 @@ func TestFormPreviewSaveAndExternalEditConflict(t *testing.T) {
 	}
 }
 
+func TestRuleSourceFormMigratesLegacyKeyWithoutLosingComments(t *testing.T) {
+	server, path, _ := testServer(t)
+	for _, source := range []string{"builtin", "https://rules.example/list.txt", "./rules.txt", ""} {
+		original := "# My policy\ntailscale: {}\nrules:\n  # My subscription\n  gfwlist: builtin # Keep source comment\n  direct_domains: [example.com]\n"
+		status, body := request(t, server, "POST", "/api/preview", map[string]any{
+			"yaml": original, "changes": map[string]any{"rules.source": source},
+		}, nil)
+		var preview document
+		if err := json.Unmarshal(body, &preview); err != nil || status != 200 || !preview.Valid {
+			t.Fatalf("source edit failed: %s, %v", body, err)
+		}
+		for _, comment := range []string{"# My policy", "# My subscription", "# Keep source comment", "direct_domains: [example.com]"} {
+			if !strings.Contains(preview.YAML, comment) {
+				t.Fatalf("source migration lost %q: %s", comment, preview.YAML)
+			}
+		}
+		if strings.Contains(preview.YAML, "gfwlist:") || !strings.Contains(preview.YAML, "source:") {
+			t.Fatalf("source migration left conflicting aliases: %s", preview.YAML)
+		}
+		config, err := tray.ValidateConfigDocument(path, []byte(preview.YAML))
+		if err != nil || source != "./rules.txt" && config.Rules.GFWList != source {
+			t.Fatalf("migration changed the selected source: %+v, %v", config.Rules, err)
+		}
+		data, _ := os.ReadFile(path)
+		if string(data) != fixtureConfig {
+			t.Fatal("preview changed the saved configuration")
+		}
+	}
+}
+
 func TestInvalidEditsNeverApplyAndBrokenYAMLRemainsReadable(t *testing.T) {
 	server, path, applied := testServer(t)
 	_, revision, err := tray.ReadConfigDocument(path)
