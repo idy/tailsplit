@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -102,6 +103,23 @@ func TestExitPingServiceIdleSessionIsSerializedBoundedAndCanceled(t *testing.T) 
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIdlePingPreservesExistingServiceRules(t *testing.T) {
+	server := &Server{Base: privateTestDirectory(t), UID: os.Getuid(), Ping: func(_ context.Context, _ tailsplit.Config, id string) (tailsplit.ExitPingResult, error) {
+		return tailsplit.ExitPingResult{ID: id}, nil
+	}}
+	directory, err := prepareRuntimeUser(server.Base, server.userKey(), Files{Rules: []byte("||custom.example")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.pingExit(context.Background(), Request{Target: "100.64.0.10", Config: &tailsplit.Config{}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "gfwlist.txt"))
+	if err != nil || string(data) != "||custom.example" {
+		t.Fatalf("idle ping changed the service rule cache: %q %v", data, err)
 	}
 }
 

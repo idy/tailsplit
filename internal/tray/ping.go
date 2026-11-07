@@ -12,6 +12,7 @@ import (
 	"runtime"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/pingenv"
 )
 
 func (c *Controller) pingAvailableLocked() bool {
@@ -69,7 +70,7 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 	args := append(append([]string{}, c.options.HelperArgs...), operation, "--id", id, "--parent-pid", fmt.Sprint(os.Getpid()), "-c", c.options.ConfigPath)
 	command := exec.CommandContext(ctx, c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
-	command.Env = append(os.Environ(), c.options.ExtraEnv...)
+	command.Env = pingenv.WithoutAuthentication(append(os.Environ(), c.options.ExtraEnv...))
 	command.Stderr = c.log
 	lease, err := prepareProcess(command, true)
 	if err != nil {

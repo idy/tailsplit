@@ -142,6 +142,15 @@ func compilePreflight(config Config) (Compiled, error) {
 		return Compiled{}, err
 	}
 	delete(native, "inbounds")
+	// A listener-free device session never serves client DNS. Opening the
+	// persistent cache consumes FakeIP metadata until a clean shutdown, so an
+	// interrupted preflight must use the core's in-memory store instead.
+	if experimental, ok := native["experimental"].(map[string]any); ok {
+		delete(experimental, "cache_file")
+		if len(experimental) == 0 {
+			delete(native, "experimental")
+		}
+	}
 	compiled.JSON, err = json.Marshal(native)
 	return compiled, err
 }

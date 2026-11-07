@@ -31,6 +31,10 @@ func prepareRuntime(base string, uid int, files Files) (string, error) {
 }
 
 func prepareRuntimeUser(base, user string, files Files) (string, error) {
+	return prepareRuntimeUserWithRules(base, user, files, true)
+}
+
+func prepareRuntimeUserWithRules(base, user string, files Files, updateRules bool) (string, error) {
 	if user == "" || user == "." || user == ".." || strings.ContainsAny(user, `/\\:`) {
 		return "", errors.New("invalid registered service user")
 	}
@@ -59,6 +63,9 @@ func prepareRuntimeUser(base, user string, files Files) (string, error) {
 		if err := replacePrivate(filepath.Join(directory, ".initialized"), []byte("1\n")); err != nil {
 			return "", err
 		}
+	}
+	if !updateRules {
+		return directory, nil
 	}
 	if len(files.Rules) > 0 {
 		if err := replacePrivate(filepath.Join(directory, "gfwlist.txt"), files.Rules); err != nil {

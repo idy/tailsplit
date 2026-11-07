@@ -5,8 +5,11 @@ import (
 	"errors"
 	"math"
 	"net/netip"
+	"os"
 	"strconv"
 	"time"
+
+	"github.com/idy/tailsplit/internal/pingenv"
 
 	"github.com/sagernet/sing-box/adapter"
 	singlog "github.com/sagernet/sing-box/log"
@@ -268,6 +271,12 @@ func PingSavedExitNode(ctx context.Context, config Config, id string) (result Ex
 		return result, ErrPingTarget
 	}
 	if !TailscaleEnabled || config.Tailscale == nil {
+		return result, ErrPingUnavailable
+	}
+	// The service can run concurrently with other operations, so never mutate
+	// its process environment. Refuse an idle engine if tsnet could use an
+	// inherited key or force a login; the desktop helper strips these settings.
+	if pingenv.HasAuthentication(os.Environ()) {
 		return result, ErrPingUnavailable
 	}
 	ctx, cancel := context.WithTimeout(ctx, ExitPingTimeout)

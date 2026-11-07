@@ -101,7 +101,7 @@ func (s *Server) pingExit(ctx context.Context, request Request) (tailsplit.ExitP
 	}
 	config.TUN.Enabled = false
 	config.Rules.GFWList = ""
-	if _, err := prepareRuntimeUser(s.Base, s.userKey(), request.Files); err != nil {
+	if _, err := prepareRuntimeUserWithRules(s.Base, s.userKey(), request.Files, false); err != nil {
 		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
 	}
 	return s.Ping(ctx, config, request.Target)

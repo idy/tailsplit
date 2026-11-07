@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -192,6 +194,18 @@ func TestExitPingCancellationAndFailures(t *testing.T) {
 	defer engine.ping.Unlock()
 	if _, err := engine.PingExitNode(context.Background(), "100.64.0.10"); err != ErrPingBusy {
 		t.Fatalf("concurrent engine ping allowed: %v", err)
+	}
+}
+
+func TestExitPingSavedDeviceRejectsImplicitAuthentication(t *testing.T) {
+	t.Setenv("TS_AUTHKEY", "fixture")
+	directory := filepath.Join(t.TempDir(), "not-opened")
+	config := Config{StateDir: directory, Tailscale: &TailscaleConfig{}}
+	if _, err := PingSavedExitNode(context.Background(), config, "100.64.0.10"); !errors.Is(err, ErrPingUnavailable) {
+		t.Fatalf("ambient authentication was not rejected: %v", err)
+	}
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Fatalf("implicit login check opened the device state: %v", err)
 	}
 }
 

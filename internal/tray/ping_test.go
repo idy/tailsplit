@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/pingenv"
 )
 
 func TestExitPingHelperProcess(t *testing.T) {
@@ -24,6 +25,9 @@ func TestExitPingHelperProcess(t *testing.T) {
 	}
 	if !slices.Contains(os.Args, "ping") || !slices.Contains(os.Args, "--id") || !slices.Contains(os.Args, "100.64.0.10") {
 		os.Exit(4)
+	}
+	if mode == "clean-env" && (pingenv.HasAuthentication(os.Environ()) || os.Getenv("TAILSPLIT_PING_SENTINEL") != "keep") {
+		os.Exit(5)
 	}
 	if mode == "wait" {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -77,6 +81,15 @@ func TestExitPingControllerValidatesAndPreservesDisconnectedState(t *testing.T) 
 	controller = pingController(t, "offline")
 	if _, err := controller.PingExitNode(context.Background(), "100.64.0.10"); !errors.Is(err, tailsplit.ErrPingOffline) {
 		t.Fatalf("service error lost: %v", err)
+	}
+}
+
+func TestExitPingHelperDoesNotInheritAuthenticationSettings(t *testing.T) {
+	t.Setenv("TS_AUTHKEY", "fixture")
+	controller := pingController(t, "clean-env")
+	controller.options.ExtraEnv = append(controller.options.ExtraEnv, "TS_AUTH_KEY=fixture", "TSNET_FORCE_LOGIN=1", "TAILSPLIT_PING_SENTINEL=keep")
+	if _, err := controller.PingExitNode(context.Background(), "100.64.0.10"); err != nil {
+		t.Fatalf("ping helper received implicit login settings: %v", err)
 	}
 }
 
