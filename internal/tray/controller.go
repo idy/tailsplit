@@ -47,21 +47,22 @@ type Snapshot struct {
 // Controller owns only its bundled helper process, never a system sing-box or
 // Tailscale daemon. The UI starts it explicitly or through an opt-in preference.
 type Controller struct {
-	mu         sync.Mutex
-	options    Options
-	snapshot   Snapshot
-	command    *exec.Cmd
-	input      io.WriteCloser
-	done       chan struct{}
-	stopping   bool
-	loggingOut bool
-	closed     bool
-	log        *rotatingLog
-	close      sync.Once
-	closeErr   error
-	stopWait   time.Duration
-	pingCancel context.CancelFunc
-	pingDone   chan struct{}
+	mu            sync.Mutex
+	options       Options
+	snapshot      Snapshot
+	command       *exec.Cmd
+	input         io.WriteCloser
+	done          chan struct{}
+	stopping      bool
+	loggingOut    bool
+	reconfiguring bool
+	closed        bool
+	log           *rotatingLog
+	close         sync.Once
+	closeErr      error
+	stopWait      time.Duration
+	pingCancel    context.CancelFunc
+	pingDone      chan struct{}
 }
 
 func New(options Options) (*Controller, error) {
@@ -103,9 +104,31 @@ func (c *Controller) Start() error {
 	return c.start("proxy")
 }
 
+// beginReconfigure keeps independent Ping requests out of the gap between
+// stopping a device and starting its replacement.
+func (c *Controller) beginReconfigure() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.loggingOut || c.reconfiguring {
+		return tailsplit.ErrPingBusy
+	}
+	c.reconfiguring = true
+	return nil
+}
+
+func (c *Controller) endReconfigure() {
+	c.mu.Lock()
+	c.reconfiguring = false
+	c.mu.Unlock()
+}
+
 // Restart is also available after a failed or stopped session. Reconfigure
 // intentionally preserves a disconnected state and cannot implement Retry.
 func (c *Controller) Restart() error {
+	if err := c.beginReconfigure(); err != nil {
+		return err
+	}
+	defer c.endReconfigure()
 	if err := c.Stop(); err != nil {
 		return err
 	}
@@ -131,6 +154,10 @@ func (c *Controller) RefreshExitNodes() error {
 // then reconnects only if the proxy was running. A failed edit restores the old
 // running configuration instead of leaving a previously connected user offline.
 func (c *Controller) Reconfigure(update func() error) error {
+	if err := c.beginReconfigure(); err != nil {
+		return err
+	}
+	defer c.endReconfigure()
 	before := c.Snapshot()
 	reconnect := before.Active && (before.Mode == "tun" || before.Mode == "proxy")
 	if err := c.Stop(); err != nil {

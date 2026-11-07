@@ -16,7 +16,7 @@ import (
 )
 
 func (c *Controller) pingAvailableLocked() bool {
-	if c.closed || c.stopping || c.loggingOut || !c.snapshot.PingAvailable || c.snapshot.BackendState != "Running" {
+	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || !c.snapshot.PingAvailable || c.snapshot.BackendState != "Running" {
 		return false
 	}
 	if c.command == nil {
@@ -40,7 +40,7 @@ func (c *Controller) pingAvailableLocked() bool {
 // opens a scoped session for that same saved device. Its output is bounded.
 func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.ExitPingResult, error) {
 	c.mu.Lock()
-	if c.pingCancel != nil {
+	if c.pingCancel != nil || c.reconfiguring {
 		c.mu.Unlock()
 		return tailsplit.ExitPingResult{}, tailsplit.ErrPingBusy
 	}
@@ -53,6 +53,7 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 		return tailsplit.ExitPingResult{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, tailsplit.ExitPingTimeout)
+	defer cancel()
 	done := make(chan struct{})
 	c.pingCancel, c.pingDone = cancel, done
 	c.mu.Unlock()
@@ -68,7 +69,6 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 		close(done)
 		c.mu.Unlock()
 		responseCh <- response{result: result, err: err}
-		cancel()
 	}()
 	select {
 	case reply := <-responseCh:

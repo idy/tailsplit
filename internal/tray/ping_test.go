@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -105,6 +106,60 @@ func TestExitPingControllerValidatesAndPreservesDisconnectedState(t *testing.T) 
 	controller = pingController(t, "offline")
 	if _, err := controller.PingExitNode(context.Background(), "100.64.0.10"); !errors.Is(err, tailsplit.ErrPingOffline) {
 		t.Fatalf("service error lost: %v", err)
+	}
+}
+
+func TestWindowsReconfigureBlocksPingUntilUpdateFinishes(t *testing.T) {
+	controller := pingController(t, "success")
+	started, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Reconfigure(func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("configuration update did not start")
+	}
+	if controller.Snapshot().PingAvailable {
+		t.Fatal("reconfiguring device advertised Ping availability")
+	}
+	if _, err := controller.PingExitNode(context.Background(), "100.64.0.10"); !errors.Is(err, tailsplit.ErrPingBusy) {
+		t.Fatalf("Ping was not blocked during the update: %v", err)
+	}
+	unblock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("configuration update did not finish")
+	}
+	if _, err := controller.PingExitNode(context.Background(), "100.64.0.10"); err != nil {
+		t.Fatalf("Ping remained blocked after the update: %v", err)
+	}
+}
+
+func TestWindowsPingReturnsCompletedResultsBeforeCancel(t *testing.T) {
+	for _, test := range []struct {
+		mode string
+		want error
+	}{{"success", nil}, {"offline", tailsplit.ErrPingOffline}} {
+		controller := pingController(t, test.mode)
+		controller.options.ExtraEnv = append(controller.options.ExtraEnv, "GORACE=atexit_sleep_ms=0")
+		for i := 0; i < 12; i++ {
+			result, err := controller.PingExitNode(context.Background(), "100.64.0.10")
+			if !errors.Is(err, test.want) || test.want == nil && result.LatencyMS != 10.25 {
+				t.Fatalf("%s iteration %d: result %+v, error %v", test.mode, i, result, err)
+			}
+		}
 	}
 }
 
