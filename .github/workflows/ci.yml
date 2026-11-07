@@ -41,7 +41,7 @@ jobs:
         run: |
           test -z "$(gofmt -l .)"
           sh -n install.sh
-      - name: Race tests, vet and offline configuration check
+      - name: Race tests, vet and configuration check
         run: make test check
       - name: Installer execution tests
         run: python3 -B -m unittest discover -s tests/installer

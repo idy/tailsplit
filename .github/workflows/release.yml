@@ -70,7 +70,7 @@ jobs:
         with:
           python-version: '3.13'
           architecture: ${{ matrix.python_arch }}
-      - name: Validate source, race tests and offline configuration
+      - name: Validate source, race tests and configuration
         if: matrix.goos != 'windows'
         run: |
           test -z "$(gofmt -l .)"

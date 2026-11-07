@@ -87,7 +87,8 @@ def verify(directory, arch):
         before = hashlib.sha256(sentinel.read_bytes()).hexdigest()
         environment = {key: value for key, value in os.environ.items() if not key.startswith("SOPS_AGE_")}
         environment.update(USERPROFILE=str(home), HOME=str(home),
-                           LOCALAPPDATA=str(home / "AppData/Local"), APPDATA=str(home / "AppData/Roaming"))
+                           LOCALAPPDATA=str(home / "AppData/Local"), APPDATA=str(home / "AppData/Roaming"),
+                           HTTP_PROXY="http://127.0.0.1:1", HTTPS_PROXY="http://127.0.0.1:1", NO_PROXY="")
         def execute(*args, success=True):
             result = subprocess.run([str(binary), *args], env=environment, cwd=work,
                                     capture_output=True, text=True, timeout=45)
@@ -105,6 +106,13 @@ def verify(directory, arch):
         execute("init", "-c", str(config), success=False)
         if config.read_bytes() != saved:
             raise ValueError("init changed existing configuration")
+        local_rules = work / "fixture-gfwlist.txt"
+        local_rules.write_text("[AutoProxy 0.2.9]\n||fixture.example\n@@||safe.fixture.example\n", encoding="utf-8")
+        source = "  gfwlist: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
+        text = saved.decode("utf-8")
+        if text.count(source) != 1:
+            raise ValueError("Example configuration has an unexpected GFWList source")
+        config.write_bytes(text.replace(source, "  gfwlist: " + json.dumps(str(local_rules))).encode("utf-8"))
         execute("check", "-c", str(config))
         json.loads(execute("render", "-c", str(config)))
         if hashlib.sha256(sentinel.read_bytes()).hexdigest() != before:
