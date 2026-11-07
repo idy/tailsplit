@@ -148,7 +148,17 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		}
 		options.Startup = func() bool { mutex.Lock(); defer mutex.Unlock(); return startup }
 		options.Logs = func() (string, error) {
-			return "UI preview simulation only. Sign-in, exits and connection state are simulated. No proxy, TUN, network service or Tailnet connection is started.\n", nil
+			return "UI preview simulation only. Sign-in, exits and connection state are simulated. No proxy, TUN, network service or Tailnet connection is started.\n\n" +
+				"\x1b[37mDEBUG\x1b[0m[0001] config: loaded preview configuration\n" +
+				"\x1b[36mINFO\x1b[0m[0001] \x1b[32mTailSplit UI preview is ready\x1b[0m\n" +
+				"\x1b[36mINFO\x1b[0m[0002] [\x1b[38;5;168m3717191320\x1b[0m 0ms] inbound/tun[tun-in]: inbound connection from 172.31.255.1:54505\n" +
+				"\x1b[36mINFO\x1b[0m[0002] [\x1b[38;5;168m3717191320\x1b[0m 1ms] dns: lookup succeeded for example.com: 192.0.2.10 192.0.2.11\n" +
+				"\x1b[36mINFO\x1b[0m[0002] [\x1b[38;5;168m3717191320\x1b[0m 1ms] outbound/direct-ipv4[direct]: outbound connection to example.com:443\n" +
+				"\x1b[36mINFO\x1b[0m[0003] [\x1b[38;5;191m24257871\x1b[0m 0ms] inbound/tun[tun-in]: inbound connection to 198.18.0.45:443\n" +
+				"\x1b[36mINFO\x1b[0m[0003] [\x1b[38;5;191m24257871\x1b[0m 2ms] endpoint/tailscale[tailnet]: outbound connection to example.org:443\n" +
+				"\x1b[36mINFO\x1b[0m[0003] [\x1b[38;5;191m24257871\x1b[0m 259ms] dns: exchanged CNAME example.org. 52 IN CNAME edge.example.org.\n" +
+				"\x1b[33mWARN\x1b[0m[0004] preview simulation: selected exit is unavailable\n" +
+				"\x1b[31mERROR\x1b[0m[0005] preview simulation: DNS lookup timed out\n", nil
 		}
 		options.Action = func(ctx context.Context, action string) error {
 			mutex.Lock()

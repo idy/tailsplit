@@ -235,6 +235,7 @@ test('header keeps the same real links and accessible controls on desktop and mo
   assert.deepEqual(links(navigation[0]), links(navigation[1]));
   assert.deepEqual(links(navigation[0]), [
     ['#routing', 'Routing', 'splitNavRouting'], ['#install', 'Install', 'splitNavInstall'],
+    ['https://discord.gg/RY7ktfh8Pr', 'Discord', null],
     ['https://github.com/idy/tailsplit', 'GitHub', null], ['https://idy.dev/', 'idy.dev', null],
   ]);
   assert.match(header, /<a class="idy-home" href="#main">TailSplit<\/a>/);
