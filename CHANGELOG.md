@@ -15,6 +15,8 @@
 - Refresh older official caches before applying the supplemental cleanup, and
   stop startup if that upgrade fails. Keep service-side rule loading restricted
   to transferred contents, and retain offline Debian and Windows smoke tests.
+- Isolate caches by subscription URL so validating an unsaved draft cannot
+  replace the saved subscription's rules.
 
 ## 0.7.11
 

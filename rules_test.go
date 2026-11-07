@@ -32,7 +32,7 @@ func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
 	if err != nil || info.Proxy != 1 || info.Direct != 1 {
 		t.Fatalf("valid refresh failed: %+v, %v", info, err)
 	}
-	cache := filepath.Join(config.StateDir, "gfwlist.txt")
+	cache := RulesCachePath(config)
 	before, err := os.ReadFile(cache)
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestRuleCacheDownloadsOnceAndWorksOffline(t *testing.T) {
 			if err != nil {
 				t.Fatal("first compile did not download rules:", err)
 			}
-			cache := filepath.Join(config.StateDir, "gfwlist.txt")
+			cache := RulesCachePath(config)
 			cached, err := os.ReadFile(cache)
 			if err != nil || string(cached) != data {
 				t.Fatalf("original downloaded bytes were not cached: %v", err)
@@ -147,7 +147,7 @@ func TestOlderOfficialCacheUpgradesBeforeUse(t *testing.T) {
 				if err := privateState(config.StateDir); err != nil {
 					t.Fatal(err)
 				}
-				cache := filepath.Join(config.StateDir, "gfwlist.txt")
+				cache := RulesCachePath(config)
 				before := base64.StdEncoding.EncodeToString([]byte(legacy))
 				if err := os.WriteFile(cache, []byte(before), 0o600); err != nil {
 					t.Fatal(err)
@@ -201,7 +201,7 @@ func TestOlderCustomCacheDoesNotRequireAnOfficialUpgrade(t *testing.T) {
 	if err := privateState(config.StateDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(config.StateDir, "gfwlist.txt"), []byte("[AutoProxy 0.2.9]\n! Last Modified: Mon, 21 Sep 2026 12:27:46 +0000\n||fixture.example\n"), 0o600); err != nil {
+	if err := os.WriteFile(RulesCachePath(config), []byte("[AutoProxy 0.2.9]\n! Last Modified: Mon, 21 Sep 2026 12:27:46 +0000\n||fixture.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	transport := http.DefaultTransport

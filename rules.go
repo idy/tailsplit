@@ -2,6 +2,7 @@ package tailsplit
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,16 @@ import (
 
 	"github.com/idy/tailsplit/internal/domainrules"
 )
+
+// RulesCachePath isolates remote subscriptions while preserving the official
+// source's established cache pathname. Query credentials are hashed, not stored.
+func RulesCachePath(config Config) string {
+	name := "gfwlist.txt"
+	if config.Rules.GFWList != "builtin" && config.Rules.GFWList != domainrules.DefaultRulesURL {
+		name = fmt.Sprintf("gfwlist-%x.txt", sha256.Sum256([]byte(config.Rules.GFWList)))
+	}
+	return filepath.Join(config.StateDir, name)
+}
 
 // This upstream revision covers the domains removed from the supplement.
 // Older official caches must refresh before they can be used with that cleanup.
@@ -32,7 +43,7 @@ func EnsureRules(ctx context.Context, config Config, client *http.Client) error 
 		return nil
 	}
 	legacy := false
-	cache := filepath.Join(config.StateDir, "gfwlist.txt")
+	cache := RulesCachePath(config)
 	if _, err := os.Stat(cache); err == nil {
 		if config.Rules.GFWList != "builtin" && config.Rules.GFWList != domainrules.DefaultRulesURL {
 			return nil
@@ -130,7 +141,7 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	if err := file.Close(); err != nil {
 		return domainrules.RulesInfo{}, err
 	}
-	installed, err := commitRuleCache(file.Name(), filepath.Join(config.StateDir, "gfwlist.txt"))
+	installed, err := commitRuleCache(file.Name(), RulesCachePath(config))
 	if err != nil {
 		if installed {
 			return projection.Info, errors.New("rules installed but directory durability could not be confirmed")

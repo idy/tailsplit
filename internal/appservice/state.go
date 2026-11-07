@@ -185,7 +185,7 @@ func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
 	}
 	local := rules != "builtin" && !strings.HasPrefix(rules, "https://")
 	if !local {
-		rules = filepath.Join(config.StateDir, "gfwlist.txt")
+		rules = tailsplit.RulesCachePath(*config)
 	}
 	files.Rules, err = readUserFile(rules, maxRules)
 	if err != nil {

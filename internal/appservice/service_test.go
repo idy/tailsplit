@@ -397,6 +397,29 @@ func TestChangingRuleSourceDoesNotReuseAnOldServiceCache(t *testing.T) {
 	}
 }
 
+func TestUserFilesSelectsTheConfiguredSubscriptionCache(t *testing.T) {
+	config := tailsplit.Config{StateDir: t.TempDir(), Rules: tailsplit.RulesConfig{GFWList: "https://rules.example/a"}}
+	cacheA := tailsplit.RulesCachePath(config)
+	config.Rules.GFWList = "https://rules.example/b"
+	cacheB := tailsplit.RulesCachePath(config)
+	if cacheA == cacheB {
+		t.Fatal("different subscriptions share one cache pathname")
+	}
+	for path, data := range map[string]string{
+		cacheA: "[AutoProxy 0.2.9]\n||a.fixture.example\n",
+		cacheB: "[AutoProxy 0.2.9]\n||b.fixture.example\n",
+		filepath.Join(config.StateDir, "gfwlist.txt"): "unrelated legacy cache",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := userFiles(&config, false)
+	if err != nil || string(files.Rules) != "[AutoProxy 0.2.9]\n||b.fixture.example\n" {
+		t.Fatal("desktop transfer selected a different subscription's cache:", err)
+	}
+}
+
 func TestMissingLocalRulesDoNotSilentlySelectBuiltin(t *testing.T) {
 	directory := t.TempDir()
 	config := tailsplit.Config{StateDir: directory, Rules: tailsplit.RulesConfig{GFWList: filepath.Join(directory, "missing")}}

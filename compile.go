@@ -358,7 +358,7 @@ func loadProjection(ctx context.Context, config Config) (*domainrules.Projection
 		if err := EnsureRules(ctx, config, nil); err != nil {
 			return nil, "", err
 		}
-		source = filepath.Join(config.StateDir, "gfwlist.txt")
+		source = RulesCachePath(config)
 	}
 	projection, err := readProjection(source)
 	return projection, source, err
