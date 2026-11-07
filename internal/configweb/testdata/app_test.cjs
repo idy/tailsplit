@@ -1559,6 +1559,53 @@ test('invalid ping payloads cannot display fabricated latency', async () => {
 const pickerPingButton = (app, id) => app.$('#exit-list').children.flatMap(row => row.children).find(child => child.dataset.nodePing === id);
 const pickerLatency = (app, id) => app.$('#exit-list').children.find(row => row.children.some(child => child.dataset.exitChoice === id))?.children.find(child => child.className?.startsWith('node-latency'));
 
+test('Ping live regions are available inside and outside the picker dialog', () => {
+  const html = readFileSync(join(__dirname, '../assets/index.html'), 'utf8');
+  const dialog = html.match(/<dialog class="exit-picker-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  const nodesPage = html.match(/<section class="app-page nodes-page"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(dialog && nodesPage);
+  assert.match(dialog, /id="picker-ping-announcement" role="status" aria-atomic="true"/);
+  assert.doesNotMatch(nodesPage, /id="ping-announcement"/);
+  assert.match(html.replace(dialog, ''), /id="ping-announcement" role="status" aria-atomic="true"/);
+});
+
+test('picker announces Ping progress, success and failure within the dialog', async () => {
+  const app = await page(exitsSnapshot(), '', { language: 'en' }, exitDocument());
+  await app.$('#choose-exit').emit('click');
+  const pending = deferred();
+  app.override = request => request.path === '/api/exit-ping' ? pending.promise : undefined;
+  const pinging = pickerPingButton(app, '100.64.0.20').emit('click');
+  await settle();
+  assert.equal(app.$('#picker-ping-announcement').textContent, 'Pinging travel');
+  assert.equal(app.$('#ping-announcement').textContent, '');
+  pending.resolve(response({ id: '100.64.0.20', latency_ms: 24.7, direct: true }));
+  await pinging;
+  assert.equal(app.$('#picker-ping-announcement').textContent, 'travel: 24.7 ms');
+  app.override = request => request.path === '/api/exit-ping' ? response({ error: 'Timed out' }, false) : undefined;
+  await pickerPingButton(app, '100.64.0.20').emit('click');
+  assert.match(app.$('#picker-ping-announcement').textContent, /travel: ping failed/);
+  assert.equal(app.$('#ping-announcement').textContent, '');
+});
+
+test('in-flight Ping announcements follow the active dialog', async () => {
+  const app = await page(exitsSnapshot(), '', { language: 'en' }, exitDocument());
+  await app.$('[data-page="nodes"]').emit('click');
+  const pending = deferred();
+  app.override = request => request.path === '/api/exit-ping' ? pending.promise : undefined;
+  const pinging = pingButton(app, '100.64.0.20').emit('click');
+  await settle();
+  assert.equal(app.$('#ping-announcement').textContent, 'Pinging travel');
+  await selectNodeButton(app, '100.64.0.10').emit('click');
+  assert.equal(app.$('#ping-announcement').textContent, '');
+  assert.equal(app.$('#picker-ping-announcement').textContent, 'Pinging travel');
+  await app.$('#cancel-exit-picker').emit('click');
+  assert.equal(app.$('#picker-ping-announcement').textContent, '');
+  assert.equal(app.$('#ping-announcement').textContent, 'Pinging travel');
+  pending.resolve(response({ id: '100.64.0.20', latency_ms: 24.7, direct: true }));
+  await pinging;
+  assert.equal(app.$('#ping-announcement').textContent, 'travel: 24.7 ms');
+});
+
 test('latency thresholds include 500 ms in green and 1000 ms in amber on both surfaces', async () => {
   const app = await page(exitsSnapshot(), '', {}, exitDocument());
   for (const [ms, band] of [[0, 'fast'], [499.9, 'fast'], [500, 'fast'], [500.1, 'medium'], [999.9, 'medium'], [1000, 'medium'], [1000.1, 'slow'], [1500, 'slow']]) {

@@ -544,10 +544,18 @@
     if (configured && !nodes.some((node) => node.configured)) nodes.unshift({ id: configured, name: configured, online: false, configured: true, missing: true });
     return nodes;
   }
+  function announcePing(text) {
+    setStatusText('#ping-announcement', exitDialog.open ? '' : text);
+    setStatusText('#picker-ping-announcement', exitDialog.open ? text : '');
+  }
+  function syncPingAnnouncement() {
+    const pending = pingBusy && exitNodes().find((node) => node.id === pingBusy);
+    announcePing(pending ? t('正在 Ping {name}', { name: pending.name }) : '');
+  }
   function clearPingResults() {
     pingGeneration++;
     pingResults.clear();
-    setStatusText('#ping-announcement', '');
+    announcePing('');
   }
   function updateDesktop(live) {
     if (desktopLive && (live.network !== desktopLive.network || live.hostname !== desktopLive.hostname || signedIn(live) !== signedIn())) clearPingResults();
@@ -772,17 +780,17 @@
     if (pingBusy || !node?.online || !signedIn() || !desktopLive?.ping_available || desktopBusy || quickBusy || isLocked() || connectionLost) return;
     const generation = pingGeneration;
     pingBusy = id; pingResults.delete(id); renderConnectionCenter();
-    setStatusText('#ping-announcement', t('正在 Ping {name}', { name: node.name }));
+    announcePing(t('正在 Ping {name}', { name: node.name }));
     try {
       const result = await api('exit-ping', { id });
       if (generation !== pingGeneration || !exitNodes().some((node) => node.id === id && node.online)) return;
       if (result.id !== id || !Number.isFinite(result.latency_ms) || result.latency_ms < 0 || typeof result.direct !== 'boolean') throw new Error(t('未收到有效的 Ping 结果，请重试。'));
       pingResults.set(id, result);
-      setStatusText('#ping-announcement', t('{name}：{latency}', { name: node.name, latency: pingLabel(result) }));
+      announcePing(t('{name}：{latency}', { name: node.name, latency: pingLabel(result) }));
     } catch (error) {
       if (generation !== pingGeneration) return;
       pingResults.set(id, { error });
-      setStatusText('#ping-announcement', `${t('{name}：测试失败，可重新 Ping。', { name: node.name })} ${message(error)}`);
+      announcePing(`${t('{name}：测试失败，可重新 Ping。', { name: node.name })} ${message(error)}`);
     } finally { pingBusy = ''; renderConnectionCenter(); }
   }
   function openExitPicker(id, opener = $('#choose-exit')) {
@@ -795,14 +803,14 @@
       selectedExitDiscovered = true;
     }
     $('#exit-search').value = ''; $('#exit-node').value = ''; $('#manual-exit').open = false;
-    exitDialog.showModal(); renderConnectionCenter(); $('#exit-search').focus();
+    exitDialog.showModal(); syncPingAnnouncement(); renderConnectionCenter(); $('#exit-search').focus();
   }
   $('#choose-exit').addEventListener('click', () => openExitPicker());
   for (const id of ['close-exit-picker', 'cancel-exit-picker']) $(`#${id}`).addEventListener('click', () => { if (!quickBusy) exitDialog.close(); });
   exitDialog.addEventListener('cancel', (event) => { if (quickBusy) event.preventDefault(); });
   exitDialog.addEventListener('close', () => {
     if (!pickerCommitted) { selectedExit = pickerOriginalExit; selectedExitDiscovered = pickerOriginalDiscovered; }
-    renderConnectionCenter();
+    syncPingAnnouncement(); renderConnectionCenter();
     if (!['connection', 'nodes'].includes(state.page)) return;
     if (pickerOpener?.isConnected && !pickerOpener.disabled) pickerOpener.focus();
     else $(state.page === 'nodes' ? '#nodes-search' : '#choose-exit').focus();
