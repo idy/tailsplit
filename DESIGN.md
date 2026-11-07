@@ -35,6 +35,15 @@ colors:
   code-key: "#2459b8"
   code-value: "#25673b"
   raw-ink: "#28282e"
+  log-background: "#272a32"
+  log-ink: "#e5e5ea"
+  log-muted: "#aeb4c0"
+  log-cyan: "#70cbd6"
+  log-magenta: "#dca0e6"
+  log-selection: "#3b537c"
+  log-line: "#ffffff1f"
+  log-scroll-thumb: "#ffffff66"
+  log-scroll-thumb-hover: "#ffffff88"
   actionbar: "#f5f5f7f0"
   on-accent: "#fff"
   canvas-dark: "#1c1c1e"
@@ -286,7 +295,27 @@ Primary navigation uses neutral hover and selected fills, medium active text, an
 
 ### Cards / Containers
 
-Grouped settings share a surface and panel radius, with internal row dividers and row padding (12px 16px). The connection panel uses the same surface and radius with a larger inset. YAML and log regions use the code surface. Cards do not acquire shadows on hover.
+Grouped settings share a surface and panel radius, with internal row dividers and row padding (12px 16px). The connection panel uses the same surface and radius with a larger inset. YAML regions follow the app's code surface. Cards do not acquire shadows on hover.
+
+### Diagnostic Terminal
+
+The log viewport uses the user-selected terminal reference: a fixed deep gray
+background (`log-background`) and light foreground (`log-ink`) in both app
+appearances. Its scoped CSS properties override the code surface, primary and
+secondary ink, muted ink, borders, selection and scrollbars. ANSI foreground
+colors map to readable semantic colors; cyan and magenta identify informational
+output and connection groups alongside the existing red, amber, green and blue
+roles. Text labels preserve the meaning independently of color. Log content is
+inserted as text, with unsupported terminal commands discarded.
+
+The viewport fills the remaining workspace height below its heading and log-level
+control, keeping the page gutter at the bottom. A visible settings actionbar or
+notice consumes workspace height before the log viewport. Overflow scrolls inside
+the viewport instead of growing the window; the other app pages retain their
+existing scrolling behavior. While the Logs page is visible, the file tail refreshes
+every four seconds. Initial display and updates follow the latest entry at the
+bottom; scrolling up pauses following until the user returns to the bottom.
+Unchanged output keeps its existing DOM nodes to preserve reading and selection.
 
 ### Status and Exit Selection
 

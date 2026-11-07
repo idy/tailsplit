@@ -28,7 +28,7 @@ On macOS it installs the app into your Applications directory. Linux prefers a
 the CLI tarball. To select a specific CLI release and a user-local prefix:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.12 --cli --prefix "$HOME/.local" --no-sudo
+curl -fsSL https://raw.githubusercontent.com/idy/tailsplit/main/install.sh | sh -s -- --version 0.7.13 --cli --prefix "$HOME/.local" --no-sudo
 ```
 
 `--app-dir` selects a macOS app directory; `--method binary` forces a CLI archive.
@@ -197,8 +197,21 @@ draft before applying connection changes.
 
 Settings groups general preferences, network options, DNS, routing rules, advanced
 parameters and app updates. Logs has its own page with bounded, redacted output
-and a log-level control. Moving between these pages preserves unsaved form and
-YAML drafts, including incomplete source edits. The panel and native window follow
+and a log-level control. Logs use a terminal-style dark gray background and light
+text in both system appearances. Terminal foreground colors render with a readable
+bright palette; other terminal commands are discarded, and log content remains
+plain text. The log viewport fills the remaining window height and scrolls internally.
+While visible, Logs reads the latest file tail every four seconds and follows new
+entries at the bottom. Scrolling up pauses following; returning to the bottom
+resumes it. Unchanged output is retained so reading and text selection are preserved.
+
+Desktop logs are saved to `~/Library/Application Support/TailSplit/logs/tailsplit.log`
+on macOS and `%APPDATA%\TailSplit\logs\tailsplit.log` on Windows unless overridden
+with `--log`. The file rotates at about 5 MiB to `tailsplit.log.1`; the panel reads
+at most the latest 128 KiB, with device authorization links and keys redacted.
+
+Moving between these pages preserves unsaved form and YAML drafts, including
+incomplete source edits. The panel and native window follow
 the system's light or dark appearance and update immediately when it changes,
 preserving unsaved edits. The local page also follows the browser's color
 preference when opened outside the app.

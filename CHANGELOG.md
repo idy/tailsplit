@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.13
+
+- Render ANSI diagnostic log colors without exposing terminal escape sequences.
+  Keep log content as plain text and discard unsupported terminal commands.
+- Use a terminal-style deep gray background and light text in both app themes.
+  Fill the remaining window height and scroll inside the log viewport, including
+  when the settings actionbar is visible.
+- Refresh the latest bounded file tail every four seconds while Logs is visible.
+  Follow new entries at the bottom, pause following while reading older entries,
+  and resume when the reader returns to the bottom.
+- Preserve unchanged log nodes and reader scroll positions during refreshes, with
+  regression coverage for in-flight reads and background-page polling.
+
 ## 0.7.12
 
 - Download the official GFWList subscription when its disk cache is missing,
