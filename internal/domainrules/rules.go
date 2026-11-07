@@ -122,26 +122,39 @@ func parseActiveRules(data []byte) (*rules, []byte, error) {
 	return r, text, nil
 }
 
-// containsHTMLMarkup distinguishes error-page markup from AutoProxy filters
-// whose regex or URL syntax can legitimately contain angle brackets.
-func containsHTMLMarkup(line string) bool {
-	if !strings.ContainsAny(line, "<>") {
-		return false
-	}
+func isAutoProxyFilter(line string) bool {
 	filter := strings.TrimLeft(strings.TrimPrefix(line, "@@"), "|")
 	if strings.HasPrefix(filter, "/") {
 		end := strings.LastIndex(filter, "/")
 		if end > 0 && (end == len(filter)-1 || strings.HasPrefix(filter[end+1:], "$")) {
-			return false
+			return true
 		}
 	}
 	filter = strings.TrimPrefix(strings.TrimPrefix(filter, "https://"), "http://")
 	if end := strings.IndexAny(filter, "/?$#"); end >= 0 && !strings.ContainsAny(filter, " \t\r\n") {
-		if _, _, ok := projectRule(filter[:end]); ok {
-			return false
-		}
+		_, _, ok := projectRule(filter[:end])
+		return ok
 	}
-	tokens := html.NewTokenizer(strings.NewReader(line))
+	return false
+}
+
+// Tokenize one stream so tags spanning multiple lines are still rejected.
+// Filter and comment lines retain their routing semantics, not HTML semantics.
+func containsHTMLMarkup(data []byte) bool {
+	if !bytes.ContainsAny(data, "<>") {
+		return false
+	}
+	var candidate strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "!") || strings.HasPrefix(line, "#") || isAutoProxyFilter(line) {
+			// Keep closing brackets for tags that started on an earlier line.
+			line = strings.ReplaceAll(line, "<", " ")
+		}
+		candidate.WriteString(line)
+		candidate.WriteByte('\n')
+	}
+	tokens := html.NewTokenizer(strings.NewReader(candidate.String()))
 	for {
 		switch tokens.Next() {
 		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken, html.DoctypeToken, html.CommentToken:
@@ -173,6 +186,9 @@ func parseRules(data []byte) (*rules, []byte, error) {
 	if err == nil {
 		data = trim(decoded)
 	}
+	if containsHTMLMarkup(data) {
+		return nil, nil, fmt.Errorf("domainrules: HTML is not a rule list")
+	}
 	r := &rules{
 		proxy:  domainRules{exact: map[string]bool{}, suffix: map[string]bool{}},
 		direct: domainRules{exact: map[string]bool{}, suffix: map[string]bool{}},
@@ -181,10 +197,6 @@ func parseRules(data []byte) (*rules, []byte, error) {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "!") || strings.HasPrefix(line, "#") {
 			continue
-		}
-		// Error pages may prefix their tags with text and include bare domains.
-		if containsHTMLMarkup(line) {
-			return nil, nil, fmt.Errorf("domainrules: HTML is not a rule list")
 		}
 		if strings.HasPrefix(line, "[AutoProxy ") {
 			if !strings.HasSuffix(line, "]") {

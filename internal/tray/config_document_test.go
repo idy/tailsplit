@@ -70,6 +70,41 @@ func TestRuleSourcePatchOverridesMergedLegacyValues(t *testing.T) {
 	}
 }
 
+func TestRuleSourcePatchPreservesSharedScalarValues(t *testing.T) {
+	for name, text := range map[string]string{
+		"nullable legacy":    "rules:\n  gfwlist: &subscription builtin\n  source: null\ntailscale:\n  hostname: *subscription # Keep hostname\nstate_dir: ./state\n",
+		"legacy rename":      "rules:\n  gfwlist: &subscription builtin\ntailscale:\n  hostname: *subscription # Keep hostname\nstate_dir: ./state\n",
+		"canonical source":   "rules:\n  source: &subscription builtin\ntailscale:\n  hostname: *subscription # Keep hostname\nstate_dir: ./state\n",
+		"inherited source":   "rules:\n  <<: {gfwlist: &subscription builtin}\n  source: null\ntailscale:\n  hostname: *subscription # Keep hostname\nstate_dir: ./state\n",
+		"legacy alias":       "tailscale:\n  hostname: &subscription builtin # Keep hostname\nrules:\n  gfwlist: *subscription\n  source: null\nstate_dir: ./state\n",
+		"multiple consumers": "rules:\n  gfwlist: &subscription builtin\n  source: null\ntailscale:\n  hostname: *subscription # Keep hostname\nstate_dir: *subscription\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			before, err := ValidateConfigDocument(path, []byte(text))
+			if err != nil {
+				t.Fatal("invalid shared scalar fixture:", err)
+			}
+			for _, source := range []string{"https://rules.example/new.txt", "builtin", ""} {
+				updated, err := PatchConfigDocument([]byte(text), ConfigChange{"rules", "source", source})
+				if err != nil {
+					t.Fatal(err)
+				}
+				after, err := ValidateConfigDocument(path, updated)
+				if err != nil || after.Rules.GFWList != source || after.Tailscale == nil || after.Tailscale.Hostname != before.Tailscale.Hostname || after.StateDir != before.StateDir {
+					t.Fatalf("source edit changed an aliased field: %+v, %v\n%s", after, err, updated)
+				}
+				if !strings.Contains(string(updated), "# Keep hostname") || !strings.Contains(string(updated), "&subscription") {
+					t.Fatalf("source edit lost a shared anchor or alias comment: %s", updated)
+				}
+				if name == "multiple consumers" && !strings.Contains(string(updated), "state_dir: *subscription") {
+					t.Fatalf("source edit expanded a remaining shared alias: %s", updated)
+				}
+			}
+		})
+	}
+}
+
 func TestConfigValidationKeepsRelativePathsAndCleansTemporaryFiles(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.yaml")
