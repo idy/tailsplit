@@ -25,8 +25,8 @@ type Compiled struct {
 	GFWSource string
 }
 
-// Compile loads local or cached rules, downloading missing remote rules or
-// upgrading an older official cache. Use CompileContext to cancel a download.
+// Compile loads local or cached rules, downloading a remote source when its
+// matching cache is missing. Use CompileContext to cancel a download.
 func Compile(config Config) (Compiled, error) {
 	return CompileContext(context.Background(), config)
 }

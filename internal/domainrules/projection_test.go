@@ -122,6 +122,50 @@ func TestActiveProjectionIncludesSupplementAndHonorsExceptions(t *testing.T) {
 	}
 }
 
+func TestCompatibilityOnlyFillsMissingCoverage(t *testing.T) {
+	legacyCoverage := "||openai.com\n||chatgpt.com\n||anthropic.com\n||claude.ai\n||claude.com\n"
+	otherCoverage := legacyCoverage + "||claudeusercontent.com\n||claudemcpcontent.com\n"
+	base, err := ProjectRules(supplementalRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name       string
+		rules      string
+		extra      int
+		proxyRoot  bool
+		proxyChild bool
+	}{
+		{"current upstream", otherCoverage + "||claude.app\n", 0, true, true},
+		{"older snapshot", legacyCoverage, 3, true, true},
+		{"exact proxy host", otherCoverage + "|claude.app|\n", 1, true, true},
+		{"full direct exception", otherCoverage + "@@||claude.app\n", 0, false, false},
+		{"exact direct exception", otherCoverage + "@@|claude.app|\n", 1, false, true},
+		{"wildcard suffix coverage", otherCoverage + "||clau*.app\n", 0, true, true},
+		{"subdomains only", otherCoverage + "||*.claude.app\n", 1, true, true},
+		{"direct subdomains only", otherCoverage + "@@||*.claude.app\n", 1, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			projection, err := ProjectActiveRules([]byte("[AutoProxy 0.2.9]\n||fixture.example\n" + test.rules))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if projection.Info.SupplementalProxy != base.Info.Proxy+test.extra {
+				t.Fatalf("compatibility added redundant or insufficient rules: got=%d, want=%d", projection.Info.SupplementalProxy, base.Info.Proxy+test.extra)
+			}
+			if test.extra == 0 && projection.Info.SupplementalSHA256 != base.Info.SHA256 {
+				t.Fatal("already covered domains changed the effective supplement")
+			}
+			for domain, want := range map[string]bool{"claude.app": test.proxyRoot, "a.claude.app": test.proxyChild} {
+				proxy := !projectionMatches(projection.Direct, domain) && projectionMatches(projection.Proxy, domain)
+				if proxy != want {
+					t.Fatalf("wrong proxy coverage for %s: got=%t, want=%t", domain, proxy, want)
+				}
+			}
+		})
+	}
+}
+
 func projectionMatches(projected DomainProjection, domain string) bool {
 	if slices.Contains(projected.Exact, domain) {
 		return true

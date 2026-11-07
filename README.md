@@ -274,8 +274,9 @@ cache is missing, then atomically stores the original bytes in
 `<state_dir>/gfwlist.txt`. Custom HTTPS subscriptions use separate caches keyed
 by their URLs, so validating an unsaved source cannot replace another source's
 policy. Later checks and connections reuse the matching disk cache,
-including offline. Official caches older than the supplemental-rule cleanup are
-refreshed before use; a failed upgrade keeps the old file and stops startup.
+including offline. Compatibility coverage is added only when the selected list
+lacks previously supported application domains; older local and custom lists
+retain that coverage without a forced refresh.
 No upstream GFWList snapshot is stored in the repository or embedded in the app.
 The legacy `gfwlist: builtin` value selects the same official source; local files
 and other HTTPS subscriptions are also supported.

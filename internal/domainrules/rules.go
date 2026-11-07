@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
-	"time"
 
 	"golang.org/x/net/idna"
 )
@@ -23,10 +22,16 @@ const maxRulesSize = 2 << 20
 //go:embed supplemental.txt
 var supplementalRules []byte
 
-// RulesInfo keeps GFWList and supplemental diagnostics separate.
+// These domains moved upstream. Preserve prior coverage only when the selected
+// list does not already cover the whole domain and its subdomains.
+var upstreamApplicationDomains = [...]string{
+	"openai.com", "chatgpt.com", "anthropic.com", "claude.ai", "claude.com",
+	"claude.app", "claudeusercontent.com", "claudemcpcontent.com",
+}
+
+// RulesInfo keeps GFWList and effective supplemental diagnostics separate.
 type RulesInfo struct {
 	SHA256             string
-	LastModified       time.Time
 	Proxy              int
 	Direct             int
 	Skipped            int
@@ -69,6 +74,25 @@ func (r domainRules) match(domain string) bool {
 	return false
 }
 
+func (r domainRules) coversSuffix(domain string) bool {
+	for rest := domain; ; {
+		if r.suffix[rest] {
+			return true
+		}
+		i := strings.IndexByte(rest, '.')
+		if i < 0 {
+			break
+		}
+		rest = rest[i+1:]
+	}
+	for _, pattern := range r.wildcard {
+		if strings.HasPrefix(pattern.String(), `^(?:[^.]+\.)*`) && pattern.MatchString(domain) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *rules) match(domain string) bool {
 	return !r.direct.match(domain) && (r.proxy.match(domain) || r.supplemental.match(domain))
 }
@@ -78,7 +102,13 @@ func parseActiveRules(data []byte) (*rules, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	supplement, _, err := parseRules(supplementalRules)
+	extra := bytes.Clone(supplementalRules)
+	for _, domain := range upstreamApplicationDomains {
+		if !r.proxy.coversSuffix(domain) && !r.direct.coversSuffix(domain) {
+			extra = fmt.Appendf(extra, "\n||%s", domain)
+		}
+	}
+	supplement, _, err := parseRules(extra)
 	if err != nil {
 		return nil, nil, fmt.Errorf("domainrules: bundled supplement: %w", err)
 	}
@@ -113,9 +143,6 @@ func parseRules(data []byte) (*rules, []byte, error) {
 	}
 	for _, line := range lines[1:] {
 		line = strings.TrimSpace(line)
-		if value, ok := strings.CutPrefix(line, "! Last Modified:"); ok {
-			r.info.LastModified, _ = time.Parse(time.RFC1123Z, strings.TrimSpace(value))
-		}
 		if line == "" || strings.HasPrefix(line, "!") {
 			continue
 		}

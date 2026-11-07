@@ -26,43 +26,19 @@ func RulesCachePath(config Config) string {
 	return filepath.Join(config.StateDir, name)
 }
 
-// This upstream revision covers the domains removed from the supplement.
-// Older official caches must refresh before they can be used with that cleanup.
-var minimumOfficialRulesDate = time.Date(2026, time.November, 6, 2, 29, 19, 0, time.UTC)
-
-func officialRulesNeedUpgrade(source string, info domainrules.RulesInfo) bool {
-	return (source == "builtin" || source == domainrules.DefaultRulesURL) &&
-		!info.LastModified.IsZero() && info.LastModified.Before(minimumOfficialRulesDate)
-}
-
-// EnsureRules downloads missing remote rules and upgrades older official caches.
+// EnsureRules downloads remote rules only when the matching cache is missing.
 // Empty, local-file and global-mode policies do not require a download.
 func EnsureRules(ctx context.Context, config Config, client *http.Client) error {
 	if config.Rules.Mode == RoutingGlobal || config.Rules.GFWList == "" ||
 		config.Rules.GFWList != "builtin" && !strings.HasPrefix(config.Rules.GFWList, "https://") {
 		return nil
 	}
-	legacy := false
-	cache := RulesCachePath(config)
-	if _, err := os.Stat(cache); err == nil {
-		if config.Rules.GFWList != "builtin" && config.Rules.GFWList != domainrules.DefaultRulesURL {
-			return nil
-		}
-		projection, err := readProjection(cache)
-		if err != nil {
-			return err
-		}
-		if !officialRulesNeedUpgrade(config.Rules.GFWList, projection.Info) {
-			return nil
-		}
-		legacy = true
+	if _, err := os.Stat(RulesCachePath(config)); err == nil {
+		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 	if _, err := RefreshRules(ctx, config, client); err != nil {
-		if legacy {
-			return fmt.Errorf("cached official GFWList needs an update before use: %w", err)
-		}
 		return fmt.Errorf("no cached GFWList: %w; connect to the source or run tailsplit rules refresh first", err)
 	}
 	return nil
@@ -114,9 +90,6 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	projection, err := domainrules.ProjectActiveRules(data)
 	if err != nil {
 		return domainrules.RulesInfo{}, fmt.Errorf("invalid GFWList; existing cache retained: %w", err)
-	}
-	if officialRulesNeedUpgrade(config.Rules.GFWList, projection.Info) {
-		return domainrules.RulesInfo{}, errors.New("official GFWList is older than the supported rules; existing cache retained")
 	}
 	if err := privateState(config.StateDir); err != nil {
 		return domainrules.RulesInfo{}, err
