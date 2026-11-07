@@ -254,7 +254,7 @@ var fieldTypes = map[string]string{
 	"tailscale.exit_node": "string", "tailscale.tailnet": "string", "tailscale.domains": "list",
 	"dns.direct": "string", "dns.proxy": "string", "dns.direct_ipv6": "bool",
 	"dns.fake_ip": "bool", "dns.magic_domains": "list",
-	"rules.mode": "string", "rules.gfwlist": "string", "rules.final": "string",
+	"rules.mode": "string", "rules.source": "string", "rules.gfwlist": "string", "rules.final": "string",
 	"rules.proxy_domains": "list", "rules.direct_domains": "list",
 	"rules.proxy_ips": "list", "rules.direct_ips": "list",
 	"tun.enabled": "bool", "tun.mtu": "int",

@@ -67,7 +67,8 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const level = $('#log-level'); nodes.set('#level', level); level.dataset.field = 'log_level';
   const mtu = $('#mtu'); mtu.dataset = { field: 'tun.mtu', kind: 'int' };
   const tun = $('#tun-enabled'); tun.type = 'checkbox'; tun.dataset.field = 'tun.enabled';
-  const fields = [level, mtu, tun];
+  const ruleSource = $('#rule-source'); ruleSource.dataset.field = 'rules.source';
+  const fields = [level, mtu, tun, ruleSource];
   const pages = ['connection', 'nodes', 'logs', 'settings'].map((name) => {
     const nav = $(`[data-page="${name}"]`); nav.dataset.page = name; return nav;
   });
@@ -161,6 +162,102 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   };
   return app;
 }
+
+function ruleDocument(source, key = 'source') {
+  const text = `log_level: info\ntailscale: {}\nrules:\n  ${key}: ${JSON.stringify(source)}\n`;
+  return { ...doc(text), values: { log_level: 'info', rules: { [key]: source } } };
+}
+
+test('rule source form reads new and legacy source selections without changing YAML', async () => {
+  for (const key of ['source', 'gfwlist']) {
+    for (const [source, mode] of [['builtin', 'builtin'], ['https://rules.example/list.txt', 'custom'], ['./rules.txt', 'custom'], ['', '']]) {
+      const initial = ruleDocument(source, key);
+      const app = await page({}, '', {}, initial);
+      assert.equal(app.$('#rule-source-type').value, mode);
+      assert.equal(app.$('#rule-source').value, source);
+      assert.equal(app.$('#custom-rule-source').hidden, mode !== 'custom');
+      assert.equal(app.$('#builtin-rule-hint').hidden, mode !== 'builtin');
+      assert.equal(app.requests.some((request) => request.path === '/api/preview'), false);
+      assert.equal(app.$('#save').disabled, true);
+    }
+  }
+});
+
+test('null rule sources use the effective legacy source in the form', async () => {
+  for (const [source, mode] of [['builtin', 'builtin'], ['https://rules.example/list.txt', 'custom'], ['./rules.txt', 'custom'], ['', '']]) {
+    for (const scalar of ['null', '']) {
+      const initial = ruleDocument(source, 'gfwlist');
+      initial.yaml += `  source: ${scalar}\n`;
+      initial.values.rules.source = null;
+      const app = await page({}, '', {}, initial);
+      assert.equal(app.$('#rule-source-type').value, mode);
+      assert.equal(app.$('#rule-source').value, source);
+      assert.equal(app.$('#custom-rule-source').hidden, mode !== 'custom');
+      assert.equal(app.$('#save').disabled, true);
+      assert.equal(app.requests.some((request) => request.path === '/api/preview'), false);
+    }
+  }
+});
+
+test('switching rule sources retains a custom URL and writes the chosen source', async () => {
+  const app = await page({}, '', {}, ruleDocument('builtin'));
+  app.override = (request) => request.path === '/api/preview'
+    ? response(ruleDocument(request.data.changes['rules.source'])) : undefined;
+  const selector = app.$('#rule-source-type');
+  selector.value = 'custom'; await selector.emit('change');
+  assert.equal(app.$('#custom-rule-source').hidden, false);
+  assert.equal(app.$('#rule-source-error').hidden, false);
+  assert.equal(app.$('#validate').disabled, true);
+  assert.equal(app.$('#save').disabled, true);
+  await app.input('#rule-source', 'https://rules.example/custom.txt');
+  assert.equal(app.$('#rule-source-error').hidden, true);
+  selector.value = 'builtin'; await selector.emit('change');
+  assert.equal(app.$('#rule-source').value, 'builtin');
+  assert.equal(app.$('#custom-rule-source').hidden, true);
+  selector.value = 'custom'; await selector.emit('change');
+  assert.equal(app.$('#rule-source').value, 'https://rules.example/custom.txt');
+  await app.$('#yaml-tab').emit('click');
+  assert.match(app.$('#raw-yaml').value, /source: "https:\/\/rules.example\/custom.txt"/);
+  await app.$('#form-tab').emit('click');
+  selector.value = ''; await selector.emit('change');
+  await app.$('#yaml-tab').emit('click');
+  assert.match(app.$('#raw-yaml').value, /source: ""/);
+});
+
+test('an empty custom source can be repaired and saved in the YAML editor', async () => {
+  const app = await page({}, '', {}, ruleDocument('builtin'));
+  const selector = app.$('#rule-source-type');
+  app.override = (request) => {
+    if (request.path !== '/api/preview') return undefined;
+    return response(ruleDocument(request.data.changes?.['rules.source'] ?? 'https://rules.example/repaired.txt'));
+  };
+  selector.value = 'custom'; await selector.emit('change');
+  assert.equal(app.$('#save').disabled, true);
+  await app.$('#yaml-tab').emit('click');
+  assert.equal(app.$('#validate').disabled, false, 'a hidden empty form must not block valid YAML');
+  const repaired = ruleDocument('https://rules.example/repaired.txt');
+  await app.input('#raw-yaml', repaired.yaml);
+  await app.$('#form-tab').emit('click');
+  await app.$('#yaml-tab').emit('click');
+  await app.$('#validate').emit('click');
+  assert.equal(app.requests.some((request) => request.path === '/api/validate' && request.data.yaml === repaired.yaml), true);
+  assert.equal(app.$('#save').disabled, false);
+  await app.$('#form-tab').emit('click');
+  assert.equal(app.$('#rule-source').value, 'https://rules.example/repaired.txt');
+  assert.equal(app.$('#rule-source-error').hidden, true);
+});
+
+test('rule source selection follows raw YAML edits when returning to the form', async () => {
+  const app = await page({}, '', {}, ruleDocument('builtin'));
+  await app.$('#yaml-tab').emit('click');
+  const custom = ruleDocument('https://rules.example/from-yaml.txt');
+  app.override = (request) => request.path === '/api/preview' ? response(custom) : undefined;
+  await app.input('#raw-yaml', custom.yaml);
+  await app.$('#form-tab').emit('click');
+  assert.equal(app.$('#rule-source-type').value, 'custom');
+  assert.equal(app.$('#rule-source').value, 'https://rules.example/from-yaml.txt');
+  assert.equal(app.$('#custom-rule-source').hidden, false);
+});
 
 test('desktop logs render sing-box foreground colors without exposing ANSI sequences', async () => {
   const app = await page({ logs_available: true });

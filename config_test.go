@@ -67,6 +67,51 @@ func TestDNSListenIsNotConfigurable(t *testing.T) {
 	}
 }
 
+func TestRuleSourceSupportsNewAndLegacyConfiguration(t *testing.T) {
+	for _, key := range []string{"source", "gfwlist"} {
+		for _, source := range []string{"builtin", "https://rules.example/list.txt", "./rules.txt", ""} {
+			t.Run(key+"/"+source, func(t *testing.T) {
+				config, err := loadTestConfig(t, fmt.Sprintf("state_dir: ./state\ntailscale: {}\nrules:\n  %s: %q\n", key, source))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := source
+				if source == "./rules.txt" {
+					want = filepath.Join(filepath.Dir(config.StateDir), "rules.txt")
+				}
+				if config.Rules.GFWList != want || config.Rules.Source != nil {
+					t.Fatalf("source was not normalized: %+v", config.Rules)
+				}
+				cache := RulesCachePath(config)
+				again, err := Normalize(config, t.TempDir())
+				if err != nil || again.Rules.GFWList != want || RulesCachePath(again) != cache {
+					t.Fatalf("normalizing twice changed the source or cache: %+v, %v", again.Rules, err)
+				}
+				wire, err := json.Marshal(config.Rules)
+				if err != nil || bytes.Contains(wire, []byte(`"Source"`)) {
+					t.Fatalf("new YAML alias changed the app-service wire format: %s, %v", wire, err)
+				}
+			})
+		}
+	}
+	for _, scalar := range []string{"null", ""} {
+		config, err := loadTestConfig(t, "state_dir: ./state\ntailscale: {}\nrules:\n  gfwlist: builtin\n  source: "+scalar+"\n")
+		if err != nil || config.Rules.GFWList != "builtin" || config.Rules.Source != nil {
+			t.Fatalf("null source must retain the legacy subscription: %+v, %v", config.Rules, err)
+		}
+	}
+	for _, text := range []string{
+		"tailscale: {}\nrules:\n  source: builtin\n  gfwlist: https://rules.example/list.txt\n",
+		"tailscale: {}\nrules:\n  source: ''\n  gfwlist: builtin\n",
+		"tailscale: {}\nrules:\n  source: http://rules.example/list.txt\n",
+		"rules:\n  source: builtin\n",
+	} {
+		if _, err := loadTestConfig(t, text); err == nil {
+			t.Fatalf("accepted invalid rule source: %s", text)
+		}
+	}
+}
+
 func TestDeviceNamesDefaultToHostAndPreserveCustomNames(t *testing.T) {
 	for host, want := range map[string]string{
 		"Idy-MacBook.local": "tailsplit-idy-macbook",

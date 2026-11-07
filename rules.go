@@ -54,13 +54,13 @@ func migrateLegacyRules(config Config) (bool, error) {
 		return false, err
 	}
 	if !info.Mode().IsRegular() {
-		return false, errors.New("legacy GFWList cache must be a regular file")
+		return false, errors.New("legacy rule-list cache must be a regular file")
 	}
 	if _, err := readProjection(legacy); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("invalid legacy GFWList cache retained: %w", err)
+		return false, fmt.Errorf("invalid legacy rule-list cache retained: %w", err)
 	}
 	installed, err := commitRuleCache(legacy, target)
 	if err != nil {
@@ -99,12 +99,12 @@ func EnsureRules(ctx context.Context, config Config, client *http.Client) error 
 		return err
 	}
 	if _, err := RefreshRules(ctx, config, client); err != nil {
-		return fmt.Errorf("no cached GFWList: %w; connect to the source or run tailsplit rules refresh first", err)
+		return fmt.Errorf("no cached rule list: %w; connect to the source or run tailsplit rules refresh first", err)
 	}
 	return nil
 }
 
-// RefreshRules updates only the validated GFWList cache. Running flows, login
+// RefreshRules updates only the validated rule-list cache. Running flows, login
 // state and fake-IP mappings are untouched; restart to load the new policy.
 func RefreshRules(ctx context.Context, config Config, client *http.Client) (domainrules.RulesInfo, error) {
 	source := config.Rules.GFWList
@@ -113,7 +113,7 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	}
 	parsed, err := url.Parse(source)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
-		return domainrules.RulesInfo{}, errors.New("rules refresh requires builtin or an HTTPS GFWList URL")
+		return domainrules.RulesInfo{}, errors.New("rules refresh requires builtin or an HTTPS rule-list URL")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -121,7 +121,7 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	copyClient := *client
 	copyClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if request.URL.Scheme != "https" || request.URL.User != nil || len(via) >= 10 {
-			return errors.New("unsafe GFWList redirect")
+			return errors.New("unsafe rule-list redirect")
 		}
 		return nil
 	}
@@ -135,13 +135,13 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	if err != nil {
 		// A URL may include signed query parameters. Do not echo it in errors.
 		if ctx.Err() != nil {
-			return domainrules.RulesInfo{}, fmt.Errorf("GFWList download failed; existing cache retained: %w", ctx.Err())
+			return domainrules.RulesInfo{}, fmt.Errorf("rule list download failed; existing cache retained: %w", ctx.Err())
 		}
-		return domainrules.RulesInfo{}, errors.New("GFWList download failed; existing cache retained")
+		return domainrules.RulesInfo{}, errors.New("rule list download failed; existing cache retained")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return domainrules.RulesInfo{}, fmt.Errorf("GFWList returned HTTP %d; existing cache retained", response.StatusCode)
+		return domainrules.RulesInfo{}, fmt.Errorf("rule list returned HTTP %d; existing cache retained", response.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
 	if err != nil {
@@ -149,7 +149,7 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	}
 	projection, err := domainrules.ProjectActiveRules(data)
 	if err != nil {
-		return domainrules.RulesInfo{}, fmt.Errorf("invalid GFWList; existing cache retained: %w", err)
+		return domainrules.RulesInfo{}, fmt.Errorf("invalid rule list; existing cache retained: %w", err)
 	}
 	if err := privateState(config.StateDir); err != nil {
 		return domainrules.RulesInfo{}, err

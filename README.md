@@ -58,6 +58,21 @@ Run the Windows CLI from an Administrator terminal when connecting.
 See [CLI configuration](docs/guide.md#cli-configuration) for DNS, rule lists,
 network privileges, and configuration migration.
 
+## Rule sources
+
+Choose **Builtin rules**, a **Custom URL or file**, or **No rule list** under
+**Settings → Routing rules**. The equivalent YAML setting is:
+
+```yaml
+rules:
+  source: builtin
+```
+
+Custom sources support Base64 and plain-text domain lists, including lists
+without an AutoProxy header. Builtin rules download on first use and are cached
+for offline reuse. See [rule sources](docs/guide.md#rule-sources) for URL and file
+examples.
+
 ## Community
 
 Join the [TailSplit channel in IDY Community](https://discord.gg/RY7ktfh8Pr) for
