@@ -51,13 +51,14 @@ rules:
   # route client traffic/DNS through the selected exit (requires tun.enabled).
   # The app's Global / Kill Switch menu enables traffic capture automatically.
   mode: split
-  # Bundled offline snapshot; a validated refresh cache takes precedence.
-  # Also accepts a local file or HTTPS URL. URL startup requires a cache.
-  gfwlist: builtin
+  # Download once when the disk cache is missing; reuse state_dir/gfwlist.txt.
+  # Update explicitly with: tailsplit rules refresh -c config.yaml
+  # Also accepts a local file. Legacy "builtin" selects this same official URL.
+  gfwlist: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
   proxy_domains:
     - github.com
     - youtube.com
-    # This exit-IP checker is absent from the bundled GFWList.
+    # Keep this exit-IP checker proxied independently of upstream GFWList.
     - myexternalip.com
   proxy_ips:
     - 8.8.8.8/32

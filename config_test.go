@@ -121,13 +121,19 @@ rules:
 	}
 }
 
-func TestExampleCompilesWithoutCredentialsOrStateCreation(t *testing.T) {
+func TestExampleCompilesWithLocalRulesWithoutCredentialsOrStateCreation(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "must-not-exist")
 	text := strings.Replace(string(ExampleYAML), "~/.local/share/letsolo/tailsplit", state, 1)
 	text = strings.Replace(text, "  # auth_key_env: TAILSPLIT_AUTH_KEY", "  auth_key_env: TAILSPLIT_AUTH_KEY", 1)
 	t.Setenv("TAILSPLIT_AUTH_KEY", "credential-must-not-appear-in-render")
 	config, err := loadTestConfig(t, text)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Compile local rules offline without creating device state. Remote sources
+	// have separate first-download and persisted-cache coverage in rules_test.go.
+	config.Rules.GFWList = filepath.Join(t.TempDir(), "local-rules.txt")
+	if err := os.WriteFile(config.Rules.GFWList, []byte("[AutoProxy 0.2.9]\n||fixture.example\n@@||safe.fixture.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	compiled, err := Compile(config)
@@ -137,8 +143,8 @@ func TestExampleCompilesWithoutCredentialsOrStateCreation(t *testing.T) {
 	if bytes.Contains(compiled.JSON, []byte("credential-must-not-appear")) || bytes.Contains(compiled.JSON, []byte(`"auth_key"`)) {
 		t.Fatal("render exposed an authentication key")
 	}
-	if compiled.GFWList == nil || compiled.GFWList.Proxy < 1000 || compiled.GFWList.Direct == 0 {
-		t.Fatalf("bundled projection not loaded: %+v", compiled.GFWList)
+	if compiled.GFWList == nil || compiled.GFWList.Proxy != 1 || compiled.GFWList.Direct != 1 {
+		t.Fatalf("local projection not loaded: %+v", compiled.GFWList)
 	}
 	var native map[string]any
 	if err := json.Unmarshal(compiled.JSON, &native); err != nil {

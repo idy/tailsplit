@@ -96,10 +96,6 @@ def collect(goos, goarch, output):
         sections += ["", f"## {name} {module.get('Version', '')}", ""]
         for path in notices:
             sections += [f"### {path.relative_to(directory).as_posix()}", "", read_notice(path), ""]
-    data = ROOT / "internal/gfwlistdns/data"
-    if data.is_dir():
-        sections += ["## Embedded GFWList", "", (data / "README.md").read_text(encoding="utf-8"),
-                     "", read_notice(data / "COPYING.txt")]
     if goos == "windows":
         sections += ["## Bundled Wintun driver", "", read_notice(ROOT / "LICENSES/wintun.txt")]
     output.parent.mkdir(parents=True, exist_ok=True)

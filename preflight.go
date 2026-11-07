@@ -130,7 +130,10 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 
 func compilePreflight(config Config) (Compiled, error) {
 	config.TUN.Enabled = false
-	compiled, err := compile(config)
+	// Login, logout and exit discovery do not route client traffic and must
+	// remain available even before a remote rule cache has been downloaded.
+	config.Rules.GFWList = ""
+	compiled, err := compile(context.Background(), config)
 	if err != nil {
 		return Compiled{}, err
 	}

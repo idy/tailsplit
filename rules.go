@@ -9,21 +9,41 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/idy/tailsplit/internal/gfwlistdns"
+	"github.com/idy/tailsplit/internal/domainrules"
 )
+
+// EnsureRules downloads remote rules only when their disk cache is missing.
+// Empty, local-file and global-mode policies do not require a download. Existing
+// cache contents are validated by Compile before they can become active rules.
+func EnsureRules(ctx context.Context, config Config, client *http.Client) error {
+	if config.Rules.Mode == RoutingGlobal || config.Rules.GFWList == "" ||
+		config.Rules.GFWList != "builtin" && !strings.HasPrefix(config.Rules.GFWList, "https://") {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(config.StateDir, "gfwlist.txt")); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if _, err := RefreshRules(ctx, config, client); err != nil {
+		return fmt.Errorf("no cached GFWList: %w; connect to the source or run tailsplit rules refresh first", err)
+	}
+	return nil
+}
 
 // RefreshRules updates only the validated GFWList cache. Running flows, login
 // state and fake-IP mappings are untouched; restart to load the new policy.
-func RefreshRules(ctx context.Context, config Config, client *http.Client) (gfwlistdns.RulesInfo, error) {
+func RefreshRules(ctx context.Context, config Config, client *http.Client) (domainrules.RulesInfo, error) {
 	source := config.Rules.GFWList
 	if source == "builtin" {
-		source = gfwlistdns.DefaultRulesURL
+		source = domainrules.DefaultRulesURL
 	}
 	parsed, err := url.Parse(source)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
-		return gfwlistdns.RulesInfo{}, errors.New("rules refresh requires builtin or an HTTPS GFWList URL")
+		return domainrules.RulesInfo{}, errors.New("rules refresh requires builtin or an HTTPS GFWList URL")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -39,54 +59,57 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (gfwl
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	response, err := copyClient.Do(request)
 	if err != nil {
 		// A URL may include signed query parameters. Do not echo it in errors.
-		return gfwlistdns.RulesInfo{}, errors.New("GFWList download failed; existing cache retained")
+		if ctx.Err() != nil {
+			return domainrules.RulesInfo{}, fmt.Errorf("GFWList download failed; existing cache retained: %w", ctx.Err())
+		}
+		return domainrules.RulesInfo{}, errors.New("GFWList download failed; existing cache retained")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return gfwlistdns.RulesInfo{}, fmt.Errorf("GFWList returned HTTP %d; existing cache retained", response.StatusCode)
+		return domainrules.RulesInfo{}, fmt.Errorf("GFWList returned HTTP %d; existing cache retained", response.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
 	if err != nil {
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
-	projection, err := gfwlistdns.ProjectActiveRules(data)
+	projection, err := domainrules.ProjectActiveRules(data)
 	if err != nil {
-		return gfwlistdns.RulesInfo{}, fmt.Errorf("invalid GFWList; existing cache retained: %w", err)
+		return domainrules.RulesInfo{}, fmt.Errorf("invalid GFWList; existing cache retained: %w", err)
 	}
 	if err := privateState(config.StateDir); err != nil {
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	file, err := os.CreateTemp(config.StateDir, ".gfwlist-*")
 	if err != nil {
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	defer os.Remove(file.Name())
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	if err := file.Close(); err != nil {
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	installed, err := commitRuleCache(file.Name(), filepath.Join(config.StateDir, "gfwlist.txt"))
 	if err != nil {
 		if installed {
 			return projection.Info, errors.New("rules installed but directory durability could not be confirmed")
 		}
-		return gfwlistdns.RulesInfo{}, err
+		return domainrules.RulesInfo{}, err
 	}
 	return projection.Info, nil
 }

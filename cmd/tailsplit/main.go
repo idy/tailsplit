@@ -174,7 +174,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		}
 		return json.NewEncoder(out).Encode(info)
 	}
-	compiled, err := tailsplit.Compile(config)
+	compiled, err := tailsplit.CompileContext(ctx, config)
 	if err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func installedService(args []string, diagnostic io.Writer) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	return appservice.RunInstalled(ctx, *uid, func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-		compiled, err := tailsplit.Compile(config)
+		compiled, err := tailsplit.CompileContext(ctx, config)
 		if err != nil {
 			return err
 		}

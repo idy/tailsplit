@@ -140,6 +140,11 @@ func OpenSession(ctx context.Context, executable, operation string, config tails
 	if info.BuildID != expected {
 		return nil, errors.New("update the TailSplit network service from this app before continuing")
 	}
+	if operation == "start" {
+		if err := tailsplit.EnsureRules(ctx, config, nil); err != nil {
+			return nil, err
+		}
+	}
 	files, err := userFiles(&config, !info.Initialized)
 	if err != nil {
 		return nil, fmt.Errorf("read saved app state for migration: %w", err)

@@ -141,8 +141,6 @@ cp "$output/tailsplit-tray" "$app/Contents/MacOS/tailsplit-tray"
 cp "$project/config.example.yaml" "$app/Contents/Resources/config.example.yaml"
 core_module=$(cd "$project" && "$go_command" list -m -f '{{.Dir}}' github.com/sagernet/sing-box)
 cp "$core_module/LICENSE" "$app/Contents/Resources/sing-box-LICENSE.txt"
-cp "$project/internal/gfwlistdns/data/README.md" "$app/Contents/Resources/GFWList-Provenance.txt"
-cp "$project/internal/gfwlistdns/data/COPYING.txt" "$app/Contents/Resources/GFWList-LICENSE.txt"
 if test -f "$project/LICENSE"; then
   cp "$project/LICENSE" "$app/Contents/Resources/LICENSE"
 fi

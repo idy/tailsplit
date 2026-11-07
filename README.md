@@ -1,9 +1,9 @@
 # TailSplit
 
 An open-source desktop app for macOS and Windows, with a cross-platform CLI for
-domain and IP routing. TailSplit embeds sing-box, GFWList projection and userspace
-Tailscale. Choose which traffic goes direct, through a proxy exit, or to authorized
-Tailnet peers.
+domain and IP routing. TailSplit embeds sing-box and userspace Tailscale, and
+projects downloaded GFWList rules. Choose which traffic goes direct, through a
+proxy exit, or to authorized Tailnet peers.
 
 [Project page](https://tailsplit.idy.dev) · [Releases](https://github.com/idy/tailsplit/releases) · [Source](https://github.com/idy/tailsplit)
 
@@ -144,8 +144,8 @@ From PowerShell in the extracted directory:
 .\tailsplit.exe check -c .\config.yaml
 ```
 
-These commands work without starting a network connection. Configure your proxy
-or authorized Tailnet destination, then use an **Administrator** terminal for
+These commands do not start proxy listeners, a TUN or Tailnet login. Configure
+your proxy or authorized Tailnet destination, then use an **Administrator** terminal for
 `tailsplit.exe run -c .\config.yaml`. Both connection modes create a DNS TUN;
 Windows adapter, route and DNS changes require elevation. Ctrl+C stops the
 foreground session and removes its managed networking. Keep the existing user
@@ -241,9 +241,11 @@ tailsplit render -c config.yaml
 tailsplit version
 ```
 
-`init` creates without overwriting an existing file. `check` validates offline;
-`render` shows the embedded-core configuration. Connecting requires appropriate
-network privileges and a configured proxy or authorized Tailnet destination:
+`init` creates without overwriting an existing file. `check` validates without
+starting the proxy; `render` shows the embedded-core configuration. When a remote
+GFWList cache is missing, both commands download and cache it first. With a cache
+or local rule file, validation and rendering work offline. Connecting requires
+appropriate network privileges and a configured proxy or authorized Tailnet destination:
 
 ```sh
 sudo tailsplit run -c config.yaml
@@ -255,8 +257,29 @@ controls whole-system traffic capture and system DNS publishing. DNS listener
 addresses and ports are fixed. `dns.listen` is unsupported and fails validation;
 remove that field from older YAML files.
 
-Edit routing and DNS rules in the YAML. GFWList and the separately documented
-supplemental rules are bundled; rule refresh remains an explicit operation.
+Edit routing and DNS rules in the YAML. The default GFWList source is the
+[official subscription](https://github.com/gfwlist/gfwlist/blob/master/gfwlist.txt),
+downloaded from its raw HTTPS URL. TailSplit downloads and validates it when the
+cache is missing, then atomically stores the original bytes in
+`<state_dir>/gfwlist.txt`. Later checks and connections reuse that disk cache,
+including offline. No upstream GFWList snapshot is stored in the repository or
+embedded in the app. The legacy `gfwlist: builtin` value selects the same official
+source; local files and other HTTPS subscriptions are also supported.
+
+To update the cache explicitly:
+
+```sh
+tailsplit rules refresh -c config.yaml
+```
+
+Failed downloads or invalid rules leave the existing cache intact. An initial
+download failure without a cache stops split-mode startup with an error. Downloads
+have a 30-second timeout and a 2 MiB limit. Global mode and device login, logout
+and exit discovery do not require GFWList. The desktop app downloads as the
+ordinary user and transfers the cached contents to its network service.
+[Supplemental application rules](internal/domainrules/supplemental.txt) are added
+when loading the list; explicit GFWList direct exceptions take precedence.
+
 Credentials and persistent device state belong in user-controlled files, not in
 this repository. Keep existing configuration/state directories during upgrades.
 
@@ -296,7 +319,7 @@ For a native Windows CLI source build, use Go directly. The supported Windows
 CLI test packages include state ACL and cross-process lock checks:
 
 ```powershell
-go test -mod=readonly -tags with_gvisor . ./cmd/tailsplit ./internal/privatefs ./internal/gfwlistdns
+go test -mod=readonly -tags with_gvisor . ./cmd/tailsplit ./internal/privatefs ./internal/domainrules
 go build -mod=readonly -tags with_gvisor -o tailsplit.exe ./cmd/tailsplit
 ```
 
@@ -384,9 +407,9 @@ limit. Diffs over 5,000,000 bytes wait until an admin comments
 ## License and source provenance
 
 TailSplit is GPL-3.0-or-later; see [LICENSE](LICENSE) and
-[third-party notices](THIRD_PARTY_NOTICES.md). The embedded GFWList snapshot
-retains its LGPL-2.1 license and source provenance under
-`internal/gfwlistdns/data/`.
+[third-party notices](THIRD_PARTY_NOTICES.md). GFWList is downloaded separately
+from its [official source](https://github.com/gfwlist/gfwlist/blob/master/gfwlist.txt)
+under its upstream LGPL-2.1 license.
 
 The initial public application tree was imported from `letsolo/tailsplit`
 without its private signing files or private credential history. The shared

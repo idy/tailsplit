@@ -320,6 +320,11 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 			_ = unlock()
 		}
 	}()
+	if operation == "start" {
+		if err := tailsplit.EnsureRules(ctx, config, nil); err != nil {
+			return nil, err
+		}
+	}
 	files, err := userFiles(&config, !info.Initialized)
 	if err != nil {
 		return nil, fmt.Errorf("read private device state: %w", err)

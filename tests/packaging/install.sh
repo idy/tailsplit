@@ -58,8 +58,9 @@ from pathlib import Path
 metadata = json.loads(Path('/usr/share/doc/tailsplit/build.json').read_text())
 assert metadata == dict(zip(('version', 'commit', 'architecture'), sys.argv[1:]))
 notices = Path('/usr/share/doc/tailsplit/THIRD_PARTY_NOTICES.md').read_text()
-for expected in ('github.com/sagernet/sing-box', 'github.com/sagernet/tailscale', 'Go standard library', 'Embedded GFWList'):
+for expected in ('github.com/sagernet/sing-box', 'github.com/sagernet/tailscale', 'Go standard library'):
     assert expected in notices, expected
+assert '## Embedded GFWList' not in notices
 PY
 /usr/bin/tailsplit init -c "$work/generated.yaml"
 [ "$(stat -c %a "$work/generated.yaml")" = 600 ]

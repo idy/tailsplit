@@ -1,6 +1,7 @@
 package tailsplit
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/idy/tailsplit/internal/gfwlistdns"
+	"github.com/idy/tailsplit/internal/domainrules"
 )
 
 type object = map[string]any
@@ -20,21 +21,27 @@ type object = map[string]any
 // includes an authentication key; Run injects an explicitly requested env key.
 type Compiled struct {
 	JSON      []byte
-	GFWList   *gfwlistdns.RulesInfo
+	GFWList   *domainrules.RulesInfo
 	GFWSource string
 }
 
+// Compile loads local or cached rules, downloading a remote source when its
+// cache is missing. Use CompileContext to cancel that first download.
 func Compile(config Config) (Compiled, error) {
+	return CompileContext(context.Background(), config)
+}
+
+func CompileContext(ctx context.Context, config Config) (Compiled, error) {
 	if config.Rules.Mode == RoutingGlobal && !config.TUN.Enabled {
 		return Compiled{}, fmt.Errorf("global Kill Switch mode requires tun.enabled: true")
 	}
 	if config.Tailscale != nil && strings.TrimSpace(config.Tailscale.ExitNode) == "" {
 		return Compiled{}, fmt.Errorf("select a tailscale.exit_node before starting the proxy")
 	}
-	return compile(config)
+	return compile(ctx, config)
 }
 
-func compile(config Config) (Compiled, error) {
+func compile(ctx context.Context, config Config) (Compiled, error) {
 	base, err := os.Getwd()
 	if err != nil {
 		return Compiled{}, err
@@ -43,10 +50,10 @@ func compile(config Config) (Compiled, error) {
 		return Compiled{}, err
 	}
 	global := config.Rules.Mode == RoutingGlobal
-	var projection *gfwlistdns.Projection
+	var projection *domainrules.Projection
 	var source string
 	if !global {
-		projection, source, err = loadProjection(config)
+		projection, source, err = loadProjection(ctx, config)
 		if err != nil {
 			return Compiled{}, err
 		}
@@ -325,7 +332,7 @@ func withAction(match object, key, value string) object {
 	return result
 }
 
-func domainRules(projection gfwlistdns.DomainProjection) []object {
+func domainRules(projection domainrules.DomainProjection) []object {
 	var result []object
 	for _, item := range []struct {
 		key    string
@@ -342,23 +349,16 @@ func domainRules(projection gfwlistdns.DomainProjection) []object {
 	return result
 }
 
-func loadProjection(config Config) (*gfwlistdns.Projection, string, error) {
+func loadProjection(ctx context.Context, config Config) (*domainrules.Projection, string, error) {
 	source := config.Rules.GFWList
 	if source == "" {
 		return nil, "", nil
 	}
 	if source == "builtin" || strings.HasPrefix(source, "https://") {
-		cache := filepath.Join(config.StateDir, "gfwlist.txt")
-		if _, err := os.Stat(cache); err == nil {
-			source = cache
-		} else if !os.IsNotExist(err) {
+		if err := EnsureRules(ctx, config, nil); err != nil {
 			return nil, "", err
-		} else if source == "builtin" {
-			projection, err := gfwlistdns.BuiltinProjection()
-			return &projection, "builtin:" + gfwlistdns.BuiltinRevision, err
-		} else {
-			return nil, "", fmt.Errorf("no cached GFWList; run tailsplit rules refresh first")
 		}
+		source = filepath.Join(config.StateDir, "gfwlist.txt")
 	}
 	stream, err := os.Open(source)
 	if err != nil {
@@ -376,6 +376,6 @@ func loadProjection(config Config) (*gfwlistdns.Projection, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	projection, err := gfwlistdns.ProjectActiveRules(data)
+	projection, err := domainrules.ProjectActiveRules(data)
 	return &projection, source, err
 }

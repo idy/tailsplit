@@ -3,6 +3,8 @@ package tailsplit
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/idy/tailsplit/internal/domainrules"
 	"github.com/idy/tailsplit/internal/privatefs"
 )
 
@@ -24,9 +27,6 @@ func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
 	config, err := loadTestConfig(t, "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: "+server.URL+"\nstate_dir: ./state\n")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := Compile(config); err == nil || !strings.Contains(err.Error(), "refresh") {
-		t.Fatal("uncached URL must fail without doing a startup download")
 	}
 	info, err := RefreshRules(context.Background(), config, server.Client())
 	if err != nil || info.Proxy != 1 || info.Direct != 1 {
@@ -63,6 +63,139 @@ func TestRuleRefreshKeepsLastGoodCache(t *testing.T) {
 	after, _ = os.ReadFile(cache)
 	if string(after) != string(good) {
 		t.Fatal("oversized refresh replaced the working rule cache")
+	}
+}
+
+type ruleTransportFunc func(*http.Request) (*http.Response, error)
+
+func (f ruleTransportFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestRuleCacheDownloadsOnceAndWorksOffline(t *testing.T) {
+	data := base64.StdEncoding.EncodeToString([]byte("[AutoProxy 0.2.9]\n||fixture.example\n@@||safe.fixture.example\n"))
+	for _, source := range []string{"builtin", domainrules.DefaultRulesURL, "https://rules.example/subscription"} {
+		t.Run(source, func(t *testing.T) {
+			var requests atomic.Int32
+			transport := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = transport })
+			http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+				if requests.Add(1) > 1 {
+					return nil, errors.New("offline")
+				}
+				want := source
+				if want == "builtin" {
+					want = domainrules.DefaultRulesURL
+				}
+				if request.URL.String() != want {
+					t.Errorf("download source = %q, want %q", request.URL, want)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(data)), Header: make(http.Header)}, nil
+			})
+			config, err := loadTestConfig(t, "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: "+source+"\nstate_dir: ./state\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			compiled, err := CompileContext(context.Background(), config)
+			if err != nil {
+				t.Fatal("first compile did not download rules:", err)
+			}
+			cache := filepath.Join(config.StateDir, "gfwlist.txt")
+			cached, err := os.ReadFile(cache)
+			if err != nil || string(cached) != data {
+				t.Fatalf("original downloaded bytes were not cached: %v", err)
+			}
+			if err := privatefs.CheckFile(cache); err != nil {
+				t.Fatal("rule cache is not owner-only:", err)
+			}
+			if compiled.GFWSource != cache || compiled.GFWList == nil || compiled.GFWList.Proxy != 1 || compiled.GFWList.Direct != 1 || compiled.GFWList.SupplementalProxy == 0 {
+				t.Fatalf("downloaded rules were not projected from disk: %+v", compiled)
+			}
+			again, err := Compile(config)
+			if err != nil || string(again.JSON) != string(compiled.JSON) || requests.Load() != 1 {
+				t.Fatalf("offline compile did not reuse the saved cache: requests=%d, error=%v", requests.Load(), err)
+			}
+			if err := os.Remove(cache); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Compile(config); err == nil || !strings.Contains(err.Error(), "no cached GFWList") {
+				t.Fatalf("offline startup without a cache did not fail: %v", err)
+			}
+		})
+	}
+}
+
+func TestMissingRuleCacheRejectsFailedOrInvalidDownloads(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		data   string
+	}{
+		{"HTTP failure", http.StatusBadGateway, "upstream unavailable"},
+		{"invalid rules", http.StatusOK, "<html>not a subscription</html>"},
+		{"oversized rules", http.StatusOK, strings.Repeat("x", (2<<20)+1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.data)
+			}))
+			defer server.Close()
+			config := Config{StateDir: filepath.Join(t.TempDir(), "state"), Rules: RulesConfig{GFWList: server.URL}}
+			if err := EnsureRules(context.Background(), config, server.Client()); err == nil {
+				t.Fatal("failed download was accepted")
+			}
+			if _, err := os.Stat(config.StateDir); !os.IsNotExist(err) {
+				t.Fatal("failed download created persistent state:", err)
+			}
+		})
+	}
+}
+
+func TestRuleDownloadHonorsCancellation(t *testing.T) {
+	transport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+		return nil, request.Context().Err()
+	})
+	config, err := loadTestConfig(t, "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: builtin\nstate_dir: ./state\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := CompileContext(ctx, config); !errors.Is(err, context.Canceled) {
+		t.Fatal("initial rules download ignored cancellation:", err)
+	}
+}
+
+func TestPreflightAndIgnoredRulesDoNotDownload(t *testing.T) {
+	transport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+		t.Error("ignored rules triggered a download")
+		return nil, errors.New("unexpected request")
+	})
+	for _, source := range []string{"builtin", "https://rules.example/subscription", "./missing-local-rules"} {
+		config, err := loadTestConfig(t, "tailscale: {}\nrules:\n  gfwlist: "+source+"\nstate_dir: ./state\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := compilePreflight(config); err != nil {
+			t.Fatalf("login/logout/discovery required split rules %q: %v", source, err)
+		}
+		for _, ignored := range []Config{
+			{StateDir: config.StateDir, Rules: RulesConfig{Mode: RoutingGlobal, GFWList: source}},
+			{StateDir: config.StateDir},
+			{StateDir: config.StateDir, Rules: RulesConfig{GFWList: "./missing-local-rules"}},
+		} {
+			if err := EnsureRules(context.Background(), ignored, nil); err != nil {
+				t.Fatal("ignored/local rules required a download:", err)
+			}
+		}
+		if _, err := os.Stat(config.StateDir); !os.IsNotExist(err) {
+			t.Fatal("preflight or ignored rules created persistent state:", err)
+		}
 	}
 }
 
