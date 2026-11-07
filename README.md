@@ -1,9 +1,9 @@
 # TailSplit
 
-An open-source desktop app for macOS and Windows, with a cross-platform CLI for
-domain and IP routing. TailSplit embeds sing-box and userspace Tailscale, and
-projects downloaded GFWList rules. Choose which traffic goes direct, through a
-proxy exit, or to authorized Tailnet peers.
+TailSplit is an open-source routing client based on sing-box rule lists. It
+supports multiple Tailscale networks: switch between networks and access the
+internet through your chosen Tailscale exit node. Available as a desktop app for
+macOS and Windows, with a cross-platform CLI.
 
 [Project page](https://tailsplit.idy.dev) · [Releases](https://github.com/idy/tailsplit/releases) · [Source](https://github.com/idy/tailsplit)
 
@@ -273,7 +273,8 @@ downloaded from its raw HTTPS URL. TailSplit downloads and validates it when the
 cache is missing, then atomically stores the original bytes in a source-specific
 file under `<state_dir>`. Existing `gfwlist.txt` caches are migrated only for the
 saved subscription that owns them. Subscription URLs are hashed into cache
-filenames, so validating an unsaved source cannot replace another source's policy. Later checks and connections reuse the matching disk cache,
+filenames, so validating an unsaved source cannot replace another source's policy.
+Later checks and connections reuse the matching disk cache,
 including offline. Compatibility coverage is added only when the selected list
 lacks previously supported application domains; older local and custom lists
 retain that coverage without a forced refresh.
