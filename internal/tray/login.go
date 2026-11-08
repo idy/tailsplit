@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os/exec"
 	"runtime"
+
+	"github.com/idy/tailsplit"
 )
 
 // LoginFlow is owned by the UI event loop. A click can precede the new auth
@@ -42,7 +44,7 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 		return ""
 	}
 	backend := snapshot.BackendState
-	if snapshot.Focus != "" {
+	if snapshot.Focus != "" && snapshot.Focus != tailsplit.MainExit {
 		// An additional exit's login reports that device's state.
 		backend = snapshot.Exits[snapshot.Focus].BackendState
 	}

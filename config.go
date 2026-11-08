@@ -97,6 +97,8 @@ type ExitConfig struct {
 	Hostname string `yaml:"hostname,omitempty"`
 	ExitNode string `yaml:"exit_node"`
 	Tailnet  string `yaml:"tailnet,omitempty"`
+	// MagicDNSSuffix is DNS metadata, separate from the Tailnet login guard.
+	MagicDNSSuffix string `yaml:"magic_dns_suffix,omitempty"`
 }
 
 type RouteConfig struct {
@@ -428,7 +430,7 @@ func validatePrefixes(name string, prefixes []string) error {
 }
 
 func (c *Config) normalizeExits() error {
-	seen := map[string]bool{MainExit: true}
+	seen := map[string]bool{}
 	hostnames := map[string]bool{}
 	primaryHostname, err := DeviceHostname("")
 	if err != nil {
@@ -443,6 +445,9 @@ func (c *Config) normalizeExits() error {
 		exit.ID = strings.TrimSpace(exit.ID)
 		if !exitID.MatchString(exit.ID) {
 			return fmt.Errorf("exits[%d].id must be 1–32 lowercase letters, digits or hyphens", index)
+		}
+		if exit.ID == MainExit || exit.ID == "direct" || exit.ID == "proxy" {
+			return fmt.Errorf("exits[%d].id %q is reserved", index, exit.ID)
 		}
 		if seen[exit.ID] {
 			return fmt.Errorf("exits[%d].id %q is already used", index, exit.ID)
@@ -472,6 +477,13 @@ func (c *Config) normalizeExits() error {
 		exit.Tailnet = strings.TrimSpace(exit.Tailnet)
 		if len(exit.Tailnet) > 253 || strings.ContainsAny(exit.Tailnet, "\r\n\x00") {
 			return fmt.Errorf("exits[%d].tailnet must be a Tailnet name or DNS suffix", index)
+		}
+		if exit.MagicDNSSuffix != "" {
+			suffixes := []string{exit.MagicDNSSuffix}
+			if err := normalizeDomains(fmt.Sprintf("exits[%d].magic_dns_suffix", index), &suffixes); err != nil {
+				return err
+			}
+			exit.MagicDNSSuffix = suffixes[0]
 		}
 	}
 	return nil
@@ -541,8 +553,20 @@ func (c Config) trafficConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if id != MainExit && strings.HasSuffix(strings.ToLower(focused.Tailscale.Tailnet), ".ts.net") {
-		focused.DNS.MagicDomains = []string{strings.ToLower(focused.Tailscale.Tailnet)}
+	if id != MainExit {
+		for _, exit := range c.Exits {
+			if exit.ID != id {
+				continue
+			}
+			suffix := exit.MagicDNSSuffix
+			if suffix == "" && strings.HasSuffix(strings.ToLower(exit.Tailnet), ".ts.net") {
+				suffix = strings.ToLower(exit.Tailnet)
+			}
+			if suffix != "" {
+				focused.DNS.MagicDomains = []string{suffix}
+			}
+			break
+		}
 	}
 	return focused, nil
 }

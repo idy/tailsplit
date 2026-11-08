@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/idy/tailsplit/internal/domainrules"
@@ -76,6 +77,14 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	var exits []ExitConfig
 	active := map[string]bool{}
 	primaryActive := config.Tailscale != nil && (config.Tailscale.ExitNode != "" || config.includePending)
+	if !global && config.Tailscale != nil && !primaryActive {
+		if len(config.DNS.MagicDomains) > 0 {
+			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using dns.magic_domains", MainExit)
+		}
+		if len(config.Tailscale.Domains) > 0 {
+			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using tailscale.domains", MainExit)
+		}
+	}
 	if primaryActive {
 		active[MainExit] = true
 	}
@@ -111,13 +120,20 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	defaultDNS := proxyServer(defaultID)
 	directDNS := resolver("dns-direct", config.DNS.Direct)
 	servers := []object{directDNS}
-	var tailnetSuffixes []object
-	// One device owns a MagicDNS suffix in both DNS and traffic rules. The
-	// primary device wins shared suffixes; otherwise the first exit wins.
+	type tailnetSuffix struct {
+		suffix, server, outbound string
+	}
+	var tailnetSuffixes []tailnetSuffix
+	// DNS and traffic share longest-suffix precedence. For exact duplicates,
+	// the primary device owns the suffix, followed by the first extra exit.
 	ownedSuffixes := make(map[string]bool)
 	if primaryActive {
 		for _, suffix := range config.DNS.MagicDomains {
-			ownedSuffixes[strings.ToLower(suffix)] = true
+			suffix = strings.ToLower(suffix)
+			if !ownedSuffixes[suffix] {
+				ownedSuffixes[suffix] = true
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, "dns-tailnet", "tailnet"})
+			}
 		}
 	}
 	if primaryActive {
@@ -136,17 +152,24 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 			extra := resolver(proxyServer(exit.ID), config.DNS.Proxy)
 			extra["detour"] = ExitTag(exit.ID)
 			servers = append(servers, extra)
-			if suffix := strings.ToLower(exit.Tailnet); strings.HasSuffix(suffix, ".ts.net") && !ownedSuffixes[suffix] {
+			suffix := strings.ToLower(exit.MagicDNSSuffix)
+			if suffix == "" && strings.HasSuffix(strings.ToLower(exit.Tailnet), ".ts.net") {
+				suffix = strings.ToLower(exit.Tailnet)
+			}
+			if suffix != "" && !ownedSuffixes[suffix] {
 				ownedSuffixes[suffix] = true
 				tag := "dns-tailnet-" + exit.ID
 				servers = append(servers, object{
 					"type": "tailscale", "tag": tag, "endpoint": ExitTag(exit.ID),
 					"accept_default_resolvers": false, "accept_search_domain": false,
 				})
-				tailnetSuffixes = append(tailnetSuffixes, object{"suffix": suffix, "server": tag, "outbound": ExitTag(exit.ID)})
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, tag, ExitTag(exit.ID)})
 			}
 		}
 	}
+	slices.SortStableFunc(tailnetSuffixes, func(a, b tailnetSuffix) int {
+		return len(b.suffix) - len(a.suffix)
+	})
 	var routeGroups []RouteConfig
 	if !global && config.Focus == "" {
 		for _, route := range config.Rules.Routes {
@@ -191,11 +214,8 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 		}
 		dnsRules = append(dnsRules, withAction(match, "server", "dns-direct"))
 	}
-	if primaryActive && len(config.DNS.MagicDomains) > 0 {
-		dnsRules = append(dnsRules, withAction(object{"domain_suffix": config.DNS.MagicDomains}, "server", "dns-tailnet"))
-	}
 	for _, suffix := range tailnetSuffixes {
-		dnsRules = append(dnsRules, withAction(object{"domain_suffix": []string{suffix["suffix"].(string)}}, "server", suffix["server"].(string)))
+		dnsRules = append(dnsRules, withAction(object{"domain_suffix": []string{suffix.suffix}}, "server", suffix.server))
 	}
 	if primaryActive && len(config.Tailscale.Domains) > 0 {
 		// Public custom names keep real answers, including Tailscale Service VIPs.
@@ -282,16 +302,10 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	// they enter the endpoint; a direct DNS resolver must never see MagicDNS.
 	{
 		for _, suffix := range tailnetSuffixes {
-			match := object{"domain_suffix": []string{suffix["suffix"].(string)}}
+			match := object{"domain_suffix": []string{suffix.suffix}}
 			routes = append(routes,
-				object{"domain_suffix": match["domain_suffix"], "action": "resolve", "server": suffix["server"]},
-				withAction(match, "outbound", suffix["outbound"].(string)),
-			)
-		}
-		if primaryActive && len(config.DNS.MagicDomains) > 0 {
-			routes = append(routes,
-				object{"domain_suffix": config.DNS.MagicDomains, "action": "resolve", "server": "dns-tailnet"},
-				withAction(object{"domain_suffix": config.DNS.MagicDomains}, "outbound", "tailnet"),
+				object{"domain_suffix": match["domain_suffix"], "action": "resolve", "server": suffix.server},
+				withAction(match, "outbound", suffix.outbound),
 			)
 		}
 		if primaryActive && len(config.Tailscale.Domains) > 0 {

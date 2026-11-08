@@ -30,18 +30,19 @@ type Options struct {
 }
 
 type Snapshot struct {
-	State         string
-	LoginURL      string
-	ExitNode      string
-	NetworkName   string
-	Mode          string
-	RoutingMode   string
-	BackendState  string
-	Error         string
-	Hostname      string
-	ExitNodes     []tailsplit.ExitNode
-	Active        bool
-	PingAvailable bool
+	State          string
+	LoginURL       string
+	ExitNode       string
+	NetworkName    string
+	MagicDNSSuffix string
+	Mode           string
+	RoutingMode    string
+	BackendState   string
+	Error          string
+	Hostname       string
+	ExitNodes      []tailsplit.ExitNode
+	Active         bool
+	PingAvailable  bool
 	// Exits holds additional devices' latest status, keyed by exit ID. The
 	// identity fields above always describe the primary device; State, Active,
 	// Mode and RoutingMode describe the overall connection.
@@ -51,14 +52,15 @@ type Snapshot struct {
 }
 
 type ExitSnapshot struct {
-	BackendState  string
-	NetworkName   string
-	Hostname      string
-	ExitNode      string
-	ExitOnline    bool
-	ExitVisible   bool
-	ExitNodes     []tailsplit.ExitNode
-	PingAvailable bool
+	BackendState   string
+	NetworkName    string
+	MagicDNSSuffix string
+	Hostname       string
+	ExitNode       string
+	ExitOnline     bool
+	ExitVisible    bool
+	ExitNodes      []tailsplit.ExitNode
+	PingAvailable  bool
 }
 
 func (s Snapshot) clone() Snapshot {
@@ -184,7 +186,7 @@ func (c *Controller) Restart() error {
 // StartLogin authenticates the embedded device without installing a service or
 // creating a TUN. Connecting the network is a separate, explicit Start action.
 func (c *Controller) StartLogin() error {
-	return c.start("login", "")
+	return c.start("login", tailsplit.MainExit)
 }
 
 // StartExitLogin authorizes one additional exit's device by itself.
@@ -517,21 +519,22 @@ func (c *Controller) Close() error {
 
 func (c *Controller) onEvent(data []byte) {
 	var event struct {
-		Event         string               `json:"event"`
-		BackendState  string               `json:"backend_state"`
-		AuthURL       string               `json:"auth_url"`
-		ExitNode      string               `json:"exit_node"`
-		ExitOnline    bool                 `json:"exit_online"`
-		ExitVisible   bool                 `json:"exit_visible"`
-		NetworkName   string               `json:"network_name"`
-		Mode          string               `json:"mode"`
-		RoutingMode   string               `json:"routing_mode"`
-		Message       string               `json:"message"`
-		Phase         string               `json:"phase"`
-		Hostname      string               `json:"hostname"`
-		ExitNodes     []tailsplit.ExitNode `json:"exit_nodes"`
-		PingAvailable bool                 `json:"ping_available"`
-		Exit          string               `json:"exit"`
+		Event          string               `json:"event"`
+		BackendState   string               `json:"backend_state"`
+		AuthURL        string               `json:"auth_url"`
+		ExitNode       string               `json:"exit_node"`
+		ExitOnline     bool                 `json:"exit_online"`
+		ExitVisible    bool                 `json:"exit_visible"`
+		NetworkName    string               `json:"network_name"`
+		MagicDNSSuffix string               `json:"magic_dns_suffix"`
+		Mode           string               `json:"mode"`
+		RoutingMode    string               `json:"routing_mode"`
+		Message        string               `json:"message"`
+		Phase          string               `json:"phase"`
+		Hostname       string               `json:"hostname"`
+		ExitNodes      []tailsplit.ExitNode `json:"exit_nodes"`
+		PingAvailable  bool                 `json:"ping_available"`
+		Exit           string               `json:"exit"`
 	}
 	if json.Unmarshal(data, &event) != nil {
 		return
@@ -567,7 +570,7 @@ func (c *Controller) onEvent(data []byte) {
 	if event.Event == "authenticated" {
 		c.snapshot.State = "authenticated"
 		c.snapshot.LoginURL = ""
-		if c.snapshot.Focus != "" {
+		if c.snapshot.Focus != "" && c.snapshot.Focus != tailsplit.MainExit {
 			exit := c.snapshot.Exits[c.snapshot.Focus]
 			exit.BackendState = "Running"
 			c.setExit(c.snapshot.Focus, exit)
@@ -601,7 +604,7 @@ func (c *Controller) onEvent(data []byte) {
 	}
 	if event.Exit != "" {
 		c.setExit(event.Exit, ExitSnapshot{
-			BackendState: event.BackendState, NetworkName: event.NetworkName, Hostname: event.Hostname,
+			BackendState: event.BackendState, NetworkName: event.NetworkName, MagicDNSSuffix: event.MagicDNSSuffix, Hostname: event.Hostname,
 			ExitNode: event.ExitNode, ExitOnline: event.ExitOnline, ExitVisible: event.ExitVisible,
 			ExitNodes: event.ExitNodes, PingAvailable: event.PingAvailable,
 		})
@@ -628,6 +631,7 @@ func (c *Controller) onEvent(data []byte) {
 		c.snapshot.BackendState = event.BackendState
 		c.snapshot.PingAvailable = event.PingAvailable
 		c.snapshot.NetworkName = event.NetworkName
+		c.snapshot.MagicDNSSuffix = event.MagicDNSSuffix
 		if trafficConnection && selected != "" {
 			return
 		}

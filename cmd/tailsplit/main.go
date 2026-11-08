@@ -99,6 +99,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if command == "app-login" && *exit == "" {
+		*exit = tailsplit.MainExit
+	}
 	if *exit != "" {
 		switch command {
 		case "app-login", "discover", "app-discover", "logout", "app-logout", "ping", "app-ping":

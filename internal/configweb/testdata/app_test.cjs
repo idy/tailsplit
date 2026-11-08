@@ -1392,7 +1392,7 @@ test('Add signs in and names the first exit without assigning a traffic default'
       saves++;
       assert.deepEqual(request.data.changes, { ...(saves === 1 ? { 'rules.default_exit': '-', 'rules.global_exit': '-' } : {}), exits: [saves === 1
         ? { id: 'exit-1', auto_name: true, exit_node: '' }
-        : { id: 'exit-1', auto_name: true, exit_node: '100.101.0.11', tailnet: 'office.ts.net', name: 'hk-gateway@office.ts.net' }] });
+        : { id: 'exit-1', auto_name: true, exit_node: '100.101.0.11', tailnet: 'example.com', magic_dns_suffix: 'tail123.ts.net', name: 'hk-gateway@example.com' }] });
       app.config = { ...app.config, revision: `saved-${saves}`,
         values: { ...app.config.values, exits: request.data.changes.exits } };
       app.snapshot.revision = app.config.revision;
@@ -1400,7 +1400,7 @@ test('Add signs in and names the first exit without assigning a traffic default'
     }
     if (request.path === '/api/action') {
       assert.deepEqual(request.data, { action: 'login-exit', exit: 'exit-1' });
-      app.snapshot = exitsSnapshot({ revision: app.config.revision, exits: { 'exit-1': officeSnapshot().exits.office } });
+      app.snapshot = exitsSnapshot({ revision: app.config.revision, exits: { 'exit-1': officeSnapshot({ network: 'example.com', magic_dns_suffix: 'tail123.ts.net' }).exits.office } });
       return response({ ok: true });
     }
     return undefined;
@@ -1408,13 +1408,13 @@ test('Add signs in and names the first exit without assigning a traffic default'
   await app.$('#add-exit').emit('click');
   assert.equal(app.$('#add-exit-dialog').open, undefined, 'no naming dialog precedes login');
   assert.equal(app.$('#exit-picker-dialog').open, true);
-  assert.equal(app.$('#heading-exits').textContent, 'office.ts.net');
+  assert.equal(app.$('#heading-exits').textContent, 'example.com');
   await exitChoice(app, '100.101.0.11').emit('click');
   await app.$('#apply-exit-picker').emit('click');
   assert.equal(saves, 2);
   assert.equal(app.$('#exit-picker-dialog').open, false);
   await extraRow(app, 'exit-1').emit('click');
-  assert.equal(app.$('#heading-exits').textContent, 'hk-gateway@office.ts.net');
+  assert.equal(app.$('#heading-exits').textContent, 'hk-gateway@example.com');
   assert.equal(app.config.values.rules.default_exit, '-');
   assert.equal(app.config.values.rules.global_exit, '-');
 });
@@ -1436,6 +1436,29 @@ test('automatic names follow later node changes without changing the profile ID'
   await app.$('#apply-exit-picker').emit('click');
   assert.equal(app.$('#exit-picker-dialog').open, false);
   assert.equal(app.config.values.exits[0].name, 'us-gateway@office.ts.net');
+});
+
+test('node changes preserve custom names and guards while saving only actual DNS metadata', async () => {
+  for (const [savedSuffix, liveSuffix, expectedSuffix] of [[undefined, 'tail123.ts.net', 'tail123.ts.net'], [undefined, undefined, undefined], ['tail-old.ts.net', undefined, 'tail-old.ts.net']]) {
+    const document = multiExitDocument('100.101.0.11');
+    Object.assign(document.values.exits[0], { tailnet: 'example.com', ...(savedSuffix ? { magic_dns_suffix: savedSuffix } : {}) });
+    const app = await page(officeSnapshot({ network: 'example.com', ...(liveSuffix ? { magic_dns_suffix: liveSuffix } : {}) }), '', {}, document);
+    await extraRow(app, 'office').emit('click');
+    await exitChoice(app, '100.101.0.12').emit('click');
+    let saves = 0;
+    app.override = request => {
+      if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+      saves++;
+      assert.deepEqual(request.data.changes, { exits: [{ id: 'office', name: 'Office', exit_node: '100.101.0.12', tailnet: 'example.com',
+        ...(expectedSuffix ? { magic_dns_suffix: expectedSuffix } : {}) }] });
+      app.config = { ...document, revision: 'changed', values: { ...document.values, exits: request.data.changes.exits } };
+      app.snapshot.revision = 'changed';
+      return response(app.config);
+    };
+    await app.$('#apply-exit-picker').emit('click');
+    assert.equal(saves, 1);
+    assert.equal(app.$('#exit-picker-dialog').open, false);
+  }
 });
 
 test('picker save failures remain inside the dialog with the pending exit and retry', async () => {

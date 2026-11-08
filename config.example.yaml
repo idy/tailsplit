@@ -41,7 +41,9 @@ tailscale:
 # name as <exit-device-name>@<network name> when a node is confirmed.
 # Auto-named labels update on later node choices; omit auto_name for a custom name.
 # An exit without exit_node can sign in but carries no traffic yet.
-# A tailnet ending in .ts.net also routes that MagicDNS suffix through it.
+# tailnet is the authentication guard; magic_dns_suffix is separate DNS metadata.
+# Legacy tailnet values ending in .ts.net still provide their DNS suffix.
+# IDs main, direct and proxy are reserved.
 # Desktop Remove exit works for main, extras and the last exit. It disconnects,
 # logs out only that device, revision-checks local removal, removes its explicit
 # route groups and adjusts selectors; it stays stopped. The remote Tailnet
@@ -53,7 +55,8 @@ tailscale:
 #   - id: office
 #     name: Office
 #     exit_node: 100.101.0.11
-#     tailnet: office-net.ts.net
+#     tailnet: example.com
+#     magic_dns_suffix: office-net.ts.net
 
 dns:
   # Client DNS lives inside TUN at 172.31.255.2:53 and

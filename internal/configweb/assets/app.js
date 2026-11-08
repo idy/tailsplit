@@ -691,11 +691,13 @@
       String(fieldValue(values, 'tailscale.name') || '') || t('主出口');
   }
   function namedExitSelection(exit, nodeID) {
-    const network = exitLive(exit.id).network || exit.tailnet || '';
+    const live = exitLive(exit.id);
+    const network = live.network || exit.tailnet || '';
     const node = exitNodes(exit.id).find((node) => node.id === nodeID);
     const device = node?.name || nodeID;
     const automatic = exit.auto_name || !exit.name;
     return { ...exit, exit_node: nodeID, tailnet: exit.tailnet || network,
+      ...(live.magic_dns_suffix ? { magic_dns_suffix: live.magic_dns_suffix } : {}),
       ...(automatic ? { auto_name: true, name: network ? `${device}@${network}` : device } : {}) };
   }
   function savedExit(exit = '') {

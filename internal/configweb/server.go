@@ -221,7 +221,7 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 	// LoginURL and other authentication state never enter the browser API.
 	state := map[string]any{
 		"state": snapshot.State, "active": snapshot.Active, "mode": snapshot.Mode,
-		"exit": snapshot.ExitNode, "network": snapshot.NetworkName,
+		"exit": snapshot.ExitNode, "network": snapshot.NetworkName, "magic_dns_suffix": snapshot.MagicDNSSuffix,
 		"hostname": snapshot.Hostname, "backend_state": snapshot.BackendState,
 		"routing_mode": snapshot.RoutingMode, "logs_available": s.options.Logs != nil,
 		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
@@ -245,7 +245,7 @@ func exitStates(snapshot tray.Snapshot) map[string]any {
 			nodes = []tailsplit.ExitNode{}
 		}
 		exits[id] = map[string]any{
-			"backend_state": exit.BackendState, "network": exit.NetworkName, "hostname": exit.Hostname,
+			"backend_state": exit.BackendState, "network": exit.NetworkName, "magic_dns_suffix": exit.MagicDNSSuffix, "hostname": exit.Hostname,
 			"exit": exit.ExitNode, "exit_online": exit.ExitOnline, "exit_visible": exit.ExitVisible,
 			"exit_nodes": nodes, "ping_available": exit.PingAvailable && exit.BackendState == "Running",
 		}

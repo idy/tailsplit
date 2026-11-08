@@ -53,7 +53,7 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 			want := map[string]any{
 				"state": "running", "active": true, "mode": "tun", "routing_mode": "global",
 				"backend_state": "Running", "hostname": "preview-laptop",
-				"exit": "preview-exit", "network": "preview-tailnet.example",
+				"exit": "preview-exit", "network": "preview-tailnet.example", "magic_dns_suffix": "",
 				"error": "", "revision": revision, "preview": false,
 				"desktop": false, "startup": false, "logs_available": logsAvailable, "ping_available": false,
 				"exit_nodes": []any{map[string]any{

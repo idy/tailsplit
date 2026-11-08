@@ -28,9 +28,15 @@
   auto-connect after a device and gateway are configured. Keep existing user
   configuration intact and ship no personal device identities.
 - Wait for required additional devices to finish authorization during connection
-  preflight, without discarding their login session. Unreferenced offline or
-  signed-out exits no longer block unrelated Split connections; explicitly
-  selected gateways remain subject to readiness checks.
+  preflight, without discarding their login session. Unreferenced saved nodes no
+  longer have to be online for unrelated Split connections; explicitly selected
+  gateways still require readiness. Other retained guarded endpoints must validate
+  their identity. Preserve readiness deadlines through
+  non-authentication backend transitions.
+- Keep pending-primary private-name policy fail-closed and use consistent
+  longest-suffix MagicDNS ownership for DNS and traffic. Persist real DNS suffix
+  metadata separately from display names, reserve routing keywords in exit IDs,
+  focus primary login on its own device and accommodate full migration payloads.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

@@ -28,18 +28,22 @@ const (
 	SupportPath    = "/Library/Application Support/TailSplit"
 	InstallPackage = "TailSplit Network Service.pkg"
 	RemovePackage  = "Remove TailSplit Network Service.pkg"
-	maxRequest     = 20 << 20
-	maxState       = 1 << 20
-	maxCache       = 8 << 20
-	maxRules       = 2 << 20
-	maxExits       = 8
+	// Base64 expands the primary state, eight exit states, cache and rules
+	// beyond 25 MiB; retain bounded room for the configuration and JSON framing.
+	maxRequest = 32 << 20
+	maxState   = 1 << 20
+	maxCache   = 8 << 20
+	maxRules   = 2 << 20
+	maxExits   = 8
 )
 
 // validExitID mirrors the configuration rule; the service rechecks it before
 // using an ID as a directory name.
 var exitIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`)
 
-func validExitID(id string) bool { return id != tailsplit.MainExit && exitIDPattern.MatchString(id) }
+func validExitID(id string) bool {
+	return id != tailsplit.MainExit && id != "direct" && id != "proxy" && exitIDPattern.MatchString(id)
+}
 
 // Files contains bounded copies read by the ordinary user's process. The root
 // service never opens a config, state, rules file or executable supplied by it.

@@ -59,11 +59,27 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	if err := engine.Start(); err != nil {
 		return err
 	}
-	var required []engineExit
+	// A distinct DNS suffix also identifies an extra's Tailnet when no display
+	// network guard was configured; it is never inferred from a display label.
+	dnsIdentities := make(map[string]string)
+	for _, exit := range config.Exits {
+		dnsIdentities[exit.ID] = exit.MagicDNSSuffix
+	}
+	var required, identityOnly, checked []engineExit
 	for _, exit := range engine.exits {
+		if exit.tailnet == "" {
+			exit.tailnet = dnsIdentities[exit.id]
+		}
 		if !requireExit || requiresTrafficExit(config, exit.id) {
 			required = append(required, exit)
+		} else if exit.tailnet != "" {
+			// Optional nodes need not be online, but a retained endpoint with a
+			// configured identity guard must never route into another Tailnet.
+			identityOnly = append(identityOnly, exit)
+		} else {
+			continue
 		}
+		checked = append(checked, exit)
 	}
 	// Several devices report concurrently; keep only each one's latest status.
 	var latestMu sync.Mutex
@@ -89,13 +105,8 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			}
 		})
 	}()
-	var deadline *time.Timer
-	var timeout <-chan time.Time
-	defer func() {
-		if deadline != nil {
-			deadline.Stop()
-		}
-	}()
+	var deadline preflightDeadline
+	defer deadline.stop()
 	label := func(id string) string {
 		if id == "" {
 			return "the primary exit"
@@ -112,7 +123,7 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 				return errors.New("Tailnet status ended before confirming the exit; TUN was not enabled")
 			}
 			return err
-		case <-timeout:
+		case <-deadline.timeout:
 			if !requireExit {
 				return errors.New("the logged-in device did not report its expected Tailnet identity")
 			}
@@ -125,24 +136,69 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			snapshot := maps.Clone(latest)
 			latestMu.Unlock()
 			var done, waiting bool
-			done, waiting, pending, err = tailnetReadiness(required, snapshot, requireExit, discover)
+			done, waiting, pending, err = connectionReadiness(required, identityOnly, snapshot, requireExit, discover)
 			if err != nil {
 				return err
 			}
 			if done {
 				return nil
 			}
-			// Interactive login can take as long as the user needs. Once logged
-			// in, a missing/offline exit must fail instead of hanging forever.
-			if waiting && deadline == nil {
-				deadline = time.NewTimer(45 * time.Second)
-				timeout = deadline.C
-			} else if !waiting && deadline != nil {
-				deadline.Stop()
-				deadline, timeout = nil, nil
-			}
+			// Only an actual interactive login pauses the deadline. Backend
+			// Starting/Stopped transitions must not discard a running timeout.
+			deadline.update(waiting, awaitingInteractiveLogin(checked, snapshot, discover))
 		}
 	}
+}
+
+type preflightDeadline struct {
+	timer   *time.Timer
+	timeout <-chan time.Time
+}
+
+func (d *preflightDeadline) stop() {
+	if d.timer != nil {
+		d.timer.Stop()
+	}
+	d.timer, d.timeout = nil, nil
+}
+
+func (d *preflightDeadline) update(waiting, interactiveLogin bool) {
+	if interactiveLogin {
+		d.stop()
+	} else if waiting && d.timer == nil {
+		d.timer = time.NewTimer(45 * time.Second)
+		d.timeout = d.timer.C
+	}
+}
+
+func awaitingInteractiveLogin(exits []engineExit, snapshot map[string]Status, discover bool) bool {
+	if discover {
+		return false
+	}
+	for _, exit := range exits {
+		if snapshot[exit.id].BackendState == "NeedsLogin" {
+			return true
+		}
+	}
+	return false
+}
+
+func connectionReadiness(required, identityOnly []engineExit, snapshot map[string]Status, requireExit, discover bool) (done, waiting bool, pending string, err error) {
+	done, waiting, pending, err = tailnetReadiness(required, snapshot, requireExit, discover)
+	if err != nil {
+		return
+	}
+	identityReady, _, identityPending, identityErr := tailnetReadiness(identityOnly, snapshot, false, discover)
+	if identityErr != nil {
+		return false, false, "", identityErr
+	}
+	if !identityReady {
+		done, waiting = false, true
+		if pending == "" {
+			pending = identityPending
+		}
+	}
+	return
 }
 
 // requiresTrafficExit distinguishes explicit gateways from optional saved devices.
