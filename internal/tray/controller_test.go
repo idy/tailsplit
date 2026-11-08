@@ -151,7 +151,7 @@ func waitState(t *testing.T, controller *Controller, state string) Snapshot {
 		time.Sleep(10 * time.Millisecond)
 	}
 	log, _ := os.ReadFile(controller.options.LogPath)
-	t.Fatalf("state did not become %s: %+v; fixture log: %s", state, controller.Snapshot(), redactLog(string(log)))
+	t.Fatalf("state did not become %s: %+v; fixture log: %s", state, controller.Snapshot(), RedactLog(string(log)))
 	return Snapshot{}
 }
 

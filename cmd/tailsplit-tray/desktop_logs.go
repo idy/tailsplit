@@ -4,17 +4,16 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/idy/tailsplit/internal/tray"
 )
 
 const desktopLogLimit = 128 << 10
 
-// Helper stderr may contain material that has not passed through the
-// controller's event redaction, so sanitize again before exposing a log tail.
-var desktopPrivateLogMaterial = regexp.MustCompile(`https://login\.tailscale\.com/a/[^\s]+|tskey-[A-Za-z0-9_-]+`)
-
+// Helper stderr may bypass event redaction; apply the shared policy before
+// exposing a log tail.
 func desktopLogTail(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -44,7 +43,7 @@ func desktopLogTail(path string) (string, error) {
 			data = nil
 		}
 	}
-	text := desktopPrivateLogMaterial.ReplaceAllString(strings.ToValidUTF8(string(data), "�"), "[redacted]")
+	text := tray.RedactLog(strings.ToValidUTF8(string(data), "�"))
 	// UTF-8 replacement and redaction of short keys can expand the result.
 	if len(text) > desktopLogLimit {
 		text = text[len(text)-desktopLogLimit:]

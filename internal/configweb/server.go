@@ -1,6 +1,7 @@
 package configweb
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -41,6 +42,7 @@ type Options struct {
 	Snapshot     func() tray.Snapshot
 	Apply        func(context.Context, func() error) error
 	Action       func(context.Context, string) error
+	RemoveExit   func(context.Context, string, string) error
 	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)
 	Logs         func() (string, error)
 	Startup      func() bool
@@ -125,6 +127,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/config", s.save)
 	mux.HandleFunc("POST /api/action", s.desktopAction)
 	mux.HandleFunc("POST /api/exit-ping", s.exitPing)
+	mux.HandleFunc("POST /api/exit-remove", s.removeExit)
 	mux.HandleFunc("POST /api/update-action", s.updateAction)
 	mux.HandleFunc("GET /api/logs", s.desktopLogs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +160,7 @@ func (s *Server) handler() http.Handler {
 			return
 		}
 		switch r.URL.Path {
-		case "/", "/app.js", "/i18n.js", "/style.css",
+		case "/", "/app.js", "/i18n.js", "/select.js", "/style.css",
 			"/fonts/montserrat-latin.woff2", "/fonts/monda-latin.woff2",
 			"/fonts/lato-regular-latin.woff2", "/fonts/lato-bold-latin.woff2",
 			"/fonts/Montserrat-OFL.txt", "/fonts/Monda-OFL.txt", "/fonts/Lato-OFL.txt":
@@ -225,11 +228,29 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
 		"ping_available": s.options.PingExit != nil && snapshot.PingAvailable,
 		"startup":        s.options.Startup != nil && s.options.Startup(),
+		"exits":          exitStates(snapshot), "focus": snapshot.Focus,
 	}
 	if s.options.UpdateState != nil {
 		state["updates"] = s.options.UpdateState()
 	}
 	writeJSON(w, http.StatusOK, state)
+}
+
+// exitStates exposes additional devices' credential-free status by exit ID.
+func exitStates(snapshot tray.Snapshot) map[string]any {
+	exits := map[string]any{}
+	for id, exit := range snapshot.Exits {
+		nodes := exit.ExitNodes
+		if nodes == nil {
+			nodes = []tailsplit.ExitNode{}
+		}
+		exits[id] = map[string]any{
+			"backend_state": exit.BackendState, "network": exit.NetworkName, "hostname": exit.Hostname,
+			"exit": exit.ExitNode, "exit_online": exit.ExitOnline, "exit_visible": exit.ExitVisible,
+			"exit_nodes": nodes, "ping_available": exit.PingAvailable && exit.BackendState == "Running",
+		}
+	}
+	return exits
 }
 
 func decodeEdit(w http.ResponseWriter, r *http.Request) (editRequest, bool) {
@@ -252,9 +273,10 @@ var fieldTypes = map[string]string{
 	"listen": "string", "interface": "string", "log_level": "string",
 	"app.connect_on_start": "bool", "tailscale.hostname": "string",
 	"tailscale.exit_node": "string", "tailscale.tailnet": "string", "tailscale.domains": "list",
+	"tailscale.name": "string", "exits": "exits", "rules.routes": "routes",
 	"dns.direct": "string", "dns.proxy": "string", "dns.direct_ipv6": "bool",
 	"dns.fake_ip": "bool", "dns.magic_domains": "list",
-	"rules.mode": "string", "rules.source": "string", "rules.gfwlist": "string", "rules.final": "string",
+	"rules.mode": "string", "rules.global_exit": "string", "rules.default_exit": "string", "rules.source": "string", "rules.gfwlist": "string", "rules.final": "string",
 	"rules.proxy_domains": "list", "rules.direct_domains": "list",
 	"rules.proxy_ips": "list", "rules.direct_ips": "list",
 	"tun.enabled": "bool", "tun.mtu": "int",
@@ -289,8 +311,19 @@ func applyChanges(edit editRequest) ([]byte, error) {
 			target = new(int)
 		case "list":
 			target = new([]string)
+		case "exits":
+			target = new([]tailsplit.ExitConfig)
+		case "routes":
+			target = new([]tailsplit.RouteConfig)
 		}
-		if err := json.Unmarshal(raw, target); err != nil {
+		if kind == "exits" || kind == "routes" {
+			// Structured lists use the YAML field names, not Go's JSON names.
+			decoder := yaml.NewDecoder(bytes.NewReader(raw))
+			decoder.KnownFields(true)
+			if err := decoder.Decode(target); err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+		} else if err := json.Unmarshal(raw, target); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		section, key, nested := strings.Cut(path, ".")
@@ -323,8 +356,22 @@ func (s *Server) validateRuntime(ctx context.Context, data []byte) error {
 	if err := appservice.ValidateAppConfig(config); err != nil {
 		return err
 	}
-	// An unregistered device can still save its setup before selecting an exit.
-	if config.Tailscale != nil && config.Tailscale.ExitNode == "" {
+	// Empty-device and pending-node drafts remain editable before login. Full
+	// connection validation still runs in the helper before opening any device.
+	if len(config.ExitIDs()) == 0 {
+		return nil
+	}
+	id := config.TrafficExitID()
+	node := ""
+	if id == tailsplit.MainExit && config.Tailscale != nil {
+		node = config.Tailscale.ExitNode
+	}
+	for _, exit := range config.Exits {
+		if exit.ID == id {
+			node = exit.ExitNode
+		}
+	}
+	if node == "" {
 		return nil
 	}
 	compiled, err := tailsplit.CompileContext(ctx, config)

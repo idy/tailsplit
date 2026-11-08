@@ -59,6 +59,7 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 				"exit_nodes": []any{map[string]any{
 					"id": "100.64.0.10", "name": "preview-exit", "online": true, "selected": true,
 				}},
+				"exits": map[string]any{}, "focus": "",
 			}
 			if !reflect.DeepEqual(state, want) {
 				t.Fatalf("unexpected public state: got=%v want=%v", state, want)

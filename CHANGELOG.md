@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.0
+
+- Run multiple saved exit devices in one embedded sing-box core, including exits
+  in different Tailnets. Route domain/CIDR groups through individual exits and
+  choose a separate default proxy exit for Split routing.
+- Run only the selected device in Global (Kill-Switch) mode while retaining Split
+  policy. Keep its traffic blocked when that exit goes offline; explicit
+  disconnect still restores managed system networking.
+- Make Exit Nodes the first desktop page, with a compact device list, automatic
+  `<exit-device-name>@<network name>` labels, individual Ping actions and a direct
+  default-gateway dropdown. Ask for an explicit gateway choice before connecting
+  when no default is set; never silently choose a replacement.
+- Support removing any saved exit, including the legacy primary and last device,
+  using scoped logout and revision-checked local configuration updates. Preserve
+  remaining device identities and routing policy. Tailnet admin-console device
+  records remain; remote management deletion is not included.
+- Refresh the desktop layout with system fonts, compact equal-height settings
+  rows, sidebar Settings categories and shared custom dropdowns. Put routing mode
+  and the connection switch in the titlebar with Refresh at the far right; remove
+  redundant count/status displays, node selection fills and empty-page scrollbars.
+- Preserve saved logins when adding another device, keep login shutdown work off
+  the macOS event loop, and show connection preflight as checking while peer
+  discovery is incomplete instead of prematurely asking for another exit.
+- Share new desktop defaults across macOS and Windows: Split/builtin routing,
+  system TUN and FakeIP enabled, direct Internet IPv6 disabled, MTU 1400, and
+  auto-connect after a device and gateway are configured. Keep existing user
+  configuration intact and ship no personal device identities.
+- Preserve per-device migration, state leases and serialized Ping operations;
+  consolidate action/save handling and log redaction, and reduce repeated UI
+  rendering and configuration parsing without changing the saved-device contract.
+
 ## 0.7.16
 
 - Fix desktop login, network switching, exit discovery and connection preflight

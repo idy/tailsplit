@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -31,14 +32,23 @@ const (
 	maxState       = 1 << 20
 	maxCache       = 8 << 20
 	maxRules       = 2 << 20
+	maxExits       = 8
 )
+
+// validExitID mirrors the configuration rule; the service rechecks it before
+// using an ID as a directory name.
+var exitIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`)
+
+func validExitID(id string) bool { return id != tailsplit.MainExit && exitIDPattern.MatchString(id) }
 
 // Files contains bounded copies read by the ordinary user's process. The root
 // service never opens a config, state, rules file or executable supplied by it.
 type Files struct {
 	TailscaleState []byte `json:"tailscale_state,omitempty"`
-	Cache          []byte `json:"cache,omitempty"`
-	Rules          []byte `json:"rules,omitempty"`
+	// ExitStates holds additional exits' saved logins, keyed by exit ID.
+	ExitStates map[string][]byte `json:"exit_states,omitempty"`
+	Cache      []byte            `json:"cache,omitempty"`
+	Rules      []byte            `json:"rules,omitempty"`
 }
 
 type Request struct {
@@ -103,8 +113,13 @@ func readRequest(reader *bufio.Reader) (Request, error) {
 		return Request{}, errors.New("the app and network service protocols differ; reinstall the service")
 	}
 	if len(request.Files.TailscaleState) > maxState || len(request.Files.Cache) > maxCache ||
-		len(request.Files.Rules) > maxRules {
+		len(request.Files.Rules) > maxRules || len(request.Files.ExitStates) > maxExits {
 		return Request{}, errors.New("network service state exceeds its size limit")
+	}
+	for id, state := range request.Files.ExitStates {
+		if !validExitID(id) || len(state) > maxState {
+			return Request{}, errors.New("network service state exceeds its size limit")
+		}
 	}
 	return request, nil
 }

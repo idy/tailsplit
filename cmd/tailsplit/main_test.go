@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,5 +96,40 @@ func TestParentExitCancelsBundledHelper(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("parent-exit monitor did not stop")
+	}
+}
+
+func TestAppRunValidatesSelectedTrafficExitBeforeLaunching(t *testing.T) {
+	for _, test := range []struct {
+		name, mode, selected, primaryNode, extraNode string
+		wantLaunch                                   bool
+	}{
+		{"global extra with pending primary", "global", "office", "", "100.101.0.11", true},
+		{"global extra cannot fall back", "global", "office", "100.64.0.10", "", false},
+		{"global unknown cannot fall back", "global", "unknown", "100.64.0.10", "100.101.0.11", false},
+		{"legacy default still requires primary", "", "", "", "100.101.0.11", false},
+		{"global default still requires primary", "global", "", "", "100.101.0.11", false},
+		{"split uses primary despite remembered extra", "split", "office", "100.64.0.10", "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := tailsplit.Config{Tailscale: &tailsplit.TailscaleConfig{ExitNode: test.primaryNode},
+				Exits: []tailsplit.ExitConfig{{ID: "office", ExitNode: test.extraNode}},
+				Rules: tailsplit.RulesConfig{Mode: test.mode, GlobalExit: test.selected}}
+			var out bytes.Buffer
+			launched := false
+			err := runAppCommand(context.Background(), config, &out, func(_ context.Context, executable string, received tailsplit.Config, output io.Writer) error {
+				launched = true
+				if executable == "" || output != &out || received.TrafficExitID() != config.TrafficExitID() || len(received.Exits) != 1 {
+					t.Fatal("launch lost its saved selection or migration inventory")
+				}
+				return nil
+			})
+			if launched != test.wantLaunch || (err == nil) != test.wantLaunch {
+				t.Fatalf("launched=%t error=%v, want launch=%t", launched, err, test.wantLaunch)
+			}
+			if !test.wantLaunch && !strings.Contains(out.String(), `"event":"error"`) {
+				t.Fatal("rejected app launch did not emit its error event")
+			}
+		})
 	}
 }

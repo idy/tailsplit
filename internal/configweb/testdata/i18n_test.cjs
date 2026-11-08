@@ -43,7 +43,12 @@ test('language fallback and interpolation keep external values literal', () => {
   assert.equal(i18n.t('行数', { count: 7 }), '7 lines');
   assert.equal(i18n.t('当前版本 {version}', { version: '<v1.2.3>' }), 'Installed version <v1.2.3>');
   assert.equal(i18n.t('my-device.example.ts.net'), 'my-device.example.ts.net');
+  assert.equal(i18n.t('Rule-based'), 'Rule-based');
+  assert.equal(i18n.t('Global (Kill-Switch)'), 'Global (Kill-Switch)');
   i18n.setLanguage('zh');
+  assert.equal(i18n.t('Rule-based'), '规则分流');
+  assert.equal(i18n.t('Global (Kill-Switch)'), '全局（Kill-Switch）');
+  assert.equal(i18n.t('关闭'), '关闭');
   assert.equal(i18n.t('行数', { count: 1 }), '1 行');
   assert.equal(i18n.t('Save & apply'), '保存并应用');
 });

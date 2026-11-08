@@ -42,6 +42,42 @@ type Snapshot struct {
 	ExitNodes     []tailsplit.ExitNode
 	Active        bool
 	PingAvailable bool
+	// Exits holds additional devices' latest status, keyed by exit ID. The
+	// identity fields above always describe the primary device; State, Active,
+	// Mode and RoutingMode describe the overall connection.
+	Exits map[string]ExitSnapshot
+	// Focus names the additional exit an active login session belongs to.
+	Focus string
+}
+
+type ExitSnapshot struct {
+	BackendState  string
+	NetworkName   string
+	Hostname      string
+	ExitNode      string
+	ExitOnline    bool
+	ExitVisible   bool
+	ExitNodes     []tailsplit.ExitNode
+	PingAvailable bool
+}
+
+func (s Snapshot) clone() Snapshot {
+	s.ExitNodes = append([]tailsplit.ExitNode(nil), s.ExitNodes...)
+	if s.Exits != nil {
+		exits := make(map[string]ExitSnapshot, len(s.Exits))
+		for id, exit := range s.Exits {
+			exit.ExitNodes = append([]tailsplit.ExitNode(nil), exit.ExitNodes...)
+			exits[id] = exit
+		}
+		s.Exits = exits
+	}
+	return s
+}
+
+// reset replaces the primary state while keeping other devices' last status.
+func (c *Controller) reset(snapshot Snapshot) {
+	snapshot.Exits = c.snapshot.Exits
+	c.snapshot = snapshot
 }
 
 // Controller owns only its bundled helper process, never a system sing-box or
@@ -63,6 +99,7 @@ type Controller struct {
 	stopWait      time.Duration
 	pingCancel    context.CancelFunc
 	pingDone      chan struct{}
+	trafficExit   string // Selected traffic device for this running session.
 }
 
 func New(options Options) (*Controller, error) {
@@ -79,8 +116,7 @@ func New(options Options) (*Controller, error) {
 func (c *Controller) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	snapshot := c.snapshot
-	snapshot.ExitNodes = append([]tailsplit.ExitNode(nil), snapshot.ExitNodes...)
+	snapshot := c.snapshot.clone()
 	snapshot.Active = c.command != nil || c.loggingOut
 	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
@@ -97,11 +133,21 @@ func (c *Controller) RecordLoginBrowserResult(err error) {
 // RecordDesktopEvent retains native window startup failures in the same
 // private, redacted log as engine events; a dialog alone can be inaccessible.
 func (c *Controller) RecordDesktopEvent(message string) {
-	_, _ = io.WriteString(c.log, redactLog(message)+"\n")
+	_, _ = io.WriteString(c.log, RedactLog(message)+"\n")
+}
+
+// TrafficExitID reads the current saved preference, rather than the last
+// session's RoutingMode/trafficExit. Settings can change while disconnected.
+func (c *Controller) TrafficExitID() (string, error) {
+	config, err := tailsplit.Load(c.options.ConfigPath)
+	if err != nil {
+		return "", err
+	}
+	return config.TrafficExitID(), nil
 }
 
 func (c *Controller) Start() error {
-	return c.start("proxy")
+	return c.start("proxy", "")
 }
 
 // beginReconfigure keeps independent Ping requests out of the gap between
@@ -138,7 +184,15 @@ func (c *Controller) Restart() error {
 // StartLogin authenticates the embedded device without installing a service or
 // creating a TUN. Connecting the network is a separate, explicit Start action.
 func (c *Controller) StartLogin() error {
-	return c.start("login")
+	return c.start("login", "")
+}
+
+// StartExitLogin authorizes one additional exit's device by itself.
+func (c *Controller) StartExitLogin(id string) error {
+	if id == "" || id == tailsplit.MainExit {
+		return c.StartLogin()
+	}
+	return c.start("login", id)
 }
 
 // RefreshExitNodes reuses a running core's live status. When disconnected it
@@ -147,7 +201,7 @@ func (c *Controller) RefreshExitNodes() error {
 	if c.Snapshot().Active {
 		return nil
 	}
-	return c.start("discovery")
+	return c.start("discovery", "")
 }
 
 // Reconfigure releases the saved device's state lock before applying a change,
@@ -170,7 +224,7 @@ func (c *Controller) Reconfigure(update func() error) error {
 	return err
 }
 
-func (c *Controller) start(mode string) error {
+func (c *Controller) start(mode, focus string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -187,6 +241,7 @@ func (c *Controller) start(mode string) error {
 	}
 	runCommand := "run"
 	routingMode := tailsplit.RoutingSplit
+	trafficExit := tailsplit.MainExit
 	if mode == "discovery" {
 		runCommand = "discover"
 	}
@@ -208,7 +263,9 @@ func (c *Controller) start(mode string) error {
 				Enabled bool `yaml:"enabled"`
 			} `yaml:"tun"`
 			Rules struct {
-				Mode string `yaml:"mode"`
+				Mode        string `yaml:"mode"`
+				GlobalExit  string `yaml:"global_exit"`
+				DefaultExit string `yaml:"default_exit"`
 			} `yaml:"rules"`
 		}
 		if err := yaml.Unmarshal(data, &config); err != nil {
@@ -220,9 +277,15 @@ func (c *Controller) start(mode string) error {
 		if config.Rules.Mode == tailsplit.RoutingGlobal {
 			routingMode = tailsplit.RoutingGlobal
 		}
+		trafficExit = (tailsplit.Config{Rules: tailsplit.RulesConfig{
+			Mode: config.Rules.Mode, DefaultExit: config.Rules.DefaultExit, GlobalExit: config.Rules.GlobalExit,
+		}}).TrafficExitID()
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), runCommand, "--events",
 		"--parent-pid", fmt.Sprint(os.Getpid()), "-c", c.options.ConfigPath)
+	if focus != "" {
+		args = append(args, "--exit", focus)
+	}
 	command := exec.Command(c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
@@ -236,15 +299,21 @@ func (c *Controller) start(mode string) error {
 		if input != nil {
 			_ = input.Close()
 		}
-		c.snapshot = Snapshot{State: "failed", Error: "启动失败，请查看日志"}
+		c.reset(Snapshot{State: "failed", Error: "启动失败，请查看日志"})
 		_, _ = io.WriteString(c.log, "Could not launch the bundled helper.\n")
 		return err
 	}
 	c.snapshot.State, c.snapshot.Mode = "starting", mode
+	c.snapshot.Focus = focus
 	c.snapshot.RoutingMode = routingMode
+	c.trafficExit = trafficExit
 	c.snapshot.Error, c.snapshot.LoginURL = "", ""
-	// Authentication state must come from the new helper's events.
-	c.snapshot.BackendState = ""
+	// Only refresh primary authentication when the helper reads that device.
+	// A focused login emits no primary status and must retain its saved state.
+	if (focus == "" || focus == tailsplit.MainExit) &&
+		(trafficExit == tailsplit.MainExit || mode == "login" || mode == "discovery") {
+		c.snapshot.BackendState = ""
+	}
 	c.command, c.input = command, input
 	c.stopping = false
 	c.done = make(chan struct{})
@@ -266,10 +335,11 @@ func (c *Controller) start(mode string) error {
 					c.snapshot.Mode = ""
 				}
 			} else if err != nil && !c.stopping {
-				c.snapshot = Snapshot{State: "failed", Error: "代理已退出，请查看日志"}
+				c.reset(Snapshot{State: "failed", Error: "代理已退出，请查看日志"})
 			} else {
 				c.snapshot.State, c.snapshot.Mode, c.snapshot.LoginURL = "stopped", "", ""
 			}
+			c.snapshot.Focus = ""
 			c.stopping = false
 		}
 		close(done)
@@ -325,6 +395,18 @@ func (c *Controller) Stop() error {
 }
 
 func (c *Controller) Logout() error {
+	return c.LogoutExit("")
+}
+
+// LogoutExit signs out one device. Other devices keep their logins.
+func (c *Controller) LogoutExit(id string) error {
+	focus := id
+	if focus == "" {
+		focus = tailsplit.MainExit
+	}
+	if id == tailsplit.MainExit {
+		id = ""
+	}
 	c.mu.Lock()
 	if c.closed || c.loggingOut {
 		c.mu.Unlock()
@@ -341,7 +423,12 @@ func (c *Controller) Logout() error {
 		return err
 	}
 	c.mu.Lock()
-	c.snapshot = Snapshot{State: "logging-out"}
+	previous := c.snapshot
+	if id == "" {
+		c.reset(Snapshot{State: "logging-out"})
+	} else {
+		c.snapshot.State = "logging-out"
+	}
 	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
@@ -350,6 +437,7 @@ func (c *Controller) Logout() error {
 		logoutCommand = "app-logout"
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), logoutCommand, "-c", c.options.ConfigPath)
+	args = append(args, "--exit", focus)
 	command := exec.CommandContext(ctx, c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
@@ -357,14 +445,46 @@ func (c *Controller) Logout() error {
 		return err
 	}
 	data, err := command.CombinedOutput()
-	_, _ = io.WriteString(c.log, redactLog(string(data)))
+	_, _ = io.WriteString(c.log, RedactLog(string(data)))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {
-		c.snapshot = Snapshot{State: "failed", Error: "退出设备登录失败，请查看日志"}
+		c.reset(Snapshot{State: "failed", Error: "退出设备登录失败，请查看日志"})
 		return err
 	}
-	c.snapshot = Snapshot{State: "stopped", BackendState: "NeedsLogin"}
+	if id != "" {
+		previous.State, previous.Mode = "stopped", ""
+		previous.Exits = c.snapshot.Exits
+		c.snapshot = previous
+		c.setExit(id, ExitSnapshot{BackendState: "NeedsLogin"})
+		return nil
+	}
+	c.reset(Snapshot{State: "stopped", BackendState: "NeedsLogin"})
+	return nil
+}
+
+// RemoveExit performs a local device logout and revision-checked config
+// removal. Unlike Reconfigure, it deliberately leaves the connection stopped.
+func (c *Controller) RemoveExit(id, revision string) error {
+	return c.removeExit(id, revision, c.LogoutExit)
+}
+
+func (c *Controller) removeExit(id, revision string, logout func(string) error) error {
+	if err := c.beginReconfigure(); err != nil {
+		return err
+	}
+	defer c.endReconfigure()
+	if err := RemoveExitDocument(c.options.ConfigPath, id, revision, logout); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if id == tailsplit.MainExit {
+		c.reset(Snapshot{State: "stopped"})
+	} else {
+		delete(c.snapshot.Exits, id)
+		c.snapshot.State, c.snapshot.Mode, c.snapshot.LoginURL = "stopped", "", ""
+	}
 	return nil
 }
 
@@ -411,12 +531,13 @@ func (c *Controller) onEvent(data []byte) {
 		Hostname      string               `json:"hostname"`
 		ExitNodes     []tailsplit.ExitNode `json:"exit_nodes"`
 		PingAvailable bool                 `json:"ping_available"`
+		Exit          string               `json:"exit"`
 	}
 	if json.Unmarshal(data, &event) != nil {
 		return
 	}
 	if event.Event == "log" {
-		_, _ = io.WriteString(c.log, redactLog(event.Message)+"\n")
+		_, _ = io.WriteString(c.log, RedactLog(event.Message)+"\n")
 		return
 	}
 	c.mu.Lock()
@@ -445,8 +566,14 @@ func (c *Controller) onEvent(data []byte) {
 	}
 	if event.Event == "authenticated" {
 		c.snapshot.State = "authenticated"
-		c.snapshot.BackendState = "Running"
 		c.snapshot.LoginURL = ""
+		if c.snapshot.Focus != "" {
+			exit := c.snapshot.Exits[c.snapshot.Focus]
+			exit.BackendState = "Running"
+			c.setExit(c.snapshot.Focus, exit)
+		} else {
+			c.snapshot.BackendState = "Running"
+		}
 		return
 	}
 	if event.Event == "discovered" {
@@ -456,7 +583,7 @@ func (c *Controller) onEvent(data []byte) {
 	}
 	if event.Event == "error" {
 		c.snapshot.State = "failed"
-		c.snapshot.Error = redactLog(event.Message)
+		c.snapshot.Error = RedactLog(event.Message)
 		_, _ = io.WriteString(c.log, c.snapshot.Error+"\n")
 		return
 	}
@@ -467,16 +594,48 @@ func (c *Controller) onEvent(data []byte) {
 	if event.Event != "status" {
 		return
 	}
+	trafficConnection := c.snapshot.Mode == "proxy" || c.snapshot.Mode == "tun"
+	selected := c.trafficExit
+	if selected == tailsplit.MainExit {
+		selected = ""
+	}
+	if event.Exit != "" {
+		c.setExit(event.Exit, ExitSnapshot{
+			BackendState: event.BackendState, NetworkName: event.NetworkName, Hostname: event.Hostname,
+			ExitNode: event.ExitNode, ExitOnline: event.ExitOnline, ExitVisible: event.ExitVisible,
+			ExitNodes: event.ExitNodes, PingAvailable: event.PingAvailable,
+		})
+		if c.snapshot.Mode == "login" && event.Exit == c.snapshot.Focus {
+			// A focused login drives the session state and its browser link.
+			c.snapshot.LoginURL = ""
+			if validLoginURL(event.AuthURL) {
+				c.snapshot.LoginURL = event.AuthURL
+			}
+			if event.BackendState == "NeedsLogin" || event.AuthURL != "" {
+				c.snapshot.State = "login"
+			} else {
+				c.snapshot.State = "authenticating"
+			}
+			return
+		}
+		if !trafficConnection || event.Exit != selected {
+			return
+		}
+	} else {
+		c.snapshot.ExitNode = event.ExitNode
+		c.snapshot.Hostname = event.Hostname
+		c.snapshot.ExitNodes = event.ExitNodes
+		c.snapshot.BackendState = event.BackendState
+		c.snapshot.PingAvailable = event.PingAvailable
+		c.snapshot.NetworkName = event.NetworkName
+		if trafficConnection && selected != "" {
+			return
+		}
+	}
 	c.snapshot.LoginURL = ""
 	if validLoginURL(event.AuthURL) {
 		c.snapshot.LoginURL = event.AuthURL
 	}
-	c.snapshot.ExitNode = event.ExitNode
-	c.snapshot.Hostname = event.Hostname
-	c.snapshot.ExitNodes = event.ExitNodes
-	c.snapshot.BackendState = event.BackendState
-	c.snapshot.PingAvailable = event.PingAvailable
-	c.snapshot.NetworkName = event.NetworkName
 	switch {
 	case c.snapshot.Mode == "discovery":
 		c.snapshot.State = "discovering"
@@ -491,7 +650,9 @@ func (c *Controller) onEvent(data []byte) {
 		c.snapshot.State = "authenticating"
 	case event.BackendState == "Direct":
 		c.snapshot.State = "running"
-	case event.BackendState == "Running" && event.ExitOnline && event.Phase == "preflight":
+	case event.BackendState == "Running" && event.Phase == "preflight":
+		// The peer list and selected-exit metadata arrive incrementally. Keep
+		// checking until preflight confirms readiness or reports its timeout.
 		c.snapshot.State = "checking-exit"
 	case event.BackendState == "Running" && event.ExitOnline:
 		c.snapshot.State = "running"
@@ -504,9 +665,17 @@ func (c *Controller) onEvent(data []byte) {
 	}
 }
 
+func (c *Controller) setExit(id string, exit ExitSnapshot) {
+	if c.snapshot.Exits == nil {
+		c.snapshot.Exits = map[string]ExitSnapshot{}
+	}
+	c.snapshot.Exits[id] = exit
+}
+
 var privateLogMaterial = regexp.MustCompile(`https://login\.tailscale\.com/a/[^\s]+|tskey-[A-Za-z0-9_-]+`)
 
-func redactLog(message string) string {
+// RedactLog removes device authorization links and keys from UI-facing logs.
+func RedactLog(message string) string {
 	return privateLogMaterial.ReplaceAllString(message, "[redacted]")
 }
 

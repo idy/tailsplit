@@ -41,13 +41,18 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 		f.message = "连接失败，请查看日志"
 		return ""
 	}
-	if snapshot.BackendState == "Direct" {
+	backend := snapshot.BackendState
+	if snapshot.Focus != "" {
+		// An additional exit's login reports that device's state.
+		backend = snapshot.Exits[snapshot.Focus].BackendState
+	}
+	if backend == "Direct" {
 		f.pending = false
 		f.showMessage = true
 		f.message = "当前配置无需设备登录"
 		return ""
 	}
-	if snapshot.BackendState == "Running" && snapshot.LoginURL == "" {
+	if backend == "Running" && snapshot.LoginURL == "" {
 		f.pending = false
 		f.showMessage = false
 		f.message = "设备已登录"

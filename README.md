@@ -1,8 +1,8 @@
 # TailSplit
 
 Choose which traffic goes through your Tailscale exit node and which stays direct.
-TailSplit uses sing-box routing rules, supports switching between Tailscale
-networks, and lets you configure routing by domain and IP.
+TailSplit uses sing-box routing rules, can use exits in several Tailscale networks
+at once, and lets you configure routing by domain and IP.
 
 [Website](https://tailsplit.idy.dev/) · [Download](https://github.com/idy/tailsplit/releases/latest) · [Guide](docs/guide.md) · [Discord](https://discord.gg/RY7ktfh8Pr)
 
@@ -29,24 +29,87 @@ Windows executables are unsigned; verify the release checksums before installati
 
 ## Get connected
 
-1. Open TailSplit, sign in to Tailscale, and select a network and exit node.
+1. Open TailSplit and use **Add exit** to authorize a device in your chosen Tailnet, or sign in to an existing saved exit. Then choose its exit node.
 2. Review your routing rules in the configuration panel.
-3. Connect when ready. Opening the app or signing in does not connect automatically.
+3. Choose a default gateway and connect when ready. Signing in alone does not connect. New configurations enable automatic connection on later launches once a gateway is configured.
 
-Choose an exit in the connection page's picker, or open **Exit nodes** to test
-individual exits with Tailscale Ping. Changing an exit requires confirmation.
+The **Exit Nodes** page lists your saved exits; its top-right switch starts or
+stops the connection. Above the list, **Add exit** sits on the left and the current
+default exit on the right; no saved-exit count is shown. Each added exit is a separate embedded device in the same or a
+different Tailnet and needs its own authorization. Each device's login is saved
+locally and reused after restarting the app. Authorizing another exit does not
+sign out existing devices. Adding an exit disconnects an active session, opens
+browser sign-in to choose the network, then opens the
+node picker, without asking for a name first. Confirming the first node binds
+the exit's Tailnet guard and names it `<exit-device-name>@<network name>`.
+Automatically named profiles keep `auto_name: true`, so later node choices update
+the label without changing the profile ID or device identity. Existing custom
+names are retained. Open any exit to choose its node and test nodes with
+Tailscale Ping individually. Node
+changes require confirmation; saving reconnects an active session or leaves an
+idle app stopped.
+
+On **Exit Nodes**, the current Split default proxy exit or Global exit is shown
+in a compact text dropdown at the top right of the card list, or **Not set** if
+none is configured. Choose a gateway directly in that dropdown to save it, without
+an edit dialog. A disconnected app stays disconnected; an active session reconnects. Turning on without a default
+still opens a selection dialog with no preselected option. Choose an
+exit and confirm to save it and connect; Cancel or Escape changes nothing. A
+failed or stale save never starts traffic. Settings drafts must be resolved
+first. An existing offline default is retained rather than silently replaced.
+
+The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
+It saves immediately and reconnects active traffic. Global/TUN mode blocks
+traffic if its exit goes offline; Rule-based restores Split without deleting
+saved rules. Manual disconnect or quitting restores system networking.
+During connection preflight, incomplete peer discovery is shown as checking the
+exit rather than asking for a replacement; the same connection continues once
+its selected node becomes ready. Refresh sits
+to the right of both switches. With an active session, first configure the target
+mode's gateway before switching; unsaved settings drafts block the shortcut.
+
+In **Settings › Routing rules**, choose Split or Global and save to apply it.
+Split's default proxy exit (`rules.default_exit`) is independent of the
+unmatched-traffic setting (`rules.final`). It carries proxy matches from the
+builtin or custom rule source, `proxy_domains`, `proxy_ips`, `final: proxy`, and
+bare Tailnet addresses without a more specific route. Rule groups can send
+domains and CIDRs through other exits; unmatched traffic can go direct, use the
+default proxy exit, or use a named additional exit. Global runs only the device
+selected by `rules.global_exit` for all captured traffic. Split rules remain
+saved while hidden in Global.
+
+The legacy `tailscale` profile has logical ID `main`; it is optional and
+removable. Additional exits keep their IDs and device state under
+`state_dir/exits/<id>/tailscale`, even when `main` is removed. **Remove exit** at
+the bottom of every picker also supports the last exit. After confirmation it
+disconnects, signs out only that device, and revision-checks removal of the local
+profile and its explicit route groups. Selectors that reference it become
+explicitly unset (`"-"`), so the next connection asks for a new choice; an explicit
+`rules.final` reference to it resets to `direct`. The app stays stopped. The
+remote device record remains in the Tailnet admin console; TailSplit has no
+management authority to delete it. There are no separate switch-network or
+sign-out controls; use Add exit to choose another network. Removing the last
+exit retains the remaining routing policy as a draft. Adding again creates a
+new additional profile and leaves both traffic exit selections unset until confirmed.
 
 **Application proxy** lets individual applications use the local HTTP/SOCKS
 listeners. **System routing** captures system traffic when `tun.enabled` is set.
 Both modes create a DNS TUN and require the privileged network service:
 Windows Setup installs it; macOS requests administrator approval on first connection.
 
-Changing networks signs out the embedded device and asks you to authorize the new
-network. Configuration and device state are retained across normal updates.
+Configuration and device state are retained across normal updates.
+
+New desktop profiles use [config.default.yaml](config.default.yaml): direct Internet
+IPv6 off, FakeIP and system TUN on, MTU 1400, Split/builtin rules, unmatched traffic
+direct, system DNS for direct traffic and `8.8.8.8` for proxy DNS. Auto-connect is
+on once a gateway is configured. The template has no saved devices or account
+identity. Existing files, including their omitted-field behavior, are preserved.
+The CLI example uses the same portable preferences with an illustrative exit.
 
 ## CLI
 
-Start from [config.example.yaml](config.example.yaml):
+Start from [config.example.yaml](config.example.yaml). Replace its placeholder
+exit with an approved gateway from your Tailnet before running:
 
 ```sh
 tailsplit init -c config.yaml
@@ -97,7 +160,8 @@ See the [build guide](docs/guide.md#build-and-test) for platform-specific comman
 | Path | Contents |
 | --- | --- |
 | `cmd/`, `internal/` | CLI, desktop controls, network service, and configuration UI |
-| `config.example.yaml` | Example routing configuration |
+| `config.default.yaml` | Shared new-desktop defaults, without saved devices |
+| `config.example.yaml` | CLI starter with the same preferences and a placeholder exit |
 | `packaging/`, `scripts/` | Installers, release tools, and development helpers |
 | `site/` | Public website |
 | `tests/` | Installer, packaging, and website checks |

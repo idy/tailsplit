@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	singlog "github.com/sagernet/sing-box/log"
@@ -16,8 +18,8 @@ import (
 // TUN interfaces, DNS hijacking or system routes. It releases the state lock
 // before the network core starts.
 func PrepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) (err error) {
-	if config.Tailscale != nil && strings.TrimSpace(config.Tailscale.ExitNode) == "" {
-		return errors.New("select an exit node before starting the proxy")
+	if err := ValidateTrafficExit(config); err != nil {
+		return err
 	}
 	return prepareTailnet(ctx, config, callback, writer, true, false)
 }
@@ -38,10 +40,11 @@ func DiscoverTailnet(ctx context.Context, config Config, callback func(Status), 
 }
 
 func prepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter, requireExit, discover bool) (err error) {
-	if config.Tailscale == nil {
+	if len(config.ExitIDs()) == 0 {
 		return nil
 	}
-	compiled, err := compilePreflight(config)
+	// Connection preflight checks exactly the devices the core will run.
+	compiled, err := compilePreflight(config, !requireExit)
 	if err != nil {
 		return err
 	}
@@ -55,21 +58,27 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	if err := engine.Start(); err != nil {
 		return err
 	}
-	updates := make(chan Status, 1)
+	// Several devices report concurrently; keep only each one's latest status.
+	var latestMu sync.Mutex
+	latest := map[string]Status{}
+	changed := make(chan struct{}, 1)
 	watchError := make(chan error, 1)
 	go func() {
 		watchError <- engine.WatchStatus(ctx, func(status Status) {
+			status.Phase = "preflight"
+			if discover {
+				status.Phase = "discovery"
+				status.AuthURL = ""
+			}
+			if callback != nil {
+				callback(status)
+			}
+			latestMu.Lock()
+			latest[status.Exit] = status
+			latestMu.Unlock()
 			select {
-			case updates <- status:
+			case changed <- struct{}{}:
 			default:
-				select {
-				case <-updates:
-				default:
-				}
-				select {
-				case updates <- status:
-				case <-ctx.Done():
-				}
 			}
 		})
 	}()
@@ -80,6 +89,13 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			deadline.Stop()
 		}
 	}()
+	label := func(id string) string {
+		if id == "" {
+			return "the primary exit"
+		}
+		return fmt.Sprintf("exit %q", id)
+	}
+	pending := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -93,35 +109,54 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			if !requireExit {
 				return errors.New("the logged-in device did not report its expected Tailnet identity")
 			}
+			if pending != "" {
+				return fmt.Errorf("the selected node for %s is unavailable in its Tailnet; TUN was not enabled", label(pending))
+			}
 			return errors.New("configured exit is unavailable in this Tailnet; TUN was not enabled")
-		case status := <-updates:
-			status.Phase = "preflight"
-			if discover {
-				status.Phase = "discovery"
-				status.AuthURL = ""
+		case <-changed:
+			latestMu.Lock()
+			snapshot := maps.Clone(latest)
+			latestMu.Unlock()
+			done, waiting := true, false
+			pending = ""
+			for _, exit := range engine.exits {
+				status, seen := snapshot[exit.id]
+				if !seen {
+					done = false
+					continue
+				}
+				if status.BackendState == "NeedsLogin" {
+					if discover {
+						continue
+					}
+					if requireExit && exit.id != "" {
+						return fmt.Errorf("sign in %s before connecting", label(exit.id))
+					}
+				}
+				if status.BackendState != "Running" {
+					done = false
+					continue
+				}
+				ready, err := authenticationReady(exit.tailnet, status)
+				if requireExit {
+					ready, err = preflightReady(exit.tailnet, status)
+				}
+				if err != nil {
+					return err
+				}
+				if !ready {
+					done, waiting = false, true
+					if pending == "" {
+						pending = exit.id
+					}
+				}
 			}
-			if callback != nil {
-				callback(status)
-			}
-			if discover && status.BackendState == "NeedsLogin" {
-				return nil
-			}
-			if status.BackendState != "Running" {
-				continue
-			}
-			ready, err := authenticationReady(config.Tailscale.Tailnet, status)
-			if requireExit {
-				ready, err = preflightReady(config.Tailscale.Tailnet, status)
-			}
-			if err != nil {
-				return err
-			}
-			if ready {
+			if done {
 				return nil
 			}
 			// Interactive login can take as long as the user needs. Once logged
 			// in, a missing/offline exit must fail instead of hanging forever.
-			if deadline == nil {
+			if waiting && deadline == nil {
 				deadline = time.NewTimer(45 * time.Second)
 				timeout = deadline.C
 			}
@@ -129,11 +164,24 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	}
 }
 
-func compilePreflight(config Config) (Compiled, error) {
+func compilePreflight(config Config, includePending bool) (Compiled, error) {
+	config.includePending = includePending
 	config.TUN.Enabled = false
 	// Login, logout and exit discovery do not route client traffic and must
 	// remain available even before a remote rule cache has been downloaded.
 	config.Rules.GFWList = ""
+	if includePending {
+		// Device-only operations inspect identity, never dormant traffic policy.
+		config.Rules.Mode = RoutingSplit
+		config.Rules.Final = "direct"
+		config.Rules.Routes = nil
+		config.Rules.ProxyDomains, config.Rules.ProxyIPs = nil, nil
+		// Discovery/login must work before the user chooses a traffic default.
+		// This local compile copy has no listeners and never saves this choice.
+		if ids := config.ExitIDs(); len(ids) > 0 && !config.hasExit(config.Rules.DefaultExit) {
+			config.Rules.DefaultExit = ids[0]
+		}
+	}
 	compiled, err := compile(context.Background(), config)
 	if err != nil {
 		return Compiled{}, err
@@ -161,10 +209,17 @@ func compilePreflight(config Config) (Compiled, error) {
 // LogoutSavedTailnet uses the embedded client's supported logout operation.
 // It has no inbound listeners or TUN and never touches the system Tailscale app.
 func LogoutSavedTailnet(ctx context.Context, config Config) (err error) {
-	if config.Tailscale == nil {
+	if len(config.ExitIDs()) == 0 {
 		return errors.New("no embedded Tailscale endpoint is configured")
 	}
-	compiled, err := compilePreflight(config)
+	if config.Focus == "" {
+		var err error
+		config, err = config.FocusExit(MainExit)
+		if err != nil {
+			return err
+		}
+	}
+	compiled, err := compilePreflight(config, true)
 	if err != nil {
 		return err
 	}

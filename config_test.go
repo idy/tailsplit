@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -21,27 +22,25 @@ func loadTestConfig(t *testing.T, text string) (Config, error) {
 
 func TestConfigRejectsSilentlyUnsafeInput(t *testing.T) {
 	for name, text := range map[string]string{
-		"unknown root":            "versoin: 1\n",
-		"unknown nested":          "dns:\n  fack_ip: true\n",
-		"multiple docs":           "version: 1\n---\nversion: 1\n",
-		"duplicate":               "version: 1\nversion: 2\n",
-		"public proxy":            "listen: 0.0.0.0:17890\n",
-		"public dns":              "dns:\n  listen: 0.0.0.0:15353\n",
-		"dns loop":                "dns:\n  direct: 172.31.255.2\n",
-		"dns IPv6 loop":           "dns:\n  direct: fd74:6169:6c73::2\n",
-		"fake resolver":           "dns:\n  direct: 198.18.0.1\n",
-		"magic resolver":          "dns:\n  direct: 100.100.100.100\n",
-		"no endpoint":             "rules:\n  proxy_domains: [example.com]\n",
-		"global without endpoint": "rules:\n  mode: global\n",
-		"invalid routing mode":    "rules:\n  mode: everything\n",
-		"bad hostname":            "tailscale:\n  hostname: 'bad name'\n",
-		"raw auth":                "tailscale:\n  auth_key: secret\n",
-		"default range":           "rules:\n  direct_ips: [0.0.0.0/0]\n",
-		"host CIDR":               "rules:\n  direct_ips: [192.168.1.5/24]\n",
-		"fake overlap":            "rules:\n  direct_ips: [198.18.0.0/16]\n",
-		"URL domain":              "rules:\n  direct_domains: [https://example.com/path]\n",
-		"IP domain":               "rules:\n  direct_domains: [8.8.8.8]\n",
-		"single label":            "rules:\n  direct_domains: [com]\n",
+		"unknown root":         "versoin: 1\n",
+		"unknown nested":       "dns:\n  fack_ip: true\n",
+		"multiple docs":        "version: 1\n---\nversion: 1\n",
+		"duplicate":            "version: 1\nversion: 2\n",
+		"public proxy":         "listen: 0.0.0.0:17890\n",
+		"public dns":           "dns:\n  listen: 0.0.0.0:15353\n",
+		"dns loop":             "dns:\n  direct: 172.31.255.2\n",
+		"dns IPv6 loop":        "dns:\n  direct: fd74:6169:6c73::2\n",
+		"fake resolver":        "dns:\n  direct: 198.18.0.1\n",
+		"magic resolver":       "dns:\n  direct: 100.100.100.100\n",
+		"invalid routing mode": "rules:\n  mode: everything\n",
+		"bad hostname":         "tailscale:\n  hostname: 'bad name'\n",
+		"raw auth":             "tailscale:\n  auth_key: secret\n",
+		"default range":        "rules:\n  direct_ips: [0.0.0.0/0]\n",
+		"host CIDR":            "rules:\n  direct_ips: [192.168.1.5/24]\n",
+		"fake overlap":         "rules:\n  direct_ips: [198.18.0.0/16]\n",
+		"URL domain":           "rules:\n  direct_domains: [https://example.com/path]\n",
+		"IP domain":            "rules:\n  direct_domains: [8.8.8.8]\n",
+		"single label":         "rules:\n  direct_domains: [com]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadTestConfig(t, text); err == nil {
@@ -104,7 +103,6 @@ func TestRuleSourceSupportsNewAndLegacyConfiguration(t *testing.T) {
 		"tailscale: {}\nrules:\n  source: builtin\n  gfwlist: https://rules.example/list.txt\n",
 		"tailscale: {}\nrules:\n  source: ''\n  gfwlist: builtin\n",
 		"tailscale: {}\nrules:\n  source: http://rules.example/list.txt\n",
-		"rules:\n  source: builtin\n",
 	} {
 		if _, err := loadTestConfig(t, text); err == nil {
 			t.Fatalf("accepted invalid rule source: %s", text)
@@ -144,7 +142,7 @@ func TestDeviceNamesDefaultToHostAndPreserveCustomNames(t *testing.T) {
 	if _, err := Compile(config); err == nil {
 		t.Fatal("a proxy can start without an explicitly selected exit")
 	}
-	if _, err := compilePreflight(config); err != nil {
+	if _, err := compilePreflight(config, true); err != nil {
 		t.Fatal("listener-free discovery cannot run before choosing an exit:", err)
 	}
 }
@@ -163,6 +161,42 @@ rules:
 	}
 	if config.Rules.DirectDomains[0] != "example.com" || config.Rules.DirectDomains[1] != "xn--bcher-kva.example" {
 		t.Fatalf("domain normalization: %v", config.Rules.DirectDomains)
+	}
+}
+
+func TestDesktopDefaultsMatchRequestedPreferencesWithoutDeviceIdentity(t *testing.T) {
+	defaults, err := loadTestConfig(t, string(DefaultYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Tailscale != nil || len(defaults.Exits) != 0 || defaults.Rules.DefaultExit != UnsetExit || defaults.Rules.GlobalExit != UnsetExit {
+		t.Fatal("desktop defaults must not ship a saved device or gateway")
+	}
+	if defaults.DNS.DirectIPv6 == nil || *defaults.DNS.DirectIPv6 || !defaults.fakeIP() ||
+		!defaults.TUN.Enabled || defaults.TUN.MTU != 1400 || !defaults.App.ConnectOnStart ||
+		!defaults.App.UpdatesEnabled() || defaults.Rules.Mode != RoutingSplit || defaults.Rules.Final != "direct" || defaults.Rules.GFWList != "builtin" {
+		t.Fatalf("unexpected fresh preferences: %+v", defaults)
+	}
+	if !reflect.DeepEqual(defaults.Rules.ProxyDomains, []string{"github.com", "youtube.com", "myexternalip.com", "idy.dev"}) ||
+		!reflect.DeepEqual(defaults.Rules.ProxyIPs, []string{"8.8.8.8/32", "8.8.4.4/32", "1.1.1.1/32", "1.0.0.1/32"}) {
+		t.Fatalf("default routing lists differ: %+v", defaults.Rules)
+	}
+	if err := ValidateTrafficExit(defaults); err == nil {
+		t.Fatal("a fresh installation can connect without a user-chosen gateway")
+	}
+	example, err := loadTestConfig(t, string(ExampleYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The CLI example differs only in its illustrative device and selections.
+	example.Tailscale, example.Exits, defaults.Exits = nil, nil, nil
+	example.Rules.DefaultExit, example.Rules.GlobalExit = UnsetExit, UnsetExit
+	if !reflect.DeepEqual(example, defaults) {
+		t.Fatalf("CLI and desktop portable defaults drifted:\nCLI: %+v\ndesktop: %+v", example, defaults)
+	}
+	legacy, err := loadTestConfig(t, "version: 1\n")
+	if err != nil || legacy.DNS.DirectIPv6 != nil || legacy.TUN.Enabled || legacy.App.ConnectOnStart {
+		t.Fatal("new template preferences changed legacy omitted-field behavior", err)
 	}
 }
 

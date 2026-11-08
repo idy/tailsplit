@@ -37,19 +37,18 @@ const CoreVersion = "1.14.4"
 // and Close without launching a sing-box subprocess. A connected core always
 // owns a DNS TUN; only traffic-capture mode changes the system DNS resolver.
 type Engine struct {
-	ctx             context.Context
-	ping            sync.Mutex
-	expectedTailnet string
-	box             *box.Box
-	cancel          context.CancelFunc
-	unlock          func() error
-	once            sync.Once
-	closeErr        error
-	exitNode        string
-	routingMode     string
-	hasTUN          bool
-	dnsListen       string
-	closeDNS        func() error
+	ctx         context.Context
+	ping        sync.Mutex
+	box         *box.Box
+	cancel      context.CancelFunc
+	unlock      func() error
+	once        sync.Once
+	closeErr    error
+	exits       []engineExit
+	routingMode string
+	hasTUN      bool
+	dnsListen   string
+	closeDNS    func() error
 }
 
 func engineContext(ctx context.Context) context.Context {
@@ -101,6 +100,13 @@ func Open(ctx context.Context, config Config, compiled Compiled) (*Engine, error
 
 // OpenWithLogWriter also delivers logs to a private local UI channel.
 func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, writer singlog.PlatformWriter) (*Engine, error) {
+	if compiled.runtimeExit != "" {
+		// Watch, authenticate and ping exactly the device Global compiled.
+		var err error
+		if config, err = config.FocusExit(compiled.runtimeExit); err != nil {
+			return nil, err
+		}
+	}
 	if err := privateState(config.StateDir); err != nil {
 		return nil, err
 	}
@@ -124,12 +130,15 @@ func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 		if err := json.Unmarshal(data, &native); err != nil {
 			return nil, err
 		}
-		endpoints, ok := native["endpoints"].([]any)
-		if !ok || len(endpoints) != 1 {
-			return nil, errors.New("compiled config does not contain the expected Tailscale endpoint")
+		endpoints, _ := native["endpoints"].([]any)
+		var endpoint map[string]any
+		for _, candidate := range endpoints {
+			// The environment key authenticates only the primary device.
+			if value, ok := candidate.(map[string]any); ok && value["type"] == "tailscale" && value["tag"] == "tailnet" {
+				endpoint = value
+			}
 		}
-		endpoint, ok := endpoints[0].(map[string]any)
-		if !ok || endpoint["type"] != "tailscale" {
+		if endpoint == nil {
 			return nil, errors.New("compiled config does not contain the expected Tailscale endpoint")
 		}
 		endpoint["auth_key"] = key
@@ -172,9 +181,27 @@ func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 			}
 		}
 	}
+	primary := engineExit{tag: "tailnet"}
 	if config.Tailscale != nil {
-		engine.exitNode = config.Tailscale.ExitNode
-		engine.expectedTailnet = config.Tailscale.Tailnet
+		primary.exitNode, primary.tailnet = config.Tailscale.ExitNode, config.Tailscale.Tailnet
+		if config.Focus != MainExit {
+			primary.id = config.Focus
+		}
+	}
+	// Watch exactly the compiled devices; pending exits may be omitted.
+	for _, endpoint := range options.Endpoints {
+		if endpoint.Type != "tailscale" {
+			continue
+		}
+		if endpoint.Tag == "tailnet" {
+			engine.exits = append(engine.exits, primary)
+			continue
+		}
+		for _, exit := range config.Exits {
+			if config.Focus == "" && endpoint.Tag == ExitTag(exit.ID) {
+				engine.exits = append(engine.exits, engineExit{tag: endpoint.Tag, id: exit.ID, exitNode: exit.ExitNode, tailnet: exit.Tailnet})
+			}
+		}
 	}
 	return engine, nil
 }
@@ -209,7 +236,9 @@ func (e *Engine) Start() error {
 // Status exposes only the connection information needed by a local UI.
 // AuthURL is transient login material; callers must not publish it.
 type Status struct {
-	Event          string     `json:"event"`
+	Event string `json:"event"`
+	// Exit is empty for the primary device and otherwise an additional exit ID.
+	Exit           string     `json:"exit,omitempty"`
 	RoutingMode    string     `json:"routing_mode,omitempty"`
 	BackendState   string     `json:"backend_state,omitempty"`
 	AuthURL        string     `json:"auth_url,omitempty"`
@@ -235,23 +264,66 @@ type ExitNode struct {
 	SelectedFor string `json:"selected_for,omitempty"`
 }
 
+type engineExit struct {
+	tag, id, exitNode, tailnet string
+}
+
+// WatchStatus reports every device; Status.Exit identifies additional exits.
+// The callback may be called concurrently for different exits.
 func (e *Engine) WatchStatus(ctx context.Context, callback func(Status)) error {
-	endpoint, exists := e.box.Endpoint().Get("tailnet")
-	if !exists {
+	if len(e.exits) == 0 {
 		callback(Status{Event: "status", BackendState: "Direct"})
 		return nil
 	}
-	tailnet, ok := endpoint.(adapter.TailscaleEndpoint)
-	if !ok {
-		return errors.New("configured endpoint does not expose Tailscale status")
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var callbackMu sync.Mutex
+	errs := make(chan error, len(e.exits))
+	for _, exit := range e.exits {
+		go func() {
+			endpoint, exists := e.box.Endpoint().Get(exit.tag)
+			if !exists {
+				errs <- errors.New("configured Tailscale endpoint is missing")
+				return
+			}
+			tailnet, ok := endpoint.(adapter.TailscaleEndpoint)
+			if !ok {
+				errs <- errors.New("configured endpoint does not expose Tailscale status")
+				return
+			}
+			errs <- tailnet.SubscribeTailscaleStatus(ctx, func(current *adapter.TailscaleEndpointStatus) {
+				status := connectionStatus(current, exit.exitNode)
+				status.Exit = exit.id
+				status.RoutingMode = e.routingMode
+				_, supportsPing := endpoint.(exitPingEndpoint)
+				status.PingAvailable = supportsPing && status.BackendState == "Running"
+				callbackMu.Lock()
+				defer callbackMu.Unlock()
+				callback(status)
+			})
+		}()
 	}
-	return tailnet.SubscribeTailscaleStatus(ctx, func(current *adapter.TailscaleEndpointStatus) {
-		status := connectionStatus(current, e.exitNode)
-		status.RoutingMode = e.routingMode
-		_, supportsPing := endpoint.(exitPingEndpoint)
-		status.PingAvailable = supportsPing && status.BackendState == "Running"
-		callback(status)
-	})
+	var result error
+	for range e.exits {
+		if err := <-errs; err != nil && result == nil {
+			result = err
+			cancel()
+		}
+	}
+	return result
+}
+
+// endpointTag maps a ping/status exit ID to this engine's endpoint tag.
+func (e *Engine) endpoint(exit string) (engineExit, bool) {
+	if exit == MainExit {
+		exit = ""
+	}
+	for _, candidate := range e.exits {
+		if candidate.id == exit {
+			return candidate, true
+		}
+	}
+	return engineExit{}, false
 }
 
 func connectionStatus(current *adapter.TailscaleEndpointStatus, configuredExit string) Status {
@@ -332,7 +404,7 @@ func (e *Engine) Close() error {
 }
 
 func Run(ctx context.Context, config Config, compiled Compiled) error {
-	if config.Tailscale != nil {
+	if len(config.ExitIDs()) > 0 {
 		if err := PrepareTailnet(ctx, config, nil, nil); err != nil {
 			return err
 		}

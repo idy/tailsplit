@@ -53,6 +53,19 @@ func prepareRuntimeUserWithRules(base, user string, files Files, updateRules boo
 				return "", err
 			}
 		}
+		for id, state := range files.ExitStates {
+			if !validExitID(id) || len(state) == 0 {
+				continue
+			}
+			for _, path := range []string{filepath.Join(directory, "exits"), filepath.Join(directory, "exits", id), filepath.Join(directory, "exits", id, "tailscale")} {
+				if err := privateDirectory(path); err != nil {
+					return "", err
+				}
+			}
+			if err := replacePrivate(filepath.Join(directory, "exits", id, "tailscale", "tailscaled.state"), state); err != nil {
+				return "", err
+			}
+		}
 		if len(files.Cache) > 0 {
 			if err := replacePrivate(filepath.Join(directory, "cache.db"), files.Cache); err != nil {
 				return "", err
@@ -178,6 +191,21 @@ func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
 		files.Cache, err = readUserFile(filepath.Join(config.StateDir, "cache.db"), maxCache)
 		if err != nil {
 			return files, err
+		}
+		for _, exit := range config.Exits {
+			if len(files.ExitStates) >= maxExits || !validExitID(exit.ID) {
+				break
+			}
+			state, err := readUserFile(filepath.Join(config.ExitStateDir(exit.ID), "tailscaled.state"), maxState)
+			if err != nil {
+				return files, err
+			}
+			if len(state) > 0 {
+				if files.ExitStates == nil {
+					files.ExitStates = map[string][]byte{}
+				}
+				files.ExitStates[exit.ID] = state
+			}
 		}
 	}
 	if config.Rules.Mode == tailsplit.RoutingGlobal {

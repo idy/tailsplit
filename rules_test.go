@@ -361,7 +361,7 @@ func TestPreflightAndIgnoredRulesDoNotDownload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := compilePreflight(config); err != nil {
+		if _, err := compilePreflight(config, true); err != nil {
 			t.Fatalf("login/logout/discovery required split rules %q: %v", source, err)
 		}
 		for _, ignored := range []Config{

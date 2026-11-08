@@ -438,7 +438,7 @@ class NativeUIContractTests(unittest.TestCase):
         self.assertIn("'连接页面': 'Connection'", translations)
         self.assertIn("'连接页面': '连接'", translations)
         self.assertIn("'连接 TailSplit'='Connect TailSplit'", self.script)
-        self.assertIn("'连接页面'=@('连接','Connection')", self.script)
+        self.assertIn("'连接页面'=@('出口节点','Exit nodes','连接','Connection')", self.script)
         self.assertIn("'连接'='Connect'", self.script)
         self.assertIn("$pageNavigation = [bool]((Find-Button $automation '连接 TailSplit') -or (Find-Button $automation '设置'))", self.script)
         self.assertIn("$connectName = if ($pageNavigation) { '连接 TailSplit' } else { '连接' }", self.script)
@@ -448,7 +448,8 @@ class NativeUIContractTests(unittest.TestCase):
         self.assertNotIn("Invoke-Button $automation '连接'", self.script)
         initial = self.script.split("$initialControls = if ($pageNavigation)", 1)[1].split("foreach ($name in $initialControls)", 1)[0]
         current, legacy = initial.split("} else {", 1)
-        self.assertIn("'登录 Tailscale'", current)
+        self.assertIn("$deviceAction", current)
+        self.assertIn("$deviceAction = if (Find-Button $automation '添加出口') { '添加出口' } else { '登录 Tailscale' }", self.script)
         self.assertIn("'日志'", current)
         self.assertIn("'设置'", current)
         for hidden in ("'断开'", "'退出登录…'", "'保存并应用'"):
@@ -459,7 +460,11 @@ class NativeUIContractTests(unittest.TestCase):
     def test_refresh_follows_node_navigation_and_keeps_legacy_fallback(self):
         html = (ROOT / "internal/configweb/assets/index.html").read_text(encoding="utf-8")
         translations = (ROOT / "internal/configweb/assets/i18n.js").read_text(encoding="utf-8")
-        self.assertRegex(html, r'<button\b[^>]*data-page="nodes"[^>]*>')
+        # The first destination is now Exit Nodes and the header owns Refresh.
+        # Older upgrade fixtures may still expose a dedicated node page.
+        self.assertNotRegex(html, r'data-page="nodes"')
+        header = html.split('<header class="titlebar"', 1)[1].split('</header>', 1)[0]
+        self.assertRegex(header, r'<button\b[^>]*data-desktop-action="refresh-exits"[^>]*aria-label="刷新"')
         self.assertIn("'出口节点列表': 'Exit nodes'", translations)
         self.assertIn("'出口节点列表': '出口节点'", translations)
         self.assertIn("'出口节点页面'=@('出口节点','Exit nodes')", self.script)

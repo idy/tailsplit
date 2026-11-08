@@ -13,6 +13,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/tray"
 )
@@ -47,6 +48,28 @@ func TestPanelStartupRequiresApprovalBeforeReportingEnabled(t *testing.T) {
 	}
 	if finishPanelStartup("startup-off", tray.LoginItemDisabled, openSettings) || opened != 1 {
 		t.Fatal("disabling startup opened settings or left the panel enabled")
+	}
+}
+
+func TestAppInitializesSharedDefaultsOnlyForNewProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings", "config.yaml")
+	if err := initializeConfig(path, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, tailsplit.DefaultYAML) {
+		t.Fatal("new desktop profile did not use the embedded shared defaults", err)
+	}
+	chosen := []byte("version: 1\ndns:\n  direct_ipv6: true\ntun:\n  enabled: false\napp:\n  connect_on_start: false\n")
+	if err := os.WriteFile(path, chosen, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initializeConfig(path, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, chosen) {
+		t.Fatal("new defaults overwrote an existing user's preferences", err)
 	}
 }
 
@@ -130,18 +153,29 @@ func TestTemplateIconIsValid(t *testing.T) {
 }
 
 type desktopActionFixture struct {
-	snapshot tray.Snapshot
-	calls    []string
-	err      error
+	snapshot    tray.Snapshot
+	trafficExit string
+	trafficErr  error
+	calls       []string
+	err         error
 }
 
-func (c *desktopActionFixture) Snapshot() tray.Snapshot { return c.snapshot }
-func (c *desktopActionFixture) Start() error            { return c.record("connect") }
-func (c *desktopActionFixture) StartLogin() error       { return c.record("start-login") }
-func (c *desktopActionFixture) Stop() error             { return c.record("disconnect") }
-func (c *desktopActionFixture) Logout() error           { return c.record("logout") }
-func (c *desktopActionFixture) SwitchNetwork() error    { return c.record("switch-network") }
-func (c *desktopActionFixture) RefreshExitNodes() error { return c.record("refresh-exits") }
+func (c *desktopActionFixture) TrafficExitID() (string, error) {
+	if c.trafficExit == "" {
+		return "main", c.trafficErr
+	}
+	return c.trafficExit, c.trafficErr
+}
+
+func (c *desktopActionFixture) Snapshot() tray.Snapshot        { return c.snapshot }
+func (c *desktopActionFixture) Start() error                   { return c.record("connect") }
+func (c *desktopActionFixture) StartLogin() error              { return c.record("start-login") }
+func (c *desktopActionFixture) Stop() error                    { return c.record("disconnect") }
+func (c *desktopActionFixture) Logout() error                  { return c.record("logout") }
+func (c *desktopActionFixture) SwitchNetwork() error           { return c.record("switch-network") }
+func (c *desktopActionFixture) RefreshExitNodes() error        { return c.record("refresh-exits") }
+func (c *desktopActionFixture) StartExitLogin(id string) error { return c.record("start-login:" + id) }
+func (c *desktopActionFixture) LogoutExit(id string) error     { return c.record("logout:" + id) }
 func (c *desktopActionFixture) record(action string) error {
 	c.calls = append(c.calls, action)
 	return c.err
@@ -183,6 +217,36 @@ func TestDesktopLoginFailureKeepsPrivateDetailsOutOfActionError(t *testing.T) {
 	}
 	if !flow.ShowMessage() || flow.Next(tray.Snapshot{LoginURL: "https://login.tailscale.com/a/stale"}) != "" {
 		t.Fatal("failed login left a browser request pending")
+	}
+}
+
+func TestAdditionalExitLoginDefersShutdownAndCompletesFlowOnEventLoop(t *testing.T) {
+	const link = "https://login.tailscale.com/a/fixture-office"
+	for _, fail := range []bool{false, true} {
+		controller := &desktopActionFixture{snapshot: tray.Snapshot{Active: true, Mode: "proxy"}}
+		if fail {
+			controller.err = errors.New("https://login.tailscale.com/a/private tskey-auth-private")
+		}
+		var flow tray.LoginFlow
+		flow.Request()
+		operation, err := desktopActionOperation("login-exit:office", controller, &flow, nil)
+		if err != nil || operation == nil || len(controller.calls) != 0 {
+			t.Fatal("exit login performed blocking work on the dispatcher", err, controller.calls)
+		}
+		snapshot := tray.Snapshot{State: "login", Focus: "office", LoginURL: link,
+			Exits: map[string]tray.ExitSnapshot{"office": {BackendState: "NeedsLogin"}}}
+		err = operation()
+		if flow.Next(snapshot) != "" {
+			t.Fatal("worker mutated the event loop's login intent")
+		}
+		err = finishDesktopExitLogin(&flow, err)
+		if fail {
+			if err == nil || strings.Contains(err.Error(), "private") || flow.Next(snapshot) != "" {
+				t.Fatal("failed worker exposed private errors or queued a browser", err)
+			}
+		} else if err != nil || !slices.Equal(controller.calls, []string{"disconnect", "start-login:office"}) || flow.Next(snapshot) != link {
+			t.Fatal("exit login lost its serialized controller or browser sequence", err, controller.calls)
+		}
 	}
 }
 
@@ -335,5 +399,43 @@ func TestDesktopStartupHandlesApprovalAndRegistrationErrors(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDesktopConnectUsesSavedTrafficDeviceForLogin(t *testing.T) {
+	for _, test := range []struct{ name, selected, primary, extra, want string }{
+		{"global extra ignores signed-out primary", "office", "NeedsLogin", "Running", "connect"},
+		{"global extra without cached status checks itself", "office", "NeedsLogin", "", "connect"},
+		{"global extra signs into its own device", "office", "Running", "NeedsLogin", "start-login:office"},
+		{"primary retains legacy login", "main", "NeedsLogin", "Running", "start-login"},
+		{"primary ignores signed-out extra", "main", "Running", "NeedsLogin", "connect"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			controller := &desktopActionFixture{trafficExit: test.selected, snapshot: tray.Snapshot{
+				State: "stopped", RoutingMode: "split", BackendState: test.primary,
+				Exits: map[string]tray.ExitSnapshot{"office": {BackendState: test.extra}},
+			}}
+			var flow tray.LoginFlow
+			operation, err := desktopActionOperation("connect", controller, &flow, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if operation != nil {
+				if len(controller.calls) != 0 {
+					t.Fatal("connect launched before the worker ran")
+				}
+				if err := operation(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !slices.Equal(controller.calls, []string{test.want}) {
+				t.Fatalf("wrong device login/connection: %v, want %q", controller.calls, test.want)
+			}
+		})
+	}
+	controller := &desktopActionFixture{trafficErr: errors.New("invalid saved selection"), snapshot: tray.Snapshot{BackendState: "NeedsLogin"}}
+	var flow tray.LoginFlow
+	if operation, err := desktopActionOperation("connect", controller, &flow, nil); operation != nil || err == nil || len(controller.calls) != 0 {
+		t.Fatal("failed saved selection lookup launched a fallback device")
 	}
 }

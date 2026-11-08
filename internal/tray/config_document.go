@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/privatefs"
@@ -248,4 +250,108 @@ func SaveConfigDocument(path, revision string, data []byte) error {
 		return ErrConfigChanged
 	}
 	return privatefs.Replace(candidate, path)
+}
+
+// CheckExitRemoval validates the request without constructing a discarded patch.
+// The controller repeats these checks under its operation gate before logout.
+func CheckExitRemoval(path, id, revision string) error {
+	_, _, err := readExitRemoval(path, id, revision)
+	return err
+}
+
+func readExitRemoval(path, id, revision string) ([]byte, tailsplit.Config, error) {
+	original, current, err := ReadConfigDocument(path)
+	if err != nil {
+		return nil, tailsplit.Config{}, err
+	}
+	if revision == "" || current != revision {
+		return nil, tailsplit.Config{}, ErrConfigChanged
+	}
+	config, err := ValidateConfigDocument(path, original)
+	if err != nil {
+		return nil, tailsplit.Config{}, err
+	}
+	if !slices.Contains(config.ExitIDs(), id) {
+		return nil, tailsplit.Config{}, errors.New("the selected exit is not configured")
+	}
+	return original, config, nil
+}
+
+// PrepareExitRemoval checks the saved revision before any logout and builds a
+// local-only removal. Stable IDs and remaining device state paths never change.
+func PrepareExitRemoval(path, id, revision string) ([]byte, error) {
+	original, config, err := readExitRemoval(path, id, revision)
+	if err != nil {
+		return nil, err
+	}
+	// Patch raw values so normalization does not rewrite unrelated policy,
+	// relative paths or automatically generated hostnames in the saved file.
+	var raw tailsplit.Config
+	if err := yaml.Unmarshal(original, &raw); err != nil {
+		return nil, err
+	}
+	var changes []ConfigChange
+	var remaining []string
+	if id == tailsplit.MainExit {
+		changes = append(changes, ConfigChange{Key: "tailscale", Value: nil})
+		// These suffixes belong to the primary device. Keeping them without
+		// that client would send its MagicDNS names to an unrelated resolver.
+		if len(raw.DNS.MagicDomains) > 0 {
+			changes = append(changes, ConfigChange{Section: "dns", Key: "magic_domains", Value: []string{}})
+		}
+	} else if raw.Tailscale != nil {
+		remaining = append(remaining, tailsplit.MainExit)
+	}
+	var exits []tailsplit.ExitConfig
+	for _, exit := range raw.Exits {
+		if strings.TrimSpace(exit.ID) != id {
+			exits = append(exits, exit)
+			remaining = append(remaining, strings.TrimSpace(exit.ID))
+		}
+	}
+	if id != tailsplit.MainExit {
+		changes = append(changes, ConfigChange{Key: "exits", Value: exits})
+	}
+	// Removing a selected device requires an explicit new choice before traffic.
+	fallback := tailsplit.UnsetExit
+	if config.Rules.DefaultExit == id || !slices.Contains(remaining, config.Rules.DefaultExit) {
+		changes = append(changes, ConfigChange{Section: "rules", Key: "default_exit", Value: fallback})
+	}
+	if config.Rules.GlobalExit == id || !slices.Contains(remaining, config.Rules.GlobalExit) {
+		changes = append(changes, ConfigChange{Section: "rules", Key: "global_exit", Value: fallback})
+	}
+	if strings.TrimSpace(raw.Rules.Final) == id {
+		changes = append(changes, ConfigChange{Section: "rules", Key: "final", Value: "direct"})
+	}
+	var routes []tailsplit.RouteConfig
+	for _, route := range raw.Rules.Routes {
+		if strings.TrimSpace(route.Exit) != id {
+			routes = append(routes, route)
+		}
+	}
+	if len(routes) != len(raw.Rules.Routes) {
+		changes = append(changes, ConfigChange{Section: "rules", Key: "routes", Value: routes})
+	}
+	updated, err := PatchConfigDocument(original, changes...)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ValidateConfigDocument(path, updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// RemoveExitDocument signs out only the target local client, then checks the
+// revision again before saving. A failed logout/save leaves the config visible
+// for retry. It never removes a remote Tailnet device record or reconnects.
+func RemoveExitDocument(path, id, revision string, logout func(string) error) error {
+	updated, err := PrepareExitRemoval(path, id, revision)
+	if err != nil {
+		return err
+	}
+	if err := logout(id); err != nil {
+		return err
+	}
+	return SaveConfigDocument(path, revision, updated)
 }

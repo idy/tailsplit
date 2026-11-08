@@ -37,12 +37,15 @@ type configurationApply struct {
 
 type desktopActionController interface {
 	Snapshot() tray.Snapshot
+	TrafficExitID() (string, error)
 	Start() error
 	StartLogin() error
 	Stop() error
 	Logout() error
 	SwitchNetwork() error
 	RefreshExitNodes() error
+	StartExitLogin(string) error
+	LogoutExit(string) error
 }
 
 func desktopConfigurationBusy(action string, snapshot tray.Snapshot, editing, loggingOut, opening bool) bool {
@@ -56,14 +59,29 @@ func (request configurationApply) blocked(editing, loggingOut, browserOpening bo
 // LoginFlow and action preparation belong to the menu's event loop. Only the
 // returned controller or login-item operation may run on the settings worker.
 func desktopActionOperation(action string, controller desktopActionController, flow *tray.LoginFlow, startup func(bool) error) (func() error, error) {
+	action, exit := splitExitAction(action)
 	switch action {
+	case "login-exit":
+		flow.Cancel()
+		return func() error { return prepareDesktopExitLogin(controller, exit) }, nil
+	case "logout-exit":
+		flow.Cancel()
+		return func() error { return controller.LogoutExit(exit) }, nil
 	case "connect":
 		snapshot := controller.Snapshot()
 		if snapshot.Active {
 			return nil, nil
 		}
-		if snapshot.BackendState == "NeedsLogin" {
-			return nil, requestDesktopLogin(controller, flow)
+		exit, err := controller.TrafficExitID()
+		if err != nil {
+			return nil, err
+		}
+		if exit == tailsplit.MainExit {
+			if snapshot.BackendState == "NeedsLogin" {
+				return nil, requestDesktopLogin(controller, flow)
+			}
+		} else if snapshot.Exits[exit].BackendState == "NeedsLogin" {
+			return nil, requestDesktopExitLogin(controller, flow, exit)
 		}
 		flow.Cancel()
 		return controller.Start, nil
@@ -121,13 +139,9 @@ func main() {
 	directory := filepath.Dir(executable)
 	configRoot, _ := os.UserConfigDir()
 	defaultConfig := filepath.Join(configRoot, "TailSplit", "config.yaml")
-	defaultTemplate := filepath.Join(directory, "..", "Resources", "config.example.yaml")
-	if _, err := os.Stat(defaultTemplate); os.IsNotExist(err) {
-		defaultTemplate = filepath.Join(directory, "..", "config.example.yaml")
-	}
 	config := flag.String("config", defaultConfig, "configuration path")
 	helper := flag.String("helper", filepath.Join(directory, "tailsplit"), "bundled helper")
-	template := flag.String("template", defaultTemplate, "initial configuration template")
+	template := flag.String("template", "", "optional initial configuration template override")
 	logPath := flag.String("log", filepath.Join(configRoot, "TailSplit", "logs", "tailsplit.log"), "private log file")
 	startImmediately := flag.Bool("start", false, "start the proxy explicitly after opening the app")
 	loginImmediately := flag.Bool("login", false, "start and open the current device login page when ready")
@@ -213,7 +227,10 @@ func main() {
 		})
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
-		PingExit:    controller.PingExitNode,
+		PingExit: controller.PingExitNode,
+		RemoveExit: func(ctx context.Context, id, revision string) error {
+			return apply(ctx, func() error { return controller.RemoveExit(id, revision) }, true)
+		},
 		Apply:       func(ctx context.Context, update func() error) error { return apply(ctx, update, false) },
 		UpdateState: updates.snapshot, UpdateAction: updates.action,
 		Action: func(ctx context.Context, action string) error {
@@ -263,7 +280,6 @@ func main() {
 		login := addMenu(account, "登录 Tailscale…", "打开当前设备的登录页面")
 		copyLogin := addMenu(account, "复制登录链接", "复制当前有效的设备授权链接")
 		copyLogin.Hide()
-		logout := addMenu(account, "退出并切换 Tailnet…", "在配置面板中确认切换网络；未保存的更改会保留")
 		startup := addMenu(nil, "启动设置", "")
 		startAtLogin := addMenu(startup, "登录 macOS 时打开", "通过系统登录项启动 .app", false)
 		connectOnStart := addMenu(startup, "打开 App 后自动连接", "只影响下次打开；需要登录时仍由你主动点击登录", preferences.ConnectOnStart)
@@ -291,10 +307,15 @@ func main() {
 		quit := addMenu(nil, "退出 TailSplit", "同时停止此 App 启动的代理")
 		if *loginImmediately {
 			_ = controller.StartLogin()
-		} else if !*noConnect && (*startImmediately || preferences.ConnectOnStart) {
+		} else if !*noConnect && *startImmediately {
 			_ = controller.Start()
 		} else {
-			_ = controller.RefreshExitNodes()
+			switch desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect) {
+			case "connect":
+				_ = controller.Start()
+			case "refresh-exits":
+				_ = controller.RefreshExitNodes()
+			}
 		}
 		go func() {
 			defer close(picker.done)
@@ -370,15 +391,16 @@ func main() {
 						continue
 					}
 					snapshot := controller.Snapshot()
-					if !snapshot.Active && snapshot.BackendState == "NeedsLogin" {
-						requestLogin()
-						openReadyLogin(controller.Snapshot())
-					} else if snapshot.Active {
+					if snapshot.Active {
 						flow.Cancel()
 						editing = true
 						go func() { settingsDone <- controller.Stop() }()
 					} else {
-						_ = controller.Start()
+						operation, _ := desktopActionOperation("connect", controller, &flow, nil)
+						if operation != nil {
+							_ = operation()
+						}
+						openReadyLogin(controller.Snapshot())
 					}
 				case <-restart.ClickedCh:
 					if editing || loggingOut || flow.Opening() || !canReconnect(controller.Snapshot()) {
@@ -416,13 +438,6 @@ func main() {
 							loginStatus.SetTitle(tr("登录页面：链接已复制"))
 						}
 					}
-				case <-logout.ClickedCh:
-					if loggingOut || editing || flow.Opening() {
-						continue
-					}
-					// Reuse the panel's confirmation and draft guard. Showing its
-					// existing window preserves edits and performs no device action.
-					showConfiguration()
 				case err := <-logoutDone:
 					loggingOut = false
 					if err == nil && switchingNetwork {
@@ -523,6 +538,12 @@ func main() {
 						// Refresh even after a registration or approval error so the
 						// panel sees the actual status before its request completes.
 						refreshLoginItem()
+					}
+					if action, _ := splitExitAction(pendingAction); action == "login-exit" {
+						err = finishDesktopExitLogin(&flow, err)
+						if err == nil {
+							openReadyLogin(controller.Snapshot())
+						}
 					}
 					// Return errors to the panel after clearing the busy state.
 					if !completeRequest(err) && err != nil {
@@ -703,7 +724,6 @@ func main() {
 					busy := editing || loggingOut || snapshot.State == "stopping" || snapshot.State == "logging-out"
 					setEnabled(connect, !busy && !flow.Opening())
 					setEnabled(restart, canReconnect(snapshot) && !busy && !flow.Opening())
-					setEnabled(logout, configurationPage != nil && !busy && !flow.Opening())
 					setEnabled(login, !busy && !flow.Opening() &&
 						snapshot.Mode != "discovery" &&
 						snapshot.BackendState != "Running" && snapshot.BackendState != "Direct")
@@ -761,9 +781,13 @@ func initializeConfig(path, template string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	data, err := os.ReadFile(template)
-	if err != nil {
-		return err
+	data := tailsplit.DefaultYAML
+	var err error
+	if template != "" {
+		data, err = os.ReadFile(template)
+		if err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

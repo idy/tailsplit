@@ -68,8 +68,12 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const mtu = $('#mtu'); mtu.dataset = { field: 'tun.mtu', kind: 'int' };
   const tun = $('#tun-enabled'); tun.type = 'checkbox'; tun.dataset.field = 'tun.enabled';
   const ruleSource = $('#rule-source'); ruleSource.dataset.field = 'rules.source';
-  const fields = [level, mtu, tun, ruleSource];
-  const pages = ['connection', 'nodes', 'logs', 'settings'].map((name) => {
+  const routingMode = $('#routing-mode'); routingMode.dataset.field = 'rules.mode';
+  const globalExit = $('#global-exit'); globalExit.dataset.field = 'rules.global_exit';
+  const defaultExit = $('#default-exit'); defaultExit.dataset.field = 'rules.default_exit';
+  const finalRoute = $('#final-route'); finalRoute.dataset.field = 'rules.final';
+  const fields = [level, mtu, tun, ruleSource, routingMode, globalExit, defaultExit, finalRoute];
+  const pages = ['connection', 'logs', 'settings'].map((name) => {
     const nav = $(`[data-page="${name}"]`); nav.dataset.page = name; return nav;
   });
   const sections = ['general', 'network', 'dns', 'routing', 'advanced', 'about'].map((name) => {
@@ -78,11 +82,11 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const modes = ['split', 'global'].map((mode) => {
     const button = $(`[data-routing-mode="${mode}"]`); button.dataset.routingMode = mode; return button;
   });
-  const desktopActions = ['connect', 'disconnect', 'login', 'switch-network', 'refresh-exits'].map((action) => {
+  const desktopActions = ['connect', 'disconnect', 'login', 'refresh-exits'].map((action) => {
     const selector = action === 'refresh-exits' ? '#refresh-exits' : `#desktop-${action}`;
     const button = $(selector); button.dataset.desktopAction = action; return button;
   });
-  const appPages = ['connection', 'nodes', 'logs', 'settings'].map((name) => { const element = $(`#page-${name}`); element.id = `page-${name}`; return element; });
+  const appPages = ['connection', 'logs', 'settings'].map((name) => { const element = $(`#page-${name}`); element.id = `page-${name}`; return element; });
   const settingsPages = sections.map((nav) => { const element = $(`#section-${nav.dataset.section}`); element.id = `section-${nav.dataset.section}`; return element; });
   $('#form-tab').setAttribute('aria-selected', 'true');
   $('#yaml-tab').setAttribute('aria-selected', 'false');
@@ -154,6 +158,11 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   await settle();
   assert.equal($('#level').value, 'info');
   app.poll = () => poll();
+  app.flushTimers = async () => {
+    const callbacks = [...timers.values()]; timers.clear();
+    for (const callback of callbacks) callback();
+    await settle();
+  };
   app.input = async (selector, value) => {
     const control = $(selector);
     if (control.disabled) return;
@@ -642,90 +651,6 @@ test('current network follows authentication and keeps user names literal across
   assert.equal(app.$('#desktop-network-name').textContent, 'Network not checked yet');
 });
 
-test('changing network requires confirmation and refreshes the network and exits', async () => {
-  const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running',
-    exit_nodes: [{ id: 'old-exit', name: 'Old exit', online: true }] });
-  const dialog = app.$('#switch-network-dialog');
-  const button = app.$('#desktop-switch-network');
-  await button.emit('click');
-  assert.equal(dialog.open, true);
-  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
-  dialog.returnValue = 'cancel';
-  await dialog.emit('close');
-  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
-  app.override = (request) => {
-    if (request.path !== '/api/action') return undefined;
-    assert.equal(request.data.action, 'switch-network');
-    app.snapshot.network = 'new.ts.net';
-    app.snapshot.exit_nodes = [{ id: 'new-exit', name: 'New exit', online: true }];
-    return response({ ok: true });
-  };
-  await button.emit('click');
-  dialog.returnValue = 'switch-network';
-  await dialog.emit('close');
-  await settle();
-  assert.equal(app.$('#desktop-network-name').textContent, 'new.ts.net');
-  assert.equal(exitChoice(app, 'new-exit').disabled, false);
-  assert.equal(exitChoice(app, 'new-exit').children[1].textContent, 'New exit');
-  assert.equal(exitChoice(app, 'old-exit'), undefined);
-  assert.equal(app.requests.filter((r) => r.path === '/api/action').length, 1);
-});
-
-test('network switch conflicts stay visible across revision reloads until recovery', async () => {
-  for (const recovery of ['reload', 'login']) {
-    const app = await page({ desktop: true, network: 'old.ts.net', backend_state: 'Running' });
-    const conflict = { zh: '配置已在切换期间更新，请重试。', en: 'Configuration changed during switching. Try again.' };
-    app.override = (request) => {
-      if (request.path === '/api/action' && request.data.action === 'switch-network') {
-        app.snapshot = { ...app.snapshot, network: '', backend_state: 'NeedsLogin', revision: 'external' };
-        return response({ error: conflict.en, error_i18n: conflict }, false);
-      }
-      if (request.path === '/api/config') return response(doc(yaml + '# External edit\n', 'external'));
-      return undefined;
-    };
-    await app.$('#desktop-switch-network').emit('click');
-    app.$('#switch-network-dialog').returnValue = 'switch-network';
-    await app.$('#switch-network-dialog').emit('close');
-    await settle();
-    assert.match(app.$('#raw-yaml').value, /External edit/);
-    assert.equal(app.$('#desktop-network-name').textContent, '未登录');
-    assert.equal(app.$('#notice').hidden, false);
-    assert.equal(app.$('#notice-detail').textContent, conflict.zh);
-    await app.poll();
-    app.i18n.setLanguage('en');
-    assert.equal(app.$('#notice').hidden, false);
-    assert.equal(app.$('#notice-detail').textContent, conflict.en);
-    await app.$(recovery === 'reload' ? '#reload' : '#desktop-login').emit('click');
-    assert.equal(app.$('#notice').hidden, true, `error was not cleared by ${recovery}`);
-  }
-});
-
-test('changing network protects drafts and blocks duplicate requests', async () => {
-  const app = await page({ desktop: true, network: 'old.ts.net' });
-  const button = app.$('#desktop-switch-network');
-  await app.$('#yaml-tab').emit('click');
-  await app.input('#raw-yaml', 'unfinished: [');
-  assert.equal(button.disabled, true);
-  await button.emit('click');
-  assert.equal(app.$('#switch-network-dialog').open, undefined);
-  assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
-  assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
-
-  const clean = await page({ desktop: true, network: 'old.ts.net' });
-  const pending = deferred();
-  clean.override = (request) => request.path === '/api/action' ? pending.promise : undefined;
-  await clean.$('#desktop-switch-network').emit('click');
-  clean.$('#switch-network-dialog').returnValue = 'switch-network';
-  await clean.$('#switch-network-dialog').emit('close');
-  assert.equal(clean.$('#desktop-switch-network').disabled, true);
-  await clean.$('#desktop-switch-network').emit('click');
-  pending.resolve(response({ error: 'Fixture logout failed' }, false));
-  await settle();
-  assert.equal(clean.$('#notice-detail').textContent, 'Fixture logout failed');
-  assert.equal(clean.$('#desktop-switch-network').disabled, false);
-  assert.equal(clean.requests.filter((r) => r.path === '/api/action').length, 1);
-});
-
 test('update controls are independent of desktop connection controls', async () => {
   const app = await page();
   assert.equal(app.$('#app-updates').hidden, true);
@@ -1026,7 +951,7 @@ test('visible backend errors and location labels switch languages without retryi
 test('active sessions needing authentication can request sign-in without disconnecting', async () => {
   for (const mode of ['proxy', 'tun', 'login']) {
     for (const [state, backend_state] of [['login', 'NeedsLogin'], ['blocked', 'NeedsLogin'], ['login', 'Running']]) {
-      const app = await page({ desktop: true, active: true, mode, state, backend_state });
+      const app = await page({ desktop: true, active: true, mode, state, backend_state }, '', {}, exitDocument());
       assert.equal(app.$('#desktop-login').hidden, false, `${mode}/${state}`);
       assert.equal(app.$('#desktop-login').disabled, false, `${mode}/${state}`);
       await app.$('#desktop-login').emit('click');
@@ -1093,7 +1018,7 @@ test('a pending YAML log-level patch protects raw input and a failed request res
 
 const exitDocument = (exit = '100.64.0.10', mode = 'split', revision = 'original') => ({
   ...doc(`tailscale:\n  exit_node: ${exit}\nrules:\n  mode: ${mode}\ntun:\n  enabled: false\n`, revision),
-  values: { log_level: 'info', tailscale: { exit_node: exit }, rules: { mode }, tun: { enabled: false, mtu: 1400 } },
+  values: { log_level: 'info', tailscale: { exit_node: exit, tailnet: 'example.ts.net' }, rules: { mode }, tun: { enabled: false, mtu: 1400 } },
 });
 const exitsSnapshot = (changes = {}) => ({
   desktop: true, ping_available: true, backend_state: 'Running', hostname: 'my-device', network: 'example.ts.net',
@@ -1104,64 +1029,6 @@ const exitsSnapshot = (changes = {}) => ({
   ], ...changes,
 });
 const exitChoice = (app, id) => app.$('#exit-list').children.flatMap(row => row.children).find(child => child.dataset.exitChoice === id);
-
-test('pending exit and mode selections block network switching until canceled', async () => {
-  for (const selection of ['exit', 'mode']) {
-    const app = await page(exitsSnapshot(), '', {}, exitDocument());
-    const button = app.$('#desktop-switch-network');
-    assert.equal(button.hidden, false);
-    assert.equal(button.disabled, false);
-    if (selection === 'exit') await exitChoice(app, '100.64.0.20').emit('click');
-    else await app.$('[data-routing-mode="global"]').emit('click');
-    assert.equal(button.disabled, true, selection);
-    await button.emit('click');
-    assert.equal(app.$('#switch-network-dialog').open, undefined);
-    assert.equal(app.$('#connection-apply').hidden, false);
-    assert.equal(app.requests.some((r) => r.method === 'POST'), false);
-    await app.$('#cancel-connection-change').emit('click');
-    assert.equal(button.disabled, false);
-    assert.equal(app.$('#connection-apply').hidden, true);
-  }
-});
-
-test('network confirmation rechecks drafts and pending connection choices', async () => {
-  for (const change of ['draft', 'exit', 'mode']) {
-    const app = await page(exitsSnapshot(), '', {}, exitDocument());
-    const dialog = app.$('#switch-network-dialog');
-    await app.$('#desktop-switch-network').emit('click');
-    assert.equal(dialog.open, true);
-    if (change === 'draft') {
-      await app.$('#yaml-tab').emit('click');
-      await app.input('#raw-yaml', 'unfinished: [');
-    } else if (change === 'exit') await exitChoice(app, '100.64.0.20').emit('click');
-    else await app.$('[data-routing-mode="global"]').emit('click');
-    dialog.returnValue = 'switch-network';
-    await dialog.emit('close');
-    await settle();
-    assert.equal(app.requests.some((r) => r.path === '/api/action'), false, change);
-    assert.equal(app.requests.some((r) => r.path === '/api/config' && r.method === 'POST'), false, change);
-    if (change === 'draft') assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
-    else assert.equal(app.$('#connection-apply').hidden, false);
-  }
-});
-
-test('backend transition states block network switching until the device settles', async () => {
-  for (const transition of [
-    { state: 'starting' }, { state: 'stopping' }, { state: 'logging-out' },
-    { active: true, state: 'checking-exit', mode: '' },
-  ]) {
-    const app = await page(exitsSnapshot(transition), '', {}, exitDocument());
-    const button = app.$('#desktop-switch-network');
-    assert.equal(button.disabled, true, transition.state);
-    if (transition.state === 'logging-out') assert.equal(app.$('#desktop-network-name').textContent, '正在退出登录');
-    await button.emit('click');
-    assert.equal(app.$('#switch-network-dialog').open, undefined);
-    assert.equal(app.requests.some((r) => r.path === '/api/action'), false);
-    app.snapshot = { ...app.snapshot, active: false, state: 'stopped', mode: '' };
-    await app.poll();
-    assert.equal(button.disabled, false);
-  }
-});
 
 test('page navigation preserves incomplete YAML and keeps settings at a separate destination', async () => {
   const app = await page(exitsSnapshot());
@@ -1239,15 +1106,15 @@ test('a reconnect failure remains visible after its saved configuration is autom
   const failure = 'Configuration saved, but reconnect failed';
   app.override = (request) => {
     if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
-    app.config = exitDocument('100.64.0.10', 'global', 'saved-before-failure');
+    app.config = exitDocument('100.64.0.20', 'split', 'saved-before-failure');
     app.config.values.tun.enabled = true;
     app.config.yaml = app.config.yaml.replace('enabled: false', 'enabled: true');
     Object.assign(app.snapshot, { active: false, mode: '', state: 'failed', error: failure, revision: 'saved-before-failure' });
     return response({ code: 'apply', error: failure }, false);
   };
-  await app.$('[data-routing-mode="global"]').emit('click');
+  await exitChoice(app, '100.64.0.20').emit('click');
   await app.$('#apply-connection-change').emit('click');
-  assert.match(app.$('#raw-yaml').value, /mode: global/);
+  assert.match(app.$('#raw-yaml').value, /exit_node: 100.64.0.20/);
   assert.equal(app.$('#connection-apply').hidden, true);
   assert.equal(app.$('#notice').hidden, false);
   assert.equal(app.$('#notice-title').textContent, '无法应用连接更改');
@@ -1257,23 +1124,49 @@ test('a reconnect failure remains visible after its saved configuration is autom
   await app.$('[data-page="settings"]').emit('click');
   await app.$('#reload').emit('click');
   assert.equal(app.$('#notice').hidden, true);
-  assert.equal(app.$('#connection-state').textContent, '连接异常');
+  assert.equal(app.$('#connection-status span').textContent, '连接异常');
 });
 
-test('mode selection is confirmed with the exit and enables system routing only for global mode', async () => {
-  const app = await page(exitsSnapshot({ active: true, mode: 'proxy', state: 'running' }), '', {}, exitDocument());
-  await exitChoice(app, '100.64.0.20').emit('click');
+test('routing mode is a settings draft, hides split controls, and saves with the selected global exit', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', routes: [{ exit: 'office', domains: ['corp.example'] }] };
+  const app = await page(officeSnapshot(), '', {}, initial);
+  await app.$('[data-page="settings"]').emit('click');
+  await app.$('[data-section="routing"]').emit('click');
   await app.$('[data-routing-mode="global"]').emit('click');
-  assert.match(app.$('#connection-consequence').textContent, /网络会短暂中断/);
-  assert.equal(app.$('#apply-connection-change').textContent, '应用连接更改');
-  app.override = (request) => request.path === '/api/config' && request.method === 'POST'
-    ? response({ code: 'apply', error: 'Reconnect failed' }, false) : undefined;
-  await app.$('#apply-connection-change').emit('click');
-  const saved = app.requests.find((r) => r.path === '/api/config' && r.method === 'POST');
-  assert.deepEqual(saved.data.changes, { 'tailscale.exit_node': '100.64.0.20', 'rules.mode': 'global', 'tun.enabled': true });
-  assert.equal(app.$('#connection-apply').hidden, false);
-  assert.match(app.$('#connection-selection').textContent, /travel/);
-  assert.equal(app.$('#notice-detail').textContent, 'Reconnect failed');
+  await app.input('#global-exit', 'office');
+  assert.equal(app.$('#split-routing-fields').hidden, true);
+  assert.equal(app.$('#split-routing-fields').disabled, true);
+  assert.equal(app.$('#global-exit-row').hidden, false);
+  assert.equal(app.$('#add-route').disabled, true);
+  assert.equal(app.$('#tun-enabled').checked, true);
+  assert.equal(app.$('#connection-apply').hidden, true);
+  assert.equal(app.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
+  const updated = { ...initial, yaml: initial.yaml + '\nrules:\n  mode: global\n  global_exit: office\n',
+    values: { ...initial.values, rules: { ...initial.values.rules, mode: 'global', global_exit: 'office' }, tun: { ...initial.values.tun, enabled: true } } };
+  app.override = request => {
+    if (request.path === '/api/preview') {
+      assert.deepEqual(request.data.changes, { 'rules.mode': 'global', 'tun.enabled': true, 'rules.global_exit': 'office' });
+      return response(updated);
+    }
+    if (request.path === '/api/config' && request.method === 'POST') {
+      assert.match(request.data.yaml, /global_exit: office/);
+      app.config = { ...updated, revision: 'global-saved' }; app.snapshot.revision = 'global-saved';
+      return response(app.config);
+    }
+    return undefined;
+  };
+  // Let the debounced preview finish; only Save applies it to the actual config.
+  await app.flushTimers();
+  await app.$('#validate').emit('click');
+  await app.$('#save').emit('click');
+  assert.equal(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').length, 1);
+  assert.equal(app.$('#global-exit').value, 'office');
+  await app.$('[data-routing-mode="split"]').emit('click');
+  assert.equal(app.$('#split-routing-fields').hidden, false);
+  assert.equal(app.$('#global-exit-row').hidden, true);
+  assert.equal(app.$('#route-groups').children.length, 1, 'switching modes preserves saved rule groups');
+  assert.equal(app.$('#add-route').disabled, false);
 });
 
 test('settings drafts block quick apply without being saved or replaced', async () => {
@@ -1298,17 +1191,15 @@ test('missing configured exits remain visible and offline exits cannot be select
   assert.equal(missing.attributes.get('aria-checked'), 'true');
   assert.equal(missing.disabled, true);
   assert.equal(exitChoice(app, '100.64.0.30').disabled, true);
-  // A saved manual address can still run the backend availability preflight.
+  // An existing YAML selection is preserved, but it cannot be selected anew
+  // through the picker unless discovery reports it online.
   assert.equal(app.$('#desktop-connect').disabled, false);
-  await app.input('#exit-search', 'TRAVEL');
-  assert.deepEqual(app.$('#exit-list').children.map(row => row.children.find(child => child.dataset.exitChoice).dataset.exitChoice), ['100.64.0.20']);
-  await app.input('#exit-search', 'nonexistent');
-  assert.equal(app.$('#exit-empty').hidden, false);
-  assert.equal(app.$('#exit-empty-title').textContent, '没有匹配的出口');
+  assert.deepEqual(app.$('#exit-list').children.map(row => row.children.find(child => child.dataset.exitChoice).dataset.exitChoice), ['100.64.0.99', '100.64.0.10', '100.64.0.20', '100.64.0.30']);
+  assert.equal(app.$('#exit-empty').hidden, true);
   assert.equal(app.requests.some((r) => r.method === 'POST'), false);
 });
 
-test('a stale selected flag cannot hide a manually saved exit or block restoring the prior exit', async () => {
+test('a stale selected flag cannot hide a YAML-configured exit or block restoring a discovered exit', async () => {
   const snapshot = exitsSnapshot(); snapshot.exit_nodes[0].selected_for = '100.64.0.10';
   const app = await page(snapshot, '', {}, exitDocument());
   app.override = (request) => {
@@ -1318,16 +1209,17 @@ test('a stale selected flag cannot hide a manually saved exit or block restoring
     // Idle reconfiguration deliberately retains the old discovery snapshot.
     return response(app.config);
   };
-  await app.input('#exit-node', '100.64.0.99');
-  await app.$('#select-manual-exit').emit('click');
-  await app.$('#apply-connection-change').emit('click');
+  // Simulate a configuration edited outside the picker.
+  app.config = exitDocument('100.64.0.99', 'split', 'external');
+  app.snapshot.revision = 'external';
+  await app.$('#reload').emit('click');
   assert.equal(exitChoice(app, '100.64.0.99').attributes.get('aria-checked') === 'true', true);
   assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', false);
   await exitChoice(app, '100.64.0.10').emit('click');
   assert.equal(app.$('#connection-apply').hidden, false);
   assert.equal(app.$('#apply-connection-change').disabled, false);
   await app.$('#apply-connection-change').emit('click');
-  assert.deepEqual(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').map(r => r.data.changes['tailscale.exit_node']), ['100.64.0.99', '100.64.0.10']);
+  assert.deepEqual(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').map(r => r.data.changes['tailscale.exit_node']), ['100.64.0.10']);
 });
 
 test('selection metadata bound to the saved DNS alias identifies its discovered node', async () => {
@@ -1358,20 +1250,21 @@ test('a stale poll cannot restore old device state after a desktop action', asyn
   assert.equal(app.$('#tailnet-identity').textContent, '未登录 Tailscale');
 });
 
-const nodeRow = (app, id) => app.$('#nodes-list').children.find(row => row.children.some(child => child.dataset.nodePing === id));
+// The picker list is the only node surface; it renders while the dialog is closed.
+const nodeRow = (app, id) => app.$('#exit-list').children.find(row => row.children.some(child => child.dataset.nodePing === id));
 const pingButton = (app, id) => nodeRow(app, id)?.children.find(child => child.dataset.nodePing === id);
-const selectNodeButton = (app, id) => nodeRow(app, id)?.children.find(child => child.dataset.nodeSelect === id);
 const nodeLatency = (app, id) => nodeRow(app, id)?.children.find(child => child.className?.startsWith('node-latency'));
 
-test('disappeared discovered selection cannot be applied but manual entries remain usable', async () => {
+test('disappeared discovered selection cannot be applied until an online list entry is chosen', async () => {
   const app = await page(exitsSnapshot(), '', {}, exitDocument());
   await app.$('#choose-exit').emit('click');
   await exitChoice(app, '100.64.0.20').emit('click');
   app.snapshot.exit_nodes = app.snapshot.exit_nodes.filter(node => node.id !== '100.64.0.20');
   await app.poll();
   assert.equal(app.$('#apply-exit-picker').disabled, true);
-  await app.input('#exit-node', '100.64.0.99');
-  await app.$('#select-manual-exit').emit('click');
+  app.snapshot.exit_nodes.push({ id: '100.64.0.99', name: 'replacement', online: true });
+  await app.poll();
+  await exitChoice(app, '100.64.0.99').emit('click');
   assert.equal(app.$('#apply-exit-picker').disabled, false);
 });
 
@@ -1408,8 +1301,10 @@ test('exit picker cancel discards its selection and preserves a pending mode', a
   await app.$('#cancel-exit-picker').emit('click');
   assert.equal(app.$('#exit-picker-dialog').open, false);
   assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', true);
-  assert.equal(app.$('#connection-apply').hidden, false);
-  assert.match(app.$('#connection-selection').textContent, /home.*全局代理/);
+  assert.equal(app.$('#connection-apply').hidden, true);
+  assert.equal(app.$('#routing-mode').value, 'global', 'canceling an exit picker must preserve the settings draft');
+  assert.equal(app.$('#global-exit-row').hidden, false);
+  assert.equal(app.$('#connection-draft-warning').hidden, false);
   assert.equal(app.requests.some(request => request.method === 'POST'), false);
   await app.$('#choose-exit').emit('click');
   await exitChoice(app, '100.64.0.20').emit('click');
@@ -1419,26 +1314,128 @@ test('exit picker cancel discards its selection and preserves a pending mode', a
   assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', true);
 });
 
-test('node page opens a staged picker and confirms without starting an idle connection', async () => {
-  const app = await page(exitsSnapshot(), '', {}, exitDocument());
-  await app.$('[data-page="nodes"]').emit('click');
-  assert.equal(app.$('#page-nodes').hidden, false);
-  assert.equal(app.$('#page-connection').hidden, true);
-  await selectNodeButton(app, '100.64.0.20').emit('click');
+const multiExitDocument = (office = '', revision = 'original') => ({
+  ...doc(`tailscale:\n  exit_node: 100.64.0.10\nexits:\n  - id: office\n    name: Office\n    exit_node: "${office}"\n`, revision),
+  values: { log_level: 'info', tailscale: { exit_node: '100.64.0.10' }, exits: [{ id: 'office', name: 'Office', exit_node: office, tailnet: 'office.ts.net' }], tun: { mtu: 1400 } },
+});
+const officeSnapshot = (changes = {}) => exitsSnapshot({ exits: { office: {
+  backend_state: 'Running', network: 'office.ts.net', hostname: 'my-device-office', ping_available: true,
+  exit_nodes: [{ id: '100.101.0.11', name: 'hk-gateway', online: true }, { id: '100.101.0.12', name: 'us-gateway', online: true }],
+  ...changes } } });
+const extraRow = (app, id) => app.$('#extra-exits').children.flatMap(item => item.children).find(child => child.dataset.exitRow === id);
+
+test('an additional exit opens its own picker and saves only its node', async () => {
+  const app = await page(officeSnapshot(), '', {}, multiExitDocument());
+  assert.equal(app.$('#extra-exits').children.length, 1);
+  assert.ok(extraRow(app, 'office'), 'the saved extra exit remains in the card list');
+  await extraRow(app, 'office').emit('click');
   assert.equal(app.$('#exit-picker-dialog').open, true);
-  assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked') === 'true', true);
-  assert.equal(app.requests.some(request => request.method === 'POST'), false);
+  assert.equal(app.$('#heading-exits').textContent, 'Office');
+  assert.equal(app.$('#picker-login').hidden, true);
+  assert.equal(app.$('#exit-danger-zone').hidden, false);
+  assert.equal(exitChoice(app, '100.64.0.10'), undefined, 'the primary Tailnet nodes must not appear');
+  await exitChoice(app, '100.101.0.12').emit('click');
   app.override = request => {
     if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
-    assert.deepEqual(request.data.changes, { 'tailscale.exit_node': '100.64.0.20' });
-    app.config = exitDocument('100.64.0.20', 'split', 'changed'); app.snapshot.revision = 'changed';
+    assert.deepEqual(request.data.changes, { exits: [{ id: 'office', name: 'Office', exit_node: '100.101.0.12', tailnet: 'office.ts.net' }] });
+    app.config = multiExitDocument('100.101.0.12', 'changed'); app.snapshot.revision = 'changed';
     return response(app.config);
   };
   await app.$('#apply-exit-picker').emit('click');
   assert.equal(app.$('#exit-picker-dialog').open, false);
-  assert.equal(app.$('#page-nodes').hidden, false);
-  assert.equal(app.$('#current-exit').textContent, 'travel');
   assert.equal(app.requests.some(request => request.path === '/api/action'), false);
+  // Closing the extra picker returns the shared list to the primary exit.
+  assert.ok(exitChoice(app, '100.64.0.10'));
+});
+
+test('logging in another device never shows a sign-in prompt for an authenticated primary', async () => {
+  const app = await page(officeSnapshot({ backend_state: 'NeedsLogin' }), '', {}, multiExitDocument());
+  app.snapshot = { ...app.snapshot, state: 'login', mode: 'login', active: true, focus: 'office' };
+  await app.poll();
+  assert.equal(app.$('#desktop-login').hidden, true, 'focused login must not override primary authentication');
+  assert.equal(app.$('#picker-login').hidden, true);
+  app.snapshot = { ...app.snapshot, state: 'authenticated', active: false };
+  app.snapshot.exits.office.backend_state = 'Running';
+  await app.poll();
+  assert.equal(app.$('#desktop-login').hidden, true);
+  app.snapshot = { ...app.snapshot, state: 'stopped', mode: '', focus: '' };
+  await app.poll();
+  assert.equal(app.$('#desktop-login').hidden, true, 'the completed login must leave primary signed in');
+});
+
+test('additional exit nodes ping individually through their own device', async () => {
+  const app = await page(officeSnapshot(), '', { language: 'en' }, multiExitDocument('100.101.0.11'));
+  await extraRow(app, 'office').emit('click');
+  const bodies = [];
+  app.override = request => {
+    if (request.path !== '/api/exit-ping') return undefined;
+    bodies.push(request.data);
+    return response({ id: request.data.id, latency_ms: 30, direct: true });
+  };
+  await pickerPingButton(app, '100.101.0.11').emit('click');
+  await pickerPingButton(app, '100.101.0.12').emit('click');
+  assert.deepEqual(bodies, [{ id: '100.101.0.11', exit: 'office' }, { id: '100.101.0.12', exit: 'office' }]);
+  assert.equal(nodeLatency(app, '100.101.0.12').children[0].textContent, '30 ms');
+  await app.$('#cancel-exit-picker').emit('click');
+  // Results are scoped per device: the primary picker shows none of them.
+  assert.equal(nodeLatency(app, '100.64.0.20').children[0].textContent, '—');
+});
+
+test('Add signs in and names the first exit without assigning a traffic default', async () => {
+  const initial = exitDocument();
+  initial.values.tailscale = null;
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: '-', global_exit: '-' };
+  const app = await page(exitsSnapshot(), '', {}, initial);
+  let saves = 0;
+  app.override = request => {
+    if (request.path === '/api/config' && request.method === 'POST') {
+      saves++;
+      assert.deepEqual(request.data.changes, { ...(saves === 1 ? { 'rules.default_exit': '-', 'rules.global_exit': '-' } : {}), exits: [saves === 1
+        ? { id: 'exit-1', auto_name: true, exit_node: '' }
+        : { id: 'exit-1', auto_name: true, exit_node: '100.101.0.11', tailnet: 'office.ts.net', name: 'hk-gateway@office.ts.net' }] });
+      app.config = { ...app.config, revision: `saved-${saves}`,
+        values: { ...app.config.values, exits: request.data.changes.exits } };
+      app.snapshot.revision = app.config.revision;
+      return response(app.config);
+    }
+    if (request.path === '/api/action') {
+      assert.deepEqual(request.data, { action: 'login-exit', exit: 'exit-1' });
+      app.snapshot = exitsSnapshot({ revision: app.config.revision, exits: { 'exit-1': officeSnapshot().exits.office } });
+      return response({ ok: true });
+    }
+    return undefined;
+  };
+  await app.$('#add-exit').emit('click');
+  assert.equal(app.$('#add-exit-dialog').open, undefined, 'no naming dialog precedes login');
+  assert.equal(app.$('#exit-picker-dialog').open, true);
+  assert.equal(app.$('#heading-exits').textContent, 'office.ts.net');
+  await exitChoice(app, '100.101.0.11').emit('click');
+  await app.$('#apply-exit-picker').emit('click');
+  assert.equal(saves, 2);
+  assert.equal(app.$('#exit-picker-dialog').open, false);
+  await extraRow(app, 'exit-1').emit('click');
+  assert.equal(app.$('#heading-exits').textContent, 'hk-gateway@office.ts.net');
+  assert.equal(app.config.values.rules.default_exit, '-');
+  assert.equal(app.config.values.rules.global_exit, '-');
+});
+
+test('automatic names follow later node changes without changing the profile ID', async () => {
+  const document = multiExitDocument('100.101.0.11');
+  Object.assign(document.values.exits[0], { name: 'hk-gateway@office.ts.net', auto_name: true });
+  const app = await page(officeSnapshot(), '', {}, document);
+  await extraRow(app, 'office').emit('click');
+  await exitChoice(app, '100.101.0.12').emit('click');
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.deepEqual(request.data.changes, { exits: [{ id: 'office', auto_name: true,
+      name: 'us-gateway@office.ts.net', exit_node: '100.101.0.12', tailnet: 'office.ts.net' }] });
+    app.config = { ...document, revision: 'changed', values: { ...document.values, exits: request.data.changes.exits } };
+    app.snapshot.revision = 'changed';
+    return response(app.config);
+  };
+  await app.$('#apply-exit-picker').emit('click');
+  assert.equal(app.$('#exit-picker-dialog').open, false);
+  assert.equal(app.config.values.exits[0].name, 'us-gateway@office.ts.net');
 });
 
 test('picker save failures remain inside the dialog with the pending exit and retry', async () => {
@@ -1478,6 +1475,10 @@ test('picker protects settings drafts and cannot dismiss an in-flight save', asy
   let canceled = false;
   await clean.$('#exit-picker-dialog').emit('cancel', { preventDefault() { canceled = true; } });
   await clean.$('#cancel-exit-picker').emit('click');
+  const busyDialog = clean.$('#exit-picker-dialog');
+  busyDialog.getBoundingClientRect = () => ({ left: 100, top: 80, right: 600, bottom: 500 });
+  await busyDialog.emit('pointerdown', { clientX: 20, clientY: 20 });
+  await busyDialog.emit('click', { clientX: 20, clientY: 20 });
   assert.equal(canceled, true);
   assert.equal(clean.$('#exit-picker-dialog').open, true);
   save.resolve(response({ code: 'apply', error: 'Retry later' }, false));
@@ -1502,8 +1503,7 @@ test('node pings serialize requests and display real returned latency without ch
   assert.equal(pingButton(app, '100.64.0.20').disabled, false);
   assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked') === 'true', true);
   assert.equal(app.requests.some(request => request.method === 'POST' && request.path !== '/api/exit-ping'), false);
-  await app.input('#nodes-search', 'TRAVEL');
-  assert.equal(app.$('#nodes-list').children.length, 1);
+  assert.equal(app.$('#exit-list').children.length, 3);
   assert.equal(nodeLatency(app, '100.64.0.20').children[0].textContent, '24.7 ms');
 });
 
@@ -1562,10 +1562,9 @@ const pickerLatency = (app, id) => app.$('#exit-list').children.find(row => row.
 test('Ping live regions are available inside and outside the picker dialog', () => {
   const html = readFileSync(join(__dirname, '../assets/index.html'), 'utf8');
   const dialog = html.match(/<dialog class="exit-picker-dialog"[\s\S]*?<\/dialog>/)?.[0];
-  const nodesPage = html.match(/<section class="app-page nodes-page"[\s\S]*?<\/section>/)?.[0];
-  assert.ok(dialog && nodesPage);
+  assert.ok(dialog);
+  assert.doesNotMatch(html, /data-page="nodes"/);
   assert.match(dialog, /id="picker-ping-announcement" role="status" aria-atomic="true"/);
-  assert.doesNotMatch(nodesPage, /id="ping-announcement"/);
   assert.match(html.replace(dialog, ''), /id="ping-announcement" role="status" aria-atomic="true"/);
 });
 
@@ -1589,13 +1588,12 @@ test('picker announces Ping progress, success and failure within the dialog', as
 
 test('in-flight Ping announcements follow the active dialog', async () => {
   const app = await page(exitsSnapshot(), '', { language: 'en' }, exitDocument());
-  await app.$('[data-page="nodes"]').emit('click');
   const pending = deferred();
   app.override = request => request.path === '/api/exit-ping' ? pending.promise : undefined;
   const pinging = pingButton(app, '100.64.0.20').emit('click');
   await settle();
   assert.equal(app.$('#ping-announcement').textContent, 'Pinging travel');
-  await selectNodeButton(app, '100.64.0.10').emit('click');
+  await app.$('#choose-exit').emit('click');
   assert.equal(app.$('#ping-announcement').textContent, '');
   assert.equal(app.$('#picker-ping-announcement').textContent, 'Pinging travel');
   await app.$('#cancel-exit-picker').emit('click');
@@ -1611,20 +1609,19 @@ test('latency thresholds include 500 ms in green and 1000 ms in amber on both su
   for (const [ms, band] of [[0, 'fast'], [499.9, 'fast'], [500, 'fast'], [500.1, 'medium'], [999.9, 'medium'], [1000, 'medium'], [1000.1, 'slow'], [1500, 'slow']]) {
     app.override = request => request.path === '/api/exit-ping' ? response({ id: '100.64.0.20', latency_ms: ms, direct: true }) : undefined;
     await pingButton(app, '100.64.0.20').emit('click');
-    for (const latency of [nodeLatency(app, '100.64.0.20'), pickerLatency(app, '100.64.0.20')]) {
+    for (const latency of [pickerLatency(app, '100.64.0.20')]) {
       assert.equal(latency.className, `node-latency ${band}`, `${ms} ms`);
       assert.match(latency.children[0].textContent, /ms$/);
     }
   }
 });
 
-test('Ping preserves selection and Phosphor CheckCircle follows staged choices and cancellation', async () => {
+test('Ping preserves radio selection while the picker uses plain check icons', async () => {
   const iconFor = choice => choice.children[0].children[0].children[0].attributes.get('href');
   const app = await page(exitsSnapshot(), '', {}, exitDocument());
   await app.$('#choose-exit').emit('click');
   app.override = request => request.path === '/api/exit-ping' ? response({ id: '100.64.0.20', latency_ms: 740, direct: false }) : undefined;
   assert.equal(pickerPingButton(app, '100.64.0.20').textContent, 'Ping');
-  assert.equal(pingButton(app, '100.64.0.20').textContent, 'Ping');
   await pickerPingButton(app, '100.64.0.20').emit('click');
   assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked'), 'true');
   assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked'), 'false');
@@ -1632,26 +1629,481 @@ test('Ping preserves selection and Phosphor CheckCircle follows staged choices a
     assert.equal(exitChoice(app, id).children[0].className, 'node-check');
     assert.equal(exitChoice(app, id).children[0].hidden, false);
   }
-  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check-circle');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check');
   assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check');
   assert.equal(app.$('#apply-exit-picker').disabled, true);
   assert.equal(nodeLatency(app, '100.64.0.20').className, 'node-latency medium');
   await exitChoice(app, '100.64.0.20').emit('click');
   assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked'), 'false');
   assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked'), 'true');
-  assert.equal(selectNodeButton(app, '100.64.0.10').attributes.get('aria-pressed'), 'true');
   assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check');
-  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check-circle');
-  assert.equal(iconFor(selectNodeButton(app, '100.64.0.10')), '#i-check-circle');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check');
   assert.equal(app.$('#apply-exit-picker').disabled, false);
   assert.equal(exitChoice(app, '100.64.0.20').children[1].textContent, 'travel');
   const descendants = element => [element, ...element.children.flatMap(descendants)];
-  for (const list of [app.$('#exit-list'), app.$('#nodes-list')]) {
+  for (const list of [app.$('#exit-list')]) {
     assert.equal(descendants(list).some(element => element.type === 'radio'), false);
     assert.equal(descendants(list).some(element => element.textContent.includes('100.64.')), false);
   }
   await app.$('#cancel-exit-picker').emit('click');
-  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check-circle');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check');
   assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check');
   assert.equal(app.requests.some(request => request.path === '/api/config' && request.method === 'POST'), false);
+});
+
+
+test('backdrop dismissal cancels a staged exit and ignores interior clicks or drags', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  await app.$('#choose-exit').emit('click');
+  const dialog = app.$('#exit-picker-dialog');
+  dialog.getBoundingClientRect = () => ({ left: 100, top: 80, right: 600, bottom: 500 });
+  await exitChoice(app, '100.64.0.20').emit('click');
+  await dialog.emit('pointerdown', { clientX: 130, clientY: 110 });
+  await dialog.emit('click', { clientX: 130, clientY: 110 });
+  assert.equal(dialog.open, true, 'clicking dialog padding must not close it');
+  await dialog.emit('pointerdown', { target: exitChoice(app, '100.64.0.20'), clientX: 160, clientY: 150 });
+  await dialog.emit('click', { clientX: 20, clientY: 20 });
+  assert.equal(dialog.open, true, 'a drag starting inside must not dismiss');
+  await dialog.emit('pointerdown', { clientX: 20, clientY: 20 });
+  await dialog.emit('click', { clientX: 20, clientY: 20 });
+  assert.equal(dialog.open, false);
+  assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked'), 'true');
+  assert.equal(app.requests.some(request => request.path === '/api/config' && request.method === 'POST'), false);
+});
+
+
+test('Global connection uses its selected extra while unrelated primary and exits stay signed out', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.tailscale.exit_node = '';
+  initial.values.rules = { mode: 'global', global_exit: 'office' };
+  initial.values.exits.push({ id: 'unused', name: 'Unused', exit_node: '100.102.0.11' });
+  const snapshot = officeSnapshot({ exit: 'hk-gateway' });
+  snapshot.backend_state = 'NeedsLogin';
+  snapshot.exits.unused = { backend_state: 'NeedsLogin' };
+  const app = await page(snapshot, '', {}, initial);
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  assert.equal(app.$('#desktop-login').hidden, false, 'primary sign-in still belongs to primary row');
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    assert.deepEqual(request.data, { action: 'connect' });
+    Object.assign(app.snapshot, { active: true, state: 'running', mode: 'tun', routing_mode: 'global' });
+    return response({ ok: true });
+  };
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#desktop-connect').hidden, true);
+  assert.equal(app.$('#desktop-disconnect').hidden, false);
+  assert.equal(app.$('#desktop-disconnect').disabled, false);
+  assert.equal(app.$('#connection-status span').textContent, '已连接');
+  assert.equal(app.$('#exit-label').textContent, 'hk-gateway');
+});
+
+
+test('header switch distinguishes device-only work from a blocked traffic session', async () => {
+  for (const [mode, state, checked] of [['discovery','discovering','false'], ['login','authenticating','false'], ['tun','blocked','true']]) {
+    const app = await page(exitsSnapshot({ active: true, mode, state }), '', {}, exitDocument());
+    assert.equal(app.$('#desktop-disconnect').hidden, false);
+    assert.equal(app.$('#desktop-disconnect').attributes.get('aria-checked'), checked);
+  }
+});
+
+
+async function confirmExitRemoval(app) {
+  const removing = app.$('#exit-remove').emit('click');
+  await settle();
+  assert.equal(app.$('#remove-exit-dialog').open, true);
+  app.$('#remove-exit-dialog').returnValue = 'remove';
+  app.$('#remove-exit-dialog').close();
+  await removing;
+}
+
+test('the primary exit can be removed, leaving an addable empty list and dormant policy', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  await app.$('#choose-exit').emit('click');
+  assert.equal(app.$('#exit-danger-zone').hidden, false);
+  app.override = request => {
+    if (request.path !== '/api/exit-remove') return undefined;
+    assert.deepEqual(request.data, { exit: 'main', revision: 'original' });
+    app.config = { ...doc('tailscale: null\nexits: []\nrules:\n  source: builtin\n', 'removed'), values: { rules: { source: 'builtin', default_exit: 'main', global_exit: 'main' }, exits: [] } };
+    Object.assign(app.snapshot, { revision: 'removed', active: false, state: 'stopped', backend_state: '', exit_nodes: [] });
+    return response(app.config);
+  };
+  await confirmExitRemoval(app);
+  assert.equal(app.$('#exit-picker-dialog').open, false);
+  assert.equal(app.$('#main-exit-item').hidden, true);
+  assert.equal(app.$('#exits-card').hidden, true);
+  assert.equal(app.$('#exits-empty').hidden, false);
+  assert.equal(app.$('#connection-exit').value, '');
+  assert.equal(app.$('#add-exit').disabled, false);
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#default-exit-dialog').open, true);
+  assert.equal(app.$('#confirm-default-exit').disabled, true, 'empty exits cannot start as a direct fallback');
+  assert.equal(app.$('#default-exit-empty').hidden, false);
+  assert.equal(app.requests.some(r => r.path === '/api/action'), false, 'the atomic removal API owns logout');
+});
+
+test('exit removal protects drafts, cancellation, and config changes during confirmation', async () => {
+  const draft = await page(exitsSnapshot(), '', {}, exitDocument());
+  await draft.$('#choose-exit').emit('click');
+  await draft.input('#level', 'debug');
+  assert.equal(draft.$('#exit-remove').disabled, true);
+  await draft.$('#exit-remove').emit('click');
+  assert.equal(draft.$('#remove-exit-dialog').open, undefined);
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  await app.$('#choose-exit').emit('click');
+  let removing = app.$('#exit-remove').emit('click'); await settle();
+  app.$('#remove-exit-dialog').returnValue = 'cancel'; app.$('#remove-exit-dialog').close(); await removing;
+  assert.equal(app.$('#exit-picker-dialog').open, true);
+  removing = app.$('#exit-remove').emit('click'); await settle();
+  app.config = exitDocument('100.64.0.20', 'split', 'external'); app.snapshot.revision = 'external';
+  await app.poll();
+  app.$('#remove-exit-dialog').returnValue = 'remove'; app.$('#remove-exit-dialog').close(); await removing;
+  assert.equal(app.requests.some(r => r.path === '/api/exit-remove'), false);
+  assert.equal(app.$('#notice').hidden, false);
+});
+
+test('failed removal keeps the saved exit visible for retry', async () => {
+  const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
+  await extraRow(app, 'office').emit('click');
+  app.override = request => request.path === '/api/exit-remove' ? response({ code: 'remove', error: 'Could not sign out' }, false) : undefined;
+  await confirmExitRemoval(app);
+  assert.equal(app.$('#exit-picker-dialog').open, true);
+  assert.ok(extraRow(app, 'office'), 'the saved extra exit remains in the card list');
+  assert.equal(app.$('#exit-remove').disabled, false);
+  assert.equal(app.$('#exit-dialog-error').textContent, 'Could not sign out');
+});
+
+test('Split connection and rule groups can use an extra without a primary device', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.tailscale = null;
+  initial.values.rules = { mode: 'split', default_exit: 'office', source: 'builtin' };
+  const snapshot = officeSnapshot(); snapshot.backend_state = '';
+  const app = await page(snapshot, '', {}, initial);
+  assert.equal(app.$('#main-exit-item').hidden, true);
+  assert.equal(app.$('#connection-exit').value, 'office');
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  assert.equal(app.$('#default-exit').value, 'office');
+  assert.equal(app.$('#add-route').disabled, false);
+});
+
+
+for (const mode of ['split', 'global']) test(`Exit Nodes displays the saved ${mode} exit without editing it`, async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode, default_exit: mode === 'split' ? 'office' : 'main', global_exit: 'office', final: 'direct', source: 'builtin',
+    routes: [{ exit: 'main', domains: ['keep.example'] }] };
+  const app = await page(officeSnapshot(), '', {}, initial);
+  assert.equal(app.$('#connection-exit').value, 'office');
+  assert.equal(app.$('#connection-exit-control').hidden, false);
+  assert.equal(app.$('#main-exit-badge').hidden, true);
+  assert.equal(app.config.values.rules.final, 'direct');
+  assert.equal(app.requests.some(r => r.method === 'POST'), false);
+});
+
+for (const mode of ['split', 'global']) test(`the ${mode} gateway dropdown saves directly without connecting or showing a dialog`, async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode, default_exit: 'main', global_exit: 'main', final: 'direct',
+    routes: [{ exit: 'main', domains: ['keep.example'] }] };
+  const app = await page(officeSnapshot({ backend_state: 'NeedsLogin' }), '', {}, initial);
+  const field = mode === 'global' ? 'global_exit' : 'default_exit';
+  const select = app.$('#connection-exit');
+  assert.equal(select.value, 'main');
+  assert.equal(select.children.find(x => x.value === 'office').textContent, 'Office', 'only display names, never appended IPs');
+  assert.equal(select.children.find(x => x.value === 'office').disabled, false, 'idle preferences may name offline devices');
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.deepEqual(request.data.changes, { [`rules.${field}`]: 'office' });
+    app.config = { ...initial, revision: 'saved', values: { ...initial.values,
+      rules: { ...initial.values.rules, [field]: 'office' } } };
+    app.snapshot.revision = 'saved';
+    return response(app.config);
+  };
+  select.value = 'office';
+  await select.emit('change');
+  assert.equal(select.value, 'office');
+  assert.ok(!app.$('#default-exit-dialog').open);
+  assert.equal(app.requests.some(r => r.path === '/api/action'), false);
+  assert.deepEqual(app.config.values.rules.routes, initial.values.rules.routes);
+});
+
+test('connected gateway dropdown changes use the guarded reconnecting save only', async () => {
+  const app = await page({ ...officeSnapshot(), active: true, mode: 'proxy', state: 'running' }, '', {}, multiExitDocument('100.101.0.11'));
+  const select = app.$('#connection-exit');
+  assert.match(select.title, /重新连接/);
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.deepEqual(request.data.changes, { 'rules.default_exit': 'office' });
+    app.config = { ...app.config, revision: 'saved', values: { ...app.config.values, rules: { default_exit: 'office' } } };
+    app.snapshot.revision = 'saved';
+    return response(app.config);
+  };
+  select.value = 'office';
+  await select.emit('change');
+  assert.ok(!app.$('#default-exit-dialog').open);
+  assert.equal(app.requests.some(r => r.path === '/api/action'), false, 'the config callback owns reconnection');
+});
+
+test('keeping the current dropdown gateway never writes or reconnects', async () => {
+  const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
+  await app.$('#connection-exit').emit('change');
+  assert.equal(app.requests.some(r => r.method === 'POST'), false);
+  assert.ok(!app.$('#default-exit-dialog').open);
+});
+
+test('a failed dropdown save restores the saved gateway', async () => {
+  const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
+  app.override = request => request.path === '/api/config' && request.method === 'POST'
+    ? response({ code: 'apply', error: 'Save failed' }, false) : undefined;
+  app.$('#connection-exit').value = 'office';
+  await app.$('#connection-exit').emit('change');
+  assert.equal(app.$('#connection-exit').value, 'main');
+  assert.equal(app.requests.some(r => r.path === '/api/action'), false);
+});
+
+test('drafts and external configuration changes block dropdown writes', async () => {
+  for (const dirty of [true, false]) {
+    const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
+    await app.input('#level', 'debug');
+    if (!dirty) { app.snapshot.revision = 'external'; await app.poll(); }
+    assert.equal(app.$('#connection-exit').disabled, true);
+    app.$('#connection-exit').value = 'office';
+    await app.$('#connection-exit').emit('change');
+    assert.equal(app.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
+  }
+});
+
+test('transient exit discovery reports checking without requesting another choice or connection', async () => {
+  const app = await page({ ...officeSnapshot(), active: true, mode: 'proxy', state: 'missing-exit' }, '', { language: 'en' }, multiExitDocument('100.101.0.11'));
+  assert.equal(app.$('#connection-status span').textContent, 'Checking exit availability');
+  app.snapshot.state = 'running';
+  await app.poll();
+  assert.equal(app.$('#connection-status span').textContent, 'Connected');
+  assert.equal(app.requests.some(request => request.method === 'POST'), false);
+});
+
+for (const active of [false, true]) test(`Kill Switch saves Global/Split policy while ${active ? 'connected' : 'idle'}`, async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', default_exit: 'main', global_exit: 'office', source: 'builtin',
+    final: 'direct', routes: [{ exit: 'office', domains: ['keep.example'] }] };
+  const app = await page({ ...officeSnapshot(), active, state: active ? 'running' : 'stopped', mode: active ? 'proxy' : '' }, '', {}, initial);
+  let calls = 0;
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    calls++;
+    assert.deepEqual(request.data.changes, calls === 1 ? { 'rules.mode': 'global', 'tun.enabled': true } : { 'rules.mode': 'split' });
+    app.config = { ...app.config, revision: `saved-${calls}`, values: { ...app.config.values,
+      rules: { ...app.config.values.rules, mode: calls === 1 ? 'global' : 'split' }, tun: { ...app.config.values.tun, enabled: true } } };
+    app.snapshot.revision = app.config.revision;
+    return response(app.config);
+  };
+  assert.equal(app.$('#kill-switch').value, 'split');
+  app.$('#kill-switch').value = 'global';
+  await app.$('#kill-switch').emit('change');
+  assert.equal(app.$('#kill-switch').value, 'global');
+  assert.equal(app.$('#connection-exit').value, 'office');
+  app.$('#kill-switch').value = 'split';
+  await app.$('#kill-switch').emit('change');
+  assert.equal(app.$('#kill-switch').value, 'split');
+  assert.equal(app.$('#connection-exit').value, 'main');
+  await app.$('#kill-switch').emit('change');
+  assert.equal(calls, 2, 'keeping the saved mode must not reconnect');
+  assert.deepEqual(app.config.values.rules.routes, initial.values.rules.routes);
+  assert.equal(app.config.values.rules.source, 'builtin');
+  assert.equal(app.requests.some(r => r.path === '/api/action'), false, 'config reconfiguration owns the running connection');
+});
+
+test('Kill Switch preserves its saved value after failure and blocks duplicate clicks', async () => {
+  const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
+  const save = deferred();
+  app.override = request => request.path === '/api/config' && request.method === 'POST' ? save.promise : undefined;
+  app.$('#kill-switch').value = 'global';
+  const pending = app.$('#kill-switch').emit('change');
+  await settle();
+  assert.equal(app.$('#kill-switch').disabled, true);
+  app.$('#kill-switch').value = 'global';
+  await app.$('#kill-switch').emit('change');
+  save.resolve(response({ code: 'apply', error: 'Save failed' }, false));
+  await pending;
+  assert.equal(app.$('#kill-switch').value, 'split');
+  assert.equal(app.requests.filter(r => r.path === '/api/config' && r.method === 'POST').length, 1);
+});
+
+test('Kill Switch cannot reconnect into an unconfigured gateway or overwrite a draft', async () => {
+  const initial = multiExitDocument('100.101.0.11'); initial.values.rules = { mode: 'split', global_exit: '-' };
+  const app = await page({ ...officeSnapshot(), active: true, mode: 'proxy', state: 'running' }, '', {}, initial);
+  assert.equal(app.$('#kill-switch').disabled, true);
+  app.$('#kill-switch').value = 'global';
+  await app.$('#kill-switch').emit('change');
+  const draft = await page(officeSnapshot(), '', {}, initial);
+  await draft.input('#level', 'debug');
+  assert.equal(draft.$('#kill-switch').disabled, true);
+  draft.$('#kill-switch').value = 'global';
+  await draft.$('#kill-switch').emit('change');
+  for (const instance of [app, draft]) assert.equal(instance.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
+});
+
+const withoutDefaultDocument = (mode = 'split') => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode, default_exit: '-', global_exit: '-', source: 'builtin' };
+  return initial;
+};
+
+for (const mode of ['split', 'global']) test(`${mode} connect requires explicit default selection and confirmation`, async () => {
+  const initial = withoutDefaultDocument(mode);
+  const field = mode === 'global' ? 'global_exit' : 'default_exit';
+  const app = await page(officeSnapshot(), '', {}, initial);
+  const calls = [];
+  assert.equal(app.$('#connection-exit').value, '');
+  assert.equal(app.$('#main-exit-badge').hidden, true);
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  app.override = request => {
+    if (request.path === '/api/config' && request.method === 'POST') {
+      calls.push('save');
+      assert.deepEqual(request.data.changes, { [`rules.${field}`]: 'office' });
+      app.config = { ...initial, revision: 'changed', values: { ...initial.values,
+        rules: { ...initial.values.rules, [field]: 'office' } } };
+      app.snapshot.revision = 'changed';
+      return response(app.config);
+    }
+    if (request.path === '/api/action') {
+      calls.push('connect');
+      assert.deepEqual(request.data, { action: 'connect' });
+      assert.equal(app.config.values.rules[field], 'office');
+      return response({ ok: true });
+    }
+    return undefined;
+  };
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#default-exit-dialog').open, true);
+  assert.equal(app.$('#default-exit-choice').value, '', 'even one available choice is never preselected');
+  assert.equal(app.$('#confirm-default-exit').disabled, true);
+  assert.deepEqual(calls, []);
+  app.$('#default-exit-choice').value = 'office';
+  await app.$('#default-exit-choice').emit('change');
+  assert.deepEqual(calls, [], 'choosing alone must not connect');
+  await app.$('#confirm-default-exit').emit('click');
+  assert.deepEqual(calls, ['save', 'connect']);
+  assert.equal(app.$('#default-exit-dialog').open, false);
+  assert.equal(app.$('#connection-exit').value, 'office');
+});
+
+test('the default dialog discovers saved logins without choosing or connecting', async () => {
+  const initial = withoutDefaultDocument(); initial.values.tailscale = null;
+  const snapshot = officeSnapshot({ backend_state: '' });
+  const app = await page(snapshot, '', {}, initial);
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    assert.deepEqual(request.data, { action: 'refresh-exits' });
+    app.snapshot = officeSnapshot();
+    return response({ ok: true });
+  };
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#default-exit-dialog').open, true);
+  assert.equal(app.$('#default-exit-choice').value, '');
+  assert.equal(app.$('#default-exit-choice').disabled, false);
+  assert.equal(app.$('#confirm-default-exit').disabled, true);
+  assert.equal(app.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
+  assert.deepEqual(app.requests.filter(r => r.path === '/api/action').map(r => r.data.action), ['refresh-exits']);
+});
+
+test('canceling the default dialog leaves configuration and connection untouched', async () => {
+  const app = await page(officeSnapshot(), '', {}, withoutDefaultDocument());
+  for (const escape of [false, true]) {
+    await app.$('#desktop-connect').emit('click');
+    app.$('#default-exit-choice').value = 'office';
+    await app.$('#default-exit-choice').emit('change');
+    if (escape) {
+      await app.$('#default-exit-dialog').emit('cancel');
+      app.$('#default-exit-dialog').close();
+    } else await app.$('#cancel-default-exit').emit('click');
+    assert.equal(app.$('#default-exit-dialog').open, false);
+    assert.equal(app.config.values.rules.default_exit, '-');
+    assert.equal(app.requests.some(r => r.method === 'POST'), false);
+  }
+});
+
+test('a failed default save stays retryable and never starts traffic', async () => {
+  const app = await page(officeSnapshot(), '', {}, withoutDefaultDocument());
+  app.override = request => request.path === '/api/config' && request.method === 'POST'
+    ? response({ code: 'apply', error: 'Save failed' }, false) : undefined;
+  await app.$('#desktop-connect').emit('click');
+  app.$('#default-exit-choice').value = 'office';
+  await app.$('#default-exit-choice').emit('change');
+  await app.$('#confirm-default-exit').emit('click');
+  assert.equal(app.requests.some(r => r.path === '/api/action'), false);
+  assert.equal(app.config.values.rules.default_exit, '-');
+  assert.equal(app.$('#default-exit-dialog').open, true);
+  assert.equal(app.$('#default-exit-error').textContent, 'Save failed');
+  assert.equal(app.$('#confirm-default-exit').disabled, false);
+});
+
+test('default confirmation rejects changed configuration or an unavailable selection', async () => {
+  for (const stale of [false, true]) {
+    const app = await page(officeSnapshot(), '', {}, withoutDefaultDocument());
+    await app.$('#desktop-connect').emit('click');
+    app.$('#default-exit-choice').value = 'office';
+    await app.$('#default-exit-choice').emit('change');
+    if (stale) {
+      app.snapshot.revision = 'external-edit';
+      app.config = { ...app.config, revision: 'external-edit', yaml: app.config.yaml + '\n# external edit\n' };
+    } else app.snapshot.exits.office.backend_state = 'NeedsLogin';
+    await app.poll();
+    assert.equal(app.$('#confirm-default-exit').disabled, true);
+    await app.$('#confirm-default-exit').emit('click');
+    assert.equal(app.requests.some(r => r.method === 'POST'), false);
+  }
+});
+
+test('default selection cannot be canceled during its save', async () => {
+  const app = await page(officeSnapshot(), '', {}, withoutDefaultDocument());
+  const save = deferred();
+  app.override = request => request.path === '/api/config' && request.method === 'POST' ? save.promise : undefined;
+  await app.$('#desktop-connect').emit('click');
+  app.$('#default-exit-choice').value = 'office';
+  await app.$('#default-exit-choice').emit('change');
+  const confirming = app.$('#confirm-default-exit').emit('click');
+  await settle();
+  let prevented = false;
+  await app.$('#default-exit-dialog').emit('cancel', { preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(app.$('#cancel-default-exit').disabled, true);
+  save.resolve(response({ code: 'apply', error: 'Retry later' }, false));
+  await confirming;
+  assert.equal(app.$('#default-exit-dialog').open, true);
+  assert.equal(app.$('#cancel-default-exit').disabled, false);
+});
+
+test('an offline configured default never silently switches to another exit', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', default_exit: 'main', source: 'builtin' };
+  const snapshot = officeSnapshot();
+  snapshot.exit_nodes.forEach(node => { node.online = false; });
+  const app = await page(snapshot, '', {}, initial);
+  assert.equal(app.$('#connection-exit').value, 'main');
+  assert.equal(app.$('#desktop-connect').disabled, true);
+  assert.equal(app.requests.some(r => r.method === 'POST'), false);
+});
+
+test('settings drafts block connection and retain the saved default display', async () => {
+  const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
+  await app.input('#level', 'debug');
+  assert.equal(app.$('#desktop-connect').disabled, true);
+  assert.equal(app.$('#connection-exit').value, 'main');
+  assert.equal(app.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
+});
+
+test('default proxy exit is editable independently of unmatched traffic and keeps the rule list', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', final: 'direct', default_exit: 'main' };
+  const app = await page(officeSnapshot(), '', {}, initial);
+  await app.input('#default-exit', 'office');
+  app.override = request => {
+    if (request.path !== '/api/preview') return undefined;
+    assert.deepEqual(request.data.changes, { 'rules.default_exit': 'office' });
+    return response({ ...initial, yaml: initial.yaml + '\n# default exit changed\n', values: { ...initial.values, rules: { ...initial.values.rules, default_exit: 'office' } } });
+  };
+  await app.flushTimers();
+  assert.equal(app.$('#default-exit').value, 'office');
+  assert.equal(app.$('#final-route').value, 'direct');
+  assert.equal(app.$('#rule-source-type').value, 'builtin');
+  assert.equal(app.$('#save').disabled, false);
+  assert.equal(app.requests.some(r => r.path === '/api/action'), false);
 });

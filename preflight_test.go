@@ -27,7 +27,7 @@ tun:
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := compilePreflight(config)
+	compiled, err := compilePreflight(config, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ tun:
 		t.Fatal("preflight changed the user's selected TUN mode")
 	}
 	config.Tailscale.ExitNode = ""
-	discovery, err := compilePreflight(config)
+	discovery, err := compilePreflight(config, true)
 	if err != nil {
 		t.Fatal("device discovery needs a preconfigured exit:", err)
 	}
@@ -130,7 +130,7 @@ func testPreflightPreservesFakeIPCache(t *testing.T, writer singlog.PlatformWrit
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := compilePreflight(config)
+	compiled, err := compilePreflight(config, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/tray"
 )
@@ -256,5 +257,52 @@ func TestDesktopPreviewFailedOrCanceledOperationsKeepSnapshot(t *testing.T) {
 	}
 	if err := options.Action(ctx, "logout"); !errors.Is(err, context.Canceled) || !reflect.DeepEqual(before, options.Snapshot()) {
 		t.Fatalf("canceled action changed preview state: %v", err)
+	}
+}
+
+func TestDesktopPreviewDefaultExtraAndLocalRemovalStayDisconnected(t *testing.T) {
+	options := testDesktopPreview(t)
+	original, revision, _ := tray.ReadConfigDocument(options.ConfigPath)
+	updated, err := tray.PatchConfigDocument(original,
+		tray.ConfigChange{Key: "state_dir", Value: "./state"},
+		tray.ConfigChange{Key: "exits", Value: []tailsplit.ExitConfig{{ID: "office", ExitNode: "100.101.0.11"}}},
+		tray.ConfigChange{Section: "rules", Key: "default_exit", Value: "office"},
+		tray.ConfigChange{Section: "rules", Key: "global_exit", Value: "office"},
+		tray.ConfigChange{Section: "rules", Key: "proxy_domains", Value: []string{"proxy.example"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tray.SaveConfigDocument(options.ConfigPath, revision, updated); err != nil {
+		t.Fatal(err)
+	}
+	previewAction(t, options, "login-exit:office")
+	connected := previewAction(t, options, "connect")
+	if !connected.Active || connected.State != "running" || connected.BackendState != "NeedsLogin" {
+		t.Fatalf("selected extra did not connect independently of primary: %+v", connected)
+	}
+	if err := options.RemoveExit(context.Background(), "main", "stale"); !errors.Is(err, tray.ErrConfigChanged) || !options.Snapshot().Active {
+		t.Fatal("stale preview removal stopped a connection or lost conflict identity")
+	}
+	_, revision, _ = tray.ReadConfigDocument(options.ConfigPath)
+	if err := options.RemoveExit(context.Background(), "main", revision); err != nil {
+		t.Fatal(err)
+	}
+	removed := options.Snapshot()
+	if removed.Active || removed.State != "stopped" || removed.Mode != "" || removed.BackendState != "" || removed.Exits["office"].BackendState != "Running" {
+		t.Fatalf("local removal reconnected, promoted extra or lost remaining metadata: %+v", removed)
+	}
+	if connected := previewAction(t, options, "connect"); !connected.Active || connected.BackendState != "" {
+		t.Fatalf("extras-only preview could not connect without inventing primary: %+v", connected)
+	}
+	_, revision, _ = tray.ReadConfigDocument(options.ConfigPath)
+	if err := options.RemoveExit(context.Background(), "office", revision); err != nil {
+		t.Fatal(err)
+	}
+	if options.Snapshot().Active {
+		t.Fatal("last preview removal reconnected")
+	}
+	if err := options.Action(context.Background(), "connect"); err == nil {
+		t.Fatal("empty-device preview silently routed dormant proxy policy directly")
 	}
 }

@@ -90,6 +90,7 @@ var errorTranslations = map[string]string{
 	"无法生成配置响应。":                            "Could not encode the configuration response.",
 	"无法读取操作请求。":                            "Could not read the action request.",
 	"未知操作。":                                "Unknown action.",
+	"未找到这个出口，请先保存设置。":                      "This exit was not found. Save your settings first.",
 	"无法读取日志。":                              "Could not read logs.",
 	"无法读取语言设置。":                            "Could not read language preferences.",
 	"语言设置必须为 auto、en 或 zh。":                "Language preference must be auto, en, or zh.",

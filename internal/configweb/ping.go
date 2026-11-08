@@ -13,7 +13,8 @@ import (
 
 func (s *Server) exitPing(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		ID string `json:"id"`
+		ID   string `json:"id"`
+		Exit string `json:"exit,omitempty"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 	decoder.DisallowUnknownFields()
@@ -27,11 +28,17 @@ func (s *Server) exitPing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.options.Snapshot()
-	if !snapshot.PingAvailable {
+	available, nodes, target := snapshot.PingAvailable, snapshot.ExitNodes, request.ID
+	if request.Exit != "" && request.Exit != tailsplit.MainExit {
+		exit, ok := snapshot.Exits[request.Exit]
+		available = ok && exit.PingAvailable && exit.BackendState == "Running"
+		nodes, target = exit.ExitNodes, request.Exit+"|"+request.ID
+	}
+	if !available {
 		pingFailure(w, tailsplit.ErrPingUnavailable)
 		return
 	}
-	if err := tailsplit.ValidateExitPingTarget(snapshot.ExitNodes, request.ID); err != nil {
+	if err := tailsplit.ValidateExitPingTarget(nodes, request.ID); err != nil {
 		pingFailure(w, err)
 		return
 	}
@@ -42,7 +49,7 @@ func (s *Server) exitPing(w http.ResponseWriter, r *http.Request) {
 	defer s.ping.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), tailsplit.ExitPingTimeout)
 	defer cancel()
-	result, err := s.options.PingExit(ctx, request.ID)
+	result, err := s.options.PingExit(ctx, target)
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()
 	}

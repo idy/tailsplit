@@ -89,14 +89,16 @@ application window and notification-area controls. The installer puts
 `Program Files\\TailSplit` and installs an idle SYSTEM network service. The UI
 runs as a normal user; only installation and service maintenance request UAC.
 
-The window contains connection, the current Tailnet, login/logout, network switching,
-exit selection, configuration and bounded diagnostic logs. Settings stay in the
-window; device authorization opens the default browser. On both macOS and Windows,
-**Change network…** asks for confirmation, disconnects, signs out the embedded
-device, and opens a fresh browser authorization to choose a Tailnet. It clears the
-previous Tailnet restriction, exit selection and auth-key environment-variable
-setting, while preserving other settings and comments. Save or discard any draft
-before switching, then choose an exit after authorization and connect explicitly.
+The window contains saved exit devices, connection controls, configuration and
+bounded diagnostic logs. On both macOS and Windows, **Add exit** creates a separate
+embedded device and opens browser authorization to choose its Tailnet. Choose its
+exit node afterward; the profile is named `<exit-device-name>@<network name>`.
+To use another network, add another exit. **Remove exit** at the bottom of each
+picker disconnects, logs out only that client, removes its local profile and
+explicit rule groups, and leaves the app stopped. Tailnet admin-console device
+records remain. Save or discard any draft before changing exits. Removing the
+primary or last device preserves remaining identities and dormant policy; no
+other device is promoted or automatically selected as its replacement.
 Closing the window hides it to the tray, whose icon turns green while connected. Quit first
 disconnects and waits for the network service to clean up. Windows login startup
 is optional and separate from automatic connection.
@@ -158,9 +160,11 @@ Authenticode-signed; verify the release's `SHA256SUMS` before running it.
 
 ## macOS app
 
-Open `TailSplit.app` normally. It starts in the menu bar, disconnected, and its
-icon turns green while connected. Review
-your YAML configuration and choose when to connect. The first connection opens
+Open `TailSplit.app` normally. A fresh installation starts in the menu bar with
+no devices or gateway, so it stays idle until setup. Use Add exit, authorize the
+device and choose its node and default gateway. New configurations enable
+auto-connect for subsequent launches once a gateway is configured; the icon
+turns green while connected. Review your routing settings before connecting. The first connection opens
 the bundled installer for the privileged network service; an administrator
 approves it once. Both connection modes use that service for TUN DNS.
 
@@ -189,17 +193,24 @@ their percentage inside that button; installation shows its current phase in
 the same place. The title row supports window dragging and double-click zoom,
 with native macOS window buttons and Windows minimize, maximize/restore and
 close controls. Closing still hides the window to the menu bar or tray.
-The sidebar puts **Connection**, **Exit nodes** and **Logs** at the top and pins
-**Settings** at the bottom. Connection combines Tailscale sign-in, connection
-controls, the current exit and split/global routing. Click the exit row to open a
-searchable picker; confirm to save the choice, or cancel or press Escape to keep
-the previous selection. A running session reconnects after confirmation, while a
-disconnected app only saves the selection. Unavailable and missing saved exits
-remain visible; TailSplit never automatically chooses a replacement. Save or
-discard any settings draft before applying connection changes.
+The sidebar puts **Exit nodes** and **Logs** at the top and pins **Settings** at
+the bottom, expanding its categories in place. Exit Nodes shows one row per saved
+device. Add exit is above the list on the left; its default-gateway dropdown is
+on the right, without an exit count. Choosing a gateway saves immediately and
+reconnects an active session; an idle app stays idle. The titlebar orders status,
+**Rule-based / Global (Kill-Switch)**, the connection switch and Refresh at the
+far right. When connecting without a default gateway, a dialog requires an
+explicit choice and confirmation; Cancel or Escape changes nothing.
 
-**Exit nodes** has a searchable list with availability, current selection and a
-**Ping** action for each online exit. Ping uses the embedded Tailscale device's
+Click an exit row to open its list-only node picker, without search, manual node
+entry, Refresh or bulk Ping. Confirm a node choice to save it, or cancel or press
+Escape to keep the previous selection. A running session reconnects after
+confirmation. Unavailable and missing saved nodes remain visible; TailSplit never
+automatically chooses a replacement. Save or discard any settings draft before
+applying exit or mode changes. The page and whole picker own scrolling, without
+an independent card scrollbar; short pages fit without an unnecessary scrollbar.
+
+Each online node has its own **Ping** action. Ping uses the embedded Tailscale device's
 discovery ping to measure round-trip latency; it does not measure download speed
 or change the selected exit. Connected desktop sessions reuse their running engine.
 When disconnected, the saved device performs a short listener-free check without
@@ -209,9 +220,10 @@ can be retried, and results clear when the network or device login changes. The
 desktop helper and network service must support this operation; update an older
 network service if Ping is unavailable.
 
-Both node lists show a leading Phosphor icon (a gray check when unselected, a
-green circle check when selected), the node name, right-aligned latency and a
-**Ping** text button. Click **Ping** to test or retry independently; click the
+Node rows show a plain green check only when selected, the node name,
+right-aligned latency and a **Ping** text button. Unselected check slots stay
+empty; rows have no selected or hover fill. Mouse selection leaves no blue
+focus box, while keyboard focus remains visible. Click **Ping** to test or retry independently; click the
 name or checkmark to select. Latency is green through 500 ms, amber above 500 ms
 through 1000 ms, and red above 1000 ms. Hover for direct/relay path or error
 details. Tailscale IPs and radio controls are not shown in the lists.
@@ -239,10 +251,11 @@ Moving between these pages preserves unsaved form and YAML drafts, including
 incomplete source edits. The panel and native window follow
 the system's light or dark appearance and update immediately when it changes,
 preserving unsaved edits. The local page also follows the browser's color
-preference when opened outside the app. Its typography matches the website:
-Montserrat for headings and actions, Monda for body text, and Lato for supporting
-text. Font files and their SIL OFL notices are embedded locally; Chinese uses
-system fallbacks, while YAML, diagnostic logs and code-like fields stay monospace.
+preference when opened outside the app. The compact desktop interface uses
+platform system fonts, with monospace reserved for YAML, diagnostic logs and
+code-like fields. Shared custom dropdowns use the app's surfaces and selected
+checks; routing and other ordinary settings rows have consistent heights, and
+MTU units sit outside the numeric field so native steppers cannot overlap them.
 Wide windows add a live YAML preview, and a full source editor is always
 available. Validate or save/apply changes from either view. Saving reconnects an
 active proxy; an idle app stays idle. Existing comments and unrelated settings are preserved. External edits
@@ -301,6 +314,13 @@ appropriate network privileges and a configured proxy or authorized Tailnet dest
 ```sh
 sudo tailsplit run -c config.yaml
 ```
+
+New templates use Split/builtin routing, direct unmatched traffic, system DNS
+for direct traffic, `8.8.8.8` for proxy DNS, FakeIP, system TUN and MTU 1400.
+`dns.direct_ipv6: false` disables direct Internet IPv6 handling; it does not
+disable proxy/Tailnet IPv6 or change the operating system's IPv6 setting.
+Desktop auto-connect is enabled once a device and gateway are configured.
+Existing configuration files and legacy omitted-field semantics are preserved.
 
 DNS is always served inside the TUN at `172.31.255.2:53` and
 `[fd74:6169:6c73::2]:53`, including when `tun.enabled: false`. The switch only

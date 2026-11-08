@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -63,6 +64,31 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			}
 			return nil
 		},
+	}
+	options.RemoveExit = func(ctx context.Context, id, revision string) error {
+		mutex.Lock()
+		defer mutex.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := tray.RemoveExitDocument(configPath, id, revision, func(id string) error {
+			// Preview logout is simulated; no device identity or network is opened.
+			snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
+			if id == tailsplit.MainExit {
+				snapshot.BackendState, snapshot.Hostname, snapshot.NetworkName, snapshot.ExitNode = "", "", "", ""
+				snapshot.ExitNodes, snapshot.PingAvailable = nil, false
+			} else {
+				delete(snapshot.Exits, id)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		config, err := tailsplit.Load(configPath)
+		if err == nil {
+			updatePreviewSnapshot(&snapshot, config)
+		}
+		return err
 	}
 	if desktop {
 		// A broken configuration must remain editable in the preview.
@@ -122,6 +148,11 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			defer mutex.Unlock()
 			current := snapshot
 			current.ExitNodes = append([]tailsplit.ExitNode(nil), snapshot.ExitNodes...)
+			current.Exits = map[string]tray.ExitSnapshot{}
+			for id, exit := range snapshot.Exits {
+				exit.ExitNodes = append([]tailsplit.ExitNode(nil), exit.ExitNodes...)
+				current.Exits[id] = exit
+			}
 			return current
 		}
 		options.PingExit = func(ctx context.Context, id string) (tailsplit.ExitPingResult, error) {
@@ -130,10 +161,15 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			if err := ctx.Err(); err != nil {
 				return tailsplit.ExitPingResult{}, err
 			}
-			if !snapshot.PingAvailable {
+			exit, id := tailsplit.SplitPingTarget(id)
+			available, nodes := snapshot.PingAvailable, snapshot.ExitNodes
+			if exit != "" {
+				available, nodes = snapshot.Exits[exit].PingAvailable, snapshot.Exits[exit].ExitNodes
+			}
+			if !available {
 				return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
 			}
-			if err := tailsplit.ValidateExitPingTarget(snapshot.ExitNodes, id); err != nil {
+			if err := tailsplit.ValidateExitPingTarget(nodes, id); err != nil {
 				return tailsplit.ExitPingResult{}, err
 			}
 			// Deliberately deterministic simulated values. No network operation,
@@ -143,6 +179,8 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				return tailsplit.ExitPingResult{ID: id, LatencyMS: 740, Relay: "preview-simulated"}, nil
 			case "100.64.0.40":
 				return tailsplit.ExitPingResult{ID: id, LatencyMS: 1250, Relay: "preview-simulated"}, nil
+			case "100.101.0.11":
+				return tailsplit.ExitPingResult{ID: id, LatencyMS: 61, Relay: "preview-simulated"}, nil
 			}
 			return tailsplit.ExitPingResult{ID: id, LatencyMS: 23.4, Direct: true}, nil
 		}
@@ -166,21 +204,54 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if name, exit, ok := strings.Cut(action, ":"); ok {
+				config, err := tailsplit.Load(configPath)
+				if err != nil {
+					return err
+				}
+				if snapshot.Exits == nil {
+					snapshot.Exits = map[string]tray.ExitSnapshot{}
+				}
+				// Simulate a second Tailnet so per-exit pickers show different nodes.
+				if name == "login-exit" {
+					snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
+					snapshot.Exits[exit] = tray.ExitSnapshot{BackendState: "Running", NetworkName: "preview-office.ts.net",
+						Hostname: "preview-device-" + exit, PingAvailable: true, ExitNodes: []tailsplit.ExitNode{
+							{ID: "100.101.0.11", Name: "office-hk-gateway", Online: true},
+							{ID: "100.101.0.12", Name: "office-us-gateway", Online: true},
+							{ID: "100.101.0.13", Name: "office-lab-offline", Online: false},
+						}}
+				} else {
+					snapshot.Exits[exit] = tray.ExitSnapshot{BackendState: "NeedsLogin"}
+				}
+				updatePreviewSnapshot(&snapshot, config)
+				return nil
+			}
 			switch action {
 			case "connect", "login", "refresh-exits":
 				config, err := tailsplit.Load(configPath)
 				if err != nil {
 					return err
 				}
-				if action != "login" && config.Tailscale != nil && snapshot.BackendState != "Running" {
-					return fmt.Errorf("Preview simulation: sign in before connecting or refreshing exits.")
+				if action == "refresh-exits" && config.Tailscale != nil && snapshot.BackendState != "Running" {
+					return fmt.Errorf("Preview simulation: sign in before refreshing exits.")
+				}
+				backend := snapshot.BackendState
+				if id := config.TrafficExitID(); id != tailsplit.MainExit {
+					backend = snapshot.Exits[id].BackendState
 				}
 				if action == "connect" {
+					if err := tailsplit.ValidateTrafficExit(config); err != nil {
+						return err
+					}
+					if len(config.ExitIDs()) > 0 && backend != "Running" {
+						return fmt.Errorf("Preview simulation: sign in before connecting.")
+					}
 					snapshot.State, snapshot.Active = "running", true
-					if config.Tailscale == nil {
+					if len(config.ExitIDs()) == 0 {
 						snapshot.BackendState = "Direct"
 					}
-				} else {
+				} else if config.Tailscale != nil {
 					network := snapshot.NetworkName
 					if network == "" {
 						network = "preview-tailnet.example"
@@ -235,6 +306,10 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 func updatePreviewSnapshot(snapshot *tray.Snapshot, config tailsplit.Config) {
 	snapshot.RoutingMode = config.Rules.Mode
 	snapshot.PingAvailable = config.Tailscale != nil && snapshot.BackendState == "Running"
+	if config.Tailscale == nil && len(config.ExitIDs()) > 0 {
+		snapshot.BackendState, snapshot.Hostname, snapshot.NetworkName = "", "", ""
+		snapshot.ExitNodes = nil
+	}
 	snapshot.ExitNode = ""
 	if config.Tailscale != nil {
 		snapshot.ExitNode = config.Tailscale.ExitNode
@@ -245,12 +320,34 @@ func updatePreviewSnapshot(snapshot *tray.Snapshot, config tailsplit.Config) {
 			snapshot.Hostname = config.Tailscale.Hostname
 		}
 	}
-	for i := range snapshot.ExitNodes {
-		exit := &snapshot.ExitNodes[i]
-		exit.Selected = snapshot.ExitNode == exit.ID || snapshot.ExitNode == exit.Name
-		exit.SelectedFor = ""
-		if exit.Selected {
-			exit.SelectedFor = snapshot.ExitNode
+	markSelected := func(nodes []tailsplit.ExitNode, selected string) {
+		for i := range nodes {
+			node := &nodes[i]
+			node.Selected = selected != "" && (selected == node.ID || selected == node.Name)
+			node.SelectedFor = ""
+			if node.Selected {
+				node.SelectedFor = selected
+			}
+		}
+	}
+	markSelected(snapshot.ExitNodes, snapshot.ExitNode)
+	if snapshot.Exits == nil {
+		snapshot.Exits = map[string]tray.ExitSnapshot{}
+	}
+	for _, configured := range config.Exits {
+		if _, ok := snapshot.Exits[configured.ID]; !ok {
+			snapshot.Exits[configured.ID] = tray.ExitSnapshot{BackendState: "NeedsLogin"}
+		}
+		if state, ok := snapshot.Exits[configured.ID]; ok {
+			state.ExitNode = configured.ExitNode
+			state.ExitVisible, state.ExitOnline = false, false
+			for _, node := range state.ExitNodes {
+				if configured.ExitNode != "" && (node.ID == configured.ExitNode || node.Name == configured.ExitNode) {
+					state.ExitVisible, state.ExitOnline = true, node.Online
+				}
+			}
+			markSelected(state.ExitNodes, configured.ExitNode)
+			snapshot.Exits[configured.ID] = state
 		}
 	}
 	if snapshot.Active {
