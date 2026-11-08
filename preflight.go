@@ -43,7 +43,8 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	if len(config.ExitIDs()) == 0 {
 		return nil
 	}
-	// Connection preflight checks exactly the devices the core will run.
+	// Keep runtime devices available for their own Tailnet traffic, but require
+	// readiness only for gateways explicitly selected by the traffic policy.
 	compiled, err := compilePreflight(config, !requireExit)
 	if err != nil {
 		return err
@@ -57,6 +58,12 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	defer func() { cancel(); err = errors.Join(err, engine.Close()) }()
 	if err := engine.Start(); err != nil {
 		return err
+	}
+	var required []engineExit
+	for _, exit := range engine.exits {
+		if !requireExit || requiresTrafficExit(config, exit.id) {
+			required = append(required, exit)
+		}
 	}
 	// Several devices report concurrently; keep only each one's latest status.
 	var latestMu sync.Mutex
@@ -117,39 +124,10 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			latestMu.Lock()
 			snapshot := maps.Clone(latest)
 			latestMu.Unlock()
-			done, waiting := true, false
-			pending = ""
-			for _, exit := range engine.exits {
-				status, seen := snapshot[exit.id]
-				if !seen {
-					done = false
-					continue
-				}
-				if status.BackendState == "NeedsLogin" {
-					if discover {
-						continue
-					}
-					if requireExit && exit.id != "" {
-						return fmt.Errorf("sign in %s before connecting", label(exit.id))
-					}
-				}
-				if status.BackendState != "Running" {
-					done = false
-					continue
-				}
-				ready, err := authenticationReady(exit.tailnet, status)
-				if requireExit {
-					ready, err = preflightReady(exit.tailnet, status)
-				}
-				if err != nil {
-					return err
-				}
-				if !ready {
-					done, waiting = false, true
-					if pending == "" {
-						pending = exit.id
-					}
-				}
+			var done, waiting bool
+			done, waiting, pending, err = tailnetReadiness(required, snapshot, requireExit, discover)
+			if err != nil {
+				return err
 			}
 			if done {
 				return nil
@@ -159,9 +137,75 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			if waiting && deadline == nil {
 				deadline = time.NewTimer(45 * time.Second)
 				timeout = deadline.C
+			} else if !waiting && deadline != nil {
+				deadline.Stop()
+				deadline, timeout = nil, nil
 			}
 		}
 	}
+}
+
+// requiresTrafficExit distinguishes explicit gateways from optional saved devices.
+// Optional Tailnet destinations remain compiled and fail closed for their own
+// traffic when unavailable, without preventing unrelated routes from starting.
+func requiresTrafficExit(config Config, id string) bool {
+	if id == "" {
+		id = MainExit
+	}
+	if id == config.TrafficExitID() {
+		return true
+	}
+	if config.Focus != "" || config.Rules.Mode == RoutingGlobal {
+		return false
+	}
+	if id == config.Rules.Final {
+		return true
+	}
+	for _, route := range config.Rules.Routes {
+		if route.Exit == id && len(route.Domains)+len(route.IPs) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func tailnetReadiness(exits []engineExit, snapshot map[string]Status, requireExit, discover bool) (done, waiting bool, pending string, err error) {
+	done = true
+	awaitingLogin := false
+	for _, exit := range exits {
+		status, seen := snapshot[exit.id]
+		if !seen {
+			done = false
+			continue
+		}
+		if discover && status.BackendState == "NeedsLogin" {
+			continue
+		}
+		if status.BackendState != "Running" {
+			// Every required device may finish interactive authorization. Do not
+			// discard its auth URL by terminating an additional exit's helper.
+			awaitingLogin = awaitingLogin || status.BackendState == "NeedsLogin"
+			done = false
+			continue
+		}
+		ready, checkErr := authenticationReady(exit.tailnet, status)
+		if requireExit {
+			ready, checkErr = preflightReady(exit.tailnet, status)
+		}
+		if checkErr != nil {
+			return false, false, "", checkErr
+		}
+		if !ready {
+			done, waiting = false, true
+			if pending == "" {
+				pending = exit.id
+			}
+		}
+	}
+	if awaitingLogin {
+		waiting, pending = false, ""
+	}
+	return
 }
 
 func compilePreflight(config Config, includePending bool) (Compiled, error) {

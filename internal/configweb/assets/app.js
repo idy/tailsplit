@@ -877,7 +877,12 @@
     const activeExitReady = exitSignedIn(activeExit);
     const activeExitNodes = exitNodes(activeExit);
     const chosenNode = pickerNodes.find((node) => node.id === chosen || node.name === chosen || selectedExit === null && node.configured);
-    const extrasBlocked = mode === 'split' && exitList().some((exit) => exit.exit_node && exitLive(exit.id).backend_state === 'NeedsLogin');
+    const savedRoutes = fieldValue(state.savedValues, 'rules.routes');
+    const referencedExits = new Set([
+      fieldValue(state.savedValues, 'rules.default_exit'), fieldValue(state.savedValues, 'rules.final'),
+      ...(Array.isArray(savedRoutes) ? savedRoutes : []).filter(route => route && (route.domains?.length || route.ips?.length)).map(route => route.exit),
+    ]);
+    const extrasBlocked = mode === 'split' && exitList().some(exit => referencedExits.has(exit.id) && exit.exit_node && exitLive(exit.id).backend_state === 'NeedsLogin');
     $('#desktop-controls').hidden = !live.desktop;
     $('#desktop-connect').hidden = Boolean(live.active);
     $('#desktop-disconnect').hidden = !live.active;

@@ -27,6 +27,10 @@
   system TUN and FakeIP enabled, direct Internet IPv6 disabled, MTU 1400, and
   auto-connect after a device and gateway are configured. Keep existing user
   configuration intact and ship no personal device identities.
+- Wait for required additional devices to finish authorization during connection
+  preflight, without discarding their login session. Unreferenced offline or
+  signed-out exits no longer block unrelated Split connections; explicitly
+  selected gateways remain subject to readiness checks.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

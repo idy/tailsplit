@@ -76,7 +76,11 @@ bare Tailnet addresses without a more specific route. Rule groups can send
 domains and CIDRs through other exits; unmatched traffic can go direct, use the
 default proxy exit, or use a named additional exit. Global runs only the device
 selected by `rules.global_exit` for all captured traffic. Split rules remain
-saved while hidden in Global.
+saved while hidden in Global. Connection preflight checks the default gateway,
+explicit final exit and nonempty rule groups; other saved devices remain
+available for their own traffic without gating unrelated connections. Required
+devices that need authorization keep their login session alive until sign-in
+completes, without an exit-availability timeout expiring during authorization.
 
 The legacy `tailscale` profile has logical ID `main`; it is optional and
 removable. Additional exits keep their IDs and device state under

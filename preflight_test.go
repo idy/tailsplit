@@ -187,6 +187,79 @@ func TestExitCheckCannotEnableTUNInTheWrongTailnet(t *testing.T) {
 	}
 }
 
+func TestAdditionalTrafficExitWaitsForLoginWithoutDiscardingAuthorization(t *testing.T) {
+	device := engineExit{id: "office", tailnet: "office.ts.net"}
+	latest := map[string]Status{"office": {BackendState: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/fixture"}}
+	done, waiting, _, err := tailnetReadiness([]engineExit{device}, latest, true, false)
+	if err != nil || done || waiting || latest["office"].AuthURL == "" {
+		t.Fatalf("connect aborted or timed out an interactive extra login: done=%v waiting=%v err=%v", done, waiting, err)
+	}
+	latest[""] = Status{BackendState: "Running", ExitVisible: true, ExitOnline: false}
+	if done, waiting, _, err := tailnetReadiness([]engineExit{{id: ""}, device}, latest, true, false); err != nil || done || waiting {
+		t.Fatal("another offline device started a timeout during interactive login", done, waiting, err)
+	}
+	latest["office"] = Status{BackendState: "Running", NetworkName: "office.ts.net", ExitVisible: true, ExitOnline: true}
+	if done, _, _, err := tailnetReadiness([]engineExit{device}, latest, true, false); err != nil || !done {
+		t.Fatal("the same preflight did not complete after authorization", done, err)
+	}
+	latest["office"] = Status{BackendState: "NeedsLogin"}
+	if done, _, _, err := tailnetReadiness([]engineExit{device}, latest, false, true); err != nil || !done {
+		t.Fatal("discovery waited for interactive login", done, err)
+	}
+}
+
+func TestPreflightOnlyRequiresExplicitTrafficGateways(t *testing.T) {
+	config, err := loadTestConfig(t, `tailscale:
+  exit_node: 100.64.0.10
+exits:
+  - id: office
+    exit_node: 100.64.0.20
+  - id: spare
+    exit_node: 100.64.0.30
+rules:
+  default_exit: main
+  final: direct
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devices := []engineExit{{id: ""}, {id: "office"}, {id: "spare"}}
+	latest := map[string]Status{
+		"":       {BackendState: "Running", ExitVisible: true, ExitOnline: true},
+		"office": {BackendState: "Running", ExitVisible: true, ExitOnline: false},
+		"spare":  {BackendState: "NeedsLogin"},
+	}
+	check := func(config Config, wantReady bool, pending string) {
+		t.Helper()
+		var required []engineExit
+		for _, device := range devices {
+			if requiresTrafficExit(config, device.id) {
+				required = append(required, device)
+			}
+		}
+		done, waiting, target, err := tailnetReadiness(required, latest, true, false)
+		if err != nil || done != wantReady || waiting == wantReady || target != pending {
+			t.Fatalf("wrong readiness done=%v waiting=%v pending=%q err=%v", done, waiting, target, err)
+		}
+	}
+	check(config, true, "") // Unused offline and signed-out devices do not gate main.
+	config.Rules.Routes = []RouteConfig{{Exit: "office"}}
+	check(config, true, "") // Empty rule groups carry no traffic.
+	config.Rules.Routes[0].Domains = []string{"corp.example"}
+	check(config, false, "office")
+	config.Rules.Routes = nil
+	config.Rules.Final = "office"
+	check(config, false, "office")
+	config.Rules.Final, config.Rules.DefaultExit = "direct", "office"
+	check(config, false, "office")
+	config.Rules.Mode, config.Rules.GlobalExit = RoutingGlobal, MainExit
+	check(config, true, "") // Global ignores retained Split selections.
+	config.Focus = "spare"
+	if requiresTrafficExit(config, "") || !requiresTrafficExit(config, "spare") {
+		t.Fatal("focused device operations inherited another traffic gateway")
+	}
+}
+
 func TestLoginCompletesIndependentlyOfExitAvailability(t *testing.T) {
 	for _, status := range []Status{
 		{BackendState: "Running", NetworkName: "original@example.com"},

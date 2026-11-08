@@ -2082,6 +2082,19 @@ test('an offline configured default never silently switches to another exit', as
   assert.equal(app.requests.some(r => r.method === 'POST'), false);
 });
 
+test('unused signed-out or offline exits never disable Split connection', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', default_exit: 'main', final: 'direct', routes: [] };
+  for (const state of ['NeedsLogin', 'Running']) {
+    const snapshot = officeSnapshot({ backend_state: state, exit_nodes: [{ id: '100.101.0.11', name: 'office', online: false }] });
+    const app = await page(snapshot, '', {}, initial);
+    assert.equal(app.$('#desktop-connect').disabled, false, `unused ${state} device blocked the default`);
+  }
+  initial.values.rules.routes = [{ exit: 'office', domains: ['corp.example'] }];
+  const required = await page(officeSnapshot({ backend_state: 'NeedsLogin' }), '', {}, initial);
+  assert.equal(required.$('#desktop-connect').disabled, true, 'a rule group still requires its own login');
+});
+
 test('settings drafts block connection and retain the saved default display', async () => {
   const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
   await app.input('#level', 'debug');
