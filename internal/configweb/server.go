@@ -163,7 +163,8 @@ func (s *Server) handler() http.Handler {
 			return
 		}
 		switch r.URL.Path {
-		case "/", "/app.js", "/i18n.js", "/select.js", "/style.css",
+		case "/", "/app.js", "/i18n.js", "/select.js", "/style.css", "/companion.js",
+			"/vendor/peetty/peetty.global.js", "/vendor/peetty/peetty.css", "/vendor/peetty/LICENSE.txt",
 			"/fonts/montserrat-latin.woff2", "/fonts/monda-latin.woff2",
 			"/fonts/lato-regular-latin.woff2", "/fonts/lato-bold-latin.woff2",
 			"/fonts/Montserrat-OFL.txt", "/fonts/Monda-OFL.txt", "/fonts/Lato-OFL.txt":

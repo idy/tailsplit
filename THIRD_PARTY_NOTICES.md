@@ -25,6 +25,20 @@ archives and Debian packages. The macOS app also carries the networking-core and
 dependency notices in its Resources directory. The full corresponding project
 source is available in this repository.
 
+## Page companion
+
+The configuration panel bundles [Peetty](https://github.com/idy/peetty) 0.2.0,
+Copyright (c) 2026 Yan, under the MIT License. The vendored browser bundle,
+stylesheet and complete license are in
+`internal/configweb/assets/vendor/peetty/`. Source revision:
+`ba28bf822a1fee9f1961b2427b38548f23f27612`.
+
+The only source adaptation moves the overlay's shadow-root stylesheet into a
+same-origin CSS file to preserve the panel's restrictive Content Security Policy.
+Chat is disabled; no chat or provider dependencies are shipped. Regenerate the
+assets with `node scripts/vendor-peetty.mjs` (Node.js 22.19+, Git, npm and network
+access are needed only when updating the vendored assets).
+
 ## Interface fonts
 
 The desktop configuration panel embeds the same unmodified Latin WOFF2 assets

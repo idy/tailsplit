@@ -381,6 +381,8 @@
     '查看设置草稿': 'View settings draft',
     '更改后需保存并应用。': 'Save and apply to use the new level.',
     '界面语言与启动偏好。': 'Interface language and startup preferences.',
+    '页面小人': 'Page companion',
+    '在页面里走动和跳跃；可拖动，悬停查看更多动作。': 'Walks and jumps around the page. Drag to move; hover for more actions.',
     '立即生效，不会中断连接。': 'Applies immediately without interrupting your connection.',
     '登录系统后启动': 'Open at login',
     '登录这台电脑时打开 TailSplit。': 'Open TailSplit when you sign in to this computer.',

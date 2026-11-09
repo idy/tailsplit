@@ -308,6 +308,27 @@ Primary navigation items are 28px high with 15px icons, neutral hover and select
 
 Grouped settings and exit lists share a 16px panel radius, with internal row dividers. Settings rows use 8px by 14px padding. Dialogs use a 20px radius. Where supported, `corner-shape: superellipse(1.6)` smooths the transition from straight edges into corners; older WebKit keeps the same radius as a rounded fallback. YAML regions follow the app's code surface. Cards do not acquire shadows on hover.
 
+### Page Companion
+
+The configuration panel includes the vendored Peetty Miru companion at 88 CSS
+pixels, with lively local walking and jumping between safe visible edges. Its
+shadow-root overlay leaves the page click-through outside the figure and menu;
+the titlebar is explicitly excluded, and native modal dialogs remain above it.
+Dragging, the hover/context menu and Peetty's keyboard actions are retained.
+Chat is disabled, and all runtime assets are embedded and served locally.
+
+Settings › General includes an immediate Page companion switch, independent of
+network configuration and settings drafts. The menu's Hide action updates that
+switch too. The visibility preference is stored for the browser origin when
+storage is available. Hiding the document or leaving the page destroys the
+companion and its listeners; returning restores it if enabled. Peetty suppresses
+autonomous walking and jumping under reduced motion. Companion controls follow
+the panel's English/Chinese language in place.
+
+The build extracts the upstream shadow-root CSS into a same-origin stylesheet;
+the panel keeps its existing restrictive Content Security Policy. Provenance and
+regeneration instructions are in the vendored README and third-party notices.
+
 ### Diagnostic Terminal
 
 The log viewport uses the user-selected terminal reference: a fixed deep gray

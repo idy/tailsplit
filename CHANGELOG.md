@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1
+
+- Add a bundled Peetty Miru companion to the desktop configuration page, with
+  local walking, jumping, dragging and hover actions. No AI connection or API key
+  is required, and the existing Content Security Policy is preserved.
+- Add an immediate Page companion switch under Settings › General, synchronized
+  with the companion's Hide action. Remember visibility for the browser origin,
+  follow English/Chinese UI language, respect reduced motion, and stop the
+  companion while the page is hidden.
+
 ## 0.8.0
 
 - Run multiple saved exit devices in one embedded sing-box core, including exits
