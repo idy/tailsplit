@@ -12,7 +12,10 @@ import (
 // Included by the native CI TestWindows filter on both architectures. It uses
 // actual Windows private directories and atomic state publication, no Tailnet.
 func TestWindowsUnusedPrimaryMigrationAndLogoutAuthority(t *testing.T) {
-	legacy := privateTestDirectory(t)
+	legacy := filepath.Join(t.TempDir(), "legacy")
+	if err := privateDirectory(legacy); err != nil {
+		t.Fatal(err)
+	}
 	if err := privateDirectory(filepath.Join(legacy, "tailscale")); err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +32,9 @@ func TestWindowsUnusedPrimaryMigrationAndLogoutAuthority(t *testing.T) {
 	if err != nil || len(ids) != 0 {
 		t.Fatal("direct-only operation requested an unused identity", ids, err)
 	}
-	base := privateTestDirectory(t)
+	// Leave the service root absent so prepareRuntimeUser creates its protected
+	// current-user descriptor, rather than inheriting the runner's temp owner.
+	base := filepath.Join(t.TempDir(), "service")
 	directory := runtimeUserDirectory(base, "fixture-user")
 	plan, err := runtimeImports(directory, ids)
 	if err != nil {
