@@ -501,11 +501,14 @@ a pull request to merge once all required checks and conversations are satisfied
 
 [The OpenAI PR review workflow](../.github/workflows/openai-review.yml) calls the
 shared [GizClaw reviewer](https://github.com/GizClaw/github-workflows) at its
-`latest` tag. Automatic reviews run directly on `push` for current internal PR
-updates targeting the default branch, and on `pull_request_target` for PR
-lifecycle/metadata changes and fork updates. The resolver rejects stale, draft,
-foreign and ambiguous pushed targets. The shared reviewer checks out only the
-trusted base and reads the PR diff as data; it never runs proposed project code.
+`latest` tag. Automatic reviews run directly on `pull_request_target` from the
+protected default-branch workflow, including every synchronization event. They
+do not depend on a caller in the proposed branch. Secret-bearing review jobs
+reject unprotected or non-default workflow refs. The shared reviewer checks out
+only the trusted base and reads the PR diff as data; it never runs proposed
+project code. Install this trusted caller on the protected default branch before
+requiring its three merge checks; dispatch-origin reports cannot bootstrap an
+eligible default-branch caller.
 Each review publishes `OpenAI PR Review`, `OpenAI Issue Review` and
 `OpenAI Code Review` on the reviewed head with one combined report.
 

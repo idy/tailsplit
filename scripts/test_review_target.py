@@ -1,5 +1,4 @@
-"""Exercise the workflow's metadata-only review target resolver."""
-import copy
+"""Exercise the protected-default workflow's metadata-only target resolver."""
 import json
 from pathlib import Path
 import re
@@ -13,19 +12,17 @@ NODE = shutil.which("node")
 HARNESS = r"""
 const fs = require('node:fs');
 const data = JSON.parse(fs.readFileSync(0, 'utf8'));
-const outputs = {}, calls = [];
-const github = { rest: { repos: { listPullRequestsAssociatedWithCommit: async (args) => {
-  calls.push(args); return {data: data.pulls || []};
-} } } };
+const outputs = {};
 const core = {setOutput: (key, value) => {outputs[key] = value;}, info() {}};
 process.env.CODEX_REVIEW_PR_INPUT = data.input || '';
+process.env.CODEX_REVIEW_REF_PROTECTED = data.protected ? 'true' : 'false';
 (async () => {
   let error = '';
   try {
     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-    await new AsyncFunction('github', 'context', 'core', data.script)(github, data.context, core);
+    await new AsyncFunction('context', 'core', data.script)(data.context, core);
   } catch (failure) { error = failure.message; }
-  process.stdout.write(JSON.stringify({outputs, calls, error}));
+  process.stdout.write(JSON.stringify({outputs, error}));
 })();
 """
 
@@ -34,85 +31,66 @@ process.env.CODEX_REVIEW_PR_INPUT = data.input || '';
 class ReviewTargetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        workflow = (ROOT / ".github/workflows/openai-review.yml").read_text()
+        cls.workflow = (ROOT / ".github/workflows/openai-review.yml").read_text()
         match = re.search(
             r"(?ms)^  resolve_review_target:.*?^          script: \|\n(.*?)(?=^  review:)",
-            workflow,
+            cls.workflow,
         )
         if not match:
             raise AssertionError("Review target script was not found")
         cls.script = textwrap.dedent(match.group(1))
 
-    def resolve(self, context, pulls=(), request=""):
+    def context(self, event, **payload):
+        return {"eventName": event, "ref": "refs/heads/main",
+                "payload": {"repository": {"default_branch": "main"}, **payload}}
+
+    def resolve(self, context, request="", protected=True):
         result = subprocess.run(
             [NODE, "-e", HARNESS], cwd=ROOT, text=True, capture_output=True, check=True,
             input=json.dumps({"script": self.script, "context": context,
-                              "pulls": list(pulls), "input": request}),
+                              "input": request, "protected": protected}),
         )
         return json.loads(result.stdout)
 
-    def push(self):
-        return {"eventName": "push", "repo": {"owner": "idy", "repo": "tailsplit"},
-                "sha": "current-head", "payload": {"repository": {"default_branch": "main"}}}
-
-    def pull(self):
-        return {"number": 29, "state": "open", "draft": False,
-                "head": {"sha": "current-head", "repo": {"full_name": "idy/tailsplit"}},
-                "base": {"ref": "main", "repo": {"full_name": "idy/tailsplit"}}}
-
-    def test_current_internal_push_resolves_exact_pr(self):
-        result = self.resolve(self.push(), [self.pull()])
-        self.assertEqual(result["outputs"], {"number": "29"})
-        self.assertEqual(result["error"], "")
-        self.assertEqual(result["calls"][0]["commit_sha"], "current-head")
-
-    def test_stale_draft_closed_and_foreign_pushes_do_not_review(self):
-        changes = [
-            lambda pr: pr["head"].update(sha="older-head"),
-            lambda pr: pr.update(draft=True),
-            lambda pr: pr.update(state="closed"),
-            lambda pr: pr["head"]["repo"].update(full_name="fork/tailsplit"),
-            lambda pr: pr["base"]["repo"].update(full_name="other/repo"),
-            lambda pr: pr["base"].update(ref="other-base"),
-        ]
-        for change in changes:
-            with self.subTest(change=changes.index(change)):
-                pr = self.pull()
-                change(pr)
-                result = self.resolve(self.push(), [pr])
-                self.assertEqual(result["outputs"], {"number": ""})
+    def test_target_lifecycle_including_sync_always_resolves_its_pr(self):
+        for action in ("opened", "synchronize", "edited", "ready_for_review"):
+            with self.subTest(action=action):
+                context = self.context("pull_request_target", action=action, pull_request={"number": 29})
+                result = self.resolve(context)
+                self.assertEqual(result["outputs"], {"number": "29"})
                 self.assertEqual(result["error"], "")
 
-    def test_no_open_pr_is_a_safe_noop(self):
-        self.assertEqual(self.resolve(self.push())["outputs"], {"number": ""})
-
-    def test_ambiguous_push_is_rejected(self):
-        other = copy.deepcopy(self.pull())
-        other["number"] = 30
-        self.assertIn("Ambiguous", self.resolve(self.push(), [self.pull(), other])["error"])
-
-    def test_missing_default_branch_is_rejected(self):
-        context = self.push()
-        context["payload"]["repository"] = {}
-        self.assertIn("default branch", self.resolve(context, [self.pull()])["error"])
-
-    def test_target_event_uses_its_pr_metadata(self):
-        result = self.resolve({"eventName": "pull_request_target", "payload": {"pull_request": {"number": 29}}})
-        self.assertEqual(result["outputs"], {"number": "29"})
-        self.assertEqual(result["calls"], [])
-
-    def test_comment_target_remains_the_comment_pr(self):
-        context = {"eventName": "issue_comment", "payload": {"issue": {"number": 29, "pull_request": {}}}}
+    def test_comment_target_stays_the_comment_pr(self):
+        context = self.context("issue_comment", issue={"number": 29, "pull_request": {}})
         result = self.resolve(context, request="77")
         self.assertEqual(result["outputs"], {"number": "29"})
-        self.assertEqual(result["calls"], [])
 
     def test_manual_target_requires_a_positive_safe_integer(self):
-        context = {"eventName": "workflow_dispatch", "payload": {}}
+        context = self.context("workflow_dispatch")
         self.assertEqual(self.resolve(context, request="29")["outputs"], {"number": "29"})
         for invalid in ("", "0", "-1", "1.5", "9007199254740992", "not-a-number"):
             with self.subTest(invalid=invalid):
                 self.assertIn("positive safe integer", self.resolve(context, request=invalid)["error"])
+
+    def test_unprotected_default_ref_cannot_start_secret_bearing_review(self):
+        result = self.resolve(self.context("workflow_dispatch"), request="29", protected=False)
+        self.assertEqual(result["outputs"], {"number": ""})
+        self.assertEqual(result["error"], "")
+
+    def test_protected_nondefault_ref_is_also_rejected(self):
+        context = self.context("workflow_dispatch")
+        context["ref"] = "refs/heads/proposed-workflow"
+        self.assertEqual(self.resolve(context, request="29")["outputs"], {"number": ""})
+
+    def test_missing_default_branch_is_a_safe_noop(self):
+        context = self.context("workflow_dispatch")
+        context["payload"]["repository"] = {}
+        self.assertEqual(self.resolve(context, request="29")["outputs"], {"number": ""})
+
+    def test_push_event_cannot_invoke_the_reviewer(self):
+        events = self.workflow.split("\npermissions:", 1)[0]
+        self.assertNotRegex(events, r"(?m)^  push:")
+        self.assertIn("Unsupported review event", self.resolve(self.context("push"))["error"])
 
 
 if __name__ == "__main__":
