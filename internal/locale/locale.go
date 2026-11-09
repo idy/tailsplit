@@ -1,4 +1,4 @@
-// Package locale persists the app's UI language independently of network configuration.
+// Package locale persists the app's UI preferences independently of network configuration.
 package locale
 
 import (
@@ -22,18 +22,22 @@ type State struct {
 	Language   string `json:"language"`
 }
 
+const maxPreferencesSize = 1024
+
 type Store struct {
-	mu           sync.RWMutex
-	path         string
-	preference   string
-	hostLanguage string
+	mu               sync.RWMutex
+	path             string
+	preference       string
+	hostLanguage     string
+	companionEnabled bool
+	saved            map[string]json.RawMessage
 }
 
 func NewStore(configPath string) *Store {
 	// Resolve existing parent aliases once, including when initialization has
 	// not yet created the config directory. Never resolve the preference file.
 	path := resolveParentAliases(configPath + ".ui.json")
-	s := &Store{path: path, preference: "auto", hostLanguage: detectLanguage()}
+	s := &Store{path: path, preference: "auto", hostLanguage: detectLanguage(), companionEnabled: true}
 	if safePath(s.path) != nil {
 		return s
 	}
@@ -43,18 +47,31 @@ func NewStore(configPath string) *Store {
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 1024 {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxPreferencesSize {
 		return s
 	}
-	var saved struct {
-		Preference string `json:"preference"`
-	}
-	d := json.NewDecoder(io.LimitReader(f, 1025))
-	d.DisallowUnknownFields()
+	var saved map[string]json.RawMessage
+	d := json.NewDecoder(io.LimitReader(f, maxPreferencesSize+1))
 	var extra any
-	if d.Decode(&saved) == nil && d.Decode(&extra) == io.EOF && valid(saved.Preference) {
-		s.preference = saved.Preference
+	if d.Decode(&saved) != nil || saved == nil || d.Decode(&extra) != io.EOF {
+		return s
 	}
+	preference, companionEnabled := "auto", true
+	if raw, ok := saved["preference"]; ok {
+		var value string
+		if json.Unmarshal(raw, &value) != nil || !valid(value) {
+			return s
+		}
+		preference = value
+	}
+	if raw, ok := saved["companion_enabled"]; ok {
+		var enabled *bool
+		if json.Unmarshal(raw, &enabled) != nil || enabled == nil {
+			return s
+		}
+		companionEnabled = *enabled
+	}
+	s.preference, s.companionEnabled, s.saved = preference, companionEnabled, saved
 	return s
 }
 
@@ -122,20 +139,45 @@ func safePath(path string) error {
 	}
 }
 
+func (s *Store) CompanionEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.companionEnabled
+}
+
+func (s *Store) SetCompanionEnabled(enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(s.preference, enabled)
+}
+
 func (s *Store) Set(preference string) error {
 	if !valid(preference) {
 		return errors.New("language preference must be auto, en, or zh")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked(preference, s.companionEnabled)
+}
+
+// saveLocked updates both preferences together so either setter preserves the
+// other setting and any UI fields written by newer versions of the app.
+func (s *Store) saveLocked(preference string, companionEnabled bool) error {
 	if err := safePath(s.path); err != nil {
 		return err
 	}
-	data, err := json.Marshal(struct {
-		Preference string `json:"preference"`
-	}{preference})
+	saved := make(map[string]json.RawMessage, len(s.saved)+2)
+	for key, value := range s.saved {
+		saved[key] = value
+	}
+	saved["preference"], _ = json.Marshal(preference)
+	saved["companion_enabled"], _ = json.Marshal(companionEnabled)
+	data, err := json.Marshal(saved)
 	if err != nil {
 		return err
+	}
+	if len(data)+1 > maxPreferencesSize {
+		return errors.New("UI preferences must not exceed 1 KiB")
 	}
 	f, err := os.CreateTemp(filepath.Dir(s.path), ".tailsplit-ui-*")
 	if err != nil {
@@ -159,7 +201,7 @@ func (s *Store) Set(preference string) error {
 	if err = privatefs.Replace(f.Name(), s.path); err != nil {
 		return err
 	}
-	s.preference = preference
+	s.preference, s.companionEnabled, s.saved = preference, companionEnabled, saved
 	return nil
 }
 

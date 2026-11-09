@@ -1,6 +1,7 @@
 package locale
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -70,13 +71,104 @@ func TestFailedSaveAndUnsafeFiles(t *testing.T) {
 
 func TestMalformedPreferencesFallback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	for _, content := range []string{`{"preference":"fr"}`, `{"preference":"zh"} {}`, `{"preference":"zh","unknown":true}`, `null`, `bad JSON`} {
+	for _, content := range []string{
+		`{"preference":"fr"}`, `{"preference":null}`, `{"preference":"zh"} {}`,
+		`{"preference":"zh","companion_enabled":null}`, `{"preference":"zh","companion_enabled":"false"}`,
+		`{"preference":"zh","companion_enabled":0}`, `null`, `[]`, `bad JSON`,
+	} {
 		if err := os.WriteFile(path+".ui.json", []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if got := NewStore(path).Get(); got.Preference != "auto" {
-			t.Fatal(content, got)
+		store := NewStore(path)
+		if got := store.Get(); got.Preference != "auto" || !store.CompanionEnabled() {
+			t.Fatal(content, got, store.CompanionEnabled())
 		}
+	}
+}
+
+func TestCompanionPreferencePreservesLanguageAndOtherUISettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if !NewStore(path).CompanionEnabled() {
+		t.Fatal("companion must default to enabled")
+	}
+	// Existing language-only files keep their selection and enable the companion.
+	if err := os.WriteFile(path+".ui.json", []byte(`{"preference":"zh","theme":{"mode":"dark"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(path)
+	if store.Get().Preference != "zh" || !store.CompanionEnabled() {
+		t.Fatal("legacy language preference did not load")
+	}
+	if err := store.SetCompanionEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	store = NewStore(path)
+	if store.Get().Preference != "zh" || store.CompanionEnabled() {
+		t.Fatal("companion change lost language or did not persist")
+	}
+	if err := store.Set("en"); err != nil {
+		t.Fatal(err)
+	}
+	store = NewStore(path)
+	if store.Get().Preference != "en" || store.CompanionEnabled() {
+		t.Fatal("language change lost companion preference")
+	}
+	for _, enabled := range []bool{true, false} {
+		if err := store.SetCompanionEnabled(enabled); err != nil {
+			t.Fatal(err)
+		}
+		store = NewStore(path)
+		if store.CompanionEnabled() != enabled || store.Get().Preference != "en" {
+			t.Fatal("companion preference did not survive restart")
+		}
+	}
+	data, err := os.ReadFile(path + ".ui.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]json.RawMessage
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if string(saved["theme"]) != `{"mode":"dark"}` || string(saved["companion_enabled"]) != "false" {
+		t.Fatal("other UI preferences were discarded", string(data))
+	}
+	if info, err := os.Stat(path + ".ui.json"); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("UI preferences are not private", info, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("UI preference wrote network YAML", err)
+	}
+}
+
+func TestCompanionFailedSaveDoesNotPublishState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store := NewStore(path)
+	if err := store.Set("zh"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCompanionEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.path); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, store.path); err != nil {
+		t.Skip(err)
+	}
+	if store.SetCompanionEnabled(true) == nil || store.CompanionEnabled() || store.Get().Preference != "zh" {
+		t.Fatal("failed save changed UI preferences")
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "keep" {
+		t.Fatal("modified symlink target")
+	}
+	if !NewStore(path).CompanionEnabled() {
+		t.Fatal("unsafe UI preferences did not fall back to enabled")
 	}
 }
 
@@ -131,6 +223,11 @@ func TestConcurrentAccess(t *testing.T) {
 					t.Error(err)
 					return
 				}
+				if err := s.SetCompanionEnabled(j%2 == 0); err != nil {
+					t.Error(err)
+					return
+				}
+				_ = s.CompanionEnabled()
 				state := s.Get()
 				if !valid(state.Preference) || state.Language != "en" && state.Language != "zh" {
 					t.Error(state)
