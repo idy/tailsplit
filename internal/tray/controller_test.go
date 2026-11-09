@@ -36,12 +36,12 @@ func TestHelperProcess(t *testing.T) {
 		}
 	}
 	if expected := os.Getenv("TAILSPLIT_TEST_CWD"); expected != "" {
-		current, err := os.Getwd()
-		// macOS runners return /private/var/... from getcwd even when
-		// testing.T.TempDir supplied the /var/... alias.
-		expected, expectedErr := filepath.EvalSymlinks(expected)
-		if err != nil || expectedErr != nil || current != expected {
-			fmt.Fprintln(os.Stderr, "fixture helper working directory did not match its resolved config directory")
+		// Directory identity survives macOS /var aliases and Windows short
+		// names or casing differences without accepting a different directory.
+		current, currentErr := os.Stat(".")
+		configDirectory, expectedErr := os.Stat(expected)
+		if currentErr != nil || expectedErr != nil || !os.SameFile(current, configDirectory) {
+			fmt.Fprintf(os.Stderr, "fixture helper working directory did not match its config directory: current=%v expected=%v\n", currentErr, expectedErr)
 			os.Exit(4)
 		}
 	}
