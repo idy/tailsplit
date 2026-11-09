@@ -125,6 +125,29 @@ func TestGlobalExitDNSMetadataAndLegacyFallback(t *testing.T) {
 	}
 }
 
+func TestAdditionalExitIDsRejectWindowsDeviceBasenames(t *testing.T) {
+	reserved := []string{"con", "prn", "aux", "nul"}
+	for index := 1; index <= 9; index++ {
+		reserved = append(reserved, fmt.Sprintf("com%d", index), fmt.Sprintf("lpt%d", index))
+	}
+	for _, id := range reserved {
+		t.Run("reserved/"+id, func(t *testing.T) {
+			_, err := loadTestConfig(t, fmt.Sprintf("exits:\n  - id: %q\n", id))
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("Windows device basename %q was accepted: %v", id, err)
+			}
+		})
+	}
+	for _, id := range []string{"console", "con-office", "prn-1", "aux-gateway", "nul-2", "com0", "com10", "com1-office", "lpt0", "lpt10", "lpt9-office", "office", "exit-1"} {
+		t.Run("valid/"+id, func(t *testing.T) {
+			config, err := loadTestConfig(t, fmt.Sprintf("state_dir: ./state\nexits:\n  - id: %q\n", id))
+			if err != nil || config.Exits[0].ID != id || config.ExitStateDir(id) != filepath.Join(config.StateDir, "exits", id, "tailscale") {
+				t.Fatalf("ordinary ID %q lost its stable state path: %+v, %v", id, config.Exits, err)
+			}
+		})
+	}
+}
+
 func TestAdditionalExitIDsReserveFinalRouteKeywords(t *testing.T) {
 	for _, id := range []string{MainExit, "direct", "proxy", " direct ", " proxy "} {
 		t.Run("reserved/"+id, func(t *testing.T) {

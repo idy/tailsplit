@@ -723,7 +723,13 @@
   }
   let connectionExitSignature = '';
   function gatewaySelectable(exit) {
-    return networkActive() ? exitCanConnect(exit) : Boolean(exit?.exit_node);
+    if (!networkActive()) return Boolean(exit?.exit_node);
+    if (exitCanConnect(exit)) return true;
+    // Global observes only its chosen device. Uncached alternatives need to
+    // reach preflight before their authentication and availability are known.
+    const live = exitLive(exit?.id);
+    return savedMode() === 'global' && Boolean(exit?.exit_node) && exit.id !== connectionExitRecord()?.id &&
+      !live.backend_state && !live.exit && !live.exit_nodes?.length && live.exit_online !== false;
   }
   function renderConnectionExit() {
     const select = $('#connection-exit');

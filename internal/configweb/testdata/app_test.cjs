@@ -1864,6 +1864,99 @@ test('connected gateway dropdown changes use the guarded reconnecting save only'
   assert.equal(app.requests.some(r => r.path === '/api/action'), false, 'the config callback owns reconnection');
 });
 
+function activeGlobalGatewayDocument() {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'global', global_exit: 'office', default_exit: 'main', final: 'direct' };
+  initial.values.exits.push({ id: 'spare', name: 'Spare', exit_node: '100.102.0.11' });
+  return initial;
+}
+function activeGlobalGatewaySnapshot() {
+  return { ...officeSnapshot(), active: true, mode: 'tun', state: 'running', routing_mode: 'global',
+    backend_state: '', network: '', hostname: '', exit: '', exit_nodes: [] };
+}
+
+for (const target of ['main', 'spare']) test(`active Global can switch to uncached saved ${target} through guarded preflight`, async () => {
+  const initial = activeGlobalGatewayDocument();
+  const app = await page(activeGlobalGatewaySnapshot(), '', {}, initial);
+  const select = app.$('#connection-exit');
+  assert.equal(select.value, 'office');
+  assert.equal(select.children.find(option => option.value === target).disabled, false);
+  let saves = 0;
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    saves++;
+    assert.deepEqual(request.data.changes, { 'rules.global_exit': target });
+    assert.equal(request.data.revision, 'original');
+    app.config = { ...initial, revision: 'saved', values: { ...initial.values, rules: { ...initial.values.rules, global_exit: target } } };
+    Object.assign(app.snapshot, { revision: 'saved', state: 'checking-exit' });
+    return response(app.config);
+  };
+  select.value = target;
+  await select.emit('change');
+  assert.equal(saves, 1);
+  assert.equal(select.value, target);
+  assert.equal(app.requests.some(request => request.path === '/api/action'), false, 'the backend config callback owns preflight and reconnection');
+  assert.equal(app.snapshot.backend_state, '', 'selection must not invent primary authentication');
+  assert.equal(app.snapshot.exits.spare, undefined, 'selection must not invent extra authentication');
+  assert.equal(app.snapshot.state, 'checking-exit');
+});
+
+test('active Global keeps known invalid or offline gateway states guarded', async () => {
+  for (const target of ['main', 'spare']) {
+    for (const status of [
+      { backend_state: 'NeedsLogin' },
+      { backend_state: 'Stopped' },
+      { backend_state: 'Running', exit_nodes: [{ id: target === 'main' ? '100.64.0.10' : '100.102.0.11', online: false }] },
+      { backend_state: '', exit_online: false },
+    ]) {
+      const snapshot = activeGlobalGatewaySnapshot();
+      if (target === 'main') Object.assign(snapshot, status);
+      else snapshot.exits[target] = status;
+      const app = await page(snapshot, '', {}, activeGlobalGatewayDocument());
+      const select = app.$('#connection-exit');
+      assert.equal(select.children.find(option => option.value === target).disabled, true);
+      select.value = target;
+      await select.emit('change');
+      assert.equal(app.requests.some(request => request.method === 'POST'), false);
+      assert.equal(select.value, 'office');
+    }
+  }
+});
+
+test('active Global same-value selection never writes or reconnects', async () => {
+  const app = await page(activeGlobalGatewaySnapshot(), '', {}, activeGlobalGatewayDocument());
+  await app.$('#connection-exit').emit('change');
+  assert.equal(app.requests.some(request => request.method === 'POST'), false);
+  assert.equal(app.$('#connection-exit').value, 'office');
+});
+
+test('active Global uncached gateway changes retain draft and revision protections', async () => {
+  for (const external of [false, true]) {
+    const app = await page(activeGlobalGatewaySnapshot(), '', {}, activeGlobalGatewayDocument());
+    await app.input('#level', 'debug');
+    if (external) { app.snapshot.revision = 'external'; await app.poll(); }
+    assert.equal(app.$('#connection-exit').disabled, true);
+    app.$('#connection-exit').value = 'spare';
+    await app.$('#connection-exit').emit('change');
+    assert.equal(app.requests.some(request => request.path === '/api/config' && request.method === 'POST'), false);
+    assert.equal(app.$('#level').value, 'debug');
+  }
+  const app = await page(activeGlobalGatewaySnapshot(), '', {}, activeGlobalGatewayDocument());
+  let saves = 0;
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    saves++;
+    assert.equal(request.data.revision, 'original');
+    return response({ code: 'conflict', error: 'Config changed' }, false);
+  };
+  app.$('#connection-exit').value = 'spare';
+  await app.$('#connection-exit').emit('change');
+  assert.equal(saves, 1);
+  assert.equal(app.$('#connection-exit').value, 'office');
+  assert.equal(app.$('#connection-exit').disabled, true);
+  assert.equal(app.requests.some(request => request.path === '/api/action'), false);
+});
+
 test('keeping the current dropdown gateway never writes or reconnects', async () => {
   const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
   await app.$('#connection-exit').emit('change');
@@ -2116,6 +2209,23 @@ test('unused signed-out or offline exits never disable Split connection', async 
   initial.values.rules.routes = [{ exit: 'office', domains: ['corp.example'] }];
   const required = await page(officeSnapshot({ backend_state: 'NeedsLogin' }), '', {}, initial);
   assert.equal(required.$('#desktop-connect').disabled, true, 'a rule group still requires its own login');
+});
+
+test('the explicit no-device direct-only Windows fixture connects without a gateway dialog', async () => {
+  const initial = { ...doc('tailscale: null\nexits: []\nrules:\n  source: ""\n  final: direct\n'),
+    values: { log_level: 'info', tailscale: null, exits: [], rules: { source: '', final: 'direct' }, tun: { enabled: false, mtu: 1400 } } };
+  const app = await page({ desktop: true, active: false, state: 'stopped', backend_state: 'Direct' }, '', {}, initial);
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    assert.deepEqual(request.data, { action: 'connect' });
+    app.snapshot = { ...app.snapshot, active: true, state: 'running', mode: 'proxy', backend_state: 'Direct' };
+    return response({ ok: true });
+  };
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  await app.$('#desktop-connect').emit('click');
+  assert.ok(!app.$('#default-exit-dialog').open);
+  assert.equal(app.$('#connection-status span').textContent, '已连接');
+  assert.equal(app.requests.filter(request => request.path === '/api/action').length, 1);
 });
 
 test('settings drafts block connection and retain the saved default display', async () => {

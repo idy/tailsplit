@@ -259,11 +259,15 @@ def main():
     sentinel = b"isolated-ci-migration-sentinel-not-a-real-device-credential\n"
     (state / "tailscale/tailscaled.state").write_bytes(sentinel)
     config = temporary / "config.yaml"
+    # Deliberate direct-only service/upgrade fixture, not the production defaults:
+    # no saved devices, no proxy rule source and no cloud/browser authorization.
+    # This valid no-device policy connects directly and must not need a gateway.
     # The installed GUIs run during this fixture; keep them off GitHub's API.
     config.write_text("# Native desktop fixture: no Tailnet/cloud authorization.\n" +
                       "app:\n  check_for_updates: false\n" +
                       f"state_dir: {json.dumps(str(state))}\nlisten: 127.0.0.1:{free_port()}\n" +
-                      "dns:\n  direct: system\n  proxy: 8.8.8.8\nrules:\n  final: direct\ntun:\n  enabled: false\n", encoding="utf-8")
+                      "tailscale: null\nexits: []\n" +
+                      "dns:\n  direct: system\n  proxy: 8.8.8.8\nrules:\n  source: \"\"\n  final: direct\ntun:\n  enabled: false\n", encoding="utf-8")
     process = None
     gui_user = None
     credential_file = temporary / "standard-user.json"

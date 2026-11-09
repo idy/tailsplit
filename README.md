@@ -86,7 +86,10 @@ availability timeout; other backend transitions preserve its deadline.
 An extra's `tailnet` is its login identity guard; `magic_dns_suffix` stores the
 actual DNS suffix independently of its display network name. DNS and traffic
 use the same longest-suffix ownership order, with the primary winning exact
-duplicates. Exit IDs `main`, `direct` and `proxy` are reserved.
+duplicates. Exit IDs `main`, `direct`, `proxy` and Windows device basenames such
+as `con`, `nul`, `com1` and `lpt1` are reserved. Pending or missing owners of live
+private-name policy must be configured before connecting; their rules never
+silently fall through to another resolver or gateway.
 
 The legacy `tailscale` profile has logical ID `main`; it is optional and
 removable. Additional exits keep their IDs and device state under

@@ -24,6 +24,19 @@ func desktopStartupAction(path string, connectOnStart, noConnect bool) string {
 	return "refresh-exits"
 }
 
+// Native primary sign-in remains visible for legacy profiles. Without main,
+// show the panel's Add exit workflow rather than launching an invalid main login.
+func nativePrimarySignIn(path string, openPanel, login func() error) error {
+	config, err := tailsplit.Load(path)
+	if err != nil {
+		return err
+	}
+	if config.Tailscale == nil {
+		return openPanel()
+	}
+	return login()
+}
+
 type desktopLoginController interface {
 	Snapshot() tray.Snapshot
 	StartLogin() error

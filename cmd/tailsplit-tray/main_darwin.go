@@ -356,7 +356,11 @@ func main() {
 				flow.Cancel()
 				go func() { settingsDone <- controller.Reconfigure(update) }()
 			}
-			requestLogin := func() error { return requestDesktopLogin(controller, &flow) }
+			requestLogin := func() error {
+				return nativePrimarySignIn(*config,
+					func() error { showConfiguration(); return nil },
+					func() error { return requestDesktopLogin(controller, &flow) })
+			}
 			loginItemStatus := tray.LoginItemUnavailable
 			refreshLoginItem := func() {
 				loginItemStatus = tray.LoginItem()

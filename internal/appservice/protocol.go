@@ -12,7 +12,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"regexp"
 	"sync"
 	"time"
 
@@ -37,12 +36,10 @@ const (
 	maxExits   = 8
 )
 
-// validExitID mirrors the configuration rule; the service rechecks it before
-// using an ID as a directory name.
-var exitIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`)
-
+// validExitID applies the shared configuration and state-directory policy at
+// the service boundary before an ID can become a directory name.
 func validExitID(id string) bool {
-	return id != tailsplit.MainExit && id != "direct" && id != "proxy" && exitIDPattern.MatchString(id)
+	return tailsplit.ValidExitID(id)
 }
 
 // Files contains bounded copies read by the ordinary user's process. The root

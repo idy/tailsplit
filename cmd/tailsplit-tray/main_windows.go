@@ -46,6 +46,7 @@ type windowsApp struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	controller  *tray.Controller
+	configPath  string
 	window      *winui.Window
 	operations  chan windowsOperation
 	login       tray.LoginFlow
@@ -178,7 +179,7 @@ func runWindowsDesktop() (runErr error) {
 	defer cancel()
 	// Keep one bounded pending request while the dispatcher handles its status
 	// tick. An unbuffered nonblocking send can reject a click while idle.
-	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
+	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
 	go app.operate()
 	preferences, err := tray.ReadPreferences(*config)
 	if err != nil {
@@ -421,7 +422,8 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			a.login.Cancel()
 			return a.controller.Stop()
 		case "login":
-			return requestDesktopLogin(a.controller, &a.login)
+			return nativePrimarySignIn(a.configPath, a.window.Show,
+				func() error { return requestDesktopLogin(a.controller, &a.login) })
 		case "logout":
 			a.login.Cancel()
 			return a.controller.Logout()

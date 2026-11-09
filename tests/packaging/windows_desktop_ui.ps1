@@ -122,7 +122,7 @@ $UiNames = @{
     '登录 Tailnet…'='Sign in to Tailnet…'; '退出设备登录'='Sign out of device';
     '刷新出口'='Refresh exits'; '查看日志'='View logs';
     '保存并应用'='Save & apply'; '最大化或还原'='Maximize or restore';
-    '刷新日志'='Refresh logs'; '关闭'='Close'
+    '刷新日志'='Refresh logs'; '关闭'='Close'; '确认并连接'='Confirm and connect'
 }
 function Find-Control([System.Windows.Automation.AutomationElement]$Root, [string]$Name, [System.Windows.Automation.ControlType]$Type) {
     foreach ($candidate in (@($Name) + @($UiNames[$Name]))) {
@@ -173,7 +173,12 @@ function Wait-Connected([System.Windows.Automation.AutomationElement]$Root, [str
     $condition = New-Object System.Windows.Automation.OrCondition(
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'已连接')),
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Connected')))
-    Wait-Until { $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition) } $Failure 60 | Out-Null
+    # This is an explicitly direct-only no-device fixture. A gateway chooser
+    # here would be a regression; production proxy policy still requires one.
+    Wait-Until {
+        if (Find-Button $Root '确认并连接') { throw 'Direct-only fixture unexpectedly requested an exit gateway.' }
+        $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
+    } $Failure 60 | Out-Null
 }
 function Invoke-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
     $button = Wait-Until { $found=Find-Button $Root $Name; if ($found -and $found.Current.IsEnabled) {$found} } "Missing or disabled button: $Name"

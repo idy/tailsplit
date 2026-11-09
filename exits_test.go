@@ -37,8 +37,10 @@ func compiledNative(t *testing.T, config Config) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(compiled); err != nil {
-		t.Fatal(err)
+	if TailscaleEnabled {
+		if err := Check(compiled); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var native map[string]any
 	if err := json.Unmarshal(compiled.JSON, &native); err != nil {
@@ -77,8 +79,10 @@ func TestUnsetDefaultRequiresChoiceButAllowsDeviceDiscovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := Check(compiled); err != nil {
-			t.Fatal("device discovery needs to work before choosing a default:", err)
+		if TailscaleEnabled {
+			if err := Check(compiled); err != nil {
+				t.Fatal("device discovery needs to work before choosing a default:", err)
+			}
 		}
 		if normalized.Rules.DefaultExit != UnsetExit || normalized.Rules.GlobalExit != UnsetExit {
 			t.Fatal("discovery silently assigned a traffic default")
@@ -401,6 +405,7 @@ func TestExtrasOnlyCompileDiscoveryAndStatusKeepStableIdentity(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			config := focusedExitTestConfig(t)
 			config.Tailscale = nil
+			config.DNS.MagicDomains = nil
 			config.Rules.Mode, config.Rules.DefaultExit, config.Rules.GlobalExit = mode, "office", "office"
 			config.Rules.Final = "proxy"
 			compiled, err := Compile(config)

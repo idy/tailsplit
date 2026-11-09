@@ -37,6 +37,11 @@
   longest-suffix MagicDNS ownership for DNS and traffic. Persist real DNS suffix
   metadata separately from display names, reserve routing keywords in exit IDs,
   focus primary login on its own device and accommodate full migration payloads.
+- Keep orphaned private-name policies fail-closed even when their owner is absent,
+  ignore credentials for omitted endpoints, and redirect native sign-in to Add exit
+  when no primary exists. Reject Windows device names as exit IDs, allow saved
+  inactive Global gateways to enter preflight, preserve surviving YAML references
+  during removal and keep tagged/untagged test contracts explicit.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

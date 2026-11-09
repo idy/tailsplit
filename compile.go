@@ -77,11 +77,11 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	var exits []ExitConfig
 	active := map[string]bool{}
 	primaryActive := config.Tailscale != nil && (config.Tailscale.ExitNode != "" || config.includePending)
-	if !global && config.Tailscale != nil && !primaryActive {
+	if !global && !config.includePending && !primaryActive {
 		if len(config.DNS.MagicDomains) > 0 {
 			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using dns.magic_domains", MainExit)
 		}
-		if len(config.Tailscale.Domains) > 0 {
+		if config.Tailscale != nil && len(config.Tailscale.Domains) > 0 {
 			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using tailscale.domains", MainExit)
 		}
 	}
@@ -90,6 +90,10 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	}
 	if config.Focus == "" {
 		for _, exit := range config.Exits {
+			if !global && !config.includePending && exit.ExitNode == "" &&
+				(exit.MagicDNSSuffix != "" || strings.HasSuffix(strings.ToLower(exit.Tailnet), ".ts.net")) {
+				return Compiled{}, fmt.Errorf("select an exit node for exit %q before using its MagicDNS suffix", exit.ID)
+			}
 			if exit.ExitNode != "" || config.includePending {
 				exits = append(exits, exit)
 				active[exit.ID] = true

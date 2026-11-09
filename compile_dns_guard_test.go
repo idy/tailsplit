@@ -211,6 +211,73 @@ func TestExtraMagicDNSSuffixPrefersIdentityMetadata(t *testing.T) {
 	}
 }
 
+func TestOrphanedPrivateSuffixPolicyFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name, suffix, tailnet, exit string
+		missingPrimary              bool
+	}{
+		{name: "missing primary", missingPrimary: true, exit: MainExit},
+		{name: "pending extra metadata", suffix: "private.ts.net", exit: "spare"},
+		{name: "pending extra legacy suffix", tailnet: "private.ts.net", exit: "spare"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.DefaultExit = "office"
+			if test.missingPrimary {
+				config.Tailscale = nil
+			} else {
+				config.Exits[1].MagicDNSSuffix = test.suffix
+				config.Exits[1].Tailnet = test.tailnet
+			}
+			for _, preflight := range []bool{false, true} {
+				var err error
+				if preflight {
+					_, err = compilePreflight(config, false)
+				} else {
+					_, err = CompileContext(t.Context(), config)
+				}
+				if err == nil || !strings.Contains(err.Error(), `exit "`+test.exit+`"`) {
+					t.Fatalf("preflight=%v: orphaned private DNS policy was silently dropped: %v", preflight, err)
+				}
+			}
+
+			// Login/discovery remains available while the policy is dormant.
+			discovery, err := compilePreflight(config, true)
+			if err != nil {
+				t.Fatalf("orphaned policy blocked device-only discovery: %v", err)
+			}
+			if TailscaleEnabled {
+				if err := Check(discovery); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var native map[string]any
+			if err := json.Unmarshal(discovery.JSON, &native); err != nil {
+				t.Fatal(err)
+			}
+			if native["inbounds"] != nil || endpointTags(native)["exit-spare"] == nil {
+				t.Fatal("discovery opened listeners or omitted the pending saved device")
+			}
+
+			// Global ignores the saved Split policy and runs only its selected device.
+			config.Rules.Mode, config.Rules.GlobalExit = RoutingGlobal, "office"
+			compiled, err := CompileContext(t.Context(), config)
+			if err != nil {
+				t.Fatalf("orphaned Split policy blocked Global: %v", err)
+			}
+			if TailscaleEnabled {
+				if err := Check(compiled); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if compiled.runtimeExit != "office" || strings.Contains(string(compiled.JSON), "private.ts.net") ||
+				strings.Contains(string(compiled.JSON), "primary.ts.net") {
+				t.Fatal("Global retained the ignored private suffix policy")
+			}
+		})
+	}
+}
+
 func firstSuffixRuleValue(rules []any, hostname, key string) string {
 	for _, raw := range rules {
 		rule := raw.(map[string]any)

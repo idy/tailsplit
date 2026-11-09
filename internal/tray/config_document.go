@@ -88,6 +88,69 @@ func detachScalarAliases(document, scalar *yaml.Node) {
 	}
 }
 
+// preserveAliases keeps surviving references valid when their anchored mapping
+// or sequence is replaced. Scalar anchors retain the compact representation
+// handled above; container references are expanded independently of the old tree.
+func preserveAliases(document, replaced *yaml.Node) error {
+	if replaced.Kind != yaml.MappingNode && replaced.Kind != yaml.SequenceNode {
+		detachScalarAliases(document, replaced)
+		return nil
+	}
+	removed := make(map[*yaml.Node]bool)
+	var collect func(*yaml.Node)
+	collect = func(node *yaml.Node) {
+		removed[node] = true
+		for _, child := range node.Content {
+			collect(child)
+		}
+	}
+	collect(replaced)
+	var visit func(*yaml.Node) error
+	visit = func(node *yaml.Node) error {
+		if removed[node] {
+			return nil
+		}
+		if node.Kind == yaml.AliasNode && removed[node.Alias] {
+			preserved, err := expandYAMLAliases(node.Alias, make(map[*yaml.Node]bool))
+			if err != nil {
+				return err
+			}
+			head, line, foot := node.HeadComment, node.LineComment, node.FootComment
+			*node = *preserved
+			node.HeadComment, node.LineComment, node.FootComment = head, line, foot
+			return nil
+		}
+		for _, child := range node.Content {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return visit(document)
+}
+
+func expandYAMLAliases(node *yaml.Node, visiting map[*yaml.Node]bool) (*yaml.Node, error) {
+	if node == nil || visiting[node] {
+		return nil, errors.New("cannot preserve a recursive YAML alias")
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+	if node.Kind == yaml.AliasNode {
+		return expandYAMLAliases(node.Alias, visiting)
+	}
+	copy := *node
+	copy.Anchor, copy.Alias, copy.Content = "", nil, nil
+	for _, child := range node.Content {
+		preserved, err := expandYAMLAliases(child, visiting)
+		if err != nil {
+			return nil, err
+		}
+		copy.Content = append(copy.Content, preserved)
+	}
+	return &copy, nil
+}
+
 // PatchConfigDocument preserves comments and unrelated values in the document.
 func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, error) {
 	if len(original) > MaxConfigBytes {
@@ -160,7 +223,9 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 					legacy = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str"}
 					nested.Content = append(nested.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "gfwlist"}, legacy)
 				}
-				detachScalarAliases(&document, legacy)
+				if err := preserveAliases(&document, legacy); err != nil {
+					return nil, err
+				}
 				// This changes only the local scalar, retaining its comments.
 				legacy.Kind, legacy.Tag, legacy.Value, legacy.Alias = yaml.ScalarNode, "!!str", "", nil
 			}
@@ -169,7 +234,9 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 			scalar = &yaml.Node{}
 			nested.Content = append(nested.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: change.Key}, scalar)
 		}
-		detachScalarAliases(&document, scalar)
+		if err := preserveAliases(&document, scalar); err != nil {
+			return nil, err
+		}
 		head, line, foot := scalar.HeadComment, scalar.LineComment, scalar.FootComment
 		if err := scalar.Encode(change.Value); err != nil {
 			return nil, err

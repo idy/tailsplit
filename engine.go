@@ -122,10 +122,6 @@ func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 	}()
 	data := compiled.JSON
 	if config.Tailscale != nil && config.Tailscale.AuthKeyEnv != "" {
-		key := os.Getenv(config.Tailscale.AuthKeyEnv)
-		if key == "" {
-			return nil, fmt.Errorf("required authentication variable %s is empty", config.Tailscale.AuthKeyEnv)
-		}
 		var native object
 		if err := json.Unmarshal(data, &native); err != nil {
 			return nil, err
@@ -138,13 +134,18 @@ func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 				endpoint = value
 			}
 		}
-		if endpoint == nil {
-			return nil, errors.New("compiled config does not contain the expected Tailscale endpoint")
-		}
-		endpoint["auth_key"] = key
-		data, err = json.Marshal(native)
-		if err != nil {
-			return nil, errors.New("could not inject the authentication key")
+		if endpoint != nil {
+			// A pending primary may be omitted while another device carries traffic.
+			// Its authentication variable is irrelevant until its endpoint runs.
+			key := os.Getenv(config.Tailscale.AuthKeyEnv)
+			if key == "" {
+				return nil, fmt.Errorf("required authentication variable %s is empty", config.Tailscale.AuthKeyEnv)
+			}
+			endpoint["auth_key"] = key
+			data, err = json.Marshal(native)
+			if err != nil {
+				return nil, errors.New("could not inject the authentication key")
+			}
 		}
 	}
 	ctx, cancel := context.WithCancel(ctx)

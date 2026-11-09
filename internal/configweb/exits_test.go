@@ -13,6 +13,9 @@ import (
 )
 
 func TestExitsAndRuleGroupsPatchAsStructuredLists(t *testing.T) {
+	if !tailsplit.TailscaleEnabled {
+		t.Skip("live exit save includes native Tailscale validation; use -tags with_gvisor")
+	}
 	server, path, _ := testServer(t)
 	original, revision, err := tray.ReadConfigDocument(path)
 	if err != nil {
@@ -66,7 +69,7 @@ func TestExitActionsAcceptOnlyConfiguredExits(t *testing.T) {
 	server, path, _ := testServer(t)
 	original, revision, _ := tray.ReadConfigDocument(path)
 	if status, body := request(t, server, "POST", "/api/config", map[string]any{"yaml": string(original), "revision": revision,
-		"changes": map[string]any{"tailscale.exit_node": "100.64.0.10", "exits": []map[string]any{{"id": "office", "exit_node": ""}}}}, nil); status != http.StatusOK {
+		"changes": map[string]any{"tailscale.exit_node": "", "exits": []map[string]any{{"id": "office", "exit_node": ""}}}}, nil); status != http.StatusOK {
 		t.Fatalf("save: %d %s", status, body)
 	}
 	var calls []string
@@ -133,6 +136,9 @@ func TestGlobalExitPatchValidatesSelectedDeviceAndRetainsSplitDraft(t *testing.T
 		{"chosen extra does not require primary", "", "100.101.0.11"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.extraNode != "" && !tailsplit.TailscaleEnabled {
+				t.Skip("selected Global exit requires native validation; use -tags with_gvisor")
+			}
 			server, path, _ := testServer(t)
 			original, revision, err := tray.ReadConfigDocument(path)
 			if err != nil {

@@ -116,6 +116,20 @@ const UnsetExit = "-"
 
 var exitID = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`)
 
+// ValidExitID reports whether id can name an additional exit and its state
+// directory on every supported platform. Routing keywords and Windows device
+// basenames are reserved even when running on another operating system.
+func ValidExitID(id string) bool {
+	if !exitID.MatchString(id) {
+		return false
+	}
+	switch id {
+	case MainExit, "direct", "proxy", "con", "prn", "aux", "nul":
+		return false
+	}
+	return !(len(id) == 4 && id[3] >= '1' && id[3] <= '9' && (id[:3] == "com" || id[:3] == "lpt"))
+}
+
 // ExitTag is the sing-box endpoint tag for an exit ID.
 func ExitTag(id string) string {
 	if id == "" || id == MainExit {
@@ -446,7 +460,7 @@ func (c *Config) normalizeExits() error {
 		if !exitID.MatchString(exit.ID) {
 			return fmt.Errorf("exits[%d].id must be 1–32 lowercase letters, digits or hyphens", index)
 		}
-		if exit.ID == MainExit || exit.ID == "direct" || exit.ID == "proxy" {
+		if !ValidExitID(exit.ID) {
 			return fmt.Errorf("exits[%d].id %q is reserved", index, exit.ID)
 		}
 		if seen[exit.ID] {
