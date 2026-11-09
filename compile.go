@@ -46,13 +46,29 @@ func CompileContext(ctx context.Context, config Config) (Compiled, error) {
 	return compile(ctx, config)
 }
 
+type compileOptions struct {
+	blockedExits map[string]bool
+}
+
 func compile(ctx context.Context, config Config) (Compiled, error) {
+	return compileWithOptions(ctx, config, compileOptions{})
+}
+
+func compileWithOptions(ctx context.Context, config Config, options compileOptions) (Compiled, error) {
 	base, err := os.Getwd()
 	if err != nil {
 		return Compiled{}, err
 	}
 	if err := config.normalize(base); err != nil {
 		return Compiled{}, err
+	}
+	isBlocked := func(id string) bool {
+		return !config.includePending && (options.blockedExits[id] || id == MainExit && options.blockedExits[""])
+	}
+	for _, id := range config.ExitIDs() {
+		if isBlocked(id) && requiresTrafficExit(config, id) {
+			return Compiled{}, fmt.Errorf("cannot block required traffic exit %q", id)
+		}
 	}
 	// Global traffic runs only its selected saved device. Device-only sessions
 	// (login, discovery, logout) keep inspecting every configured device.
@@ -77,6 +93,11 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	var exits []ExitConfig
 	active := map[string]bool{}
 	primaryActive := config.Tailscale != nil && (config.Tailscale.ExitNode != "" || config.includePending)
+	primaryID := MainExit
+	if config.Focus != "" {
+		primaryID = config.Focus
+	}
+	primaryBlocked := isBlocked(primaryID)
 	if !global && !config.includePending && !primaryActive {
 		if len(config.DNS.MagicDomains) > 0 {
 			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using dns.magic_domains", MainExit)
@@ -126,21 +147,23 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	servers := []object{directDNS}
 	type tailnetSuffix struct {
 		suffix, server, outbound string
+		blocked                  bool
 	}
 	var tailnetSuffixes []tailnetSuffix
 	// DNS and traffic share longest-suffix precedence. For exact duplicates,
 	// the primary device owns the suffix, followed by the first extra exit.
+	// Blocked owners keep that position so another device cannot claim their names.
 	ownedSuffixes := make(map[string]bool)
 	if primaryActive {
 		for _, suffix := range config.DNS.MagicDomains {
 			suffix = strings.ToLower(suffix)
 			if !ownedSuffixes[suffix] {
 				ownedSuffixes[suffix] = true
-				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, "dns-tailnet", "tailnet"})
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, "dns-tailnet", "tailnet", primaryBlocked})
 			}
 		}
 	}
-	if primaryActive {
+	if primaryActive && !primaryBlocked {
 		proxyDNS := resolver("dns-proxy", config.DNS.Proxy)
 		proxyDNS["detour"] = "tailnet"
 		servers = append(servers, proxyDNS)
@@ -153,9 +176,12 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	}
 	if config.Focus == "" {
 		for _, exit := range exits {
-			extra := resolver(proxyServer(exit.ID), config.DNS.Proxy)
-			extra["detour"] = ExitTag(exit.ID)
-			servers = append(servers, extra)
+			blocked := isBlocked(exit.ID)
+			if !blocked {
+				extra := resolver(proxyServer(exit.ID), config.DNS.Proxy)
+				extra["detour"] = ExitTag(exit.ID)
+				servers = append(servers, extra)
+			}
 			suffix := strings.ToLower(exit.MagicDNSSuffix)
 			if suffix == "" && strings.HasSuffix(strings.ToLower(exit.Tailnet), ".ts.net") {
 				suffix = strings.ToLower(exit.Tailnet)
@@ -163,11 +189,13 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 			if suffix != "" && !ownedSuffixes[suffix] {
 				ownedSuffixes[suffix] = true
 				tag := "dns-tailnet-" + exit.ID
-				servers = append(servers, object{
-					"type": "tailscale", "tag": tag, "endpoint": ExitTag(exit.ID),
-					"accept_default_resolvers": false, "accept_search_domain": false,
-				})
-				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, tag, ExitTag(exit.ID)})
+				if !blocked {
+					servers = append(servers, object{
+						"type": "tailscale", "tag": tag, "endpoint": ExitTag(exit.ID),
+						"accept_default_resolvers": false, "accept_search_domain": false,
+					})
+				}
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, tag, ExitTag(exit.ID), blocked})
 			}
 		}
 	}
@@ -219,15 +247,23 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 		dnsRules = append(dnsRules, withAction(match, "server", "dns-direct"))
 	}
 	for _, suffix := range tailnetSuffixes {
-		dnsRules = append(dnsRules, withAction(object{"domain_suffix": []string{suffix.suffix}}, "server", suffix.server))
+		if suffix.blocked {
+			dnsRules = append(dnsRules, object{"domain_suffix": []string{suffix.suffix}, "action": "predefined", "rcode": "REFUSED"})
+		} else {
+			dnsRules = append(dnsRules, withAction(object{"domain_suffix": []string{suffix.suffix}}, "server", suffix.server))
+		}
 	}
 	if primaryActive && len(config.Tailscale.Domains) > 0 {
-		// Public custom names keep real answers, including Tailscale Service VIPs.
-		server := "dns-direct"
-		if global {
-			server = "dns-proxy"
+		if primaryBlocked {
+			dnsRules = append(dnsRules, object{"domain_suffix": config.Tailscale.Domains, "action": "predefined", "rcode": "REFUSED"})
+		} else {
+			// Public custom names keep real answers, including Tailscale Service VIPs.
+			server := "dns-direct"
+			if global {
+				server = "dns-proxy"
+			}
+			dnsRules = append(dnsRules, withAction(object{"domain_suffix": config.Tailscale.Domains}, "server", server))
 		}
-		dnsRules = append(dnsRules, withAction(object{"domain_suffix": config.Tailscale.Domains}, "server", server))
 	}
 	for _, match := range directMatchers {
 		appendDirectDNS(match)
@@ -307,20 +343,29 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	{
 		for _, suffix := range tailnetSuffixes {
 			match := object{"domain_suffix": []string{suffix.suffix}}
-			routes = append(routes,
-				object{"domain_suffix": match["domain_suffix"], "action": "resolve", "server": suffix.server},
-				withAction(match, "outbound", suffix.outbound),
-			)
+			if suffix.blocked {
+				match["action"] = "reject"
+				routes = append(routes, match)
+			} else {
+				routes = append(routes,
+					object{"domain_suffix": match["domain_suffix"], "action": "resolve", "server": suffix.server},
+					withAction(match, "outbound", suffix.outbound),
+				)
+			}
 		}
 		if primaryActive && len(config.Tailscale.Domains) > 0 {
-			server := "dns-direct"
-			if global {
-				server = "dns-proxy"
+			if primaryBlocked {
+				routes = append(routes, object{"domain_suffix": config.Tailscale.Domains, "action": "reject"})
+			} else {
+				server := "dns-direct"
+				if global {
+					server = "dns-proxy"
+				}
+				routes = append(routes,
+					object{"domain_suffix": config.Tailscale.Domains, "action": "resolve", "server": server},
+					withAction(object{"domain_suffix": config.Tailscale.Domains}, "outbound", "tailnet"),
+				)
 			}
-			routes = append(routes,
-				object{"domain_suffix": config.Tailscale.Domains, "action": "resolve", "server": server},
-				withAction(object{"domain_suffix": config.Tailscale.Domains}, "outbound", "tailnet"),
-			)
 		}
 	}
 	for _, match := range directMatchers {
@@ -422,14 +467,16 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 			focus = config.Focus
 		}
 		var endpoints []object
-		if primaryActive {
+		if primaryActive && !primaryBlocked {
 			primary := device(focus, config.Tailscale.Hostname, config.Tailscale.ExitNode)
 			primary["tag"] = "tailnet"
 			endpoints = append(endpoints, primary)
 		}
 		if config.Focus == "" {
 			for _, exit := range exits {
-				endpoints = append(endpoints, device(exit.ID, exit.Hostname, exit.ExitNode))
+				if !isBlocked(exit.ID) {
+					endpoints = append(endpoints, device(exit.ID, exit.Hostname, exit.ExitNode))
+				}
 			}
 		}
 		if len(endpoints) > 0 {

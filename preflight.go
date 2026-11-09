@@ -16,18 +16,32 @@ import (
 
 // PrepareTailnet authenticates and checks the selected exit without listeners,
 // TUN interfaces, DNS hijacking or system routes. It releases the state lock
-// before the network core starts.
+// before the network core starts. Use PrepareConnection when optional signed-out
+// endpoints should be isolated in the resulting runtime configuration.
 func PrepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) (err error) {
 	if err := ValidateTrafficExit(config); err != nil {
 		return err
 	}
-	return prepareTailnet(ctx, config, callback, writer, true, false)
+	return prepareTailnet(ctx, config, callback, writer, true, false, nil)
+}
+
+// PrepareConnection checks traffic readiness and returns a safe runtime plan.
+// Unauthenticated optional devices are omitted with their private destinations
+// blocked, rather than preventing an unrelated ready gateway from starting.
+func PrepareConnection(ctx context.Context, config Config, compiled Compiled, callback func(Status), writer singlog.PlatformWriter) (Compiled, error) {
+	if err := ValidateTrafficExit(config); err != nil {
+		return Compiled{}, err
+	}
+	if err := prepareTailnet(ctx, config, callback, writer, true, false, &compiled); err != nil {
+		return Compiled{}, err
+	}
+	return compiled, nil
 }
 
 // AuthenticateTailnet completes once this device is logged into the expected
 // Tailnet. Login does not depend on exit visibility, availability or approval.
 func AuthenticateTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) error {
-	return prepareTailnet(ctx, config, callback, writer, false, false)
+	return prepareTailnet(ctx, config, callback, writer, false, false, nil)
 }
 
 // DiscoverTailnet refreshes the picker without requiring an exit, opening an
@@ -36,10 +50,10 @@ func AuthenticateTailnet(ctx context.Context, config Config, callback func(Statu
 func DiscoverTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	return prepareTailnet(ctx, config, callback, writer, false, true)
+	return prepareTailnet(ctx, config, callback, writer, false, true, nil)
 }
 
-func prepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter, requireExit, discover bool) (err error) {
+func prepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter, requireExit, discover bool, runtime *Compiled) (err error) {
 	if len(config.ExitIDs()) == 0 {
 		return nil
 	}
@@ -65,21 +79,19 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	for _, exit := range config.Exits {
 		dnsIdentities[exit.ID] = exit.MagicDNSSuffix
 	}
-	var required, identityOnly, checked []engineExit
+	var required, identityOnly, optional []engineExit
 	for _, exit := range engine.exits {
 		if exit.tailnet == "" {
 			exit.tailnet = dnsIdentities[exit.id]
 		}
 		if !requireExit || requiresTrafficExit(config, exit.id) {
 			required = append(required, exit)
-		} else if exit.tailnet != "" {
-			// Optional nodes need not be online, but a retained endpoint with a
-			// configured identity guard must never route into another Tailnet.
-			identityOnly = append(identityOnly, exit)
 		} else {
-			continue
+			optional = append(optional, exit)
+			if exit.tailnet != "" {
+				identityOnly = append(identityOnly, exit)
+			}
 		}
-		checked = append(checked, exit)
 	}
 	// Several devices report concurrently; keep only each one's latest status.
 	var latestMu sync.Mutex
@@ -141,11 +153,11 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 				return err
 			}
 			if done {
-				return nil
+				return isolateOptionalExits(ctx, config, runtime, optional, snapshot)
 			}
 			// Only an actual interactive login pauses the deadline. Backend
 			// Starting/Stopped transitions must not discard a running timeout.
-			deadline.update(waiting, awaitingInteractiveLogin(checked, snapshot, discover))
+			deadline.update(waiting, awaitingInteractiveLogin(required, snapshot, discover))
 		}
 	}
 }
@@ -188,7 +200,9 @@ func connectionReadiness(required, identityOnly []engineExit, snapshot map[strin
 	if err != nil {
 		return
 	}
-	identityReady, _, identityPending, identityErr := tailnetReadiness(identityOnly, snapshot, false, discover)
+	// A signed-out optional identity is handled by runtime isolation. Required
+	// devices still retain the interactive-login behavior above.
+	identityReady, _, identityPending, identityErr := tailnetReadiness(identityOnly, snapshot, false, true)
 	if identityErr != nil {
 		return false, false, "", identityErr
 	}
@@ -199,6 +213,38 @@ func connectionReadiness(required, identityOnly []engineExit, snapshot map[strin
 		}
 	}
 	return
+}
+
+func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled, optional []engineExit, snapshot map[string]Status) error {
+	blocked := unavailableOptionalExits(optional, snapshot)
+	if len(blocked) == 0 {
+		return nil
+	}
+	if runtime == nil {
+		return errors.New("optional Tailnet devices are not authenticated; a filtered runtime plan is required")
+	}
+	isolated, err := compileWithOptions(ctx, config, compileOptions{blockedExits: blocked})
+	if err == nil {
+		*runtime = isolated
+	}
+	return err
+}
+
+// unavailableOptionalExits identifies endpoints that must stay closed for this
+// runtime. Reconnecting or explicitly signing in reevaluates their saved state.
+func unavailableOptionalExits(exits []engineExit, snapshot map[string]Status) map[string]bool {
+	blocked := make(map[string]bool)
+	for _, exit := range exits {
+		ready, err := authenticationReady(exit.tailnet, snapshot[exit.id])
+		if !ready || err != nil {
+			id := exit.id
+			if id == "" {
+				id = MainExit
+			}
+			blocked[id] = true
+		}
+	}
+	return blocked
 }
 
 // requiresTrafficExit distinguishes explicit gateways from optional saved devices.

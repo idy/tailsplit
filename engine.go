@@ -406,7 +406,9 @@ func (e *Engine) Close() error {
 
 func Run(ctx context.Context, config Config, compiled Compiled) error {
 	if len(config.ExitIDs()) > 0 {
-		if err := PrepareTailnet(ctx, config, nil, nil); err != nil {
+		var err error
+		compiled, err = PrepareConnection(ctx, config, compiled, nil, nil)
+		if err != nil {
 			return err
 		}
 	}

@@ -79,9 +79,12 @@ selected by `rules.global_exit` for all captured traffic. Split rules remain
 saved while hidden in Global. Connection preflight checks node availability for
 the default gateway, explicit final exit and nonempty rule groups. Other retained
 endpoints with an identity guard must authenticate to their configured Tailnet,
-but their nodes need not be online. Required devices keep their login session
-alive until sign-in completes. Only interactive authentication pauses the
-availability timeout; other backend transitions preserve its deadline.
+but their nodes need not be online. Signed-out optional devices are omitted from
+the running core, and their private names are refused without changing saved
+profiles or blocking the selected gateway. Reconnecting reevaluates them. Required
+devices keep their login session alive until sign-in completes. Only required
+devices' interactive authentication pauses the availability timeout; other backend
+transitions preserve its deadline.
 
 An extra's `tailnet` is its login identity guard; `magic_dns_suffix` stores the
 actual DNS suffix independently of its display network name. DNS and traffic

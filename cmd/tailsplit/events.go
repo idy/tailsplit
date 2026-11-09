@@ -66,9 +66,10 @@ func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.
 		logWriter = stream
 	}
 	if len(config.ExitIDs()) > 0 {
-		if err := tailsplit.PrepareTailnet(ctx, config, func(status tailsplit.Status) {
+		compiled, err = tailsplit.PrepareConnection(ctx, config, compiled, func(status tailsplit.Status) {
 			_ = stream.send(status)
-		}, logWriter); err != nil {
+		}, logWriter)
+		if err != nil {
 			return err
 		}
 	}

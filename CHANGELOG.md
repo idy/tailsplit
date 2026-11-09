@@ -31,8 +31,10 @@
   preflight, without discarding their login session. Unreferenced saved nodes no
   longer have to be online for unrelated Split connections; explicitly selected
   gateways still require readiness. Other retained guarded endpoints must validate
-  their identity. Preserve readiness deadlines through
-  non-authentication backend transitions.
+  their identity. Omit signed-out optional devices from the running core and
+  refuse their private names without blocking a ready selected gateway. Preserve
+  readiness deadlines through non-authentication backend transitions; optional
+  authentication never pauses a required gateway's deadline.
 - Keep pending-primary private-name policy fail-closed and use consistent
   longest-suffix MagicDNS ownership for DNS and traffic. Persist real DNS suffix
   metadata separately from display names, reserve routing keywords in exit IDs,
