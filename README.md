@@ -81,10 +81,12 @@ the default gateway, explicit final exit and nonempty rule groups. Other retaine
 endpoints with an identity guard must authenticate to their configured Tailnet,
 but their nodes need not be online. Signed-out optional devices are omitted from
 the running core, and their private names are refused without changing saved
-profiles or blocking the selected gateway. Reconnecting reevaluates them. Required
-devices keep their login session alive until sign-in completes. Only required
-devices' interactive authentication pauses the availability timeout; other backend
-transitions preserve its deadline.
+profiles or blocking the selected gateway. Reconnecting reevaluates them. The
+selected traffic device keeps its interactive login session alive until sign-in
+completes. If another required final or rule-group exit needs login, preflight
+stops with a recoverable sign-in error: open that saved exit, sign in, then retry
+connecting. Only the selected device's interactive authentication pauses the
+availability timeout; other backend transitions preserve its deadline.
 
 An extra's `tailnet` is its login identity guard; `magic_dns_suffix` stores the
 actual DNS suffix independently of its display network name. DNS and traffic

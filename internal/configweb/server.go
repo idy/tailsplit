@@ -191,6 +191,7 @@ func (s *Server) describe(data []byte) document {
 	doc.Parsed = true
 	config, err := tray.ValidateConfigDocument(s.options.ConfigPath, data)
 	if err == nil {
+		normalizeExitReferences(doc.Values, config)
 		err = appservice.ValidateAppConfig(config)
 	}
 	if err != nil {
@@ -199,6 +200,31 @@ func (s *Server) describe(data []byte) document {
 	}
 	doc.Valid = true
 	return doc
+}
+
+// Preserve the validated string identities instead of YAML's numeric/boolean
+// interpretation. Keep source text and all unrelated values as written.
+func normalizeExitReferences(values map[string]any, config tailsplit.Config) {
+	exits, _ := values["exits"].([]any)
+	for index, raw := range exits {
+		if exit, ok := raw.(map[string]any); ok {
+			exit["id"] = config.Exits[index].ID
+		}
+	}
+	rules, _ := values["rules"].(map[string]any)
+	for key, id := range map[string]string{
+		"default_exit": config.Rules.DefaultExit, "global_exit": config.Rules.GlobalExit, "final": config.Rules.Final,
+	} {
+		if _, present := rules[key]; present {
+			rules[key] = id
+		}
+	}
+	routes, _ := rules["routes"].([]any)
+	for index, raw := range routes {
+		if route, ok := raw.(map[string]any); ok {
+			route["exit"] = config.Rules.Routes[index].Exit
+		}
+	}
 }
 
 func (s *Server) readConfig(w http.ResponseWriter, _ *http.Request) {

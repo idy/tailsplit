@@ -201,6 +201,11 @@ func TestControllerLoginIsMemoryOnlyAndFailureIsVisible(t *testing.T) {
 	if strings.Contains(string(log), "test-login") {
 		t.Fatal("private status event was copied to the log")
 	}
+	controller.onEvent([]byte(`{"event":"error","message":"required office exit needs sign-in"}`))
+	controller.onEvent([]byte(`{"event":"status","backend_state":"NeedsLogin","auth_url":"https://login.tailscale.com/a/late-login"}`))
+	if snapshot := controller.Snapshot(); snapshot.State != "failed" || snapshot.Error != "required office exit needs sign-in" || snapshot.LoginURL != "" {
+		t.Fatal("failed preflight retained an unusable login link or lost its recovery error", snapshot)
+	}
 	_ = controller.Stop()
 	failing := testController(t, "fail")
 	if err := failing.Start(); err != nil {

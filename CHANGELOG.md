@@ -27,9 +27,11 @@
   system TUN and FakeIP enabled, direct Internet IPv6 disabled, MTU 1400, and
   auto-connect after a device and gateway are configured. Keep existing user
   configuration intact and ship no personal device identities.
-- Wait for required additional devices to finish authorization during connection
-  preflight, without discarding their login session. Unreferenced saved nodes no
-  longer have to be online for unrelated Split connections; explicitly selected
+- Wait for the selected traffic device to finish authorization during connection
+  preflight, without discarding its login session. If another required final or
+  rule-group exit needs login, stop preflight with a recoverable sign-in error
+  rather than waiting without a usable authorization link. Unreferenced saved nodes
+  no longer have to be online for unrelated Split connections; explicitly selected
   gateways still require readiness. Other retained guarded endpoints must validate
   their identity. Omit signed-out optional devices from the running core and
   refuse their private names without blocking a ready selected gateway. Preserve
@@ -47,6 +49,9 @@
 - Normalize directly constructed focused configurations before traffic validation,
   reject oversized app-service inventories before migrating any saved identities,
   and wait for fresh device status when restarting an additional exit's login.
+- Preserve scalar YAML exit IDs and route references as validated strings in
+  configuration responses, keeping saved devices visible and intact when adding
+  another exit, including leading-zero and large numeric identities.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

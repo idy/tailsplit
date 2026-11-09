@@ -148,7 +148,7 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			snapshot := maps.Clone(latest)
 			latestMu.Unlock()
 			var done, waiting bool
-			done, waiting, pending, err = connectionReadiness(required, identityOnly, snapshot, requireExit, discover)
+			done, waiting, pending, err = connectionReadiness(config.TrafficExitID(), required, identityOnly, snapshot, requireExit, discover)
 			if err != nil {
 				return err
 			}
@@ -195,13 +195,27 @@ func awaitingInteractiveLogin(exits []engineExit, snapshot map[string]Status, di
 	return false
 }
 
-func connectionReadiness(required, identityOnly []engineExit, snapshot map[string]Status, requireExit, discover bool) (done, waiting bool, pending string, err error) {
+func connectionReadiness(interactiveExit string, required, identityOnly []engineExit, snapshot map[string]Status, requireExit, discover bool) (done, waiting bool, pending string, err error) {
+	if requireExit && !discover {
+		for _, exit := range required {
+			id := exit.id
+			if id == "" {
+				id = MainExit
+			}
+			if id != interactiveExit && snapshot[exit.id].BackendState == "NeedsLogin" {
+				// The desktop connection flow can authorize only its selected gateway.
+				// Release this session so the saved exit's explicit sign-in action
+				// can start a focused helper with a fresh, usable authorization URL.
+				return false, false, id, fmt.Errorf("exit %q needs sign-in; open this saved exit in Exit Nodes and sign in, then connect again; TUN was not enabled", id)
+			}
+		}
+	}
 	done, waiting, pending, err = tailnetReadiness(required, snapshot, requireExit, discover)
 	if err != nil {
 		return
 	}
-	// A signed-out optional identity is handled by runtime isolation. Required
-	// devices still retain the interactive-login behavior above.
+	// A signed-out optional identity is handled by runtime isolation. The selected
+	// gateway retains interactive login; other required devices sign in explicitly.
 	identityReady, _, identityPending, identityErr := tailnetReadiness(identityOnly, snapshot, false, true)
 	if identityErr != nil {
 		return false, false, "", identityErr

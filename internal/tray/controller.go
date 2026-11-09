@@ -551,7 +551,9 @@ func (c *Controller) onEvent(data []byte) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.command == nil || c.stopping {
+	if c.command == nil || c.stopping || c.snapshot.State == "failed" {
+		// A preflight error ends this session. Late status or ready events during
+		// cleanup must not replace its actionable error before the helper exits.
 		return
 	}
 	if event.Mode != "" {
@@ -592,6 +594,7 @@ func (c *Controller) onEvent(data []byte) {
 	}
 	if event.Event == "error" {
 		c.snapshot.State = "failed"
+		c.snapshot.LoginURL = ""
 		c.snapshot.Error = RedactLog(event.Message)
 		_, _ = io.WriteString(c.log, c.snapshot.Error+"\n")
 		return

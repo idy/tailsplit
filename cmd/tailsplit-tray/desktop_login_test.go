@@ -2,8 +2,14 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/idy/tailsplit/internal/tray"
 )
@@ -42,6 +48,108 @@ func (c *desktopLoginFixture) Stop() error {
 	c.snapshot.Mode = ""
 	c.snapshot.State = "stopped"
 	return nil
+}
+
+func TestRequiredExitLoginHelperProcess(t *testing.T) {
+	if os.Getenv("TAILSPLIT_REQUIRED_LOGIN_HELPER") != "1" {
+		return
+	}
+	if !slices.Contains(os.Args, "--exit") {
+		fmt.Println(`{"event":"status","backend_state":"Running","network_name":"home.ts.net","exit_visible":true,"exit_online":true,"phase":"preflight"}`)
+		fmt.Println(`{"event":"status","exit":"office","backend_state":"NeedsLogin","auth_url":"https://login.tailscale.com/a/discarded-preflight","phase":"preflight"}`)
+		fmt.Println(`{"event":"error","message":"exit \"office\" needs sign-in; open this saved exit in Exit Nodes and sign in, then connect again; TUN was not enabled"}`)
+		// A queued peer update must not hide the sign-in error during cleanup.
+		fmt.Println(`{"event":"status","backend_state":"Running","exit_visible":true,"exit_online":true,"phase":"preflight"}`)
+		os.Exit(3)
+	}
+	index := slices.Index(os.Args, "--exit")
+	if index+1 >= len(os.Args) || os.Args[index+1] != "office" {
+		os.Exit(4)
+	}
+	fmt.Println(`{"event":"preflight","mode":"login"}`)
+	fmt.Println(`{"event":"status","exit":"office","backend_state":"NeedsLogin","auth_url":"https://login.tailscale.com/a/fresh-required-office"}`)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(os.Getenv("TAILSPLIT_REQUIRED_LOGIN_AUTHORIZED")); err == nil {
+			// Explicit device login succeeds before its node is online.
+			fmt.Println(`{"event":"status","exit":"office","backend_state":"Running","network_name":"office.ts.net","exit_online":false}`)
+			fmt.Println(`{"event":"authenticated","mode":"login"}`)
+			os.Exit(0)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	os.Exit(5)
+}
+
+func TestDesktopRequiredSecondaryLoginRecoversThroughFocusedSignIn(t *testing.T) {
+	directory := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(directory, "config.yaml")
+	config := "tailscale:\n  exit_node: 100.64.0.10\nexits:\n  - id: office\n    exit_node: 100.64.0.20\nrules:\n  mode: split\n  default_exit: main\n  routes:\n    - exit: office\n      domains: [corp.example]\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	authorized := filepath.Join(directory, "authorized")
+	controller, err := tray.New(tray.Options{
+		Helper: executable, ConfigPath: configPath, LogPath: filepath.Join(directory, "core.log"),
+		HelperArgs: []string{"-test.run=^TestRequiredExitLoginHelperProcess$", "--"},
+		ExtraEnv:   []string{"TAILSPLIT_REQUIRED_LOGIN_HELPER=1", "TAILSPLIT_REQUIRED_LOGIN_AUTHORIZED=" + authorized},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+	wait := func(state string) tray.Snapshot {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			snapshot := controller.Snapshot()
+			if snapshot.State == state && !snapshot.Active {
+				return snapshot
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("helper did not finish as %s: %+v", state, controller.Snapshot())
+		return tray.Snapshot{}
+	}
+	if err := controller.Start(); err != nil {
+		t.Fatal(err)
+	}
+	failed := wait("failed")
+	if !strings.Contains(failed.Error, `exit "office"`) || !strings.Contains(failed.Error, "sign in") ||
+		failed.BackendState != "Running" || failed.Exits["office"].BackendState != "NeedsLogin" || failed.LoginURL != "" {
+		t.Fatal("failed preflight did not retain a recoverable saved-exit sign-in state", failed)
+	}
+	// Both desktop implementations use this operation for the web panel's
+	// login-exit:office action. It must replace the failed helper, not connect.
+	var flow tray.LoginFlow
+	if err := requestDesktopExitLogin(controller, &flow, "office"); err != nil {
+		t.Fatal("the saved exit's sign-in action could not recover", err)
+	}
+	const freshLink = "https://login.tailscale.com/a/fresh-required-office"
+	link := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if link = flow.Next(controller.Snapshot()); link != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if link != freshLink || !flow.Opening() || flow.Next(controller.Snapshot()) != "" {
+		t.Fatal("explicit sign-in did not open the fresh office link exactly once", link, flow.Message(), controller.Snapshot())
+	}
+	flow.Complete(nil)
+	if err := os.WriteFile(authorized, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	authenticated := wait("authenticated")
+	if authenticated.BackendState != "Running" || authenticated.NetworkName != "home.ts.net" ||
+		authenticated.Exits["office"].BackendState != "Running" || authenticated.Exits["office"].ExitOnline || authenticated.LoginURL != "" {
+		t.Fatal("focused recovery did not authenticate office independently of main and node availability", authenticated)
+	}
 }
 
 func TestDesktopLoginPreservesActiveAuthenticationRecovery(t *testing.T) {

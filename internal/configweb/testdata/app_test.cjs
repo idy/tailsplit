@@ -1324,6 +1324,49 @@ const officeSnapshot = (changes = {}) => exitsSnapshot({ exits: { office: {
   ...changes } } });
 const extraRow = (app, id) => app.$('#extra-exits').children.flatMap(item => item.children).find(child => child.dataset.exitRow === id);
 
+test('backend-normalized scalar exit IDs remain selectable and survive Add', async () => {
+  for (const id of ['0', '001', 'false', '12345678901234567890123456789012']) {
+    const initial = multiExitDocument('100.101.0.11');
+    initial.yaml = initial.yaml.replace('id: office', `id: ${id}`);
+    initial.values.exits[0].id = id;
+    initial.values.rules = { default_exit: id, global_exit: id, final: id,
+      routes: [{ exit: id, domains: ['private.example'] }] };
+    const original = { ...initial.values.exits[0] };
+    const snapshot = officeSnapshot();
+    snapshot.exits = { [id]: snapshot.exits.office };
+    const app = await page(snapshot, '', {}, initial);
+    assert.ok(extraRow(app, id), 'the existing scalar-ID device must stay visible');
+    assert.equal(app.$('#connection-exit').value, id);
+    assert.equal(app.$('#default-exit').value, id);
+    assert.equal(app.$('#global-exit').value, id);
+    assert.equal(app.$('#final-route').value, id);
+    assert.equal(app.$('#route-groups').children[0].children[0].children[1].value, id);
+    await extraRow(app, id).emit('click');
+    assert.equal(app.$('#exit-picker-dialog').open, true);
+    assert.ok(exitChoice(app, '100.101.0.11'), 'picker must use this device rather than the primary');
+    await app.$('#cancel-exit-picker').emit('click');
+    let saved = false;
+    app.override = request => {
+      if (request.path === '/api/config' && request.method === 'POST') {
+        assert.deepEqual(request.data.changes, { exits: [original, { id: 'exit-1', auto_name: true, exit_node: '' }] });
+        saved = true;
+        app.config = { ...app.config, revision: 'added', values: { ...app.config.values, exits: request.data.changes.exits } };
+        app.snapshot.revision = 'added';
+        return response(app.config);
+      }
+      if (request.path === '/api/action') {
+        assert.deepEqual(request.data, { action: 'login-exit', exit: 'exit-1' });
+        return response({ ok: true });
+      }
+      return undefined;
+    };
+    await app.$('#add-exit').emit('click');
+    assert.equal(saved, true);
+    assert.ok(extraRow(app, id), 'Add must preserve the saved identity');
+    assert.equal(app.$('#connection-exit').value, id);
+  }
+});
+
 test('an additional exit opens its own picker and saves only its node', async () => {
   const app = await page(officeSnapshot(), '', {}, multiExitDocument());
   assert.equal(app.$('#extra-exits').children.length, 1);
