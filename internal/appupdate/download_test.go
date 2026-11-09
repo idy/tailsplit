@@ -281,14 +281,23 @@ func TestRedirectLimitAndSignedURLErrorPrivacy(t *testing.T) {
 }
 
 func TestDownloadCancellationAndTimeoutRemovePartialArtifacts(t *testing.T) {
-	for _, stage := range []string{"manifest", "package", "package timeout"} {
-		t.Run(stage, func(t *testing.T) {
+	for _, stage := range []struct {
+		name     string
+		manifest bool
+		timeout  bool
+	}{
+		{name: "manifest", manifest: true},
+		{name: "package"},
+		{name: "package timeout", timeout: true},
+		{name: "manifest timeout", manifest: true, timeout: true},
+	} {
+		t.Run(stage.name, func(t *testing.T) {
 			f := fixture(t, "v0.6.2", "darwin", "arm64")
 			started := make(chan struct{})
 			u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
 				isSums := strings.HasSuffix(r.URL.Path, "/SHA256SUMS")
 				isPackage := strings.HasSuffix(r.URL.Path, ".zip")
-				if stage == "manifest" && isSums || stage != "manifest" && isPackage {
+				if stage.manifest && isSums || !stage.manifest && isPackage {
 					if isPackage {
 						_, _ = w.Write(f.payload[:len(f.payload)/2])
 						w.(http.Flusher).Flush()
@@ -300,7 +309,7 @@ func TestDownloadCancellationAndTimeoutRemovePartialArtifacts(t *testing.T) {
 				f.serve(w, r)
 			})
 			requireCheck(t, u)
-			if stage == "package timeout" {
+			if stage.timeout {
 				u.downloadTimeout = 75 * time.Millisecond
 			}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -313,13 +322,15 @@ func TestDownloadCancellationAndTimeoutRemovePartialArtifacts(t *testing.T) {
 				}
 				done <- err
 			}()
-			waitSignal(t, started)
-			if stage != "package timeout" {
+			// The overall deadline can expire before a package request starts,
+			// including during checksum fetching or Windows private-directory setup.
+			if !stage.timeout {
+				waitSignal(t, started)
 				cancel()
 			}
 			err := waitError(t, done)
 			expected := error(context.Canceled)
-			if stage == "package timeout" {
+			if stage.timeout {
 				expected = context.DeadlineExceeded
 			}
 			if !errors.Is(err, expected) || u.Snapshot().Downloading || u.Snapshot().Error == "" {
