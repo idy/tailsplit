@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -117,6 +118,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		if config, err = config.FocusExit(*exit); err != nil {
 			return err
 		}
+	}
+	if *parentPID != 0 || strings.HasPrefix(command, "app-") {
+		prepareAppProcess()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

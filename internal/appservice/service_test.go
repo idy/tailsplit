@@ -6,16 +6,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -210,109 +209,358 @@ func TestStateLeaseCloseAcceptsConfirmedEOF(t *testing.T) {
 	}
 }
 
+type eofDuringStopConnection struct {
+	net.Conn
+	peer     net.Conn
+	pending  chan struct{}
+	readDone <-chan struct{}
+}
+
+func (c *eofDuringStopConnection) Read(data []byte) (int, error) {
+	close(c.pending)
+	return c.Conn.Read(data)
+}
+
+func (c *eofDuringStopConnection) Write([]byte) (int, error) {
+	_ = c.peer.Close()
+	<-c.readDone // Publish genuine EOF after Close's first check, before stop fails.
+	return 0, syscall.EPIPE
+}
+
+func TestStateLeaseConfirmedEOFDoesNotRequireUnavailableService(t *testing.T) {
+	for _, duringStop := range []bool{false, true} {
+		t.Run(strconv.FormatBool(duringStop), func(t *testing.T) {
+			directory := privateTestDirectory(t)
+			unlock, err := tailsplit.LockSavedState(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, service := net.Pipe()
+			defer service.Close()
+			connection := &stateLeaseConnection{Conn: client, release: unlock, sessionID: "finished-session", dial: func(context.Context) (net.Conn, error) {
+				t.Error("confirmed EOF tried to recover through an unavailable service")
+				return nil, ErrNotInstalled
+			}}
+			if duringStop {
+				pending, readDone := make(chan struct{}), make(chan struct{})
+				connection.Conn = &eofDuringStopConnection{Conn: client, peer: service, pending: pending, readDone: readDone}
+				go func() {
+					if _, err := connection.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+						t.Error("pending fixture reader did not receive orderly EOF", err)
+					}
+					close(readDone)
+				}()
+				<-pending
+			} else {
+				_ = service.Close()
+				if _, err := connection.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+					t.Fatal("fixture did not confirm orderly EOF", err)
+				}
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- connection.Close() }()
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("confirmed cleanup retained its lease after the service disappeared")
+			}
+			if release, err := tailsplit.LockSavedState(directory); err != nil {
+				t.Fatal("confirmed EOF did not release the CLI lease", err)
+			} else {
+				_ = release()
+			}
+		})
+	}
+}
+
 // A hard failure followed by EOF models transports whose next read reports EOF
 // after losing the channel, while the service can still be cleaning up.
 type failedCleanupConnection struct {
 	net.Conn
-	failed bool
-	closed chan struct{}
+	failed     bool
+	failure    error
+	acceptStop bool
 }
 
 func (c *failedCleanupConnection) Read([]byte) (int, error) {
 	if !c.failed {
 		c.failed = true
+		if c.failure != nil {
+			return 0, c.failure
+		}
 		return 0, errors.New("fixture transport failure before cleanup acknowledgement")
 	}
 	return 0, io.EOF
 }
 
-func (c *failedCleanupConnection) Close() error {
-	defer close(c.closed)
-	return c.Conn.Close()
+func (c *failedCleanupConnection) Write(data []byte) (int, error) {
+	if c.acceptStop && bytes.Equal(data, []byte("stop\n")) {
+		return len(data), nil
+	}
+	return c.Conn.Write(data)
 }
 
-func TestStateLeaseCloseRetainsUnconfirmedCleanup(t *testing.T) {
-	if mode := os.Getenv("TAILSPLIT_TEST_LEASE_FAILURE"); mode != "" {
-		unlock, err := tailsplit.LockSavedState(os.Getenv("TAILSPLIT_TEST_LEASE_DIRECTORY"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		client, service := net.Pipe()
-		defer service.Close()
-		failed := &failedCleanupConnection{Conn: client, closed: make(chan struct{})}
-		connection := &stateLeaseConnection{Conn: failed, release: unlock}
-		if mode == "prior read" {
-			if _, err := connection.Read(make([]byte, 1)); err == nil {
-				t.Fatal("fixture read did not fail")
+func TestStateLeaseHardFailureRecoversAfterCleanupAndRestart(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(strconv.FormatBool(restart), func(t *testing.T) {
+			config := migrationInventoryConfig(t, 2, tailsplit.RoutingSplit, "")
+			started, canceled, cleanup := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			finish := sync.OnceFunc(func() { close(cleanup) })
+			defer finish()
+			path, server, cancel, serverDone := testServer(t, os.Getuid(), func(context.Context, tailsplit.Config, io.Writer) error { return nil })
+			server.Ping = func(ctx context.Context, _ tailsplit.Config, _ string) (tailsplit.ExitPingResult, error) {
+				close(started)
+				<-ctx.Done()
+				close(canceled)
+				<-cleanup
+				return tailsplit.ExitPingResult{}, ctx.Err()
 			}
-		}
-		go func() {
-			<-failed.closed
-			// The peer never reads stop, so reaching Close also proves the stop
-			// write was bounded. Collect after the transport failure to ensure
-			// the parked Close keeps the real lock file rooted.
-			for range 5 {
-				runtime.GC()
-			}
-			_, _ = fmt.Fprintln(os.Stdout, "lease retained after GC")
-		}()
-		_ = connection.Close()
-		t.Fatal("Close returned without confirmed cleanup")
-	}
-
-	for _, mode := range []string{"close read", "prior read"} {
-		t.Run(mode, func(t *testing.T) {
-			t.Parallel()
-			directory := privateTestDirectory(t)
-			command := exec.Command(os.Args[0], "-test.run=^TestStateLeaseCloseRetainsUnconfirmedCleanup$", "-test.timeout=30s")
-			command.Env = append(os.Environ(), "TAILSPLIT_TEST_LEASE_FAILURE="+mode, "TAILSPLIT_TEST_LEASE_DIRECTORY="+directory)
-			var diagnostic bytes.Buffer
-			command.Stderr = &diagnostic
-			output, err := command.StdoutPipe()
+			connection, err := openLeasedSession(context.Background(), "ping", config, "exit-2|100.64.0.10", Info{}, migrationDial(path))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := command.Start(); err != nil {
-				t.Fatal(err)
-			}
-			ready := make(chan bool, 1)
+			<-started
+			leased := connection.(*stateLeaseConnection)
+			leased.Conn = &failedCleanupConnection{Conn: leased.Conn}
+			done := make(chan error, 1)
 			go func() {
-				reader := bufio.NewScanner(output)
-				ready <- reader.Scan() && reader.Text() == "lease retained after GC"
-			}()
-			waited := make(chan struct{})
-			var childErr error
-			go func() { childErr = command.Wait(); close(waited) }()
-			stop := sync.OnceFunc(func() { _ = command.Process.Kill(); <-waited })
-			defer stop()
-			select {
-			case ok := <-ready:
-				if !ok {
-					stop()
-					t.Fatalf("child did not retain cleanup: %v, %s", childErr, diagnostic.String())
+				_, err := readPingReply(context.Background(), connection)
+				if _, eof := connection.Read(make([]byte, 1)); !errors.Is(eof, io.EOF) {
+					t.Error("fixture hard error was not followed by EOF", eof)
 				}
-			case <-time.After(10 * time.Second):
-				stop()
-				t.Fatalf("stop write did not finish: %s", diagnostic.String())
-			}
-			if release, err := tailsplit.LockSavedState(directory); err == nil {
-				_ = release()
-				t.Fatal("unconfirmed cleanup allowed an overlapping CLI lease")
-			}
+				done <- errors.Join(err, connection.Close())
+			}()
 			select {
-			case <-waited:
-				t.Fatalf("broker exited without confirmed cleanup: %v, %s", childErr, diagnostic.String())
+			case <-canceled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("failed Ping did not cancel the service")
+			}
+			runtime.GC()
+			assertSavedStateLocked(t, config.StateDir)
+			select {
+			case err := <-done:
+				t.Fatalf("hard channel error released Ping before cleanup: %v", err)
 			default:
 			}
-			// Forced process termination is explicitly outside the in-process
-			// guarantee. It also leaves no parked goroutine in this test process.
-			stop()
-			if release, err := tailsplit.LockSavedState(directory); err != nil {
-				t.Fatal("terminated helper retained its OS lease", err)
+			if restart {
+				cancel()
+				// Even a replacement listener cannot serve while the old generation
+				// still owns runner cleanup and its private service lifetime lease.
+				listener, err := net.Listen("unix", path+"-replacement")
+				if err != nil {
+					t.Fatal(err)
+				}
+				replacement := &Server{UID: server.UID, Base: server.Base, BuildID: server.BuildID, Run: server.Run, Logout: server.Logout}
+				if err := replacement.Serve(context.Background(), listener); err == nil {
+					t.Fatal("replacement service overlapped old runner cleanup")
+				}
+				_ = listener.Close()
+			}
+			finish()
+			if restart {
+				if err := <-serverDone; err != nil {
+					t.Fatal(err)
+				}
+				listener, err := net.Listen("unix", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, stop := context.WithCancel(context.Background())
+				defer stop()
+				replacement := &Server{UID: server.UID, Base: server.Base, BuildID: server.BuildID, Run: server.Run, Logout: server.Logout}
+				replacementDone := make(chan error, 1)
+				go func() { replacementDone <- replacement.Serve(ctx, listener) }()
+				defer func() { stop(); <-replacementDone }()
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, tailsplit.ErrPingFailed) {
+					t.Fatal("hard Ping error identity was lost", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Ping did not finish after service cleanup/restart")
+			}
+			if release, err := tailsplit.LockSavedState(config.StateDir); err != nil {
+				t.Fatal("confirmed cleanup retained the saved-state lease", err)
 			} else {
 				_ = release()
 			}
+			if !restart {
+				cancel()
+				if err := <-serverDone; err != nil {
+					t.Fatal(err)
+				}
+			}
 		})
+	}
+}
+
+func TestStateLeaseResetAfterTerminalRecoversDuringClose(t *testing.T) {
+	config := migrationInventoryConfig(t, 2, tailsplit.RoutingSplit, "exit-2")
+	path, _, cancel, serverDone := testServer(t, os.Getuid(), func(context.Context, tailsplit.Config, io.Writer) error { return nil })
+	connection, err := openLeasedSession(context.Background(), "login", config, "", Info{}, migrationDial(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal struct{ Event string }
+	if err := json.NewDecoder(connection).Decode(&terminal); err != nil || terminal.Event != "stopped" {
+		t.Fatal("service did not finish the fixture runner", terminal, err)
+	}
+	leased := connection.(*stateLeaseConnection)
+	failed := &failedCleanupConnection{Conn: leased.Conn, failure: &net.OpError{Op: "read", Net: "unix", Err: syscall.ECONNRESET}, acceptStop: true}
+	leased.Conn = failed
+	closed := make(chan error, 1)
+	go func() { closed <- connection.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reset after terminal event parked leased Close despite finished cleanup")
+	}
+	if !failed.failed {
+		t.Fatal("fixture did not exercise a hard reset during leased Close")
+	}
+	if release, err := tailsplit.LockSavedState(config.StateDir); err != nil {
+		t.Fatal("recovered terminal reset retained the CLI lease", err)
+	} else {
+		_ = release()
+	}
+	cancel()
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertSavedStateLocked(t *testing.T, directory string) {
+	t.Helper()
+	if release, err := tailsplit.LockSavedState(directory); err == nil {
+		_ = release()
+		t.Fatal("unconfirmed service cleanup allowed an overlapping CLI lease")
+	}
+}
+
+// Delay a fully delivered request before readRequest can decode it. Closing the
+// transport cannot release this gate, modeling a handler delayed by scheduling.
+type delayedRequestConnection struct {
+	net.Conn
+	delivered chan struct{}
+	resume    <-chan struct{}
+	operation bool
+}
+
+func (c *delayedRequestConnection) Read(data []byte) (int, error) {
+	n, err := c.Conn.Read(data)
+	c.operation = c.operation || bytes.Contains(data[:n], []byte(`"op":"login"`))
+	if c.operation && n > 0 && data[n-1] == '\n' {
+		close(c.delivered)
+		<-c.resume
+	}
+	return n, err
+}
+
+type observedRecoveryConnection struct {
+	net.Conn
+	t         *testing.T
+	resume    <-chan struct{}
+	recovered func()
+	data      []byte
+}
+
+func (c *observedRecoveryConnection) Read(data []byte) (int, error) {
+	n, err := c.Conn.Read(data)
+	c.data = append(c.data, data[:n]...)
+	var reply sessionReply
+	if json.Unmarshal(bytes.TrimSpace(c.data), &reply) == nil && reply.Event == "cleanup" {
+		select {
+		case <-c.resume:
+		default:
+			if reply.Cleaned {
+				c.t.Error("cleanup acknowledged an original request still delayed before decoding")
+			}
+		}
+		c.recovered()
+	}
+	return n, err
+}
+
+func TestCleanupRecoveryCannotOvertakeDeliveredUndecodedRequest(t *testing.T) {
+	config := migrationInventoryConfig(t, 2, tailsplit.RoutingSplit, "exit-2")
+	delivered, resume, recovering := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	finish := sync.OnceFunc(func() { close(resume) })
+	defer finish()
+	recovered := sync.OnceFunc(func() { close(recovering) })
+	var handlers sync.WaitGroup
+	server := &Server{UID: os.Getuid(), Base: privateTestDirectory(t), Login: func(context.Context, tailsplit.Config, io.Writer) error {
+		t.Error("canceled late request started a runner after cleanup recovery")
+		return nil
+	}}
+	writeErr := errors.New("fixture full request delivered despite failed write")
+	calls := 0
+	dial := func(context.Context) (net.Conn, error) {
+		client, service := net.Pipe()
+		calls++
+		var peer net.Conn = service
+		if calls == 2 {
+			peer = &delayedRequestConnection{Conn: service, delivered: delivered, resume: resume}
+			clientConnection := failedRequestConnection{Conn: client, err: writeErr}
+			handlers.Add(1)
+			go func() {
+				defer handlers.Done()
+				defer service.Close()
+				server.handleAuthenticated(context.Background(), peer)
+			}()
+			return clientConnection, nil
+		}
+		if calls > 2 {
+			client = &observedRecoveryConnection{Conn: client, t: t, resume: resume, recovered: recovered}
+		}
+		handlers.Add(1)
+		go func() {
+			defer handlers.Done()
+			defer service.Close()
+			server.handleAuthenticated(context.Background(), peer)
+		}()
+		return client, nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := openLeasedSession(context.Background(), "login", config, "", Info{}, dial)
+		done <- err
+	}()
+	for index, signal := range []<-chan struct{}{delivered, recovering} {
+		select {
+		case <-signal:
+		case err := <-done:
+			t.Fatalf("failed delivered request exited before recovery stage %d: %v", index, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("failed delivered request did not reach ordered recovery stage %d", index)
+		}
+	}
+	assertSavedStateLocked(t, config.StateDir)
+	select {
+	case err := <-done:
+		t.Fatal("recovery approved cleanup before late request was retired", err)
+	default:
+	}
+	finish()
+	select {
+	case err := <-done:
+		if err != writeErr {
+			t.Fatal("failed request lost its original write error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery did not finish after the delayed handler retired")
+	}
+	handlers.Wait()
+	if release, err := tailsplit.LockSavedState(config.StateDir); err != nil {
+		t.Fatal("retired late request retained the saved-state lease", err)
+	} else {
+		_ = release()
 	}
 }
 
@@ -346,6 +594,13 @@ func testServer(t *testing.T, uid int, run Runner, discovery ...Runner) (string,
 	server := &Server{UID: uid, Base: privateTestDirectory(t), BuildID: "test-build", Run: run, Login: run, Logout: run, Discover: discover}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx, listener) }()
+	if uid == os.Getuid() {
+		// Finish service startup (including its lifetime lease) before tests
+		// snapshot private storage to check request-specific writes.
+		if _, err := probe(ctx, path, strconv.Itoa(os.Getuid())); err != nil {
+			t.Fatal("fixture service did not become ready", err)
+		}
+	}
 	return path, server, cancel, done
 }
 

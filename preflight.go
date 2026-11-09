@@ -26,8 +26,8 @@ func PrepareTailnet(ctx context.Context, config Config, callback func(Status), w
 }
 
 // PrepareConnection checks traffic readiness and returns a safe runtime plan.
-// Unauthenticated optional devices are omitted with their private destinations
-// blocked, rather than preventing an unrelated ready gateway from starting.
+// Unauthenticated optional devices with known private namespaces are omitted
+// with those destinations blocked. Unknown ownership must be resolved first.
 func PrepareConnection(ctx context.Context, config Config, compiled Compiled, callback func(Status), writer singlog.PlatformWriter) (Compiled, error) {
 	if err := ValidateTrafficExit(config); err != nil {
 		return Compiled{}, err
@@ -326,10 +326,16 @@ func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled,
 	config.Exits = slices.Clone(config.Exits)
 	for index := range config.Exits {
 		exit := &config.Exits[index]
-		if exit.ExitNode == "" || exit.magicDNSSuffix() != "" || blocked[exit.ID] ||
+		if exit.ExitNode == "" || exit.magicDNSSuffix() != "" ||
 			config.Focus != "" && config.Focus != exit.ID ||
 			config.Rules.Mode == RoutingGlobal && config.TrafficExitID() != exit.ID {
 			continue
+		}
+		// Isolation can refuse only known private names. Omitting an endpoint
+		// whose namespace was never learned would leave those names on the
+		// ordinary fallback, including direct DNS and routing.
+		if blocked[exit.ID] {
+			return fmt.Errorf("exit %q has no known private DNS suffix; refresh or sign in to this saved exit in Exit Nodes, then connect again; TUN was not enabled", exit.ID)
 		}
 		status := snapshot[exit.ID]
 		ready, err := authenticationReady(exit.Tailnet, status)

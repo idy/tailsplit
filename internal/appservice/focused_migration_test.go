@@ -59,12 +59,16 @@ func (w failingEventWriter) Write([]byte) (int, error) { return 0, w.err }
 
 type failedRequestConnection struct {
 	net.Conn
-	err error
+	err      error
+	accepted <-chan struct{}
 }
 
 func (c failedRequestConnection) Write(data []byte) (int, error) {
 	n, err := c.Conn.Write(data)
-	if err == nil {
+	if err == nil && bytes.Contains(data, []byte(`"op":"login"`)) {
+		if c.accepted != nil {
+			<-c.accepted
+		}
 		err = c.err // The service may have accepted the request despite this error.
 	}
 	return n, err
@@ -97,7 +101,7 @@ func TestMigratingSessionKeepsLeaseThroughEarlyExitCleanup(t *testing.T) {
 					connection, err := migrationDial(path)(ctx)
 					calls++
 					if err == nil && calls == 2 {
-						connection = failedRequestConnection{Conn: connection, err: writeErr}
+						connection = failedRequestConnection{Conn: connection, err: writeErr, accepted: started}
 					}
 					return connection, err
 				}

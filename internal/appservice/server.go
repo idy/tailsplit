@@ -3,6 +3,7 @@ package appservice
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"net"
@@ -31,6 +32,15 @@ type Server struct {
 	pingLive func(context.Context, string) (tailsplit.ExitPingResult, error)
 	active   sync.Mutex
 	requests sync.WaitGroup
+
+	sessionsMu sync.Mutex
+	sessions   map[string]*serviceSession
+}
+
+type serviceSession struct {
+	connection net.Conn
+	cancel     context.CancelFunc
+	done       chan struct{}
 }
 
 // Serve accepts only the user approved during package installation. Socket
@@ -40,6 +50,17 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	if !validServiceUser(s.UID, s.UserID) || s.Base == "" || s.BuildID == "" || s.Run == nil || s.Logout == nil {
 		return errors.New("invalid network service setup")
 	}
+	if err := privateDirectory(s.Base); err != nil {
+		return err
+	}
+	// Listener closure can precede slow runner teardown. Keep a process-wide
+	// lease on service-owned storage until every handler has returned, so a
+	// replacement service cannot acknowledge an old session as unknown early.
+	unlock, err := tailsplit.LockSavedState(s.Base)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -78,6 +99,10 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 	if requireUser(connection, s.userKey()) != nil {
 		return
 	}
+	s.handleAuthenticated(ctx, connection)
+}
+
+func (s *Server) handleAuthenticated(ctx context.Context, connection net.Conn) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stream := &eventWriter{connection: connection, cancel: cancel}
@@ -91,7 +116,60 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		fail(err.Error())
 		return
 	}
+	if request.Op == "session" {
+		// Register before acknowledging the handshake, so a recovery request can
+		// always find and stop an original request delayed before decoding.
+		id := rand.Text()
+		session := &serviceSession{connection: connection, cancel: cancel, done: make(chan struct{})}
+		s.sessionsMu.Lock()
+		if s.sessions == nil {
+			s.sessions = make(map[string]*serviceSession)
+		}
+		s.sessions[id] = session
+		s.sessionsMu.Unlock()
+		defer func() {
+			s.sessionsMu.Lock()
+			delete(s.sessions, id)
+			close(session.done)
+			s.sessionsMu.Unlock()
+		}()
+		if stream.send(sessionReply{Event: "session", Protocol: Protocol, SessionID: id}) != nil {
+			return
+		}
+		_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+		request, err = readRequest(reader)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		// Recovery can cancel while a complete operation is buffered. Never
+		// enter a runner after the session has already been canceled.
+		if ctx.Err() != nil {
+			return
+		}
+	}
 	_ = connection.SetReadDeadline(time.Time{})
+	if request.Op == "cleanup" {
+		if request.SessionID == "" || len(request.SessionID) > 128 {
+			fail("invalid network service session")
+			return
+		}
+		s.sessionsMu.Lock()
+		session := s.sessions[request.SessionID]
+		s.sessionsMu.Unlock()
+		cleaned := session == nil
+		if session != nil {
+			session.cancel()
+			_ = session.connection.Close()
+			select {
+			case <-session.done:
+				cleaned = true
+			default:
+			}
+		}
+		_ = stream.send(sessionReply{Event: "cleanup", Protocol: Protocol, SessionID: request.SessionID, Cleaned: cleaned})
+		return
+	}
 	if request.Op == "hello" {
 		_ = stream.send(Info{Event: "service", Protocol: Protocol, Version: Version,
 			BuildID: s.BuildID, Initialized: runtimeInitialized(runtimeUserDirectory(s.Base, s.userKey())),

@@ -61,6 +61,7 @@ type Request struct {
 	Config     *tailsplit.Config `json:"config,omitempty"`
 	Files      Files             `json:"files,omitempty"`
 	ImportIDs  []string          `json:"import_ids,omitempty"`
+	SessionID  string            `json:"session_id,omitempty"`
 }
 
 // ImportPlan is bounded by the requested inventory, never the service's history.
@@ -74,6 +75,16 @@ type importReply struct {
 	Event    string     `json:"event"`
 	Protocol int        `json:"protocol"`
 	Plan     ImportPlan `json:"plan"`
+}
+
+// Session IDs are issued and registered before the client can send a runner
+// request. Cleanup cannot overtake an operation that is still being decoded.
+// They convey no filesystem authority and are used only on authenticated channels.
+type sessionReply struct {
+	Event     string `json:"event"`
+	Protocol  int    `json:"protocol"`
+	SessionID string `json:"session_id"`
+	Cleaned   bool   `json:"cleaned,omitempty"`
 }
 
 func validateImportIDs(ids []string) error {

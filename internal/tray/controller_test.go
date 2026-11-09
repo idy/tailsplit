@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -59,10 +60,18 @@ func TestHelperProcess(t *testing.T) {
 			os.Exit(4)
 		}
 	}
-	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
-	if mode == "stubborn" {
-		signal.Ignore(syscall.SIGTERM)
-		signals = []os.Signal{os.Interrupt}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	var unlock func() error
+	if mode == "cleanup" {
+		var err error
+		unlock, err = tailsplit.LockSavedState(os.Getenv("TAILSPLIT_TEST_LEASE"))
+		if err != nil {
+			os.Exit(5)
+		}
+		if runtime.GOOS == "windows" {
+			go func() { var command [1]byte; _, _ = io.ReadFull(os.Stdin, command[:]); cancel() }()
+		}
 	}
 	fmt.Fprintln(os.Stderr, "fixture core log")
 	fmt.Println(`{"event":"ready"}`)
@@ -79,9 +88,23 @@ func TestHelperProcess(t *testing.T) {
 	} else if mode != "manual-events" {
 		fmt.Println(`{"event":"status","backend_state":"Running","exit_node":"fixture-exit","exit_online":true}`)
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), signals...)
-	defer cancel()
 	<-ctx.Done()
+	if mode == "cleanup" {
+		if os.WriteFile(os.Getenv("TAILSPLIT_TEST_CANCELED"), nil, 0o600) != nil {
+			os.Exit(6)
+		}
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			if _, err := os.Stat(os.Getenv("TAILSPLIT_TEST_RELEASE")); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				os.Exit(7)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		_ = unlock()
+	}
 	os.Exit(0)
 }
 
@@ -321,33 +344,74 @@ func TestGlobalExitOutageKeepsTheSessionActiveUntilExplicitDisconnect(t *testing
 	}
 }
 
-func TestForcedBrokerStopKeepsRestartAndLogoutAvailable(t *testing.T) {
-	controller := testController(t, "stubborn")
-	controller.stopWait = 80 * time.Millisecond
-	if err := controller.Start(); err != nil {
-		t.Fatal(err)
-	}
-	waitState(t, controller, "running")
-	if err := controller.Stop(); err != nil {
-		t.Fatal("a terminated broker prevented a follow-up action:", err)
-	}
-	if controller.Snapshot().State != "stopped" {
-		t.Fatal("forced stop did not finish the owning broker")
-	}
-	if err := controller.Start(); err != nil {
-		t.Fatal("a terminated broker blocked restart:", err)
-	}
-	waitState(t, controller, "running")
-	if err := controller.Logout(); err != nil {
-		t.Fatal("a terminated broker blocked device logout:", err)
-	}
-	if err := controller.Start(); err != nil {
-		t.Fatal("logout left the controller unable to start again:", err)
-	}
-	waitState(t, controller, "running")
-	log, err := os.ReadFile(controller.options.LogPath)
-	if err != nil || !strings.Contains(string(log), "forced stop") {
-		t.Fatal("the recoverable forced stop was hidden from diagnostics")
+func TestDesktopStopRetainsLeasePastTimeoutAndCancelsBeforeJoiningPing(t *testing.T) {
+	for _, pendingPing := range []bool{false, true} {
+		t.Run(fmt.Sprint(pendingPing), func(t *testing.T) {
+			controller := testController(t, "cleanup")
+			controller.stopWait = 80 * time.Millisecond
+			directory := t.TempDir()
+			state := filepath.Join(directory, "state")
+			canceled, release := filepath.Join(directory, "canceled"), filepath.Join(directory, "release")
+			defer func() { _ = os.WriteFile(release, nil, 0o600) }()
+			controller.options.ExtraEnv = append(controller.options.ExtraEnv, "GORACE=atexit_sleep_ms=0",
+				"TAILSPLIT_TEST_LEASE="+state, "TAILSPLIT_TEST_CANCELED="+canceled, "TAILSPLIT_TEST_RELEASE="+release)
+			if err := controller.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waitState(t, controller, "running")
+			pingDone := make(chan struct{})
+			if pendingPing {
+				controller.mu.Lock()
+				// Model a failed Ping still joining its service cleanup. It must
+				// not prevent Stop from canceling the active network helper.
+				controller.pingCancel = func() {}
+				controller.pingDone = pingDone
+				controller.mu.Unlock()
+			}
+			if err := controller.Stop(); err == nil || pendingPing && !errors.Is(err, tailsplit.ErrPingBusy) {
+				t.Fatal("Stop did not report ongoing service cleanup", err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(canceled); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("Stop waited for Ping without canceling the active helper")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if snapshot := controller.Snapshot(); !snapshot.Active || snapshot.State != "stopping" {
+				t.Fatal("slow cleanup lost its owning helper or stopping state", snapshot)
+			}
+			if unlock, err := tailsplit.LockSavedState(state); err == nil {
+				_ = unlock()
+				t.Fatal("controller timeout killed the helper and released its real CLI lease")
+			}
+			if err := controller.Start(); err == nil {
+				t.Fatal("slow cleanup permitted a second network session")
+			}
+			if os.WriteFile(release, nil, 0o600) != nil {
+				t.Fatal("could not release fixture cleanup")
+			}
+			select {
+			case <-controller.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("helper did not exit after cleanup")
+			}
+			controller.mu.Lock()
+			controller.pingCancel, controller.pingDone = nil, nil
+			close(pingDone)
+			controller.mu.Unlock()
+			if err := controller.Stop(); err != nil {
+				t.Fatal("Stop remained blocked after Ping and service cleanup", err)
+			}
+			if unlock, err := tailsplit.LockSavedState(state); err != nil {
+				t.Fatal("completed helper retained its CLI lease", err)
+			} else {
+				_ = unlock()
+			}
+		})
 	}
 }
 

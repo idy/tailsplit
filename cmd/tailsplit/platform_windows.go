@@ -73,6 +73,8 @@ func platformInstalledService(args []string) (bool, error) {
 	)
 }
 
+func prepareAppProcess() {}
+
 // The GUI owns the sole write end. Stop or GUI death closes the lease, even
 // though a Windows parent PID does not change when its process exits.
 func watchAppParent(_ context.Context, _ int, cancel func()) {

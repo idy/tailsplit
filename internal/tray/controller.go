@@ -434,45 +434,46 @@ func (c *Controller) Stop() error {
 	c.stopping = true
 	if c.pingCancel != nil {
 		c.pingCancel()
-		done := c.pingDone
-		c.mu.Unlock()
-		select {
-		case <-done:
-		case <-time.After(c.stopWait):
-			// Keep the helper alive and its lease held while the service finishes
-			// cleanup; a later operation can retry once pingDone closes.
-			c.mu.Lock()
-			c.stopping = false
-			c.mu.Unlock()
-			return tailsplit.ErrPingBusy
-		}
-		c.mu.Lock()
 	}
+	pingDone := c.pingDone
 	command, done, input := c.command, c.done, c.input
-	if command == nil {
-		c.stopping = false
-		c.mu.Unlock()
-		return nil
+	if command != nil {
+		c.snapshot.State = "stopping"
 	}
-	c.snapshot.State = "stopping"
 	c.mu.Unlock()
-	if err := requestProcessStop(command, input); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
-	}
-	select {
-	case <-done:
-		return nil
-	case <-time.After(c.stopWait):
-		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	// Stop the network session even when a failed Ping is still recovering its
+	// channel. Waiting for Ping first can prevent the active engine from closing.
+	if command != nil {
+		if err := requestProcessStop(command, input); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return err
 		}
-		<-done
-		// The broker is gone, so the service's authenticated socket sees EOF
-		// and cancels its core. Keep follow-up repair/logout/restart available.
-		// The service still rejects a new core until its cleanup has finished.
-		_, _ = io.WriteString(c.log, "Bundled helper required a forced stop; its service session is closing.\n")
-		return nil
 	}
+	timer := time.NewTimer(c.stopWait)
+	defer timer.Stop()
+	for done != nil || pingDone != nil {
+		select {
+		case <-done:
+			done = nil
+		case <-pingDone:
+			pingDone = nil
+		case <-timer.C:
+			// The helper owns the saved-state lease until service cleanup is
+			// confirmed. Killing it here would release that lease too early.
+			c.mu.Lock()
+			if c.command == nil {
+				c.stopping = false
+			}
+			c.mu.Unlock()
+			if pingDone != nil {
+				return tailsplit.ErrPingBusy
+			}
+			return errors.New("network service cleanup is still in progress")
+		}
+	}
+	c.mu.Lock()
+	c.stopping = false
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *Controller) Logout() error {
@@ -511,15 +512,15 @@ func (c *Controller) LogoutExit(id string) error {
 		c.snapshot.State = "logging-out"
 	}
 	c.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
 	logoutCommand := "logout"
 	if len(c.options.HelperArgs) == 0 && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
 		logoutCommand = "app-logout"
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), logoutCommand, "-c", c.options.ConfigPath)
 	args = append(args, "--exit", focus)
-	command := exec.CommandContext(ctx, c.options.Helper, args...)
+	// The logout helper has its own operation deadline and must outlive that
+	// deadline while it confirms service cleanup and retains the device lease.
+	command := exec.Command(c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
 	if _, err := prepareProcess(command, false); err != nil {

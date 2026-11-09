@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/idy/tailsplit"
@@ -72,6 +73,48 @@ func TestImportQueryRejectsUnsupportedOrUnrelatedRepliesAndReleasesLease(t *test
 				_ = release()
 			}
 		})
+	}
+}
+
+func TestSessionHandshakeRequiresRegistrationBeforeSendingOperation(t *testing.T) {
+	config := tailsplit.Config{StateDir: privateTestDirectory(t), Tailscale: &tailsplit.TailscaleConfig{}}
+	var handlers sync.WaitGroup
+	dial := func(context.Context) (net.Conn, error) {
+		client, server := net.Pipe()
+		handlers.Add(1)
+		go func() {
+			defer handlers.Done()
+			defer server.Close()
+			reader := bufio.NewReader(server)
+			request, err := readRequest(reader)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if request.Op == "imports" {
+				_ = json.NewEncoder(server).Encode(importReply{Event: "imports", Protocol: Protocol})
+				return
+			}
+			if request.Op != "session" || request.Config != nil {
+				t.Error("client sent operation before registering its cleanup session", request.Op)
+				return
+			}
+			// An older service can understand imports but lack session recovery.
+			_ = json.NewEncoder(server).Encode(map[string]string{"event": "error", "message": "unsupported operation"})
+			if _, err := readRequest(reader); err == nil {
+				t.Error("failed handshake still sent an operation")
+			}
+		}()
+		return client, nil
+	}
+	if _, err := openLeasedSession(context.Background(), "login", config, "", Info{}, dial); err == nil || !strings.Contains(err.Error(), "update the network service") {
+		t.Fatal("missing session registration lost service update guidance", err)
+	}
+	handlers.Wait()
+	if release, err := tailsplit.LockSavedState(config.StateDir); err != nil {
+		t.Fatal("failed handshake retained a lease before any operation", err)
+	} else {
+		_ = release()
 	}
 }
 

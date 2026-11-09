@@ -127,7 +127,7 @@ func TestPreflightFinalizationRechecksLatestPublishedStatus(t *testing.T) {
 				config := focusedExitTestConfig(t)
 				config.Rules.Final, config.Rules.Routes = "direct", nil
 				config.Exits[0].Tailnet, config.Exits[0].MagicDNSSuffix = "Office", ""
-				if change == "saved suffix mismatch" {
+				if change == "saved suffix mismatch" || change == "optional signed out" {
 					config.Exits[0].MagicDNSSuffix = "old.ts.net"
 				}
 				runtime, err := compile(t.Context(), config)
@@ -288,8 +288,17 @@ func TestMissingExtraDNSMetadataHasBoundedTrafficWait(t *testing.T) {
 				}
 			}
 			done, pending, err := session.check(t.Context(), true)
-			if err != nil || done == requiredExtra || requiredExtra && pending != "office" {
-				t.Fatal("metadata deadline bypassed required readiness or blocked optional isolation", done, pending, err)
+			if !requiredExtra {
+				if err == nil || !strings.Contains(err.Error(), `exit "office" has no known private DNS suffix`) {
+					t.Fatal("metadata timeout approved an optional endpoint's unknown namespace", done, pending, err)
+				}
+				if !bytes.Equal(runtime.JSON, before) || len(statuses) != 0 {
+					t.Fatal("unknown optional ownership changed runtime or published successful isolation")
+				}
+				return
+			}
+			if err != nil || done || pending != "office" {
+				t.Fatal("metadata deadline bypassed required readiness", done, pending, err)
 			}
 			if requiredExtra {
 				if !bytes.Equal(runtime.JSON, before) || len(statuses) != 0 {
@@ -306,14 +315,6 @@ func TestMissingExtraDNSMetadataHasBoundedTrafficWait(t *testing.T) {
 					t.Fatal(err)
 				}
 				assertBlockedExitDomainPolicy(t, native, "host.office.ts.net", "dns-tailnet-office", "exit-office")
-			} else {
-				var native map[string]any
-				if err := json.Unmarshal(runtime.JSON, &native); err != nil || endpointTags(native)["exit-office"] != nil {
-					t.Fatal("metadata-free optional endpoint survived its deadline", err)
-				}
-				if len(statuses) != 1 || statuses[0].Phase != "isolated" || statuses[0].BackendState != "Running" || statuses[0].ExitVisible || statuses[0].ExitOnline {
-					t.Fatal("optional metadata timeout lost its actual isolated status", statuses)
-				}
 			}
 		})
 	}

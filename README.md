@@ -90,17 +90,21 @@ selected by `rules.global_exit` for all captured traffic. Split rules remain
 saved while hidden in Global. Connection preflight checks node availability for
 the default gateway, explicit final exit and nonempty rule groups. Other retained
 endpoints with an identity guard must authenticate to their configured Tailnet,
-but their nodes need not be online. Signed-out optional devices are omitted from
-the running core, and their private names are refused without changing saved
-profiles or blocking the selected gateway. Reconnecting reevaluates them. The
-selected traffic device keeps its interactive login session alive until sign-in
+but their nodes need not be online. Signed-out optional devices with known DNS
+suffixes are omitted from the running core, and their private names are refused
+without changing saved profiles or blocking the selected gateway. If an optional
+device has neither a saved private suffix nor authenticated live DNS metadata,
+connection is refused: refresh or sign in to that device before retrying. Removing
+an endpoint alone cannot protect an unknown namespace. Reconnecting reevaluates
+them. The selected traffic device keeps its interactive login session alive until sign-in
 completes. If another required final or rule-group exit needs login, preflight
 stops with a recoverable sign-in error: open that saved exit, sign in, then retry
 connecting. Initial device states, including Starting, Stopped and missing status,
 have a 45-second readiness budget. Optional devices without an identity guard
-also get that opportunity to report their login state; after the budget only
-unavailable optional endpoints are isolated, and required gateways must still be
-ready. Only the selected device's interactive authentication pauses the
+also get that opportunity to report their login state and private DNS suffix;
+after the budget, unavailable optional endpoints can be isolated only when their
+private namespaces are known, and required gateways must still be ready.
+Only the selected device's interactive authentication pauses the
 availability timeout; other backend transitions preserve its deadline.
 
 An extra's `tailnet` is its login identity guard; `magic_dns_suffix` stores the
@@ -141,7 +145,11 @@ service checks import eligibility per device, reads only still-needed CLI or
 fallback copies, and holds their ordinary-user state lease through cleanup. An
 unused primary remains eligible after another device initializes the new service
 cache. Existing service-owned or logged-out devices retain authority, and legacy
-initialization markers are interpreted conservatively.
+initialization markers are interpreted conservatively. If a service channel
+fails, the helper reconnects to confirm that its registered session has finished
+before releasing the lease. A slow disconnect reports cleanup in progress and
+keeps the helper alive; the desktop does not force-kill it after its stop timeout.
+Older services without session recovery must be updated before connecting.
 
 New desktop profiles use [config.default.yaml](config.default.yaml): direct Internet
 IPv6 off, FakeIP and system TUN on, MTU 1400, Split/builtin rules, unmatched traffic
