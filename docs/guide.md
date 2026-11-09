@@ -492,6 +492,13 @@ website checks with `node --test tests/website.test.cjs`.
 
 ## Pull request review
 
+The protected `main` branch requires an up-to-date pull request, resolved review
+conversations, all four platform CI checks (Linux, macOS and Windows amd64/arm64),
+and all three OpenAI review checks. These rules also apply to administrators.
+Website-only pull requests run CI too, so required checks cannot remain pending
+because of path filters. The repository supports squash auto-merge: enable it on
+a pull request to merge once all required checks and conversations are satisfied.
+
 [The OpenAI PR review workflow](../.github/workflows/codex-review.yml) calls the
 shared [GizClaw reviewer](https://github.com/GizClaw/github-workflows) at its
 `latest` tag. It reviews ready pull requests when they are opened, reopened,

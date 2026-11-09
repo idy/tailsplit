@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, copyFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { adaptPet, adaptPerches, npmInvocation } from './peetty-vendor-tools.mjs';
+import { adaptPet, adaptPerches, npmInvocation, normalizeSource } from './peetty-vendor-tools.mjs';
 
 const revision = 'ba28bf822a1fee9f1961b2427b38548f23f27612';
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -17,7 +17,7 @@ try {
   run('git', ['clone', '--quiet', 'https://github.com/idy/peetty.git', source]);
   run('git', ['-C', source, 'checkout', '--quiet', '--detach', revision]);
   const uiPath = join(source, 'src/pet/ui.ts');
-  const ui = await readFile(uiPath, 'utf8');
+  const ui = normalizeSource(await readFile(uiPath, 'utf8'));
   const sheet = ui.match(/const STYLE = `([\s\S]*?)`;/);
   const inline = "const style = document.createElement('style');\n  style.textContent = STYLE;";
   if (!sheet || !ui.includes(inline)) throw new Error('Upstream overlay changed; review the CSP adaptation.');
@@ -35,7 +35,7 @@ try {
     '--bundle', '--format=iife', '--global-name=Peetty', '--target=es2022', '--minify',
     '--legal-comments=none', '--external:./panel.ts', `--outfile=${join(staged, 'peetty.global.js')}`,
     `--banner:js=/*! @idy/peetty 0.2.0 | MIT | ${revision} | TailSplit adaptations | see LICENSE.txt */`]);
-  await copyFile(join(source, 'LICENSE'), join(staged, 'LICENSE.txt'));
+  await writeFile(join(staged, 'LICENSE.txt'), normalizeSource(await readFile(join(source, 'LICENSE'), 'utf8')));
   // Do not change the committed assets until the complete build succeeds.
   await mkdir(target, { recursive: true });
   for (const name of ['peetty.css', 'peetty.global.js', 'LICENSE.txt']) {

@@ -12,70 +12,88 @@ function sdk() {
   return context.Peetty.Peetty;
 }
 
+function stationary(Companion, perches, x = 150, y = 440) {
+  const pet = {
+    x, y, mode: 'ground',
+    view: { reducedMotion: true, height: 88, anchor: [30, 85], motion: { exclaim() {} } },
+    overlay: { host: { style: {} }, menu: { classList: { remove() {} } } },
+    scan: () => perches, setPetVisible() {}, place() {},
+    land(perch) { this.perch = perch; this.mode = 'ground'; },
+    park() { this.mode = 'paused'; },
+  };
+  pet.settle = (...args) => Companion.prototype.settle.call(pet, ...args);
+  pet.leap = (...args) => Companion.prototype.leap.call(pet, ...args);
+  pet.startFall = (...args) => Companion.prototype.startFall.call(pet, ...args);
+  return pet;
+}
+
 test('reduced-motion entrance places the companion without starting a fall', () => {
   const Companion = sdk();
-  const target = { el: {}, left: 100, right: 200, y: 450 };
-  let landed = false, placed = false;
-  const pet = {
-    view: { reducedMotion: true, height: 88 }, overlay: { host: { style: {} } },
-    scan: () => [target], setPetVisible() {},
-    land(perch) { assert.equal(perch, target); landed = true; },
-    place() { placed = true; },
-    startFall() { assert.fail('reduced motion must not animate an entrance fall'); },
-  };
+  const target = { el: {}, left: 100, right: 200, y: 450, clear: true };
+  const pet = stationary(Companion, [target]);
   Companion.prototype.enter.call(pet);
-  assert.equal(landed, true);
-  assert.equal(placed, true);
+  assert.equal(pet.perch, target);
+  assert.equal(pet.mode, 'ground');
   assert.equal(pet.y, target.y);
 });
 
-test('reduced motion blocks jumps and turns falls into immediate safe placement', () => {
+test('reduced-motion drops snap to the nearest safe spot and retain horizontal placement', () => {
   const Companion = sdk();
-  let entered = false;
-  const pet = {
-    view: { reducedMotion: true },
-    scan() { assert.fail('reduced motion must not plan a jump'); },
-    enter() { entered = true; },
-    finishChatAction() { assert.fail('reduced motion must not begin a fall'); },
-  };
-  assert.equal(Companion.prototype.leap.call(pet), false);
-  Companion.prototype.startFall.call(pet);
-  assert.equal(entered, true);
+  const far = { el: {}, left: 10, right: 50, y: 50, clear: true };
+  const unsafe = { el: {}, left: 140, right: 160, y: 440, clear: false };
+  const near = { el: {}, left: 100, right: 200, y: 450, clear: true };
+  const pet = stationary(Companion, [far, unsafe, near]);
+  pet.startFall();
+  assert.equal(pet.perch, near);
+  assert.equal(pet.x, 150);
+  assert.equal(pet.y, 450);
+  assert.equal(pet.mode, 'ground');
+});
+
+test('the explicit move menu action selects another safe surface without an animated jump', () => {
+  const Companion = sdk();
+  const current = { el: {}, left: 100, right: 200, y: 450, clear: true };
+  const other = { el: {}, left: 210, right: 300, y: 500, clear: true };
+  const pet = stationary(Companion, [current, other]);
+  pet.perch = current;
+  pet.say = () => assert.fail('an available explicit move must not fall back to a greeting');
+  Companion.prototype.onMenu.call(pet, 'move');
+  assert.equal(pet.perch, other);
+  assert.equal(pet.mode, 'ground');
+  assert.equal(pet.x, other.left);
 });
 
 test('focusing an overlapped field repositions without jumping in reduced motion', () => {
   const Companion = sdk();
-  let entered = false;
   const field = {
     getBoundingClientRect: () => ({ left: 0, right: 100, top: 400, bottom: 500 }),
-    matches: () => false, getRootNode: () => ({ activeElement: null }),
+    matches: () => false, getRootNode: () => ({ activeElement: null }), contains: () => false,
   };
-  const pet = {
-    mode: 'ground', perch: { el: field, clear: true }, x: 50, y: 450, halfWidth: 35,
-    view: { reducedMotion: true, anchor: [30, 85], height: 88, motion: { exclaim() {} } },
-    enter() { entered = true; },
-  };
-  pet.leap = () => Companion.prototype.leap.call(pet);
-  pet.startFall = () => Companion.prototype.startFall.call(pet);
+  const current = { el: field, left: 0, right: 100, y: 450, clear: true };
+  const other = { el: {}, left: 110, right: 200, y: 450, clear: true };
+  const pet = stationary(Companion, [current, other], 50, 450);
+  pet.perch = current;
+  pet.halfWidth = 35;
   Companion.prototype.makeRoom.call(pet, field);
-  assert.equal(entered, true);
+  assert.equal(pet.perch, other);
+  assert.equal(pet.mode, 'ground');
 });
 
 test('enabling reduced motion interrupts an in-flight jump and an active walk', () => {
   const Companion = sdk();
   const pet = new Companion({ chat: false, language: 'en' });
-  let entered = false;
+  let settled = false;
   pet.view = { reducedMotion: true, step() {} };
   pet.overlay = {};
   pet.mode = 'jump';
   pet.action = 'walk';
-  pet.enter = () => { entered = true; pet.mode = 'ground'; };
+  pet.settle = () => { settled = true; pet.mode = 'ground'; };
   pet.setAction = (action) => { pet.action = action; };
   pet.ground = () => { assert.equal(pet.action, 'idle'); };
   pet.place = () => {};
   pet.updateChatAction = () => {};
   pet.tick(16);
-  assert.equal(entered, true);
+  assert.equal(settled, true);
   assert.equal(pet.mode, 'ground');
 });
 
@@ -87,4 +105,18 @@ test('Windows asset regeneration launches npm-cli.js through Node without a comm
   const custom = tools.npmInvocation({ platform: 'win32', execPath: 'C:\\Node\\node.exe', env: { npm_execpath: 'D:\\Tools\\npm-cli.js' } });
   assert.deepEqual(custom.args, ['D:\\Tools\\npm-cli.js']);
   assert.deepEqual(tools.npmInvocation({ platform: 'darwin', env: {} }), { command: 'npm', args: [] });
+});
+
+test('source adaptations handle CRLF checkouts identically to LF', async () => {
+  const tools = await import(pathToFileURL(join(__dirname, '../../../scripts/peetty-vendor-tools.mjs')).href);
+  const pet = [
+    '  private enter() {',
+    '  private leap(exclude: Element | null = null): boolean {',
+    '  private startFall(calm = false) {',
+    '    const now = this.clock;\n    switch (this.mode) {',
+  ].join('\n');
+  assert.equal(tools.adaptPet(pet.replace(/\n/g, '\r\n')), tools.adaptPet(pet));
+  const perches = '      if (text.length > MAX_TEXT || !spend(result.budget, Math.ceil(text.length / 64))) { result.complete = false; break; }\n';
+  assert.equal(tools.adaptPerches(perches.replace(/\n/g, '\r\n')), tools.adaptPerches(perches));
+  assert.equal(tools.normalizeSource('a\r\nb\rc\n'), 'a\nb\nc\n');
 });

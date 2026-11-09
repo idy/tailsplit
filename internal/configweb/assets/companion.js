@@ -3,6 +3,7 @@
 
   const toggle = document.querySelector('#page-companion');
   const errorLabel = document.querySelector('#page-companion-error');
+  const retryButton = document.querySelector('#page-companion-retry');
   const locale = window.TailSplitI18n;
   const preferences = window.TailSplitCompanionPreferences;
   let enabled = false;
@@ -11,15 +12,22 @@
   let suspended = false;
   let loading = null;
   let errorKey = '';
+  let retryAction = null;
   let pet = null;
   let generation = 0;
   toggle.checked = false;
   toggle.disabled = true;
 
-  function showError(key) {
+  function renderError() {
+    errorLabel.textContent = errorKey ? locale.t(errorKey) : '';
+    errorLabel.hidden = !errorKey;
+    retryButton.hidden = !retryAction;
+  }
+
+  function showError(key, retry = null) {
     errorKey = key;
-    errorLabel.textContent = key ? locale.t(key) : '';
-    errorLabel.hidden = !key;
+    retryAction = retry;
+    renderError();
   }
 
   function readEnabled(value) {
@@ -53,7 +61,7 @@
       next.destroy();
       if (pet === next) {
         pet = null;
-        showError('无法显示页面小人，请重新打开配置页面。');
+        showError('无法显示页面小人，请重试。', sync);
       }
     }
   }
@@ -71,7 +79,7 @@
       enabled = readEnabled(await preferences.save(value));
     } catch (_) {
       enabled = previous;
-      showError('无法保存页面小人偏好，请重试。');
+      showError('无法保存页面小人偏好，请重试。', () => save(value));
     } finally {
       saving = false;
       toggle.disabled = false;
@@ -91,15 +99,19 @@
         showError('');
         void sync();
       } catch (_) {
-        showError('无法读取页面小人偏好，请重新打开配置页面。');
+        showError('无法读取页面小人偏好，请重试。', load);
       } finally { loading = null; }
     })();
     return loading;
   }
 
   toggle.addEventListener('change', () => { void save(toggle.checked); });
-  locale.subscribe(() => { pet?.setLanguage(locale.language); showError(errorKey); });
-  document.addEventListener('visibilitychange', () => { void sync(); });
+  retryButton.addEventListener('click', () => { const retry = retryAction; showError(''); void retry?.(); });
+  locale.subscribe(() => { pet?.setLanguage(locale.language); renderError(); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !ready) void load();
+    else void sync();
+  });
   window.addEventListener('pagehide', () => { suspended = true; void sync(); });
   window.addEventListener('pageshow', () => { suspended = false; if (ready) void sync(); else void load(); });
   void load();

@@ -322,10 +322,12 @@ network configuration and settings drafts. The menu's Hide action updates that
 switch too. Visibility is saved in the app's persistent UI preferences, preserving
 language and network configuration across ports, restarts and updates. Mounting
 waits for that preference to load; failed saves restore the saved choice and show
-a localized error. Hiding the document or leaving the page destroys the companion
+a localized error with an explicit Retry action. Preference reads also retry when
+the panel becomes visible. Hiding the document or leaving the page destroys the companion
 and its listeners; returning restores it if enabled. Reduced motion uses immediate
-safe placement instead of falling, walking or jumping, including input-focus
-avoidance and live preference changes. Companion controls follow the panel's
+placement at the nearest safe spot instead of falling, walking or jumping,
+including input-focus avoidance, drag release and live preference changes.
+The explicit move action immediately chooses another safe surface. Companion controls follow the panel's
 English/Chinese language in place. Long log text is measured as one conservative
 clipped obstacle, retaining safe landing spots without enumerating every line.
 

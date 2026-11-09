@@ -10,10 +10,11 @@ const flush = () => new Promise(setImmediate);
 async function setup(options = {}) {
   const toggle = new EventTarget();
   const error = {};
+  const retry = new EventTarget();
   const document = new EventTarget();
   document.hidden = false;
   const overlays = new Set();
-  document.querySelector = (selector) => selector === '#page-companion' ? toggle : selector === '#page-companion-error' ? error : [...overlays][0]?.host;
+  document.querySelector = (selector) => selector === '#page-companion' ? toggle : selector === '#page-companion-error' ? error : selector === '#page-companion-retry' ? retry : [...overlays][0]?.host;
   const saved = options.saved || { enabled: true };
   const saves = [];
   const preferences = options.preferences || {
@@ -41,7 +42,7 @@ async function setup(options = {}) {
   const setEnabled = (enabled) => { toggle.checked = enabled; toggle.dispatchEvent(new Event('change')); };
   const setHidden = (hidden) => { document.hidden = hidden; document.dispatchEvent(new Event('visibilitychange')); };
   await flush();
-  return { toggle, error, document, window, instances, overlays, saves, saved, setEnabled, setHidden };
+  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden };
 }
 
 for (const interruption of ['toggle off', 'document hidden', 'page hidden']) {
@@ -124,6 +125,45 @@ test('failed saves restore the persisted visibility and expose a retryable error
   assert.equal(state.error.hidden, false);
   assert.match(state.error.textContent, /无法保存/);
   assert.equal(state.instances.length, 2);
+});
+
+for (const recovery of ['retry button', 'visible panel']) {
+  test(`a failed preference read recovers through the ${recovery}`, async () => {
+    let reads = 0;
+    const state = await setup({ preferences: { load: async () => {
+      if (++reads === 1) throw new Error('transient failure');
+      return { enabled: false };
+    } } });
+    assert.equal(state.retry.hidden, false);
+    if (recovery === 'retry button') state.retry.dispatchEvent(new Event('click'));
+    else { state.setHidden(true); state.setHidden(false); }
+    await flush();
+    assert.equal(reads, 2);
+    assert.equal(state.toggle.disabled, false);
+    assert.equal(state.toggle.checked, false);
+    assert.equal(state.error.hidden, true);
+    assert.equal(state.retry.hidden, true);
+  });
+}
+
+test('save retry repeats the failed user choice instead of the restored value', async () => {
+  const writes = [];
+  const state = await setup({ preferences: {
+    load: async () => ({ enabled: true }),
+    save: async (enabled) => {
+      writes.push(enabled);
+      if (writes.length === 1) throw new Error('disk temporarily unavailable');
+      return { enabled };
+    },
+  } });
+  state.setEnabled(false);
+  await flush();
+  assert.equal(state.toggle.checked, true);
+  state.retry.dispatchEvent(new Event('click'));
+  await flush();
+  assert.deepEqual(writes, [false, false]);
+  assert.equal(state.toggle.checked, false);
+  assert.equal(state.error.hidden, true);
 });
 
 test('failed or invalid preference reads do not flash an unwanted companion', async () => {
