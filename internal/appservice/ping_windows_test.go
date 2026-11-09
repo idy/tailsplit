@@ -26,6 +26,7 @@ func TestWindowsPingCancellationHoldsStateLeaseUntilCleanup(t *testing.T) {
 	defer finish()
 	canceled := make(chan struct{})
 	go func() {
+		defer service.Close() // Match the service's EOF after the cleanup reply.
 		var command [5]byte
 		if _, err := io.ReadFull(service, command[:]); err != nil || string(command[:]) != "stop\n" {
 			return

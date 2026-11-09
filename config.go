@@ -459,13 +459,12 @@ func validatePrefixes(name string, prefixes []string) error {
 func (c *Config) normalizeExits() error {
 	seen := map[string]bool{}
 	hostnames := map[string]bool{}
-	primaryHostname, err := DeviceHostname("")
+	defaultHostname, err := DeviceHostname("")
 	if err != nil {
 		return err
 	}
 	if c.Tailscale != nil {
-		primaryHostname = c.Tailscale.Hostname
-		hostnames[primaryHostname] = true
+		hostnames[c.Tailscale.Hostname] = true
 	}
 	for index := range c.Exits {
 		exit := &c.Exits[index]
@@ -485,7 +484,8 @@ func (c *Config) normalizeExits() error {
 			return fmt.Errorf("exits[%d].name must be a short single-line label", index)
 		}
 		if exit.Hostname == "" {
-			name := primaryHostname
+			// Additional identities must not follow primary renames or removal.
+			name := defaultHostname
 			name = strings.TrimRight(name[:min(len(name), 62-len(exit.ID))], "-") + "-" + exit.ID
 			exit.Hostname = name
 		}
@@ -554,6 +554,28 @@ func (c Config) FocusExit(id string) (Config, error) {
 	c.Focus = id
 	err := c.applyFocus()
 	return c, err
+}
+
+// RequiresDefaultExit reports whether traffic policy uses the selected default.
+// A configured default with a selected node also owns bare Tailnet addresses.
+// Named final exits and rule groups otherwise choose their own owners; empty
+// groups and unused pending devices do not require a default gateway.
+func (c Config) RequiresDefaultExit() bool {
+	if c.Rules.Mode == RoutingGlobal || c.Rules.GFWList != "" ||
+		c.Rules.Source != nil && *c.Rules.Source != "" ||
+		len(c.Rules.ProxyDomains)+len(c.Rules.ProxyIPs) > 0 || c.Rules.Final == "proxy" {
+		return true
+	}
+	id := strings.TrimSpace(c.Rules.DefaultExit)
+	if id == "" || id == MainExit {
+		return c.Tailscale != nil && strings.TrimSpace(c.Tailscale.ExitNode) != ""
+	}
+	for _, exit := range c.Exits {
+		if exit.ID == id {
+			return strings.TrimSpace(exit.ExitNode) != ""
+		}
+	}
+	return false
 }
 
 // TrafficExitID identifies the saved device used for client traffic. Explicit

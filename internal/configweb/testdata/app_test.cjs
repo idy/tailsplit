@@ -2756,6 +2756,146 @@ test('DNS metadata recovery cannot rewrite an unauthenticated or different Tailn
   }
 });
 
+test('retained unused devices do not force a default for direct or explicitly owned Split policy', async () => {
+  for (const defaultExit of ['-', 'main', 'pending']) {
+    for (const rules of [{ final: 'direct' }, { final: 'office' }, { final: 'direct', routes: [{ exit: 'office', domains: ['corp.example'] }] }]) {
+      const initial = multiExitDocument('100.101.0.11');
+      initial.values.tailscale = { exit_node: '' };
+      initial.values.exits.push({ id: 'pending', exit_node: '' });
+      initial.values.rules = { ...rules, mode: 'split', default_exit: defaultExit, source: '' };
+      const app = await page(officeSnapshot({ backend_state: 'Running' }), '', {}, initial);
+      app.snapshot.backend_state = 'NeedsLogin'; await app.poll();
+      assert.equal(app.$('#desktop-connect').disabled, false, `${defaultExit}/${rules.final}`);
+      assert.equal(app.$('#desktop-hint').hidden, true);
+      await app.$('#desktop-connect').emit('click');
+      assert.ok(!app.$('#default-exit-dialog').open);
+      assert.deepEqual(mutations(app).map(request => request.data.action), ['connect']);
+    }
+  }
+});
+
+test('a configured default with a node retains its bare-Tailnet readiness requirement', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', default_exit: 'office', final: 'direct', source: '' };
+  const app = await page(officeSnapshot({ backend_state: 'NeedsLogin' }), '', {}, initial);
+  assert.equal(app.$('#desktop-connect').disabled, true);
+  assert.match(app.$('#desktop-hint').textContent, /登录 Tailscale/);
+  assert.ok(!app.$('#default-exit-dialog').open);
+});
+
+function pickerNode(app, id) {
+  const row = app.$('#exit-list').children.find(row => row.children[0].dataset.exitChoice === id);
+  assert.ok(row, `missing picker row ${id}`);
+  return { choice: row.children[0], latency: row.children[1], ping: row.children[2] };
+}
+
+for (const kind of ['metadata', 'node', 'settings']) test(`active Global ${kind} applies use shared consent and a separate disconnect`, async () => {
+  for (const outcome of ['cancel', 'escape', 'success', 'disconnect-failure', 'save-failure']) {
+    const initial = activeGlobalGatewayDocument();
+    initial.values.exits[0].magic_dns_suffix = 'old.ts.net';
+    const snapshot = activeGlobalGatewaySnapshot();
+    snapshot.exits.office.magic_dns_suffix = 'new.ts.net';
+    snapshot.exits.office.exit_nodes.push({ id: '100.101.0.12', name: 'next', online: true });
+    const app = await page(snapshot, '', {}, initial);
+    app.override = request => {
+      if (request.path === '/api/preview') return response({ ...initial, yaml: initial.yaml + '# edited\n',
+        values: { ...initial.values, log_level: 'debug' } });
+      if (request.path === '/api/action') {
+        assert.equal(request.data.action, 'disconnect');
+        if (outcome === 'disconnect-failure') return response({ error: 'disconnect failed' }, false);
+        Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+        return response({ ok: true });
+      }
+      if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+      assert.equal(app.snapshot.active, false);
+      if (outcome === 'save-failure') return response({ error: 'save failed' }, false);
+      app.config = { ...initial, revision: 'saved' }; app.snapshot.revision = 'saved';
+      return response(app.config);
+    };
+    let applying;
+    if (kind === 'settings') {
+      await app.input('#level', 'debug'); await app.flushTimers();
+      applying = app.$('#save').emit('click');
+    } else {
+      await extraRow(app, 'office').emit('click');
+      if (kind === 'node') await pickerNode(app, '100.101.0.12').choice.emit('click');
+      assert.equal(app.$('#apply-exit-picker').disabled, false);
+      applying = app.$('#apply-exit-picker').emit('click');
+    }
+    await settle();
+    assert.equal(app.$('#add-exit-consent-dialog').open, true, `${kind}/${outcome}`);
+    assert.deepEqual(mutations(app), []);
+    assert.match(app.$('#add-exit-consent-description').textContent, /即使保存失败/);
+    if (outcome === 'escape') await app.$('#add-exit-consent-dialog').emit('cancel');
+    answerAddConsent(app, ['cancel', 'escape'].includes(outcome) ? 'cancel' : 'apply');
+    await applying;
+    assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action),
+      ['cancel', 'escape'].includes(outcome) ? [] : outcome === 'disconnect-failure' ? ['disconnect'] : ['disconnect', 'save']);
+    assert.equal(app.snapshot.active, ['cancel', 'escape', 'disconnect-failure'].includes(outcome));
+    if (outcome !== 'success' && kind !== 'settings') assert.equal(app.$('#exit-picker-dialog').open, true);
+  }
+});
+
+test('Global settings apply rechecks the latest revision after protection consent', async () => {
+  const initial = activeGlobalGatewayDocument();
+  const app = await page(activeGlobalGatewaySnapshot(), '', {}, initial);
+  app.override = request => request.path === '/api/preview' ? response({ ...initial, yaml: initial.yaml + '# draft\n',
+    values: { ...initial.values, log_level: 'debug' } }) : undefined;
+  await app.input('#level', 'debug'); await app.flushTimers();
+  const applying = app.$('#save').emit('click'); await settle();
+  assert.equal(app.$('#add-exit-consent-dialog').open, true);
+  app.snapshot.revision = 'native-edit'; await app.poll();
+  answerAddConsent(app, 'apply'); await applying;
+  assert.deepEqual(mutations(app), []);
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.$('#level').value, 'debug');
+});
+
+test('Global can switch explicitly to a direct-only Split policy without choosing an unused default', async () => {
+  const initial = activeGlobalGatewayDocument(); initial.values.rules.default_exit = '-';
+  const app = await page(activeGlobalGatewaySnapshot(), '', {}, initial);
+  assert.equal(app.$('#kill-switch').disabled, false);
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.deepEqual(request.data.changes, { 'rules.mode': 'split' });
+    app.config = { ...initial, revision: 'saved', values: { ...initial.values, rules: { ...initial.values.rules, mode: 'split' } } };
+    app.snapshot.revision = 'saved'; return response(app.config);
+  };
+  app.$('#kill-switch').value = 'split'; await app.$('#kill-switch').emit('change');
+  assert.ok(!app.$('#add-exit-consent-dialog').open);
+  assert.deepEqual(mutations(app).map(request => request.path), ['/api/config']);
+});
+
+test('isolated optional devices clear cached availability and ping and provide a sign-in action', async () => {
+  const app = await page(officeSnapshot(), '', {}, multiExitDocument('100.101.0.11'));
+  await extraRow(app, 'office').emit('click');
+  app.override = request => request.path === '/api/exit-ping' ? response({ id: request.data.id, latency_ms: 12, direct: true }) : undefined;
+  await pickerNode(app, '100.101.0.11').ping.emit('click');
+  assert.equal(pickerNode(app, '100.101.0.11').latency.children[0].textContent, '12 ms');
+  app.snapshot.exits.office.phase = 'isolated';
+  await app.poll();
+  assert.match(app.$('#tailnet-identity').textContent, /未加入本次连接/);
+  assert.equal(app.$('#picker-login').hidden, false);
+  assert.equal(pickerNode(app, '100.101.0.11').choice.disabled, true);
+  assert.equal(pickerNode(app, '100.101.0.11').ping.disabled, true);
+  app.snapshot.exits.office.phase = ''; await app.poll();
+  assert.equal(pickerNode(app, '100.101.0.11').latency.children[0].textContent, '—', 'isolated session invalidates old measurements');
+});
+
+test('Global omitted devices are not presented as available and remain selectable after consent', async () => {
+  const snapshot = activeGlobalGatewaySnapshot();
+  snapshot.phase = 'omitted'; snapshot.backend_state = 'Running';
+  snapshot.exit_nodes = [{ id: '100.64.0.10', online: true }];
+  snapshot.exits.spare = { phase: 'omitted', backend_state: '', exit_online: false, exit_nodes: [] };
+  const app = await page(snapshot, '', {}, activeGlobalGatewayDocument());
+  assert.equal(app.$('#main-exit-status').className, 'exit-status unknown');
+  assert.match(app.$('#desktop-network-name').textContent, /全局模式未使用此设备/);
+  assert.equal(app.$('#connection-exit').children.find(option => option.value === 'spare').disabled, false);
+  await extraRow(app, 'spare').emit('click');
+  assert.match(app.$('#tailnet-identity').textContent, /全局模式未使用此设备/);
+  assert.equal(pickerNode(app, '100.102.0.11').ping.disabled, true);
+});
+
 test('default proxy exit is editable independently of unmatched traffic and keeps the rule list', async () => {
   const initial = multiExitDocument('100.101.0.11');
   initial.values.rules = { mode: 'split', source: 'builtin', final: 'direct', default_exit: 'main' };

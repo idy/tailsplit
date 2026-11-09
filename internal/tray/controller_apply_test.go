@@ -8,6 +8,84 @@ import (
 	"github.com/idy/tailsplit"
 )
 
+func TestNewTrafficSessionClearsEveryDevicesCachedAvailability(t *testing.T) {
+	controller := testController(t, "manual-events")
+	cached := ExitSnapshot{BackendState: "Running", NetworkName: "cached.example", MagicDNSSuffix: "cached.ts.net", Hostname: "cached-device",
+		ExitNode: "100.101.0.11", ExitOnline: true, ExitVisible: true, PingAvailable: true,
+		ExitNodes: []tailsplit.ExitNode{{ID: "100.101.0.11", Online: true}}}
+	controller.snapshot = Snapshot{State: "stopped", BackendState: "Running", NetworkName: "home.example", PingAvailable: true,
+		ExitNodes: []tailsplit.ExitNode{{ID: "100.64.0.10", Online: true}}, Exits: map[string]ExitSnapshot{"office": cached, "lab": cached}}
+	if err := controller.Start(); err != nil {
+		t.Fatal(err)
+	}
+	got := controller.Snapshot()
+	if got.BackendState != "" || got.PingAvailable || len(got.ExitNodes) != 0 || got.NetworkName != "home.example" {
+		t.Fatal("new traffic session reused the primary's availability", got)
+	}
+	for id, exit := range got.Exits {
+		if exit.BackendState != "" || exit.PingAvailable || exit.ExitOnline || exit.ExitVisible || len(exit.ExitNodes) != 0 || exit.ExitNode != "" ||
+			exit.NetworkName != cached.NetworkName || exit.MagicDNSSuffix != cached.MagicDNSSuffix || exit.Hostname != cached.Hostname {
+			t.Fatalf("new session reused %s availability or lost saved identity: %+v", id, exit)
+		}
+	}
+	controller.onEvent([]byte(`{"event":"status","backend_state":"Running","exit_online":true}`))
+	controller.onEvent([]byte(`{"event":"status","exit":"office","phase":"isolated","backend_state":"","network_name":"cached.example"}`))
+	got = controller.Snapshot()
+	if got.State != "running" || got.Exits["office"].Phase != "isolated" || got.Exits["office"].BackendState != "" || got.Exits["lab"].PingAvailable {
+		t.Fatal("unseen optional isolation invented login state or affected the selected device", got)
+	}
+}
+
+func TestIsolationStatusClearsAvailabilityWithoutInventingSDKIdentity(t *testing.T) {
+	controller := testController(t, "manual-events")
+	if err := controller.Start(); err != nil {
+		t.Fatal(err)
+	}
+	controller.mu.Lock()
+	controller.trafficExit = "office"
+	controller.snapshot.State = "running"
+	controller.setExit("office", ExitSnapshot{BackendState: "Running", ExitOnline: true})
+	controller.mu.Unlock()
+	for _, event := range []string{
+		`{"event":"status","phase":"isolated","backend_state":"Running","network_name":"home.example","magic_dns_suffix":"home.ts.net","hostname":"home-device","exit_node":"100.64.0.10","exit_online":true,"exit_visible":true,"ping_available":true,"exit_nodes":[{"id":"100.64.0.10","online":true}]}`,
+		`{"event":"status","exit":"lab","phase":"isolated","backend_state":"NeedsLogin","network_name":"lab.example","magic_dns_suffix":"lab.ts.net","hostname":"lab-device","auth_url":"https://login.tailscale.com/a/unused","exit_online":true,"ping_available":true}`,
+	} {
+		controller.onEvent([]byte(event))
+	}
+	got := controller.Snapshot()
+	if got.State != "running" || got.Phase != "isolated" || got.BackendState != "Running" || got.NetworkName != "home.example" || got.MagicDNSSuffix != "home.ts.net" ||
+		got.Hostname != "home-device" || got.PingAvailable || got.ExitNode != "" || len(got.ExitNodes) != 0 || got.LoginURL != "" {
+		t.Fatal("primary isolation changed its actual identity or retained availability", got)
+	}
+	lab := got.Exits["lab"]
+	if lab.Phase != "isolated" || lab.BackendState != "NeedsLogin" || lab.NetworkName != "lab.example" || lab.MagicDNSSuffix != "lab.ts.net" || lab.Hostname != "lab-device" || lab.PingAvailable || lab.ExitOnline || lab.ExitVisible {
+		t.Fatal("optional isolation changed its actual identity or retained availability", lab)
+	}
+}
+
+func TestGlobalScopeInvalidatesOmittedDevicesAndFocusedLoginPreservesOthers(t *testing.T) {
+	controller := testController(t, "manual-events")
+	cached := ExitSnapshot{BackendState: "Running", NetworkName: "cached.example", PingAvailable: true,
+		ExitNodes: []tailsplit.ExitNode{{ID: "100.101.0.11", Online: true}}}
+	controller.snapshot = Snapshot{State: "stopped", BackendState: "Running", PingAvailable: true,
+		Exits: map[string]ExitSnapshot{"office": cached, "lab": cached}}
+	controller.invalidateDeviceStatuses(tailsplit.RoutingGlobal, "office", true)
+	got := controller.Snapshot()
+	if got.Phase != "omitted" || got.BackendState != "" || got.PingAvailable || got.Exits["lab"].Phase != "omitted" ||
+		got.Exits["lab"].BackendState != "" || got.Exits["lab"].PingAvailable || got.Exits["office"].Phase != "" {
+		t.Fatal("Global reused nonselected devices' old availability", got)
+	}
+	controller.snapshot.BackendState = "Running"
+	controller.setExit("lab", cached)
+	if err := controller.StartExitLogin("office"); err != nil {
+		t.Fatal(err)
+	}
+	got = controller.Snapshot()
+	if got.BackendState != "Running" || got.Exits["lab"].BackendState != "Running" || !got.Exits["lab"].PingAvailable || len(got.Exits["lab"].ExitNodes) != 1 {
+		t.Fatal("focused login cleared another device's cached authentication", got)
+	}
+}
+
 func TestCheckedReconfigureUsesCurrentSessionBeforeStopping(t *testing.T) {
 	controller := testController(t, "normal")
 	// An HTTP request can observe this inactive snapshot before tray Connect

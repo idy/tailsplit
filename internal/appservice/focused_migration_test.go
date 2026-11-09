@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/idy/tailsplit"
 )
@@ -48,6 +50,122 @@ func runMigrationSession(t *testing.T, path string, server *Server, operation st
 	if release, err := tailsplit.LockSavedState(config.StateDir); err == nil {
 		_ = release()
 		t.Fatal("session released the legacy state lease before its connection closed")
+	}
+}
+
+type failingEventWriter struct{ err error }
+
+func (w failingEventWriter) Write([]byte) (int, error) { return 0, w.err }
+
+type failedRequestConnection struct {
+	net.Conn
+	err error
+}
+
+func (c failedRequestConnection) Write(data []byte) (int, error) {
+	n, err := c.Conn.Write(data)
+	if err == nil {
+		err = c.err // The service may have accepted the request despite this error.
+	}
+	return n, err
+}
+
+func TestMigratingSessionKeepsLeaseThroughEarlyExitCleanup(t *testing.T) {
+	for _, exit := range []string{"output error", "cancel", "close", "request error"} {
+		t.Run(exit, func(t *testing.T) {
+			config := migrationInventoryConfig(t, 2, tailsplit.RoutingSplit, "exit-2")
+			started, canceled, cleanup := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			finish := sync.OnceFunc(func() { close(cleanup) })
+			defer finish()
+			path, server, stopServer, serverDone := testServer(t, os.Getuid(), func(ctx context.Context, received tailsplit.Config, output io.Writer) error {
+				assertMigrationFile(t, filepath.Join(received.ExitStateDir("exit-2"), "tailscaled.state"), "identity-exit-2")
+				close(started)
+				_ = json.NewEncoder(output).Encode(map[string]string{"event": "ready"})
+				<-ctx.Done()
+				close(canceled)
+				<-cleanup
+				return nil
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			writeErr := errors.New("fixture writer failed")
+			dial := migrationDial(path)
+			if exit == "request error" {
+				calls := 0
+				dial = func(ctx context.Context) (net.Conn, error) {
+					connection, err := migrationDial(path)(ctx)
+					calls++
+					if err == nil && calls == 2 {
+						connection = failedRequestConnection{Conn: connection, err: writeErr}
+					}
+					return connection, err
+				}
+			}
+			done := make(chan error, 1)
+			go func() {
+				connection, err := openLeasedSession(ctx, "login", config, "", Info{}, dial)
+				if err == nil {
+					switch exit {
+					case "output error":
+						err = Forward(ctx, connection, failingEventWriter{writeErr})
+					case "cancel":
+						err = Forward(ctx, connection, io.Discard)
+					case "close":
+						<-started
+						err = connection.Close()
+					default:
+						t.Error("request write did not fail")
+					}
+					_ = connection.Close()
+				}
+				done <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("service runner did not start")
+			}
+			if exit == "cancel" {
+				cancel()
+			}
+			select {
+			case <-canceled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("service did not receive stop")
+			}
+			if release, err := tailsplit.LockSavedState(config.StateDir); err == nil {
+				_ = release()
+				t.Fatal("legacy identity became usable during runner cleanup")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("client finished before cleanup: %v", err)
+			default:
+			}
+			finish()
+			select {
+			case err := <-done:
+				if exit == "output error" || exit == "request error" {
+					if err != writeErr {
+						t.Fatalf("original write error was lost: %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("client did not finish after cleanup")
+			}
+			stopServer()
+			if err := <-serverDone; err != nil {
+				t.Fatal(err)
+			}
+			if release, err := tailsplit.LockSavedState(config.StateDir); err != nil {
+				t.Fatal("completed session retained the legacy lease", err)
+			} else {
+				_ = release()
+			}
+			assertMigrationFile(t, filepath.Join(runtimeUserDirectory(server.Base, server.userKey()), "exits", "exit-2", "tailscale", "tailscaled.state"), "identity-exit-2")
+		})
 	}
 }
 

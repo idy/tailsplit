@@ -279,7 +279,7 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 	state := map[string]any{
 		"state": snapshot.State, "active": snapshot.Active, "mode": snapshot.Mode,
 		"exit": snapshot.ExitNode, "network": snapshot.NetworkName, "magic_dns_suffix": snapshot.MagicDNSSuffix,
-		"hostname": snapshot.Hostname, "backend_state": snapshot.BackendState,
+		"hostname": snapshot.Hostname, "backend_state": snapshot.BackendState, "phase": snapshot.Phase,
 		"routing_mode": snapshot.RoutingMode, "logs_available": s.options.Logs != nil,
 		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
@@ -302,7 +302,7 @@ func exitStates(snapshot tray.Snapshot) map[string]any {
 			nodes = []tailsplit.ExitNode{}
 		}
 		exits[id] = map[string]any{
-			"backend_state": exit.BackendState, "network": exit.NetworkName, "magic_dns_suffix": exit.MagicDNSSuffix, "hostname": exit.Hostname,
+			"backend_state": exit.BackendState, "phase": exit.Phase, "network": exit.NetworkName, "magic_dns_suffix": exit.MagicDNSSuffix, "hostname": exit.Hostname,
 			"exit": exit.ExitNode, "exit_online": exit.ExitOnline, "exit_visible": exit.ExitVisible,
 			"exit_nodes": nodes, "ping_available": exit.PingAvailable && exit.BackendState == "Running",
 		}
@@ -457,9 +457,10 @@ func (s *Server) validateRuntime(ctx context.Context, data []byte) error {
 	return compileCandidate(ctx, config)
 }
 
-// Drafts may be saved while stopped, but cannot replace an active helper. Global
-// opens only its traffic device; other devices' cached status cannot verify a
-// replacement without first disconnecting the protected session.
+// Drafts may be saved while stopped, but cannot replace an active helper.
+// Replacing any active Global configuration tears down its TUN, even when only
+// metadata changes. Consent is followed by a separate disconnect, so a failed
+// save cannot silently restore the old protected session.
 func checkCandidateSession(snapshot tray.Snapshot, config tailsplit.Config, draftErr error) error {
 	if !snapshot.Active {
 		return nil
@@ -468,8 +469,8 @@ func checkCandidateSession(snapshot tray.Snapshot, config tailsplit.Config, draf
 		return draftErr
 	}
 	if config.Rules.Mode == tailsplit.RoutingGlobal && snapshot.RoutingMode == tailsplit.RoutingGlobal &&
-		(snapshot.Mode == "tun" || snapshot.Mode == "proxy") && config.TrafficExitID() != snapshot.TrafficExit {
-		return errors.New("disconnect before changing the active Global gateway device")
+		(snapshot.Mode == "tun" || snapshot.Mode == "proxy") {
+		return errors.New("disconnect before applying changes to an active Global connection")
 	}
 	return nil
 }
@@ -500,6 +501,25 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := applyChanges(edit)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "validation", err.Error())
+		return
+	}
+	// A byte-identical save is a no-op: it must not stop even a protected helper.
+	// Revisions still have to match so a stale request cannot claim success.
+	current, currentRevision, err := tray.ReadConfigDocument(s.options.ConfigPath)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "read", err.Error())
+		return
+	}
+	if currentRevision != edit.Revision {
+		fail(w, http.StatusConflict, "conflict", "配置文件已由其他操作修改，请重新读取后再保存。")
+		return
+	}
+	if bytes.Equal(current, data) {
+		s.readConfig(w, r)
+		return
+	}
 	var config tailsplit.Config
 	var draftErr error
 	if err == nil {
@@ -526,17 +546,8 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "validation", err.Error())
 		return
 	}
-	// Check before stopping a running session, then check again at the atomic
-	// replacement boundary so a native-menu edit cannot silently be overwritten.
-	_, currentRevision, err := tray.ReadConfigDocument(s.options.ConfigPath)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, "read", err.Error())
-		return
-	}
-	if currentRevision != edit.Revision {
-		fail(w, http.StatusConflict, "conflict", "配置文件已由其他操作修改，请重新读取后再保存。")
-		return
-	}
+	// Recheck the session under the operation gate before stopping, and the
+	// revision at the atomic replacement boundary before writing.
 	err = s.options.Apply(r.Context(), func(snapshot tray.Snapshot) error {
 		if err := check(snapshot); err != nil {
 			return applyValidationError{err}

@@ -83,6 +83,15 @@
   metadata during traffic preflight, and allow explicit same-node metadata repair.
 - Track unused-primary import eligibility separately from cache initialization,
   skip owned/unrelated legacy copies, and lease migration on both desktop systems.
+- Report the actual missing policy owner in connection errors; keep additional
+  implicit hostnames independent of primary renames and retain explicit names.
+- Keep the legacy state lease through graceful service cleanup after output or
+  transport errors. Preserve direct-only connection with unused pending devices,
+  without weakening a configured default's bare Tailnet-address fallback.
+- Guard all active Global reconfiguration, including same-device metadata applies,
+  with the shared disconnect consent, and clear stale optional runtime availability.
+- Preserve alias targets when anchor names are reused and route lists reordered;
+  adopt authenticated missing DNS suffixes in the runtime copy before traffic.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

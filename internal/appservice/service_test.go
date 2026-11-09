@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,6 +50,135 @@ func TestStopWaitsForThePrivilegedCoreToFinish(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the broker did not finish after privileged cleanup")
+	}
+}
+
+type observedReadConnection struct {
+	net.Conn
+	started    chan struct{}
+	once       sync.Once
+	mu         sync.Mutex
+	reading    bool
+	concurrent bool
+}
+
+func (c *observedReadConnection) Read(data []byte) (int, error) {
+	c.mu.Lock()
+	c.concurrent = c.concurrent || c.reading
+	c.reading = true
+	c.mu.Unlock()
+	c.once.Do(func() { close(c.started) })
+	n, err := c.Conn.Read(data)
+	c.mu.Lock()
+	c.reading = false
+	c.mu.Unlock()
+	return n, err
+}
+
+func TestStateLeaseCloseJoinsPendingReaderAndDuplicateClose(t *testing.T) {
+	client, service := net.Pipe()
+	defer service.Close()
+	observed := &observedReadConnection{Conn: client, started: make(chan struct{})}
+	released := make(chan struct{}, 2)
+	releaseErr := errors.New("fixture unlock error")
+	connection := &stateLeaseConnection{Conn: observed, release: func() error {
+		released <- struct{}{}
+		return releaseErr
+	}}
+	cleanup := make(chan struct{})
+	finish := sync.OnceFunc(func() { close(cleanup) })
+	defer finish()
+	canceled := make(chan struct{})
+	go func() {
+		defer service.Close()
+		var command [5]byte
+		if _, err := io.ReadFull(service, command[:]); err != nil || string(command[:]) != "stop\n" {
+			return
+		}
+		close(canceled)
+		<-cleanup
+		_, _ = io.WriteString(service, "{\"event\":\"stopped\"}\n")
+	}()
+	readerDone := make(chan error, 1)
+	go func() { readerDone <- Forward(context.Background(), connection, io.Discard) }()
+	select {
+	case <-observed.started:
+	case <-time.After(time.Second):
+		t.Fatal("client did not begin reading")
+	}
+	closed := make(chan error, 2)
+	go func() { closed <- connection.Close() }()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Close deadlocked behind its pending reader")
+	}
+	go func() { closed <- connection.Close() }()
+	select {
+	case <-released:
+		t.Fatal("Close released the lease before cleanup")
+	case err := <-closed:
+		t.Fatalf("Close returned before cleanup: %v", err)
+	default:
+	}
+	finish()
+	for range 2 {
+		select {
+		case err := <-closed:
+			if !errors.Is(err, releaseErr) {
+				t.Fatalf("Close lost its release error: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Close did not finish after cleanup")
+		}
+	}
+	select {
+	case err := <-readerDone:
+		if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatal("pending reader did not finish cleanly", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close left its existing reader blocked")
+	}
+	observed.mu.Lock()
+	concurrent := observed.concurrent
+	observed.mu.Unlock()
+	if concurrent {
+		t.Fatal("Close and Forward read the service stream concurrently")
+	}
+	<-released
+	select {
+	case <-released:
+		t.Fatal("duplicate Close released the lease twice")
+	default:
+	}
+}
+
+func TestStateLeaseCloseBoundsBrokenService(t *testing.T) {
+	client, service := net.Pipe()
+	defer service.Close()
+	released := make(chan struct{})
+	connection := &stateLeaseConnection{Conn: client, release: func() error { close(released); return nil }}
+	closed := make(chan error, 1)
+	// The peer neither reads stop nor acknowledges cleanup. Both directions
+	// must be bounded, and duplicate Close must not restart that budget.
+	go func() { closed <- connection.Close() }()
+	select {
+	case err := <-closed:
+		var timeout net.Error
+		if !errors.As(err, &timeout) || !timeout.Timeout() {
+			t.Fatalf("unacknowledged cleanup did not report a timeout: %v", err)
+		}
+		if again := connection.Close(); again != err {
+			t.Fatalf("duplicate Close changed its result: %v, %v", err, again)
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("Close hung on an unresponsive service")
+	}
+	select {
+	case <-released:
+	default:
+		t.Fatal("failed transport retained its local lease after the bounded wait")
 	}
 }
 

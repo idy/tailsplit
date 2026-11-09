@@ -91,13 +91,233 @@ func TestUnsetDefaultRequiresChoiceButAllowsDeviceDiscovery(t *testing.T) {
 	}
 }
 
+func TestAdditionalDefaultHostnameSurvivesPrimaryChanges(t *testing.T) {
+	base := t.TempDir()
+	var hostname, state string
+	for _, primary := range []string{"original", "renamed", ""} {
+		config := Config{
+			StateDir: base,
+			Exits: []ExitConfig{
+				{ID: "office", ExitNode: "100.101.0.11"},
+				{ID: "explicit", Hostname: "renamed-office"},
+			},
+			Rules: RulesConfig{DefaultExit: UnsetExit},
+		}
+		if primary != "" {
+			config.Tailscale = &TailscaleConfig{Hostname: primary}
+		}
+		normalized, err := Normalize(config, base)
+		if err != nil {
+			t.Fatalf("primary %q introduced a derived hostname collision: %v", primary, err)
+		}
+		if hostname == "" {
+			hostname, state = normalized.Exits[0].Hostname, normalized.ExitStateDir("office")
+		}
+		if normalized.Exits[0].Hostname != hostname || normalized.Exits[0].ID != "office" || normalized.ExitStateDir("office") != state || normalized.Exits[1].Hostname != "renamed-office" {
+			t.Fatalf("primary %q changed an additional identity: %+v", primary, normalized.Exits)
+		}
+		native := compiledNative(t, normalized)
+		if endpoint := endpointTags(native)["exit-office"]; endpoint["hostname"] != hostname || endpoint["state_directory"] != state {
+			t.Fatalf("primary %q changed the compiled additional identity: %v", primary, endpoint)
+		}
+	}
+}
+
+func TestDirectAndNamedPoliciesDoNotRequireUnusedDefault(t *testing.T) {
+	for _, test := range []struct {
+		name, defaultExit, final string
+		routes                   []RouteConfig
+		removePrimary            bool
+	}{
+		{name: "unset default direct", defaultExit: UnsetExit, final: "direct"},
+		{name: "pending primary default", defaultExit: MainExit, final: "direct"},
+		{name: "pending extra default", defaultExit: "spare", final: "direct"},
+		{name: "missing legacy main default", defaultExit: MainExit, final: "direct", removePrimary: true},
+		{name: "named final", defaultExit: UnsetExit, final: "office"},
+		{name: "named domain group", defaultExit: UnsetExit, final: "direct", routes: []RouteConfig{{Exit: "office", Domains: []string{"corp.example"}}}},
+		{name: "named IP group", defaultExit: UnsetExit, final: "direct", routes: []RouteConfig{{Exit: "office", IPs: []string{"203.0.113.0/24"}}}},
+		{name: "empty missing group", defaultExit: UnsetExit, final: "direct", routes: []RouteConfig{{Exit: "missing"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := Config{
+				StateDir: t.TempDir(), Tailscale: &TailscaleConfig{Hostname: "primary"},
+				Exits: []ExitConfig{{ID: "office", ExitNode: "100.101.0.11"}, {ID: "spare"}},
+				Rules: RulesConfig{DefaultExit: test.defaultExit, Final: test.final, Routes: test.routes},
+			}
+			if test.removePrimary {
+				config.Tailscale = nil
+			}
+			config, err := Normalize(config, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.RequiresDefaultExit() || requiresTrafficExit(config, MainExit) || requiresTrafficExit(config, "spare") {
+				t.Fatal("unused missing or pending default became a required gateway")
+			}
+			if err := ValidateTrafficExit(config); err != nil {
+				t.Fatal(err)
+			}
+			compiled, err := CompileContext(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if TailscaleEnabled {
+				if err := Check(compiled); err != nil {
+					t.Fatal("compiled policy references an unavailable DNS/outbound:", err)
+				}
+			}
+			var native map[string]any
+			if err := json.Unmarshal(compiled.JSON, &native); err != nil {
+				t.Fatal(err)
+			}
+			if tags := endpointTags(native); tags["tailnet"] != nil || tags["exit-spare"] != nil {
+				t.Fatal("pending device entered the traffic runtime", tags)
+			}
+			for _, raw := range native["route"].(map[string]any)["rules"].([]any) {
+				rule := raw.(map[string]any)
+				prefixes, _ := rule["ip_cidr"].([]any)
+				if slices.Contains(prefixes, any("100.64.0.0/10")) {
+					t.Fatal("bare Tailnet fallback referenced an unusable default", rule)
+				}
+			}
+			if test.final == "office" || len(test.routes) > 0 && len(test.routes[0].Domains)+len(test.routes[0].IPs) > 0 {
+				if !requiresTrafficExit(config, "office") {
+					t.Fatal("explicit owner lost its required status")
+				}
+				config.Exits[0].ExitNode = ""
+				if _, err := CompileContext(t.Context(), config); err == nil || !strings.Contains(err.Error(), `"office"`) {
+					t.Fatal("unused default exemption weakened required-owner readiness", err)
+				}
+			}
+		})
+	}
+}
+
+func TestNamedPrimaryPolicyWorksWithUnsetDefault(t *testing.T) {
+	for _, final := range []string{MainExit, "direct"} {
+		config := Config{
+			StateDir: t.TempDir(), Tailscale: &TailscaleConfig{Hostname: "primary", ExitNode: "100.64.0.10"},
+			Rules: RulesConfig{DefaultExit: UnsetExit, Final: final},
+		}
+		if final == "direct" {
+			config.Rules.Routes = []RouteConfig{{Exit: MainExit, Domains: []string{"corp.example"}}}
+		}
+		if config.RequiresDefaultExit() || !requiresTrafficExit(config, MainExit) {
+			t.Fatal("named primary policy became dependent on an unrelated default")
+		}
+		compiled, err := CompileContext(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if TailscaleEnabled {
+			if err := Check(compiled); err != nil {
+				t.Fatal(err)
+			}
+		}
+		config.Tailscale.ExitNode = ""
+		if _, err := CompileContext(t.Context(), config); err == nil || !strings.Contains(err.Error(), `"main"`) {
+			t.Fatal("unset default exemption weakened explicit primary ownership", err)
+		}
+	}
+}
+
+func TestOnlyPendingDevicesCanPrepareDirectConnection(t *testing.T) {
+	config, err := Normalize(Config{
+		StateDir: filepath.Join(t.TempDir(), "state"), Tailscale: &TailscaleConfig{Hostname: "primary"},
+		Exits: []ExitConfig{{ID: "office"}}, Rules: RulesConfig{DefaultExit: UnsetExit},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := CompileContext(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConnection(t.Context(), config, compiled, nil, nil)
+	if err != nil || string(prepared.JSON) != string(compiled.JSON) {
+		t.Fatal("no active Tailnet endpoints should need authentication before direct traffic", err)
+	}
+}
+
+func TestUsableDefaultStillRequiresBareTailnetFallback(t *testing.T) {
+	config, err := Normalize(Config{
+		StateDir: t.TempDir(), Exits: []ExitConfig{{ID: "office", ExitNode: "100.101.0.11"}},
+		Rules: RulesConfig{DefaultExit: "office", Final: "direct"},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.RequiresDefaultExit() || !requiresTrafficExit(config, "office") {
+		t.Fatal("configured default's bare Tailnet policy became optional")
+	}
+	native := compiledNative(t, config)
+	found := false
+	for _, raw := range native["route"].(map[string]any)["rules"].([]any) {
+		rule := raw.(map[string]any)
+		prefixes, _ := rule["ip_cidr"].([]any)
+		if slices.Contains(prefixes, any("100.64.0.0/10")) && slices.Contains(prefixes, any("fd7a:115c:a1e0::/48")) {
+			found = rule["outbound"] == "exit-office"
+		}
+	}
+	if !found {
+		t.Fatal("configured default lost bare Tailnet-address ownership")
+	}
+	required, optional := preflightExits(config, []engineExit{{id: "office"}}, true)
+	if done, waiting, _, err := connectionReadiness("office", required, optional, map[string]Status{"office": {BackendState: "Running"}}, true, false); err != nil || done || !waiting {
+		t.Fatal("offline implicit fallback owner was approved", done, waiting, err)
+	}
+	if _, err := compileWithOptions(t.Context(), config, compileOptions{blockedExits: map[string]bool{"office": true}}); err == nil {
+		t.Fatal("unavailable bare Tailnet fallback could silently become direct")
+	}
+}
+
+func TestPendingNamedOwnerRetainsSelectionDraftBoundary(t *testing.T) {
+	config := Config{
+		StateDir: t.TempDir(), Tailscale: &TailscaleConfig{Hostname: "primary", ExitNode: "100.64.0.10"},
+		Exits: []ExitConfig{{ID: "office"}}, Rules: RulesConfig{DefaultExit: "office", Final: "office"},
+	}
+	if config.RequiresDefaultExit() || !requiresTrafficExit(config, "office") {
+		t.Fatal("pending nominal selection lost its explicit named ownership")
+	}
+	if err := ValidateTrafficExit(config); err == nil || !strings.Contains(err.Error(), `"office"`) {
+		t.Fatal("pending selected named owner lost its selection-draft error", err)
+	}
+	for _, defaultExit := range []string{MainExit, UnsetExit} {
+		config.Rules.DefaultExit = defaultExit
+		if err := ValidateTrafficExit(config); err != nil {
+			t.Fatal("unrelated nominal selection changed pending named-owner classification", err)
+		}
+		if _, err := CompileContext(t.Context(), config); err == nil || !strings.Contains(err.Error(), `"office"`) {
+			t.Fatal("pending named owner could start traffic", err)
+		}
+	}
+}
+
+func TestDefaultProxyPolicyStillRequiresSelection(t *testing.T) {
+	for _, rules := range []RulesConfig{
+		{Final: "proxy"}, {GFWList: "builtin"}, {Source: new("builtin")},
+		{ProxyDomains: []string{"proxy.example"}}, {ProxyIPs: []string{"203.0.113.0/24"}},
+		{Mode: RoutingGlobal, GlobalExit: UnsetExit},
+	} {
+		rules.DefaultExit = UnsetExit
+		config := Config{Exits: []ExitConfig{{ID: "office", ExitNode: "100.101.0.11"}}, Rules: rules}
+		if !config.RequiresDefaultExit() {
+			t.Fatalf("actual proxy policy lost its default requirement: %+v", rules)
+		}
+		if err := ValidateTrafficExit(config); err == nil || !strings.Contains(err.Error(), "select a default exit") {
+			t.Fatalf("proxy policy used an unset default: %+v: %v", rules, err)
+		}
+	}
+}
+
 func TestExitsCompileToSeparateDevicesAndRoutes(t *testing.T) {
 	config, err := loadTestConfig(t, multiExitYAML)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := config.Exits[0].Hostname; got != "laptop-office" {
-		t.Fatalf("default exit hostname: %q", got)
+	withoutPrimary, err := loadTestConfig(t, "exits:\n  - id: office\n")
+	if err != nil || config.Exits[0].Hostname != withoutPrimary.Exits[0].Hostname {
+		t.Fatalf("additional default hostname depends on primary: %q, %v", config.Exits[0].Hostname, err)
 	}
 	native := compiledNative(t, config)
 	tags := endpointTags(native)
@@ -189,7 +409,7 @@ func TestFocusSelectsOneDeviceIdempotently(t *testing.T) {
 		native := compiledNative(t, candidate)
 		tags := endpointTags(native)
 		if len(tags) != 1 || tags["tailnet"]["state_directory"] != candidate.ExitStateDir("office") ||
-			tags["tailnet"]["hostname"] != "laptop-office" {
+			tags["tailnet"]["hostname"] != config.Exits[0].Hostname {
 			t.Fatalf("focused session must run only the office device: %v", tags)
 		}
 	}
@@ -675,7 +895,7 @@ func TestUnresolvedSplitExitClassification(t *testing.T) {
 		{name: "empty missing group", compileOK: true, configure: func(c *Config) {
 			c.Rules.Routes = []RouteConfig{{Exit: "office"}}
 		}},
-		{name: "pending default node", configure: func(c *Config) { c.Tailscale.ExitNode = "" }},
+		{name: "pending default node", configure: func(c *Config) { c.Tailscale.ExitNode = ""; c.Rules.Final = "proxy" }},
 		{name: "missing default device", configure: func(c *Config) { c.Tailscale = nil; c.Rules.Final = "proxy" }},
 		{name: "pending final node", configure: func(c *Config) {
 			c.Exits = []ExitConfig{{ID: "office", Hostname: "office"}}
@@ -818,7 +1038,11 @@ func TestEmptyDeviceDraftsRetainDormantPolicyButCannotProxy(t *testing.T) {
 	if _, err := compilePreflight(pending, true); err != nil {
 		t.Fatalf("first extra cannot log in or discover before choosing a node: %v", err)
 	}
+	if _, err := Compile(pending); err != nil {
+		t.Fatal("unused pending first extra blocked direct-only traffic:", err)
+	}
+	pending.Rules.Final = "proxy"
 	if _, err := Compile(pending); err == nil {
-		t.Fatal("pending first extra can start traffic before choosing a node")
+		t.Fatal("pending default can carry required proxy traffic before choosing a node")
 	}
 }

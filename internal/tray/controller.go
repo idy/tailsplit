@@ -40,6 +40,7 @@ type Snapshot struct {
 	// TrafficExit is the logical device selected by the current helper, which
 	// can differ from configuration saved since that helper started.
 	TrafficExit   string
+	Phase         string
 	BackendState  string
 	Error         string
 	Hostname      string
@@ -55,6 +56,8 @@ type Snapshot struct {
 }
 
 type ExitSnapshot struct {
+	// Phase distinguishes runtime isolation from an SDK authentication state.
+	Phase          string
 	BackendState   string
 	NetworkName    string
 	MagicDNSSuffix string
@@ -305,6 +308,9 @@ func (c *Controller) startLocked(mode, focus string) error {
 			TUN struct {
 				Enabled bool `yaml:"enabled"`
 			} `yaml:"tun"`
+			Exits []struct {
+				ID string `yaml:"id"`
+			} `yaml:"exits"`
 			Rules struct {
 				Mode        string `yaml:"mode"`
 				GlobalExit  string `yaml:"global_exit"`
@@ -323,6 +329,13 @@ func (c *Controller) startLocked(mode, focus string) error {
 		trafficExit = (tailsplit.Config{Rules: tailsplit.RulesConfig{
 			Mode: config.Rules.Mode, DefaultExit: config.Rules.DefaultExit, GlobalExit: config.Rules.GlobalExit,
 		}}).TrafficExitID()
+		if mode == "proxy" || mode == "tun" || mode == "discovery" {
+			for _, exit := range config.Exits {
+				if _, ok := c.snapshot.Exits[exit.ID]; !ok {
+					c.setExit(exit.ID, ExitSnapshot{})
+				}
+			}
+		}
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), runCommand, "--events",
 		"--parent-pid", fmt.Sprint(os.Getpid()), "-c", c.options.ConfigPath)
@@ -351,21 +364,16 @@ func (c *Controller) startLocked(mode, focus string) error {
 	c.snapshot.RoutingMode = routingMode
 	c.trafficExit = trafficExit
 	c.snapshot.Error, c.snapshot.LoginURL = "", ""
-	// Only refresh primary authentication when the helper reads that device.
-	// A focused login emits no primary status and must retain its saved state.
-	if (focus == "" || focus == tailsplit.MainExit) &&
-		(trafficExit == tailsplit.MainExit || mode == "login" || mode == "discovery") {
-		c.snapshot.BackendState = ""
-	}
-	authExit := focus
-	if mode == "proxy" || mode == "tun" {
-		authExit = trafficExit
-	}
-	if authExit != "" && authExit != tailsplit.MainExit {
-		// LoginFlow must wait for this helper's status, not a previous session.
-		exit := c.snapshot.Exits[authExit]
-		exit.BackendState = ""
-		c.setExit(authExit, exit)
+	if mode == "proxy" || mode == "tun" || mode == "discovery" {
+		// A new traffic/discovery helper must observe every device afresh. An
+		// optional endpoint can be omitted without ever producing SDK status.
+		c.invalidateDeviceStatuses(routingMode, trafficExit, mode != "discovery")
+	} else if focus == "" || focus == tailsplit.MainExit {
+		c.invalidatePrimaryStatus("")
+	} else {
+		// Focused login preserves other devices' cached authentication.
+		exit := c.snapshot.Exits[focus]
+		c.setExit(focus, ExitSnapshot{NetworkName: exit.NetworkName, MagicDNSSuffix: exit.MagicDNSSuffix, Hostname: exit.Hostname})
 	}
 	c.command, c.input = command, input
 	c.stopping = false
@@ -399,6 +407,26 @@ func (c *Controller) startLocked(mode, focus string) error {
 		c.mu.Unlock()
 	}()
 	return nil
+}
+
+func (c *Controller) invalidatePrimaryStatus(phase string) {
+	c.snapshot.Phase = phase
+	c.snapshot.BackendState, c.snapshot.ExitNode = "", ""
+	c.snapshot.ExitNodes, c.snapshot.PingAvailable = nil, false
+}
+
+func (c *Controller) invalidateDeviceStatuses(routingMode, trafficExit string, traffic bool) {
+	phase := func(id string) string {
+		if traffic && routingMode == tailsplit.RoutingGlobal && id != trafficExit {
+			return "omitted"
+		}
+		return ""
+	}
+	c.invalidatePrimaryStatus(phase(tailsplit.MainExit))
+	for id, exit := range c.snapshot.Exits {
+		c.setExit(id, ExitSnapshot{Phase: phase(id), NetworkName: exit.NetworkName,
+			MagicDNSSuffix: exit.MagicDNSSuffix, Hostname: exit.Hostname})
+	}
 }
 
 func (c *Controller) Stop() error {
@@ -652,13 +680,20 @@ func (c *Controller) onEvent(data []byte) {
 		return
 	}
 	trafficConnection := c.snapshot.Mode == "proxy" || c.snapshot.Mode == "tun"
+	if event.Phase == "isolated" {
+		// Isolation is an application runtime decision, not an invented SDK
+		// identity. Never retain availability from an earlier status/session.
+		event.AuthURL, event.ExitNode = "", ""
+		event.ExitOnline, event.ExitVisible, event.PingAvailable = false, false, false
+		event.ExitNodes = nil
+	}
 	selected := c.trafficExit
 	if selected == tailsplit.MainExit {
 		selected = ""
 	}
 	if event.Exit != "" {
 		c.setExit(event.Exit, ExitSnapshot{
-			BackendState: event.BackendState, NetworkName: event.NetworkName, MagicDNSSuffix: event.MagicDNSSuffix, Hostname: event.Hostname,
+			Phase: event.Phase, BackendState: event.BackendState, NetworkName: event.NetworkName, MagicDNSSuffix: event.MagicDNSSuffix, Hostname: event.Hostname,
 			ExitNode: event.ExitNode, ExitOnline: event.ExitOnline, ExitVisible: event.ExitVisible,
 			ExitNodes: event.ExitNodes, PingAvailable: event.PingAvailable,
 		})
@@ -679,6 +714,7 @@ func (c *Controller) onEvent(data []byte) {
 			return
 		}
 	} else {
+		c.snapshot.Phase = event.Phase
 		c.snapshot.ExitNode = event.ExitNode
 		c.snapshot.Hostname = event.Hostname
 		c.snapshot.ExitNodes = event.ExitNodes

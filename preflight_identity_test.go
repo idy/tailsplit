@@ -83,7 +83,7 @@ func TestOptionalSuffixMismatchCannotBeIsolatedAtReadinessDeadline(t *testing.T)
 	// Simulate the deadline seeing a new status before its change notification
 	// has been handled. Refusing only old.ts.net would leak new.ts.net.
 	latest := map[string]Status{"office": {BackendState: "Running", NetworkName: "corp.example", MagicDNSSuffix: "new.ts.net"}}
-	if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest); err == nil || !strings.Contains(err.Error(), "apply its current DNS metadata") {
+	if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest, nil); err == nil || !strings.Contains(err.Error(), "apply its current DNS metadata") {
 		t.Fatal("timeout path accepted stale DNS ownership instead of requiring repair", err)
 	}
 	if !bytes.Equal(before, runtime.JSON) {
@@ -159,7 +159,7 @@ func TestSignedOutOptionalDeviceProducesIsolatedRuntime(t *testing.T) {
 	}
 	originalJSON := bytes.Clone(original.JSON)
 	isolated := original
-	if err := isolateOptionalExits(t.Context(), config, &isolated, optional, latest); err != nil {
+	if err := isolateOptionalExits(t.Context(), config, &isolated, optional, latest, nil); err != nil {
 		t.Fatal(err)
 	}
 	if TailscaleEnabled {
@@ -178,12 +178,156 @@ func TestSignedOutOptionalDeviceProducesIsolatedRuntime(t *testing.T) {
 	if !bytes.Equal(original.JSON, originalJSON) {
 		t.Fatal("isolation mutated the caller's original runtime")
 	}
-	if err := isolateOptionalExits(t.Context(), config, nil, optional, latest); err == nil {
+	if err := isolateOptionalExits(t.Context(), config, nil, optional, latest, nil); err == nil {
 		t.Fatal("error-only preparation approved an unfiltered runtime")
 	}
 	latest[""] = Status{BackendState: "NeedsLogin"}
-	if err := isolateOptionalExits(t.Context(), config, &isolated, required, latest); err == nil {
+	if err := isolateOptionalExits(t.Context(), config, &isolated, required, latest, nil); err == nil {
 		t.Fatal("a required gateway could be isolated instead of authenticated")
+	}
+}
+
+func TestObservedExtraMagicDNSIsProtectedOnlyInRuntime(t *testing.T) {
+	for _, scope := range []string{"optional Split", "guarded Split", "default Split", "named group", "named final", "Global", "focused"} {
+		t.Run(scope, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.Final, config.Rules.Routes = "direct", nil
+			config.Exits[0].Tailnet, config.Exits[0].MagicDNSSuffix = "", ""
+			server, outbound := "dns-tailnet-office", "exit-office"
+			devices := []engineExit{{id: ""}, {id: "office"}}
+			switch scope {
+			case "guarded Split":
+				config.Exits[0].Tailnet, devices[1].tailnet = "Office", "Office"
+			case "default Split":
+				config.Rules.DefaultExit = "office"
+			case "named group":
+				config.Rules.DefaultExit = UnsetExit
+				config.Rules.Routes = []RouteConfig{{Exit: "office", Domains: []string{"corp.example"}}}
+			case "named final":
+				config.Rules.DefaultExit, config.Rules.Final = UnsetExit, "office"
+			case "Global":
+				config.Rules.Mode, config.Rules.GlobalExit = RoutingGlobal, "office"
+				devices, server, outbound = devices[1:], "dns-tailnet", "tailnet"
+			case "focused":
+				var err error
+				config, err = config.FocusExit("office")
+				if err != nil {
+					t.Fatal(err)
+				}
+				devices, server, outbound = devices[1:], "dns-tailnet", "tailnet"
+			}
+			before, _ := json.Marshal(config)
+			runtime, err := CompileContext(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := bytes.Clone(runtime.JSON)
+			required, optional := preflightExits(config, devices, true)
+			latest := map[string]Status{
+				"":       {BackendState: "Running", ExitVisible: true, ExitOnline: true},
+				"office": {BackendState: "Running", NetworkName: "Office", MagicDNSSuffix: "OFFICE.TS.NET.", ExitVisible: true, ExitOnline: true},
+				"spare":  {BackendState: "Running", MagicDNSSuffix: "unrelated.ts.net"},
+			}
+			if done, _, _, err := connectionReadiness(config.TrafficExitID(), required, optional, latest, true, false); err != nil || !done {
+				t.Fatal("minimal CLI profile could not finish authentication", done, err)
+			}
+			if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest, nil); err != nil {
+				t.Fatal(err)
+			}
+			if TailscaleEnabled {
+				if err := Check(runtime); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var native map[string]any
+			if err := json.Unmarshal(runtime.JSON, &native); err != nil {
+				t.Fatal(err)
+			}
+			assertBlockedExitDomainPolicy(t, native, "host.office.ts.net", server, outbound)
+			if endpointTags(native)[outbound]["state_directory"] != config.ExitStateDir("office") {
+				t.Fatal("observing DNS metadata changed the saved device state identity")
+			}
+			if strings.Contains(string(runtime.JSON), "unrelated.ts.net") {
+				t.Fatal("pending or out-of-scope status established runtime DNS ownership")
+			}
+			if after, _ := json.Marshal(config); !bytes.Equal(before, after) || bytes.Contains(original, []byte("office.ts.net")) {
+				t.Fatal("runtime observation changed the caller's configuration or original plan")
+			}
+			if scope == "Global" || scope == "focused" {
+				if strings.Contains(string(runtime.JSON), "primary.ts.net") || len(endpointTags(native)) != 1 {
+					t.Fatal("observing a focused suffix restored unrelated runtime devices")
+				}
+			}
+			if err := isolateOptionalExits(t.Context(), config, nil, optional, latest, nil); err == nil {
+				t.Fatal("error-only preparation approved traffic without its observed DNS protection")
+			}
+		})
+	}
+}
+
+func TestObservedExtraMagicDNSKeepsPrimaryOwnership(t *testing.T) {
+	for _, owner := range []string{"MagicDNS", "custom domain"} {
+		t.Run(owner, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.Final, config.Rules.Routes = "direct", nil
+			config.Exits[0].Tailnet, config.Exits[0].MagicDNSSuffix = "", ""
+			server := "dns-tailnet"
+			if owner == "MagicDNS" {
+				config.DNS.MagicDomains = []string{"shared.ts.net"}
+			} else {
+				config.DNS.MagicDomains = nil
+				config.Tailscale.Domains = []string{"shared.ts.net"}
+				server = "dns-direct"
+			}
+			runtime, err := CompileContext(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			latest := map[string]Status{"office": {BackendState: "Running", MagicDNSSuffix: "shared.ts.net"}}
+			if err := isolateOptionalExits(t.Context(), config, &runtime, []engineExit{{id: "office"}}, latest, nil); err != nil {
+				t.Fatal(err)
+			}
+			var native map[string]any
+			if err := json.Unmarshal(runtime.JSON, &native); err != nil {
+				t.Fatal(err)
+			}
+			assertBlockedExitDomainPolicy(t, native, "host.shared.ts.net", server, "tailnet")
+		})
+	}
+}
+
+func TestOptionalIsolationReportsActualStoppedAvailability(t *testing.T) {
+	for _, backend := range []string{"unseen", "Starting", "Stopped", "NeedsLogin"} {
+		t.Run(backend, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.Final, config.Rules.Routes = "direct", nil
+			runtime, err := CompileContext(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			latest := map[string]Status{}
+			if backend != "unseen" {
+				latest["office"] = Status{
+					BackendState: backend, NetworkName: "Office", MagicDNSSuffix: "office.ts.net", Hostname: "office-device",
+					AuthURL: "https://login.tailscale.com/a/fixture", ExitNode: "old-node", ExitVisible: true, ExitOnline: true,
+					PingAvailable: true, ExitNodes: []ExitNode{{ID: "100.101.0.11", Online: true}},
+				}
+			}
+			var statuses []Status
+			if err := isolateOptionalExits(t.Context(), config, &runtime, []engineExit{{id: "office", tailnet: "office.ts.net"}}, latest, func(status Status) { statuses = append(statuses, status) }); err != nil {
+				t.Fatal(err)
+			}
+			if len(statuses) != 1 {
+				t.Fatal("isolated optional device did not receive a final status", statuses)
+			}
+			status := statuses[0]
+			if status.Event != "status" || status.Exit != "office" || status.Phase != "isolated" || status.RoutingMode != config.Rules.Mode || status.BackendState != latest["office"].BackendState || status.NetworkName != latest["office"].NetworkName || status.MagicDNSSuffix != latest["office"].MagicDNSSuffix || status.Hostname != latest["office"].Hostname {
+				t.Fatal("isolated status fabricated authentication or lost real identity metadata", status)
+			}
+			if status.AuthURL != "" || status.ExitNode != "" || status.ExitVisible || status.ExitOnline || status.PingAvailable || len(status.ExitNodes) != 0 {
+				t.Fatal("isolated device retained stale availability", status)
+			}
+		})
 	}
 }
 

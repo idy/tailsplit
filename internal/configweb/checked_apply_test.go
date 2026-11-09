@@ -39,6 +39,47 @@ func TestActiveGlobalRejectsPendingGatewayBeforeApply(t *testing.T) {
 	}
 }
 
+func TestActiveGlobalMetadataRequiresSeparateDisconnectAndNoopKeepsHelper(t *testing.T) {
+	if !tailsplit.TailscaleEnabled {
+		t.Skip("Global metadata applies require native Tailscale validation; use -tags with_gvisor")
+	}
+	for _, active := range []bool{true, false} {
+		server, path, applied := testServer(t)
+		original := "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\nexits:\n  - id: office\n    exit_node: 100.101.0.11\n    tailnet: office.example\n    magic_dns_suffix: old.ts.net\nrules:\n  mode: global\n  global_exit: office\ntun:\n  enabled: true\n"
+		if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		server.options.Snapshot = func() tray.Snapshot {
+			return tray.Snapshot{Active: active, Mode: "tun", RoutingMode: tailsplit.RoutingGlobal, TrafficExit: "office"}
+		}
+		_, revision, _ := tray.ReadConfigDocument(path)
+		status, body := request(t, server, "POST", "/api/config", map[string]any{"yaml": original, "revision": revision}, nil)
+		if status != http.StatusOK || applied.Load() != 0 {
+			t.Fatalf("no-op stopped or replaced Global: %d %s", status, body)
+		}
+		status, body = request(t, server, "POST", "/api/config", map[string]any{"yaml": original, "revision": "stale"}, nil)
+		if status != http.StatusConflict || applied.Load() != 0 {
+			t.Fatalf("stale no-op bypassed revision check: %d %s", status, body)
+		}
+		for _, changes := range []map[string]any{
+			{"log_level": "debug"},
+			{"exits": []map[string]any{{"id": "office", "exit_node": "100.101.0.11", "tailnet": "office.example", "magic_dns_suffix": "new.ts.net"}}},
+		} {
+			_, revision, _ = tray.ReadConfigDocument(path)
+			before := applied.Load()
+			status, body = request(t, server, "POST", "/api/config", map[string]any{"yaml": original, "revision": revision, "changes": changes}, nil)
+			current, currentRevision, _ := tray.ReadConfigDocument(path)
+			if active {
+				if status != http.StatusUnprocessableEntity || applied.Load() != before || string(current) != original || currentRevision != revision || !bytes.Contains(body, []byte("disconnect before applying")) {
+					t.Fatalf("same-device metadata tore down active Global: %d %s", status, body)
+				}
+			} else if status != http.StatusOK || applied.Load() != before+1 {
+				t.Fatalf("explicit disconnect did not permit metadata save: %d %s", status, body)
+			}
+		}
+	}
+}
+
 func TestStoppedDraftSavesDoNotClaimRuntimeReadiness(t *testing.T) {
 	for name, candidate := range map[string]string{
 		"empty devices with runtime source": "tailscale: null\nrules:\n  source: ./missing-rules.txt\n  final: direct\n",
@@ -64,6 +105,24 @@ func TestStoppedDraftSavesDoNotClaimRuntimeReadiness(t *testing.T) {
 	}
 }
 
+func TestUnusedPendingDefaultDoesNotBlockDirectOnlyAPIValidationOrApply(t *testing.T) {
+	for _, selection := range []string{"-", "main", "pending"} {
+		server, path, applied := testServer(t)
+		_, revision, _ := tray.ReadConfigDocument(path)
+		candidate := "state_dir: ./state\ntailscale: null\nexits:\n  - id: pending\n    exit_node: ''\nrules:\n  default_exit: '" + selection + "'\n  final: direct\n  source: ''\n"
+		for _, endpoint := range []string{"/api/validate", "/api/config"} {
+			status, body := request(t, server, "POST", endpoint, map[string]string{"yaml": candidate, "revision": revision}, nil)
+			if status != http.StatusOK {
+				t.Fatalf("unused %s default blocked direct-only %s: %d %s", selection, endpoint, status, body)
+			}
+		}
+		current, _, err := tray.ReadConfigDocument(path)
+		if err != nil || string(current) != candidate || applied.Load() != 1 {
+			t.Fatal("direct-only API did not preserve the unused saved device", err)
+		}
+	}
+}
+
 func TestRetainedPrimaryPrivateOwnerCannotReplaceActiveGlobal(t *testing.T) {
 	server, path, applied := testServer(t)
 	original := "state_dir: ./state\ntailscale: null\nexits:\n  - id: office\n    exit_node: 100.101.0.11\ndns:\n  magic_domains: [removed.ts.net]\nrules:\n  mode: global\n  default_exit: office\n  global_exit: office\ntun:\n  enabled: true\n"
@@ -85,10 +144,14 @@ func TestRetainedPrimaryPrivateOwnerCannotReplaceActiveGlobal(t *testing.T) {
 
 func TestConcurrentConnectRechecksDraftAtApplyGate(t *testing.T) {
 	for name, candidate := range map[string]string{
-		"unresolved Split": "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  final: office\n",
-		"pending Global":   "exits:\n  - id: office\nrules:\n  mode: global\n  global_exit: office\ntun:\n  enabled: true\n",
+		"unresolved Split":            "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  final: office\n",
+		"pending Global":              "exits:\n  - id: office\nrules:\n  mode: global\n  global_exit: office\ntun:\n  enabled: true\n",
+		"same-device Global metadata": "tailscale:\n  exit_node: 100.64.0.10\nlog_level: debug\nrules:\n  mode: global\n  global_exit: main\ntun:\n  enabled: true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			if name == "same-device Global metadata" && !tailsplit.TailscaleEnabled {
+				t.Skip("Global metadata apply requires native Tailscale validation; use -tags with_gvisor")
+			}
 			server, path, applied := testServer(t)
 			original, revision, _ := tray.ReadConfigDocument(path)
 			var active atomic.Bool
@@ -156,8 +219,8 @@ func TestGlobalGatewayGuardUsesRunningDeviceInsteadOfSavedSelection(t *testing.T
 		t.Fatal("changing the actual protected traffic device used cached or saved state")
 	}
 	config.Rules.GlobalExit = tailsplit.MainExit
-	if err := checkCandidateSession(snapshot, config, nil); err != nil {
-		t.Fatal("retaining the actual Global gateway was rejected:", err)
+	if err := checkCandidateSession(snapshot, config, nil); err == nil {
+		t.Fatal("same-device Global replacement could stop protection without a separate disconnect")
 	}
 	config.Rules.Mode, config.Rules.DefaultExit = tailsplit.RoutingSplit, "office"
 	if err := checkCandidateSession(snapshot, config, nil); err != nil {

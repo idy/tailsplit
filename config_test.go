@@ -139,6 +139,7 @@ func TestDeviceNamesDefaultToHostAndPreserveCustomNames(t *testing.T) {
 	if config.Tailscale.Hostname != want || config.App.ConnectOnStart {
 		t.Fatal("automatic hostname or explicit-start default was lost")
 	}
+	config.Rules.Final = "proxy"
 	if _, err := Compile(config); err == nil {
 		t.Fatal("a proxy can start without an explicitly selected exit")
 	}

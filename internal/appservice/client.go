@@ -291,36 +291,80 @@ func openLeasedSession(ctx context.Context, operation string, config tailsplit.C
 	if err != nil {
 		return nil, err
 	}
-	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, ActiveOnly: activeOnly, Config: &config, Files: files}); err != nil {
-		_ = connection.Close()
+	leased := &stateLeaseConnection{Conn: connection, release: unlock}
+	keep = true
+	_ = leased.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(leased).Encode(Request{Protocol: Protocol, Op: operation, Target: target, ActiveOnly: activeOnly, Config: &config, Files: files}); err != nil {
+		// Even a failed write may have delivered a complete request.
+		if closeErr := leased.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
-	_ = connection.SetWriteDeadline(time.Time{})
-	keep = true
-	return &stateLeaseConnection{Conn: connection, release: unlock}, nil
+	_ = leased.SetWriteDeadline(time.Time{})
+	return leased, nil
+}
+
+// Bound the cleanup handshake separately from the operation's context. A broken
+// service must not keep Close or a cancelled Forward blocked indefinitely.
+const sessionCleanupTimeout = 5 * time.Second
+
+// stopSession uses the existing lifetime command without closing the read side:
+// the service sends its terminal event and EOF only after its runner returns.
+func stopSession(connection net.Conn) {
+	if leased, ok := connection.(*stateLeaseConnection); ok {
+		leased.stopOnce.Do(func() { stopSession(leased.Conn) })
+		return
+	}
+	now := time.Now()
+	if connection.SetReadDeadline(now.Add(sessionCleanupTimeout)) != nil || connection.SetWriteDeadline(now.Add(time.Second)) != nil {
+		_ = connection.Close()
+		return
+	}
+	_, _ = io.WriteString(connection, "stop\n")
 }
 
 type stateLeaseConnection struct {
 	net.Conn
-	release func() error
-	once    sync.Once
-	err     error
+	release  func() error
+	stopOnce sync.Once
+	readMu   sync.Mutex
+	once     sync.Once
+	err      error
+}
+
+func (c *stateLeaseConnection) Read(data []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	return c.Conn.Read(data)
 }
 
 func (c *stateLeaseConnection) Close() error {
-	c.once.Do(func() { c.err = errors.Join(c.Conn.Close(), c.release()) })
+	c.once.Do(func() {
+		// Stop before taking readMu: an existing reader can be waiting for the
+		// runner, which in turn needs this command to begin cleanup. Its read
+		// shares the cleanup deadline and finishes before we take over draining.
+		stopSession(c)
+		c.readMu.Lock()
+		_, err := io.Copy(io.Discard, c.Conn)
+		closeErr := c.Conn.Close()
+		c.readMu.Unlock()
+		if err != nil {
+			err = fmt.Errorf("wait for network service cleanup: %w", err)
+		}
+		c.err = errors.Join(err, closeErr, c.release())
+	})
 	return c.err
 }
 
 // Forward keeps the app channel alive until privileged cleanup completes.
 func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
+	stop := sync.OnceFunc(func() { stopSession(connection) })
 	done := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = connection.SetWriteDeadline(time.Now().Add(time.Second))
-			_, _ = io.WriteString(connection, "stop\n")
+			stop()
 		case <-done:
 		}
 	}()
@@ -328,10 +372,14 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 	scanner := bufio.NewScanner(connection)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	stopped := false
+	var writeErr error
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if _, err := output.Write(append(append([]byte(nil), line...), '\n')); err != nil {
-			return err
+		if writeErr == nil {
+			if _, err := output.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+				writeErr = err
+				stop()
+			}
 		}
 		var event struct {
 			Event string `json:"event"`
@@ -340,13 +388,16 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 			stopped = true
 		}
 	}
-	if ctx.Err() != nil {
-		return nil
+	if writeErr != nil {
+		if err := scanner.Err(); err != nil {
+			return errors.Join(writeErr, err)
+		}
+		return writeErr
 	}
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	if stopped {
+	if ctx.Err() != nil || stopped {
 		return nil
 	}
 	return errors.New("the network service session ended; see its status in the app")

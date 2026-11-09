@@ -82,6 +82,16 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 		}
 		runtimeExit = config.Focus
 	}
+	// A focused traffic session uses its own saved suffix, never the original
+	// primary's names. Device-only sessions do not consume routing metadata.
+	if config.Focus != "" && config.Focus != MainExit && !config.includePending {
+		for _, exit := range config.Exits {
+			if exit.ID == config.Focus && exit.magicDNSSuffix() != "" {
+				config.DNS.MagicDomains = []string{exit.magicDNSSuffix()}
+				break
+			}
+		}
+	}
 	global := config.Rules.Mode == RoutingGlobal
 	var projection *domainrules.Projection
 	var source string
@@ -527,14 +537,11 @@ func ValidateTrafficExit(config Config) error {
 			}
 		}
 	}
-	ids := config.ExitIDs()
-	if len(ids) == 0 && config.Focus == "" {
-		if config.Rules.Mode == RoutingGlobal || config.Rules.GFWList != "" || config.Rules.Source != nil && *config.Rules.Source != "" ||
-			len(config.Rules.ProxyDomains)+len(config.Rules.ProxyIPs)+len(config.DNS.MagicDomains) > 0 ||
-			config.Rules.Final != "" && config.Rules.Final != "direct" {
-			return errors.New("configure an exit device before starting proxy routing")
-		}
+	if !requiresTrafficExit(config, config.TrafficExitID()) && config.Focus == "" {
 		return nil
+	}
+	if len(config.ExitIDs()) == 0 && config.Focus == "" {
+		return errors.New("configure an exit device before starting proxy routing")
 	}
 	id := config.TrafficExitID()
 	if id == UnsetExit {

@@ -46,6 +46,9 @@ func TestStateExposesSeparatePrimaryAndAdditionalDNSSuffixes(t *testing.T) {
 }
 
 func TestExitSelectionPersistsSeparateDNSSuffixThroughStructuredEdits(t *testing.T) {
+	if !tailsplit.TailscaleEnabled {
+		t.Skip("configured DNS suffix save requires native Tailscale validation; use -tags with_gvisor")
+	}
 	server, path, applied := testServer(t)
 	original, revision, err := tray.ReadConfigDocument(path)
 	if err != nil {

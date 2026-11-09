@@ -60,8 +60,10 @@ an edit dialog. A disconnected app stays disconnected; an active Split session
 reconnects. Switching devices during active Global mode first asks for consent
 to stop protection, then disconnects and saves the selection while staying stopped
 until you reconnect manually. Signing in to another saved device follows the
-same consent rule; native actions without that confirmation require disconnecting
-first. Recovery of the current device's pending authorization keeps its helper. Turning on without a default
+same consent rule; active Global settings, node and DNS-metadata applies also
+require that separate disconnect. Exact no-op saves keep the current session.
+Native actions without confirmation require disconnecting first. Recovery of the
+current device's pending authorization keeps its helper. Turning on without a default
 still opens a selection dialog with no preselected option. Choose an
 exit and confirm to save it and connect; Cancel or Escape changes nothing. A
 failed or stale save never starts traffic. Settings drafts must be resolved

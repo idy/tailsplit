@@ -625,6 +625,10 @@
     state.busy = true; updateActions();
     try {
       if (!(await flushPreview()) || !state.valid || state.external) return;
+      const generation = state.generation, revision = state.revision;
+      if (state.draft !== state.saved && !(await disconnectForGlobalApply(fieldValue(state.values, 'rules.mode'),
+        () => generation === state.generation && revision === state.revision && !state.external &&
+          (!desktopLive?.revision || desktopLive.revision === revision)))) return;
       const doc = await api('config', { yaml: state.draft, revision: state.revision });
       useDocument(doc);
       toast(t('配置已保存并应用'));
@@ -669,7 +673,13 @@
   const exitDialog = $('#exit-picker-dialog');
   const networkActive = (live = desktopLive) => Boolean(live?.active && ['tun', 'proxy'].includes(live.mode));
   const needsAuthentication = (live = desktopLive) => live?.backend_state === 'NeedsLogin' || live?.state === 'login' && !live?.focus;
-  const signedIn = (live = desktopLive) => !needsAuthentication(live) && (live?.backend_state === 'Running' || live?.state === 'authenticated' && !live?.focus);
+  const excludedDevice = (live) => ['isolated', 'omitted'].includes(live?.phase);
+  const signedIn = (live = desktopLive) => !excludedDevice(live) && !needsAuthentication(live) && (live?.backend_state === 'Running' || live?.state === 'authenticated' && !live?.focus);
+  function deviceSessionNote(exit = '') {
+    const phase = exitLive(exit).phase;
+    return phase === 'omitted' ? t(networkActive() ? '全局模式未使用此设备；断开后可刷新或登录。' : '此设备尚未刷新；请刷新或登录。') :
+      phase === 'isolated' ? t('此设备未加入本次连接；请登录后重新连接。') : '';
+  }
   const exitList = (values = state.savedValues) => {
     const exits = fieldValue(values, 'exits');
     return (Array.isArray(exits) ? exits : []).filter((exit) => exit && typeof exit === 'object' && typeof exit.id === 'string' && exit.id);
@@ -686,7 +696,7 @@
   }
   function exitSignedIn(exit = '') {
     const id = exitKey(exit);
-    return id !== null && (id ? exitLive(id).backend_state === 'Running' : signedIn());
+    return id !== null && !excludedDevice(exitLive(id)) && (id ? exitLive(id).backend_state === 'Running' : signedIn());
   }
   function exitLabel(exit = '', values = state.savedValues) {
     const id = exitKey(exit);
@@ -712,7 +722,7 @@
   const savedMode = () => fieldValue(state.savedValues, 'rules.mode') === 'global' ? 'global' : 'split';
   const connectionExitField = () => savedMode() === 'global' ? 'rules.global_exit' : 'rules.default_exit';
   function connectionExitRecord() {
-    const current = String(fieldValue(state.savedValues, connectionExitField()));
+    const current = String(fieldValue(state.savedValues, connectionExitField())).trim() || 'main';
     const selected = configuredExits().find((exit) => exit.id === current);
     return selected?.exit_node ? selected : undefined;
   }
@@ -733,7 +743,7 @@
     // explicit consent to disconnect before saving; never test them by teardown.
     const live = exitLive(exit?.id);
     return savedMode() === 'global' && Boolean(exit?.exit_node) && exit.id !== connectionExitRecord()?.id &&
-      !live.backend_state && !live.exit && !live.exit_nodes?.length && live.exit_online !== false;
+      (live.phase === 'omitted' || !live.backend_state && !live.exit && !live.exit_nodes?.length && live.exit_online !== false);
   }
   function renderConnectionExit() {
     const select = $('#connection-exit');
@@ -814,16 +824,18 @@
     const updated = pickerDNSUpdate();
     return updated ? { exits: exitList().map((exit) => exit.id === pickerExit ? updated : exit) } : {};
   };
-  function modeNeedsExit(values) {
-    const routes = fieldValue(values, 'rules.routes');
-    return fieldValue(values, 'rules.mode') === 'global' || fieldValue(values, 'rules.final') !== 'direct' ||
-      Boolean(fieldValue(values, 'rules.source')) || ['rules.proxy_domains', 'rules.proxy_ips', 'dns.magic_domains'].some((field) => {
+  // Mirror Config.RequiresDefaultExit, including the bare-Tailnet fallback
+  // retained when a selected default has a node. Other policy names its owners.
+  function requiresDefaultExit(values) {
+    const id = String(fieldValue(values, 'rules.default_exit')).trim() || 'main';
+    return fieldValue(values, 'rules.mode') === 'global' || fieldValue(values, 'rules.final') === 'proxy' ||
+      Boolean(fieldValue(values, 'rules.source') || values.rules?.gfwlist) || ['rules.proxy_domains', 'rules.proxy_ips'].some((field) => {
         const items = fieldValue(values, field); return Array.isArray(items) && items.length > 0;
-      }) || Array.isArray(routes) && routes.some((route) => route && (route.domains?.length || route.ips?.length));
+      }) || configuredExits(values).some(exit => exit.id === id && String(exit.exit_node || '').trim());
   }
   function exitNodes(exit = '') {
     const live = exitLive(exit);
-    const nodes = (Array.isArray(live.exit_nodes) ? live.exit_nodes : []).map((node) => ({
+    const nodes = (!excludedDevice(live) && Array.isArray(live.exit_nodes) ? live.exit_nodes : []).map((node) => ({
       id: String(node.id || node.ID || ''), name: String(node.name || node.Name || node.id || node.ID || ''),
       online: node.online === true || node.Online === true, selected: node.selected === true || node.Selected === true,
       selectedFor: String(node.selected_for || node.SelectedFor || ''),
@@ -859,13 +871,13 @@
   }
   function updateDesktop(live) {
     if (desktopLive && (live.network !== desktopLive.network || live.hostname !== desktopLive.hostname ||
-        live.backend_state !== desktopLive.backend_state || signedIn(live) !== signedIn())) clearPingResults('');
+        live.backend_state !== desktopLive.backend_state || live.phase !== desktopLive.phase || signedIn(live) !== signedIn())) clearPingResults('');
     // A device that signs out, disappears or changes identity invalidates itself.
     const previous = desktopLive?.exits || {};
     desktopLive = live;
     for (const [id, exit] of Object.entries(previous)) {
       const current = exitLive(id);
-      if (current.network !== exit.network || current.hostname !== exit.hostname || current.backend_state !== exit.backend_state) clearPingResults(id);
+      if (current.network !== exit.network || current.hostname !== exit.hostname || current.backend_state !== exit.backend_state || current.phase !== exit.phase) clearPingResults(id);
     }
     const online = new Set(['', ...exitList().map((exit) => exit.id)].flatMap((exit) =>
       exitNodes(exit).filter((node) => node.online).map((node) => pingKey(node.id, exit))));
@@ -889,7 +901,7 @@
     const hasPrimary = Boolean(state.savedValues.tailscale);
     const records = configuredExits();
     const hasTailnet = records.length > 0;
-    const proxyPolicy = modeNeedsExit(state.savedValues);
+    const defaultRequired = requiresDefaultExit(state.savedValues);
     $('#main-exit-item').hidden = !hasPrimary;
     $('#exits-card').hidden = !hasTailnet;
     $('#exits-empty').hidden = hasTailnet;
@@ -900,7 +912,9 @@
     const killSwitch = $('#kill-switch');
     const targetField = mode === 'global' ? 'rules.default_exit' : 'rules.global_exit';
     const targetID = String(fieldValue(state.savedValues, targetField));
-    const targetReady = records.some(exit => exit.id === targetID && exit.exit_node);
+    const targetNeedsDefault = mode !== 'global' || requiresDefaultExit({ ...state.savedValues,
+      rules: { ...state.savedValues.rules, mode: 'split' } });
+    const targetReady = !targetNeedsDefault || records.some(exit => exit.id === targetID && exit.exit_node);
     $('#kill-switch-control').hidden = !live.desktop;
     killSwitch.value = mode;
     killSwitch.disabled = !live.desktop || locked || discovering || changing || state.dirty || state.external || !state.loaded || !state.savedValid || connected && !targetReady;
@@ -909,20 +923,20 @@
     const activeExit = connectionExit();
     renderConnectionExit();
     renderDefaultExitDialog();
-    const needsDefaultChoice = (hasTailnet || proxyPolicy) && !connectionExitRecord();
+    const needsDefaultChoice = defaultRequired && !connectionExitRecord();
     const activeExitReady = exitSignedIn(activeExit);
     const activeExitNodes = exitNodes(activeExit);
     const chosenNode = pickerNodes.find((node) => node.id === chosen || node.name === chosen || selectedExit === null && node.configured);
     const savedRoutes = fieldValue(state.savedValues, 'rules.routes');
     const referencedExits = new Set([
-      fieldValue(state.savedValues, 'rules.default_exit'), fieldValue(state.savedValues, 'rules.final'),
+      ...(defaultRequired ? [fieldValue(state.savedValues, 'rules.default_exit')] : []), fieldValue(state.savedValues, 'rules.final'),
       ...(Array.isArray(savedRoutes) ? savedRoutes : []).filter(route => route && (route.domains?.length || route.ips?.length)).map(route => route.exit),
     ]);
-    const extrasBlocked = mode === 'split' && exitList().some(exit => referencedExits.has(exit.id) && exit.exit_node && exitLive(exit.id).backend_state === 'NeedsLogin');
+    const requiredBlocked = mode === 'split' && records.some(exit => referencedExits.has(exit.id) && exit.exit_node && exitLive(exit.id).backend_state === 'NeedsLogin');
     $('#desktop-controls').hidden = !live.desktop;
     $('#desktop-connect').hidden = Boolean(live.active);
     $('#desktop-disconnect').hidden = !live.active;
-    $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || !needsDefaultChoice && (extrasBlocked || (hasTailnet || proxyPolicy) && (!activeExitReady || !savedExit(activeExit) || activeExitNodes.some((node) => node.configured && !node.online && !node.missing)));
+    $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || !needsDefaultChoice && (requiredBlocked || defaultRequired && (!activeExitReady || !savedExit(activeExit) || activeExitNodes.some((node) => node.configured && !node.online && !node.missing)));
     $('#desktop-disconnect').disabled = !live.desktop || isDesktopBusy() || quickBusy || connectionLost;
     $('#desktop-disconnect').setAttribute('aria-checked', String(connected));
     $('#desktop-disconnect').title = connected ? t('断开') : t('取消');
@@ -939,8 +953,8 @@
     $('#desktop-startup').disabled = !live.desktop || locked;
     $('#desktop-startup').checked = live.startup === true;
     const transitioning = ['starting', 'stopping', 'authorizing', 'logging-out'].includes(live.state) || discovering;
-    const network = live.state === 'logging-out' ? t('正在退出登录') : live.network ||
-      (authenticated ? t('已登录（网络名称未提供）') : live.backend_state === 'NeedsLogin' ? t('未登录') : transitioning ? t('正在读取网络…') : t('尚未读取网络'));
+    const network = deviceSessionNote() || (live.state === 'logging-out' ? t('正在退出登录') : live.network ||
+      (authenticated ? t('已登录（网络名称未提供）') : live.backend_state === 'NeedsLogin' ? t('未登录') : transitioning ? t('正在读取网络…') : t('尚未读取网络')));
     setStatusText('#desktop-network-name', network);
     $('#desktop-network-name').title = network;
     const identity = authenticated ? live.hostname || t('已登录') :
@@ -948,7 +962,7 @@
     const extra = exitLive(pickerExit);
     const extraIdentity = !pickerExit ? '' : exitSignedIn(pickerExit) ? [extra.hostname, extra.network].filter(Boolean).join(' · ') || t('已登录') :
       extra.backend_state === 'NeedsLogin' ? t('未登录 Tailscale') : t('尚未读取设备');
-    setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : pickerExit ? extraIdentity : identity);
+    setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : deviceSessionNote(pickerExit) || (pickerExit ? extraIdentity : identity));
     $('#picker-login').hidden = exitSignedIn(pickerExit);
     $('#picker-login').disabled = !live.desktop || locked || transitioning;
     $('#exit-danger-zone').hidden = !records.some((record) => record.id === (pickerExit || 'main'));
@@ -974,7 +988,7 @@
       !live.desktop ? t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。') :
       live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') :
       state.dirty ? t('请先保存配置，再连接。') : changing ? t('连接选项尚未应用，请先确认选择。') :
-      needsDefaultChoice ? t('未设置默认出口') : !activeExitReady && hasTailnet ? t('先登录 Tailscale，再选择出口并连接。') : hasTailnet && !savedExit(activeExit) ? t('尚未选择出口') : '';
+      needsDefaultChoice ? t('未设置默认出口') : defaultRequired && !activeExitReady ? t('先登录 Tailscale，再选择出口并连接。') : defaultRequired && !savedExit(activeExit) ? t('尚未选择出口') : '';
     setStatusText('#desktop-hint', hint);
     $('#desktop-hint').hidden = !hint || state.dirty || changing;
     $('#desktop-connect').title = hint || t('连接 TailSplit');
@@ -983,7 +997,8 @@
     const dnsUpdate = selectedExit === null || selectedExit === savedExit(pickerExit) ? pickerDNSUpdate() : null;
     const selection = dnsUpdate ? t('更新此出口的 DNS 信息：{suffix}', { suffix: dnsUpdate.magic_dns_suffix }) :
       t('已选：{name} · {mode}', { name, mode: mode === 'global' ? t('全局代理') : t('规则分流') });
-    const consequence = connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
+    const consequence = connected && (live.routing_mode || mode) === 'global' ? t('应用更改需先确认断开全局保护，保存后保持未连接。') :
+      connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
     const applyLabel = quickBusy ? t('正在应用…') : dnsUpdate ? t('保存 DNS 信息') : connected ? t('切换出口') : t('保存选择');
     const cannotApply = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && (!chosenNode || !chosenNode.online || chosenNode.missing === true);
     for (const prefix of ['connection', 'exit-dialog']) {
@@ -1053,7 +1068,7 @@
     const rows = exits.map((exit) => {
       const live = exitLive(exit.id);
       const node = exitNodes(exit.id).find((node) => node.configured);
-      return [exit.id, exitLabel(exit.id), exit.exit_node, node?.name || '', node?.online, live.network || '', live.backend_state || '', exitStatus(exit.id)];
+      return [exit.id, exitLabel(exit.id), exit.exit_node, node?.name || '', node?.online, live.network || '', live.backend_state || '', exitStatus(exit.id), live.phase || ''];
     });
     const activeExit = connectionExit();
     const signature = JSON.stringify([rows, locked, activeExit, savedMode(), locale.language]);
@@ -1078,9 +1093,9 @@
       const exitName = document.createElement('span'); exitName.className = 'exit-name';
       exitName.textContent = nodeName || configured || t('尚未选择出口');
       const detail = document.createElement('span'); detail.className = 'exit-network';
-      detail.textContent = backend === 'NeedsLogin' ? t('未登录') : network || (backend === 'Running' ? t('已登录（网络名称未提供）') : t('尚未读取网络'));
+      detail.textContent = deviceSessionNote(id) || (backend === 'NeedsLogin' ? t('未登录') : network || (backend === 'Running' ? t('已登录（网络名称未提供）') : t('尚未读取网络')));
       address.append(exitName, detail);
-      if (configured && backend === 'Running' && !online) {
+      if (configured && !excludedDevice(exitLive(id)) && backend === 'Running' && !online) {
         const unavailable = document.createElement('span'); unavailable.textContent = t(nodeName ? '已选 · 不可用' : '已保存 · 未发现');
         address.append(unavailable);
       }
@@ -1093,7 +1108,7 @@
       trigger.setAttribute('aria-label', `${label}: ${exitName.textContent} · ${detail.textContent}`);
       trigger.addEventListener('click', () => openExitPicker(trigger, id));
       item.append(trigger);
-      if (backend === 'NeedsLogin') {
+      if (backend === 'NeedsLogin' || exitLive(id).phase === 'isolated') {
         const login = document.createElement('button'); login.type = 'button'; login.className = 'button small exit-login';
         login.textContent = t('登录'); login.disabled = locked; login.dataset.exitLogin = id;
         login.setAttribute('aria-label', t('登录 {name}', { name: label }));
@@ -1270,6 +1285,11 @@
       if (state.dirty) { operationError = { title: '操作未完成', detail: t('请先保存或放弃更改，再添加出口。') }; clearNotice(); }
       return false;
     }
+    const revision = state.revision;
+    const candidateMode = changes['rules.mode'] ?? savedMode();
+    if (!(await disconnectForGlobalApply(candidateMode,
+      () => revision === state.revision && !state.dirty && !state.external && !isLocked() && !quickBusy &&
+        (!desktopLive?.revision || desktopLive.revision === revision)))) return false;
     operationError = null; clearNotice();
     stateRequest++;
     quickBusy = true; state.busy = true; updateActions();
@@ -1310,6 +1330,7 @@
       add: ['断开全局保护并添加出口？', '添加出口会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使保存或登录失败，也会保持未连接；准备好后请手动重新连接。', '断开并添加出口'],
       login: ['断开全局保护并登录？', '登录另一个设备会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使登录失败，也会保持未连接；准备好后请手动重新连接。', '断开并登录'],
       gateway: ['断开全局保护并切换出口？', '切换到另一个设备前会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。仅保存选择，即使保存失败也会保持未连接；准备好后请手动重新连接。', '断开并保存选择'],
+      apply: ['断开全局保护并应用更改？', '应用更改会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使保存失败，也会保持未连接；准备好后请手动重新连接。', '断开并应用更改'],
     }[action];
     const dialog = $('#add-exit-consent-dialog');
     $('#add-exit-consent-title').textContent = t(copy[0]);
@@ -1322,6 +1343,14 @@
       const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
       return answer === action;
     } finally { globalConsentPending = false; renderConnectionCenter(); }
+  }
+  async function disconnectForGlobalApply(candidateMode, current) {
+    const protectedSession = () => networkActive() && (desktopLive.routing_mode || savedMode()) === 'global';
+    // Switching explicitly to Split already expresses the change of protection.
+    if (!protectedSession() || candidateMode !== 'global') return true;
+    if (!(await confirmGlobalLoss('apply')) || !current() || connectionLost || !desktopLive?.desktop || isDesktopBusy()) return false;
+    if (protectedSession() && !(await desktopAction('disconnect'))) return false;
+    return current() && !connectionLost && desktopLive?.desktop && !desktopLive.active;
   }
   $('#add-exit').addEventListener('click', async () => {
     if (addingExit || !canManageExits() || exitList().length >= 8) return;
@@ -1423,7 +1452,7 @@
   }
   async function connectWithExit() {
     if ($('#desktop-connect').disabled || state.external || defaultExitDialog.open) return;
-    if ((configuredExits().length || modeNeedsExit(state.savedValues)) && !connectionExitRecord()) {
+    if (requiresDefaultExit(state.savedValues) && !connectionExitRecord()) {
       return openDefaultExitDialog();
     }
     return desktopAction('connect');
@@ -1681,7 +1710,7 @@
 
     $('#sidebar-status').classList.toggle('connected', connected);
     const selected = connectionExit();
-    const selectedLabel = selected === null ? (configuredExits().length || modeNeedsExit(state.savedValues) ? t('未设置默认出口') : '') : exitLive(selected).exit || savedExit(selected);
+    const selectedLabel = selected === null ? (requiresDefaultExit(state.savedValues) ? t('未设置默认出口') : '') : exitLive(selected).exit || savedExit(selected);
     setStatusText('#exit-label', connectionLost ? t('请确认 TailSplit 仍在运行') : selectedLabel || (live.preview ? t('更改仅保存到预览副本') : t('本机配置')));
     $('#exit-label').title = $('#exit-label').textContent;
   }

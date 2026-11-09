@@ -52,7 +52,7 @@ func TestUnguardedOptionalDeviceWaitsForInitialStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := original
-	if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest); err != nil || !bytes.Equal(runtime.JSON, original.JSON) {
+	if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest, nil); err != nil || !bytes.Equal(runtime.JSON, original.JSON) {
 		t.Fatal("late authenticated optional status was still isolated", err)
 	}
 	var native map[string]any
@@ -79,7 +79,7 @@ func TestOptionalStatusBudgetExpiresWithoutApprovingRequiredDevices(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest); err != nil {
+	if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest, nil); err != nil {
 		t.Fatal(err)
 	}
 	if TailscaleEnabled {

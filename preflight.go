@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -16,8 +17,8 @@ import (
 
 // PrepareTailnet authenticates and checks the selected exit without listeners,
 // TUN interfaces, DNS hijacking or system routes. It releases the state lock
-// before the network core starts. Use PrepareConnection when optional signed-out
-// endpoints should be isolated in the resulting runtime configuration.
+// before the network core starts. Use PrepareConnection when observed DNS
+// metadata or optional signed-out endpoints need an updated runtime configuration.
 func PrepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) (err error) {
 	if err := ValidateTrafficExit(config); err != nil {
 		return err
@@ -70,6 +71,9 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 		return err
 	}
 	defer func() { cancel(); err = errors.Join(err, engine.Close()) }()
+	if len(engine.exits) == 0 {
+		return nil
+	}
 	if err := engine.Start(); err != nil {
 		return err
 	}
@@ -77,10 +81,23 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	// Several devices report concurrently; keep only each one's latest status.
 	var latestMu sync.Mutex
 	latest := map[string]Status{}
+	var callbackMu sync.Mutex
+	finished := false
+	finish := func(snapshot map[string]Status) error {
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
+		finished = true
+		return isolateOptionalExits(ctx, config, runtime, optional, snapshot, callback)
+	}
 	changed := make(chan struct{}, 1)
 	watchError := make(chan error, 1)
 	go func() {
 		watchError <- engine.WatchStatus(ctx, func(status Status) {
+			callbackMu.Lock()
+			defer callbackMu.Unlock()
+			if finished {
+				return
+			}
 			status.Phase = "preflight"
 			if discover {
 				status.Phase = "discovery"
@@ -133,7 +150,7 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 				return checkErr
 			}
 			if ready {
-				return isolateOptionalExits(ctx, config, runtime, optional, snapshot)
+				return finish(snapshot)
 			}
 			pending = requiredPending
 			if pending != "" {
@@ -150,7 +167,10 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 				return err
 			}
 			if done {
-				return isolateOptionalExits(ctx, config, runtime, optional, snapshot)
+				if !requireExit {
+					return nil
+				}
+				return finish(snapshot)
 			}
 			// Only an actual interactive login pauses the deadline. Backend
 			// Starting/Stopped transitions must not discard a running timeout.
@@ -249,7 +269,7 @@ func connectionReadiness(interactiveExit string, required, optional []engineExit
 	return
 }
 
-func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled, optional []engineExit, snapshot map[string]Status) error {
+func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled, optional []engineExit, snapshot map[string]Status, callback func(Status)) error {
 	// The deadline can win a race with the latest status callback. Recheck
 	// mismatches here too: merely blocking a stale suffix would still leave the
 	// device's newly reported private suffix unprotected in the runtime policy.
@@ -259,17 +279,57 @@ func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled,
 		}
 	}
 	blocked := unavailableOptionalExits(optional, snapshot)
-	if len(blocked) == 0 {
+	// Minimal CLI profiles may omit DNS metadata. Protect the authenticated
+	// device's observed suffix in this runtime only, without changing saved
+	// mappings or the caller's shared exit slice.
+	observed := false
+	config.Exits = slices.Clone(config.Exits)
+	for index := range config.Exits {
+		exit := &config.Exits[index]
+		if exit.ExitNode == "" || exit.magicDNSSuffix() != "" || blocked[exit.ID] ||
+			config.Focus != "" && config.Focus != exit.ID ||
+			config.Rules.Mode == RoutingGlobal && config.TrafficExitID() != exit.ID {
+			continue
+		}
+		status := snapshot[exit.ID]
+		ready, err := authenticationReady(exit.Tailnet, status)
+		if err != nil {
+			return err
+		}
+		if ready && status.MagicDNSSuffix != "" {
+			exit.MagicDNSSuffix = status.MagicDNSSuffix
+			observed = true
+		}
+	}
+	if len(blocked) == 0 && !observed {
 		return nil
 	}
 	if runtime == nil {
-		return errors.New("optional Tailnet devices are not authenticated; a filtered runtime plan is required")
+		return errors.New("Tailnet runtime policy needs observed DNS metadata or device isolation; a prepared runtime plan is required")
 	}
 	isolated, err := compileWithOptions(ctx, config, compileOptions{blockedExits: blocked})
-	if err == nil {
-		*runtime = isolated
+	if err != nil {
+		return err
 	}
-	return err
+	*runtime = isolated
+	if callback != nil {
+		for _, exit := range optional {
+			id := exit.id
+			if id == "" {
+				id = MainExit
+			}
+			if !blocked[id] {
+				continue
+			}
+			status := snapshot[exit.id]
+			status.Event, status.Exit, status.RoutingMode = "status", exit.id, config.Rules.Mode
+			status.Phase, status.AuthURL, status.ExitNode = "isolated", "", ""
+			status.ExitVisible, status.ExitOnline, status.PingAvailable = false, false, false
+			status.ExitNodes = nil
+			callback(status)
+		}
+	}
+	return nil
 }
 
 // unavailableOptionalExits identifies endpoints that must stay closed for this
@@ -296,11 +356,11 @@ func requiresTrafficExit(config Config, id string) bool {
 	if id == "" {
 		id = MainExit
 	}
-	if id == config.TrafficExitID() {
-		return true
-	}
 	if config.Focus != "" || config.Rules.Mode == RoutingGlobal {
-		return false
+		return id == config.TrafficExitID()
+	}
+	if config.RequiresDefaultExit() && id == config.TrafficExitID() {
+		return true
 	}
 	if id == config.Rules.Final {
 		return true

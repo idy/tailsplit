@@ -114,7 +114,7 @@ func TestAppRunValidatesSelectedTrafficExitBeforeLaunching(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			config := tailsplit.Config{Tailscale: &tailsplit.TailscaleConfig{ExitNode: test.primaryNode},
 				Exits: []tailsplit.ExitConfig{{ID: "office", ExitNode: test.extraNode}},
-				Rules: tailsplit.RulesConfig{Mode: test.mode, GlobalExit: test.selected}}
+				Rules: tailsplit.RulesConfig{Mode: test.mode, GlobalExit: test.selected, ProxyDomains: []string{"proxy.example"}}}
 			var out bytes.Buffer
 			launched := false
 			err := runAppCommand(context.Background(), config, &out, func(_ context.Context, executable string, received tailsplit.Config, output io.Writer) error {

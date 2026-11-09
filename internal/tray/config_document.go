@@ -577,13 +577,13 @@ func replaceYAMLAlias(node, preserved *yaml.Node) {
 	node.HeadComment, node.LineComment, node.FootComment = head, line, foot
 }
 
-// Reordering a list can move an alias before its anchor. Materialize only that
-// occurrence; YAML cannot refer forward to an anchor emitted later in the file.
-func orderYAMLAliases(node *yaml.Node, seen map[*yaml.Node]bool, budget *yamlPatchBudget, depth int) error {
+// An alias binds to the latest emitted definition of its name. Materialize
+// references whose original target is now forward or shadowed by reordering.
+func orderYAMLAliases(node *yaml.Node, bindings map[string]*yaml.Node, budget *yamlPatchBudget, depth int) error {
 	if err := budget.step(depth); err != nil {
 		return err
 	}
-	if node.Kind == yaml.AliasNode && !seen[node.Alias] {
+	if node.Kind == yaml.AliasNode && bindings[node.Value] != node.Alias {
 		preserved, err := expandYAMLAliases(node.Alias, make(map[*yaml.Node]bool), budget, depth)
 		if err != nil {
 			return err
@@ -591,10 +591,10 @@ func orderYAMLAliases(node *yaml.Node, seen map[*yaml.Node]bool, budget *yamlPat
 		replaceYAMLAlias(node, preserved)
 	}
 	if node.Anchor != "" {
-		seen[node] = true
+		bindings[node.Anchor] = node
 	}
 	for _, child := range node.Content {
-		if err := orderYAMLAliases(child, seen, budget, depth+1); err != nil {
+		if err := orderYAMLAliases(child, bindings, budget, depth+1); err != nil {
 			return err
 		}
 	}
@@ -743,7 +743,7 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 		*scalar = *replacement
 		scalar.HeadComment, scalar.LineComment, scalar.FootComment = head, line, foot
 	}
-	if err := orderYAMLAliases(&document, make(map[*yaml.Node]bool), budget, 0); err != nil {
+	if err := orderYAMLAliases(&document, make(map[string]*yaml.Node), budget, 0); err != nil {
 		return nil, err
 	}
 	var output configYAMLBuffer

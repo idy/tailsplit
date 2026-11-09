@@ -222,7 +222,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 // entrypoint regression tests never contact the installed application.
 func runAppCommand(ctx context.Context, config tailsplit.Config, out io.Writer, launch func(context.Context, string, tailsplit.Config, io.Writer) error) error {
 	if err := tailsplit.ValidateTrafficExit(config); err != nil {
-		_ = json.NewEncoder(out).Encode(map[string]string{"event": "error", "message": "请先从“选择出口节点”菜单选择一个出口"})
+		// Selection validation contains static repair guidance and validated IDs,
+		// not authentication URLs or device-state contents.
+		_ = json.NewEncoder(out).Encode(map[string]string{"event": "error", "message": err.Error()})
 		return err
 	}
 	executable, err := os.Executable()
