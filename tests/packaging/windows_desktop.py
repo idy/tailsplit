@@ -228,6 +228,24 @@ def process_running(pid):
     return powershell(f"[bool](Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue)") == "True"
 
 
+def seed_service_owned_fixture(runtime, sentinel):
+    """Seed disposable SYSTEM-owned state for upgrade/uninstall preservation checks.
+
+    The direct-only fixture has no configured identity to migrate. Migration
+    eligibility and logout authority are covered by native Windows Go tests;
+    this fixture separately verifies that installers retain existing service data.
+    """
+    runtime = Path(runtime)
+    directory = runtime / "tailscale"
+    if not (runtime / ".initialized").is_file() or directory.exists():
+        raise RuntimeError("Expected initialized direct-only runtime without a primary identity")
+    enable_fixture_owner_assignment()
+    private_directory(directory, "S-1-5-18")
+    destination = directory / "tailscaled.state"
+    destination.write_bytes(sentinel)
+    return destination
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--arch", choices=("amd64", "arm64"), required=True)
@@ -288,12 +306,18 @@ def main():
         process = broker(core, config)
         conflict = run(core, "run", "-c", config, check=False, timeout=20)
         if conflict.returncode == 0 or "already in use" not in conflict.stderr:
-            raise RuntimeError("Legacy CLI was able to use the migrated identity concurrently")
+            raise RuntimeError("Legacy CLI entered the state directory during the desktop session")
         stop_broker(process)
         process = None
         runtime = Path(os.environ["ProgramData"]) / "TailSplit/users" / sid
-        if (runtime / "tailscale/tailscaled.state").read_bytes() != sentinel or not (runtime / ".initialized").is_file():
-            raise RuntimeError("Service migration did not retain the seeded identity")
+        if (not (runtime / ".initialized").is_file() or (runtime / "tailscale").exists() or
+                (runtime / ".primary-initialized").exists() or
+                (state / "tailscale/tailscaled.state").read_bytes() != sentinel):
+            raise RuntimeError("Direct-only startup imported or claimed an unused primary identity")
+        report["checks"]["unused_primary_not_imported"] = True
+        # Seed only this disposable service-owned fixture, after proving the
+        # real direct-only broker did not import or claim the unused identity.
+        seed_service_owned_fixture(runtime, sentinel)
         (state / "tailscale/tailscaled.state").write_bytes(b"stale-source-must-not-reimport\n")
         process = broker(core, config)
         stop_broker(process, crash=True)
@@ -313,7 +337,7 @@ def main():
             raise RuntimeError("Service reimported stale user-state after initialization")
         if routes() != before:
             raise RuntimeError("Service disconnect/crash did not preserve default routes")
-        report["checks"].update(authenticated_broker=True, legacy_lock=True, identity_import_once=True, graceful_stop=True, broker_crash_cleanup=True)
+        report["checks"].update(authenticated_broker=True, legacy_lock=True, service_owned_identity_preserved=True, graceful_stop=True, broker_crash_cleanup=True)
         hashes = {path.name: digest(path) for path in (core, gui, installed / "TailSplit.Window.dll")}
         install(installer, sid, args.evidence / "upgrade.log")
         if {path.name: digest(path) for path in (core, gui, installed / "TailSplit.Window.dll")} != hashes:
