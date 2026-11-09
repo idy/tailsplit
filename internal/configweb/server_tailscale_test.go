@@ -14,6 +14,7 @@ import (
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/privatefs"
+	"github.com/idy/tailsplit/internal/tray"
 )
 
 func TestDraftSubscriptionValidationDoesNotReplaceSavedRules(t *testing.T) {
@@ -88,6 +89,55 @@ func TestDraftSubscriptionValidationDoesNotReplaceSavedRules(t *testing.T) {
 		!strings.Contains(string(compiled.JSON), `"saved.fixture.example"`) ||
 		strings.Contains(string(compiled.JSON), `"draft.fixture.example"`) {
 		t.Fatal("saved subscription reused an unsaved draft's routing policy")
+	}
+}
+
+func TestGlobalGatewayChangeRequiresExplicitDisconnect(t *testing.T) {
+	server, path, applied := testServer(t)
+	// A saved policy can drift while the old helper still uses main. Decisions
+	// must use that helper's actual TrafficExit rather than the saved selection.
+	original := "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\nexits:\n  - id: office\n    exit_node: 100.101.0.11\nrules:\n  mode: global\n  global_exit: office\ntun:\n  enabled: true\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var active atomic.Bool
+	active.Store(true)
+	server.options.Snapshot = func() tray.Snapshot {
+		return tray.Snapshot{Active: active.Load(), Mode: "tun", RoutingMode: tailsplit.RoutingGlobal, TrafficExit: tailsplit.MainExit}
+	}
+	_, revision, _ := tray.ReadConfigDocument(path)
+	edit := map[string]any{"yaml": original, "revision": revision, "changes": map[string]any{"log_level": "debug"}}
+	status, body := request(t, server, "POST", "/api/config", edit, nil)
+	current, currentRevision, err := tray.ReadConfigDocument(path)
+	if status != http.StatusUnprocessableEntity || applied.Load() != 0 || err != nil || string(current) != original || currentRevision != revision {
+		t.Fatalf("save replaced the actual protected gateway without disconnect: %d %s, %v", status, body, err)
+	}
+	active.Store(false)
+	status, body = request(t, server, "POST", "/api/config", edit, nil)
+	if status != http.StatusOK || applied.Load() != 1 {
+		t.Fatalf("explicitly disconnected gateway could not be saved: %d %s", status, body)
+	}
+}
+
+func TestGlobalToSplitCanUseAnotherDefaultDevice(t *testing.T) {
+	server, path, applied := testServer(t)
+	original := "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\nexits:\n  - id: office\n    exit_node: 100.101.0.11\nrules:\n  mode: global\n  global_exit: main\n  default_exit: office\ntun:\n  enabled: true\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server.options.Snapshot = func() tray.Snapshot {
+		return tray.Snapshot{Active: true, Mode: "tun", RoutingMode: tailsplit.RoutingGlobal, TrafficExit: tailsplit.MainExit}
+	}
+	_, revision, _ := tray.ReadConfigDocument(path)
+	status, body := request(t, server, "POST", "/api/config", map[string]any{
+		"yaml": original, "revision": revision, "changes": map[string]any{"rules.mode": tailsplit.RoutingSplit},
+	}, nil)
+	if status != http.StatusOK || applied.Load() != 1 {
+		t.Fatalf("explicit Rule-based mode switch could not use its own default: %d %s", status, body)
+	}
+	config, err := tailsplit.LoadDraft(path)
+	if err != nil || config.Rules.Mode != tailsplit.RoutingSplit || config.TrafficExitID() != "office" {
+		t.Fatalf("Split shortcut did not retain its independent default device: %+v, %v", config.Rules, err)
 	}
 }
 

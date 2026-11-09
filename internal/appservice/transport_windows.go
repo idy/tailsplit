@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 	"unsafe"
 
@@ -311,55 +310,5 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 	if operation == "ping" && !info.PingAvailable {
 		return nil, tailsplit.ErrPingUnavailable
 	}
-	// Without the legacy lease, a ping may only use an already active service
-	// engine. The service enforces this after acquiring its own session gate.
-	unlock, err := tailsplit.LockSavedState(config.StateDir)
-	activeOnly := false
-	if err != nil {
-		if operation != "ping" || !info.Initialized {
-			return nil, err
-		}
-		activeOnly = true
-		unlock = func() error { return nil }
-	}
-	keep := false
-	defer func() {
-		if !keep {
-			_ = unlock()
-		}
-	}()
-	if operation == "start" {
-		if err := tailsplit.EnsureRules(ctx, config, nil); err != nil {
-			return nil, err
-		}
-	}
-	files, err := userFiles(&config, !info.Initialized)
-	if err != nil {
-		return nil, fmt.Errorf("read private device state: %w", err)
-	}
-	config.StateDir = ""
-	connection, err := windowsDial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, ActiveOnly: activeOnly, Config: &config, Files: files}); err != nil {
-		connection.Close()
-		return nil, err
-	}
-	_ = connection.SetWriteDeadline(time.Time{})
-	keep = true
-	return &stateLeaseConnection{Conn: connection, release: unlock}, nil
-}
-
-type stateLeaseConnection struct {
-	net.Conn
-	release func() error
-	once    sync.Once
-	err     error
-}
-
-func (c *stateLeaseConnection) Close() error {
-	c.once.Do(func() { c.err = errors.Join(c.Conn.Close(), c.release()) })
-	return c.err
+	return openLeasedSession(ctx, operation, config, target, info, windowsDial)
 }

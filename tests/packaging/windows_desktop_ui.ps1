@@ -116,13 +116,13 @@ function Test-NativeCanvas([IntPtr]$Window, [int]$Light) {
 # Connection nav is also named 连接, so it must never be used as a connect action.
 $UiNames = @{
     '连接'='Connect'; '连接 TailSplit'='Connect TailSplit'; '断开'='Disconnect';
-    '连接页面'=@('连接','Connection'); '出口节点页面'=@('出口节点','Exit nodes'); '日志'='Logs'; '设置'='Settings'; '网络'='Network';
-    '登录 Tailscale'='Sign in to Tailscale'; 'Tailscale 设备操作'='Tailscale device actions';
+    '连接页面'=@('出口节点','Exit nodes','连接','Connection'); '出口节点页面'=@('出口节点','Exit nodes'); '日志'='Logs'; '设置'='Settings'; '网络'='Network';
+    '登录 Tailscale'='Sign in to Tailscale'; '添加出口'='Add exit'; 'Tailscale 设备操作'='Tailscale device actions';
     '退出登录…'='Sign out…'; '刷新'='Refresh'; '代理监听地址'='Proxy listen address';
     '登录 Tailnet…'='Sign in to Tailnet…'; '退出设备登录'='Sign out of device';
     '刷新出口'='Refresh exits'; '查看日志'='View logs';
     '保存并应用'='Save & apply'; '最大化或还原'='Maximize or restore';
-    '刷新日志'='Refresh logs'; '关闭'='Close'
+    '刷新日志'='Refresh logs'; '关闭'='Close'; '确认并连接'='Confirm and connect'
 }
 function Find-Control([System.Windows.Automation.AutomationElement]$Root, [string]$Name, [System.Windows.Automation.ControlType]$Type) {
     foreach ($candidate in (@($Name) + @($UiNames[$Name]))) {
@@ -136,7 +136,10 @@ function Find-Control([System.Windows.Automation.AutomationElement]$Root, [strin
     return $null
 }
 function Find-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
-    return Find-Control $Root $Name ([System.Windows.Automation.ControlType]::Button)
+    $button = Find-Control $Root $Name ([System.Windows.Automation.ControlType]::Button)
+    if ($button) { return $button }
+    # ARIA connection switches can be exposed as CheckBox by WebView2.
+    return Find-Control $Root $Name ([System.Windows.Automation.ControlType]::CheckBox)
 }
 function Read-WindowText([System.Windows.Automation.AutomationElement]$Root) {
     $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Document)
@@ -170,12 +173,22 @@ function Wait-Connected([System.Windows.Automation.AutomationElement]$Root, [str
     $condition = New-Object System.Windows.Automation.OrCondition(
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'已连接')),
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Connected')))
-    Wait-Until { $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition) } $Failure 60 | Out-Null
+    # This is an explicitly direct-only no-device fixture. A gateway chooser
+    # here would be a regression; production proxy policy still requires one.
+    Wait-Until {
+        if (Find-Button $Root '确认并连接') { throw 'Direct-only fixture unexpectedly requested an exit gateway.' }
+        $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
+    } $Failure 60 | Out-Null
 }
 function Invoke-Button([System.Windows.Automation.AutomationElement]$Root, [string]$Name) {
     $button = Wait-Until { $found=Find-Button $Root $Name; if ($found -and $found.Current.IsEnabled) {$found} } "Missing or disabled button: $Name"
-    $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    $pattern.Invoke()
+    $pattern = $null
+    if ($button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) {
+        $pattern.Invoke()
+    } else {
+        $pattern = $button.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+        $pattern.Toggle()
+    }
 }
 
 $credential = Get-Content -LiteralPath $Credentials -Raw | ConvertFrom-Json
@@ -216,8 +229,9 @@ try {
     $pageNavigation = [bool]((Find-Button $automation '连接 TailSplit') -or (Find-Button $automation '设置'))
     $connectName = if ($pageNavigation) { '连接 TailSplit' } else { '连接' }
     Wait-Until { $button=Find-Button $automation $connectName; $button -and $button.Current.IsEnabled } 'The direct-config connect action is unavailable.' | Out-Null
+    $deviceAction = if (Find-Button $automation '添加出口') { '添加出口' } else { '登录 Tailscale' }
     $initialControls = if ($pageNavigation) {
-        @('登录 Tailscale','连接页面','日志','设置','最大化或还原')
+        @($deviceAction,'连接页面','日志','设置','最大化或还原')
     } else {
         @('断开','登录 Tailnet…','退出设备登录','刷新出口','查看日志','保存并应用','最大化或还原')
     }
@@ -231,7 +245,7 @@ try {
             Invoke-Button $automation '出口节点页面'
             Wait-Until { Find-Button $automation '刷新' } 'The exit nodes page has no refresh control.' | Out-Null
             Invoke-Button $automation '连接页面'
-            Wait-Until { Find-Button $automation '登录 Tailscale' } 'The connection page did not reopen.' | Out-Null
+            Wait-Until { (Find-Button $automation '添加出口') -or (Find-Button $automation '登录 Tailscale') } 'The exit list did not reopen.' | Out-Null
         } elseif (-not (Find-Button $automation '刷新')) {
             throw 'The connection page has no refresh control.'
         }

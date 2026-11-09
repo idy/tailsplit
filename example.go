@@ -2,7 +2,12 @@ package tailsplit
 
 import _ "embed"
 
-// ExampleYAML is also embedded in the binary for tailsplit init.
+// DefaultYAML is the shared initial desktop configuration, without device identities.
+//
+//go:embed config.default.yaml
+var DefaultYAML []byte
+
+// ExampleYAML is a configured CLI example with a placeholder exit for tailsplit init.
 //
 //go:embed config.example.yaml
 var ExampleYAML []byte

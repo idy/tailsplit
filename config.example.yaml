@@ -5,7 +5,8 @@ log_level: info
 
 app:
   # Independent of the macOS "Open at Login" switch in the menu.
-  connect_on_start: false
+  # Desktop auto-connect waits until a device and traffic gateway are configured.
+  connect_on_start: true
   # Check stable GitHub Releases after startup and every six hours.
   # Installation always requires confirmation; this does not auto-connect.
   check_for_updates: true
@@ -13,20 +14,51 @@ app:
 # Optional: bind direct traffic and Tailscale transport to the physical NIC.
 # interface: en0
 
+# Optional legacy profile with logical ID main and state_dir/tailscale state.
+# Omit this block (or set tailscale: null) to use only exits below, or to keep a
+# zero-exit draft. Removing main never renames another exit or moves its state.
 tailscale:
   # Empty follows this computer's hostname, e.g. tailsplit-my-macbook.
   # Also editable from the device-name menu.
   hostname: ""
   # Replace this example IP with an approved exit node in your own Tailnet.
   exit_node: 100.64.0.10
-  # Optional guard: either mode starts only after confirming this Tailnet and
-  # the selected exit. Device login and discovery never create a TUN.
+  # Optional guard: when this device is used, confirm its Tailnet and exit
+  # before starting traffic. Login and discovery never create a TUN.
+  # The desktop app chooses the network during Add exit authorization and
+  # saves its Tailnet guard when the first node selection is confirmed.
   # tailnet: tail12345.ts.net
   domains: []
   # Optional custom names whose DNS records already point into the Tailnet.
   # domains: [gateway.example.com]
   # Omit this for interactive login. Never put the actual key in this file.
   # auth_key_env: TAILSPLIT_AUTH_KEY
+
+# Optional additional exits, usable with or without main. Each is a separate
+# embedded device that signs in to the same or another Tailnet and uses one node.
+# Keep each ID stable: device state lives at state_dir/exits/<id>/tailscale.
+# Do not reuse an ID still referenced by dormant routing policy.
+# Desktop Add exit asks for no name. It sets auto_name: true and saves
+# name as <exit-device-name>@<network name> when a node is confirmed.
+# Auto-named labels update on later node choices; omit auto_name for a custom name.
+# An exit without exit_node can sign in but carries no traffic yet.
+# tailnet is the authentication guard; magic_dns_suffix is separate DNS metadata.
+# Legacy tailnet values ending in .ts.net still provide their DNS suffix.
+# IDs main, direct and proxy are reserved.
+# Desktop Remove exit works for main, extras and the last exit. It disconnects,
+# logs out only that device and revision-checks local removal. Explicit route
+# groups/final references remain unresolved until replaced; affected selectors
+# become unset, and the app stays stopped. The remote Tailnet
+# device record remains: TailSplit has no management authority to delete it.
+# Zero-exit drafts retain remaining routing policy. Add exit then creates a new
+# additional profile and leaves rules.default_exit and rules.global_exit unset
+# until the user explicitly chooses a traffic exit.
+# exits:
+#   - id: office
+#     name: Office
+#     exit_node: 100.101.0.11
+#     tailnet: example.com
+#     magic_dns_suffix: office-net.ts.net
 
 dns:
   # Client DNS lives inside TUN at 172.31.255.2:53 and
@@ -38,7 +70,7 @@ dns:
   # Use IPv4 for direct Internet names if the physical uplink has no IPv6
   # route, including cached TLS/QUIC IPv6 targets with a recoverable hostname.
   # Proxy/Tailnet names retain their own IPv6 policy.
-  # direct_ipv6: false
+  direct_ipv6: false
   proxy: 8.8.8.8
   fake_ip: true
   # Enable after choosing to enable MagicDNS in this Tailnet.
@@ -51,6 +83,17 @@ rules:
   # route client traffic/DNS through the selected exit (requires tun.enabled).
   # The app's Global / Kill Switch menu enables traffic capture automatically.
   mode: split
+  # Split's default proxy exit, independent of final below. Used by proxy
+  # matches from source (builtin/custom), proxy_domains, proxy_ips, final: proxy,
+  # and bare Tailnet addresses without a more specific route. For traffic, use
+  # main with tailscale configured, or choose an exits ID such as office.
+  default_exit: main
+  # Global runs only this saved device, ignoring Split routing without erasing
+  # it. Both selectors default to main when omitted; main can also be an empty
+  # draft placeholder, but cannot carry traffic without a configured device.
+  # Use "-" for an explicitly unset selection. The desktop asks you to choose
+  # and confirm when turning on; it never automatically picks a replacement.
+  global_exit: main
   # Download when the source cache is missing in state_dir; reuse it offline.
   # Update explicitly with: tailsplit rules refresh -c config.yaml
   # Use builtin, a custom HTTPS URL, or a local file path.
@@ -61,6 +104,7 @@ rules:
     - youtube.com
     # Keep this exit-IP checker proxied independently of the rule list.
     - myexternalip.com
+    - idy.dev
   proxy_ips:
     - 8.8.8.8/32
     - 8.8.4.4/32
@@ -68,10 +112,19 @@ rules:
     - 1.0.0.1/32
   direct_domains: []
   direct_ips: []
+  # Unmatched traffic: direct, proxy (rules.default_exit), or an ID from exits.
+  # Changing this does not change the exit used by the proxy rules above.
   final: direct
+  # Rule groups send more domains/CIDRs through a chosen exit. Explicit direct
+  # rules still win; groups apply before the proxy rules above.
+  # routes:
+  #   - exit: office
+  #     domains: [corp.example]
+  #     ips: [203.0.113.0/24]
 
 # Both modes create a DNS TUN and require the network service (or equivalent
 # CLI privileges). This switch controls system-wide traffic capture and DNS
 # publishing; false installs only narrow routes to the DNS peer.
 tun:
-  enabled: false
+  enabled: true
+  mtu: 1400

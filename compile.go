@@ -3,6 +3,7 @@ package tailsplit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/idy/tailsplit/internal/domainrules"
@@ -23,6 +25,9 @@ type Compiled struct {
 	JSON      []byte
 	GFWList   *domainrules.RulesInfo
 	GFWSource string
+	// runtimeExit binds Global's single endpoint to its saved device metadata.
+	// Empty means normal all-device compilation or an explicit focused session.
+	runtimeExit string
 }
 
 // Compile loads local or cached rules, downloading a remote source when its
@@ -32,22 +37,60 @@ func Compile(config Config) (Compiled, error) {
 }
 
 func CompileContext(ctx context.Context, config Config) (Compiled, error) {
-	if config.Rules.Mode == RoutingGlobal && !config.TUN.Enabled {
-		return Compiled{}, fmt.Errorf("global Kill Switch mode requires tun.enabled: true")
-	}
-	if config.Tailscale != nil && strings.TrimSpace(config.Tailscale.ExitNode) == "" {
-		return Compiled{}, fmt.Errorf("select a tailscale.exit_node before starting the proxy")
-	}
-	return compile(ctx, config)
+	return compileWithOptions(ctx, config, compileOptions{validateTraffic: true})
+}
+
+type compileOptions struct {
+	blockedExits    map[string]bool
+	validateTraffic bool
 }
 
 func compile(ctx context.Context, config Config) (Compiled, error) {
+	return compileWithOptions(ctx, config, compileOptions{})
+}
+
+func compileWithOptions(ctx context.Context, config Config, options compileOptions) (Compiled, error) {
 	base, err := os.Getwd()
 	if err != nil {
 		return Compiled{}, err
 	}
 	if err := config.normalize(base); err != nil {
 		return Compiled{}, err
+	}
+	if options.validateTraffic {
+		if config.Rules.Mode == RoutingGlobal && !config.TUN.Enabled {
+			return Compiled{}, fmt.Errorf("global Kill Switch mode requires tun.enabled: true")
+		}
+		if err := ValidateTrafficExit(config); err != nil {
+			return Compiled{}, err
+		}
+	}
+	isBlocked := func(id string) bool {
+		return !config.includePending && (options.blockedExits[id] || id == MainExit && options.blockedExits[""])
+	}
+	for _, id := range config.ExitIDs() {
+		if isBlocked(id) && requiresTrafficExit(config, id) {
+			return Compiled{}, fmt.Errorf("cannot block required traffic exit %q", id)
+		}
+	}
+	// Global traffic runs only its selected saved device. Device-only sessions
+	// (login, discovery, logout) keep inspecting every configured device.
+	runtimeExit := ""
+	if config.Rules.Mode == RoutingGlobal && config.Focus == "" && !config.includePending {
+		if config, err = config.trafficConfig(); err != nil {
+			return Compiled{}, err
+		}
+		runtimeExit = config.Focus
+	}
+	// A focused traffic session uses its own saved suffix, never the original
+	// primary's names. Device-only sessions do not consume routing metadata.
+	if config.Focus != "" && config.Focus != MainExit && !config.includePending {
+		for _, exit := range config.Exits {
+			if exit.ID == config.Focus && exit.magicDNSSuffix() != "" {
+				config.DNS.MagicDomains = []string{exit.magicDNSSuffix()}
+				break
+			}
+		}
 	}
 	global := config.Rules.Mode == RoutingGlobal
 	var projection *domainrules.Projection
@@ -58,13 +101,96 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 			return Compiled{}, err
 		}
 	}
+	// An exit without a selected node is pending: it can log in and list
+	// nodes, but it carries no traffic until a node is chosen.
+	var exits []ExitConfig
+	active := map[string]bool{}
+	primaryActive := config.Tailscale != nil && (config.Tailscale.ExitNode != "" || config.includePending)
+	primaryID := MainExit
+	if config.Focus != "" {
+		primaryID = config.Focus
+	}
+	primaryBlocked := isBlocked(primaryID)
+	if !global && !config.includePending && !primaryActive {
+		if len(config.DNS.MagicDomains) > 0 {
+			if config.Tailscale == nil {
+				return Compiled{}, fmt.Errorf("%w: exit %q for dns.magic_domains is not configured", ErrUnresolvedSplitExit, MainExit)
+			}
+			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using dns.magic_domains", MainExit)
+		}
+		if config.Tailscale != nil && len(config.Tailscale.Domains) > 0 {
+			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using tailscale.domains", MainExit)
+		}
+	}
+	if primaryActive {
+		active[MainExit] = true
+	}
+	if config.Focus == "" {
+		for _, exit := range config.Exits {
+			if !global && !config.includePending && exit.ExitNode == "" && exit.magicDNSSuffix() != "" {
+				return Compiled{}, fmt.Errorf("select an exit node for exit %q before using its MagicDNS suffix", exit.ID)
+			}
+			if exit.ExitNode != "" || config.includePending {
+				exits = append(exits, exit)
+				active[exit.ID] = true
+			}
+		}
+	}
+	if !global && config.Rules.Final != "direct" && config.Rules.Final != "proxy" && !active[config.Rules.Final] {
+		return Compiled{}, fmt.Errorf("select an exit node for exit %q before using it for unmatched traffic", config.Rules.Final)
+	}
+	defaultID := config.TrafficExitID()
+	defaultTag := ExitTag(defaultID)
+	if config.Focus != "" {
+		defaultID, defaultTag = MainExit, "tailnet"
+	}
 	final := "direct"
 	if global || config.Rules.Final == "proxy" {
-		final = "tailnet"
+		final = defaultTag
+	} else if config.Rules.Final != "direct" {
+		final = ExitTag(config.Rules.Final)
 	}
+	// Each exit resolves its own proxied names through itself.
+	proxyServer := func(exit string) string {
+		if exit == "" || exit == MainExit {
+			return "dns-proxy"
+		}
+		return "dns-proxy-" + exit
+	}
+	defaultDNS := proxyServer(defaultID)
 	directDNS := resolver("dns-direct", config.DNS.Direct)
 	servers := []object{directDNS}
-	if config.Tailscale != nil {
+	type tailnetSuffix struct {
+		suffix, server, outbound string
+		blocked                  bool
+	}
+	var tailnetSuffixes []tailnetSuffix
+	// MagicDNS and custom domains share longest-suffix precedence in both DNS
+	// and traffic. Primary ownership wins exact ties, with its MagicDNS resolver
+	// preferred over custom-domain resolution; then the first extra exit wins.
+	// Blocked owners keep that position so another device cannot claim their names.
+	ownedSuffixes := make(map[string]bool)
+	if primaryActive {
+		for _, suffix := range config.DNS.MagicDomains {
+			suffix = strings.ToLower(suffix)
+			if !ownedSuffixes[suffix] {
+				ownedSuffixes[suffix] = true
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, "dns-tailnet", "tailnet", primaryBlocked})
+			}
+		}
+		// Custom names keep real answers, including Tailscale Service VIPs.
+		server := "dns-direct"
+		if global {
+			server = "dns-proxy"
+		}
+		for _, suffix := range config.Tailscale.Domains {
+			if !ownedSuffixes[suffix] {
+				ownedSuffixes[suffix] = true
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, server, "tailnet", primaryBlocked})
+			}
+		}
+	}
+	if primaryActive && !primaryBlocked {
 		proxyDNS := resolver("dns-proxy", config.DNS.Proxy)
 		proxyDNS["detour"] = "tailnet"
 		servers = append(servers, proxyDNS)
@@ -73,6 +199,42 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 				"type": "tailscale", "tag": "dns-tailnet", "endpoint": "tailnet",
 				"accept_default_resolvers": false, "accept_search_domain": false,
 			})
+		}
+	}
+	if config.Focus == "" {
+		for _, exit := range exits {
+			blocked := isBlocked(exit.ID)
+			if !blocked {
+				extra := resolver(proxyServer(exit.ID), config.DNS.Proxy)
+				extra["detour"] = ExitTag(exit.ID)
+				servers = append(servers, extra)
+			}
+			suffix := exit.magicDNSSuffix()
+			if suffix != "" && !ownedSuffixes[suffix] {
+				ownedSuffixes[suffix] = true
+				tag := "dns-tailnet-" + exit.ID
+				if !blocked {
+					servers = append(servers, object{
+						"type": "tailscale", "tag": tag, "endpoint": ExitTag(exit.ID),
+						"accept_default_resolvers": false, "accept_search_domain": false,
+					})
+				}
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, tag, ExitTag(exit.ID), blocked})
+			}
+		}
+	}
+	slices.SortStableFunc(tailnetSuffixes, func(a, b tailnetSuffix) int {
+		return len(b.suffix) - len(a.suffix)
+	})
+	var routeGroups []RouteConfig
+	if !global && config.Focus == "" {
+		for _, route := range config.Rules.Routes {
+			if !active[route.Exit] && len(route.Domains)+len(route.IPs) > 0 {
+				return Compiled{}, fmt.Errorf("select an exit node for exit %q before using it in routing rules", route.Exit)
+			}
+			if active[route.Exit] {
+				routeGroups = append(routeGroups, route)
+			}
 		}
 	}
 	if config.fakeIP() {
@@ -108,31 +270,37 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 		}
 		dnsRules = append(dnsRules, withAction(match, "server", "dns-direct"))
 	}
-	if len(config.DNS.MagicDomains) > 0 {
-		dnsRules = append(dnsRules, withAction(object{"domain_suffix": config.DNS.MagicDomains}, "server", "dns-tailnet"))
-	}
-	if config.Tailscale != nil && len(config.Tailscale.Domains) > 0 {
-		// Public custom names keep real answers, including Tailscale Service VIPs.
-		server := "dns-direct"
-		if global {
-			server = "dns-proxy"
+	for _, suffix := range tailnetSuffixes {
+		if suffix.blocked {
+			dnsRules = append(dnsRules, object{"domain_suffix": []string{suffix.suffix}, "action": "predefined", "rcode": "REFUSED"})
+		} else {
+			dnsRules = append(dnsRules, withAction(object{"domain_suffix": []string{suffix.suffix}}, "server", suffix.server))
 		}
-		dnsRules = append(dnsRules, withAction(object{"domain_suffix": config.Tailscale.Domains}, "server", server))
 	}
 	for _, match := range directMatchers {
 		appendDirectDNS(match)
 	}
-	for _, match := range proxyMatchers {
+	appendProxyDNS := func(match object, server string) {
 		if config.fakeIP() {
 			fake := withAction(match, "server", "dns-fake")
 			fake["query_type"] = []string{"A", "AAAA"}
 			dnsRules = append(dnsRules, fake)
 		}
-		dnsRules = append(dnsRules, withAction(match, "server", "dns-proxy"))
+		dnsRules = append(dnsRules, withAction(match, "server", server))
+	}
+	for _, route := range routeGroups {
+		if len(route.Domains) > 0 {
+			appendProxyDNS(object{"domain_suffix": route.Domains}, proxyServer(route.Exit))
+		}
+	}
+	for _, match := range proxyMatchers {
+		appendProxyDNS(match, defaultDNS)
 	}
 	dnsFinal := "dns-direct"
-	if final == "tailnet" {
-		dnsFinal = "dns-proxy"
+	if global || config.Rules.Final == "proxy" {
+		dnsFinal = defaultDNS
+	} else if final != "direct" {
+		dnsFinal = proxyServer(config.Rules.Final)
 	} else if config.DNS.DirectIPv6 != nil && !*config.DNS.DirectIPv6 {
 		// Domain-specific Tailnet/proxy rules have already matched above.
 		// With no direct IPv6 uplink, an AAAA answer would otherwise make
@@ -184,26 +352,19 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	// Peer and Service VIP routing must precede generic private-IP bypass.
 	// Resolve magic/custom Tailnet hostnames to their real addresses before
 	// they enter the endpoint; a direct DNS resolver must never see MagicDNS.
-	if config.Tailscale != nil {
-		if len(config.DNS.MagicDomains) > 0 {
-			routes = append(routes,
-				object{"domain_suffix": config.DNS.MagicDomains, "action": "resolve", "server": "dns-tailnet"},
-				withAction(object{"domain_suffix": config.DNS.MagicDomains}, "outbound", "tailnet"),
-			)
-		}
-		if len(config.Tailscale.Domains) > 0 {
-			server := "dns-direct"
-			if global {
-				server = "dns-proxy"
+	{
+		for _, suffix := range tailnetSuffixes {
+			match := object{"domain_suffix": []string{suffix.suffix}}
+			if suffix.blocked {
+				match["action"] = "reject"
+				routes = append(routes, match)
+			} else {
+				routes = append(routes,
+					object{"domain_suffix": match["domain_suffix"], "action": "resolve", "server": suffix.server},
+					withAction(match, "outbound", suffix.outbound),
+				)
 			}
-			routes = append(routes,
-				object{"domain_suffix": config.Tailscale.Domains, "action": "resolve", "server": server},
-				withAction(object{"domain_suffix": config.Tailscale.Domains}, "outbound", "tailnet"),
-			)
 		}
-		routes = append(routes, withAction(object{
-			"ip_cidr": []string{"100.64.0.0/10", "fd7a:115c:a1e0::/48"},
-		}, "outbound", "tailnet"))
 	}
 	for _, match := range directMatchers {
 		routes = append(routes, withAction(match, "outbound", "direct"))
@@ -211,13 +372,28 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	if !global && len(config.Rules.DirectIPs) > 0 {
 		routes = append(routes, withAction(object{"ip_cidr": config.Rules.DirectIPs}, "outbound", "direct"))
 	}
+	for _, route := range routeGroups {
+		if len(route.Domains) > 0 {
+			routes = append(routes, withAction(object{"domain_suffix": route.Domains}, "outbound", ExitTag(route.Exit)))
+		}
+		if len(route.IPs) > 0 {
+			routes = append(routes, withAction(object{"ip_cidr": route.IPs}, "outbound", ExitTag(route.Exit)))
+		}
+	}
+	// Only unmatched Tailnet addresses fall back to the default device. A
+	// more specific per-exit rule must be allowed to choose another Tailnet.
+	if active[defaultID] {
+		routes = append(routes, withAction(object{
+			"ip_cidr": []string{"100.64.0.0/10", "fd7a:115c:a1e0::/48"},
+		}, "outbound", defaultTag))
+	}
 	// Explicit IP ranges are meaningful even for destinations that have no
 	// DNS lookup. They are independent of the GFWList domain projection.
 	if !global && len(config.Rules.ProxyIPs) > 0 {
-		routes = append(routes, withAction(object{"ip_cidr": config.Rules.ProxyIPs}, "outbound", "tailnet"))
+		routes = append(routes, withAction(object{"ip_cidr": config.Rules.ProxyIPs}, "outbound", defaultTag))
 	}
 	for _, match := range proxyMatchers {
-		routes = append(routes, withAction(match, "outbound", "tailnet"))
+		routes = append(routes, withAction(match, "outbound", defaultTag))
 	}
 	if !global {
 		routes = append(routes, withAction(object{"ip_is_private": true}, "outbound", "direct"))
@@ -263,20 +439,47 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 		}
 		directDNS["bind_interface"] = config.Interface
 	}
-	if config.Tailscale != nil {
-		endpoint := object{
-			"type": "tailscale", "tag": "tailnet",
-			"hostname":           config.Tailscale.Hostname,
-			"state_directory":    filepath.Join(config.StateDir, "tailscale"),
-			"taildrop_directory": filepath.Join(config.StateDir, "taildrop"),
-			"exit_node":          config.Tailscale.ExitNode,
-			"system_interface":   false, "accept_routes": false,
-			"advertise_exit_node": false, "domain_resolver": "dns-direct",
+	{
+		device := func(id, hostname, exitNode string) object {
+			taildrop := filepath.Join(config.StateDir, "taildrop")
+			if id != MainExit {
+				taildrop = filepath.Join(config.StateDir, "exits", id, "taildrop")
+			}
+			endpoint := object{
+				"type": "tailscale", "tag": ExitTag(id),
+				"hostname":           hostname,
+				"state_directory":    config.ExitStateDir(id),
+				"taildrop_directory": taildrop,
+				"exit_node":          exitNode,
+				"system_interface":   false, "accept_routes": false,
+				"advertise_exit_node": false, "domain_resolver": "dns-direct",
+			}
+			if config.Interface != "" {
+				endpoint["bind_interface"] = config.Interface
+			}
+			return endpoint
 		}
-		if config.Interface != "" {
-			endpoint["bind_interface"] = config.Interface
+		// A focused session keeps the primary tag so single-device flows apply.
+		focus := MainExit
+		if config.Focus != "" {
+			focus = config.Focus
 		}
-		native["endpoints"] = []object{endpoint}
+		var endpoints []object
+		if primaryActive && !primaryBlocked {
+			primary := device(focus, config.Tailscale.Hostname, config.Tailscale.ExitNode)
+			primary["tag"] = "tailnet"
+			endpoints = append(endpoints, primary)
+		}
+		if config.Focus == "" {
+			for _, exit := range exits {
+				if !isBlocked(exit.ID) {
+					endpoints = append(endpoints, device(exit.ID, exit.Hostname, exit.ExitNode))
+				}
+			}
+		}
+		if len(endpoints) > 0 {
+			native["endpoints"] = endpoints
+		}
 	}
 	tun := object{
 		"type": "tun", "tag": "tun-in", "address": tunAddresses(),
@@ -305,11 +508,62 @@ func compile(ctx context.Context, config Config) (Compiled, error) {
 	if err != nil {
 		return Compiled{}, err
 	}
-	result := Compiled{JSON: append(data, '\n'), GFWSource: source}
+	result := Compiled{JSON: append(data, '\n'), GFWSource: source, runtimeExit: runtimeExit}
 	if projection != nil {
 		result.GFWList = &projection.Info
 	}
 	return result, nil
+}
+
+// ErrUnresolvedSplitExit identifies a missing device referenced by live Split
+// final, route-group or private-name policy. Such policy can be saved as a draft,
+// but cannot connect. Missing defaults and pending nodes do not use it.
+var ErrUnresolvedSplitExit = errors.New("unresolved Split traffic policy")
+
+// ValidateTrafficExit requires a selected traffic device and configured owners
+// for live Split policy before a connection starts. It does not open saved state
+// or check network availability. Dormant drafts remain usable for device sessions.
+func ValidateTrafficExit(config Config) error {
+	if config.Focus == "" && config.Rules.Mode != RoutingGlobal && !config.includePending {
+		if config.Tailscale == nil && len(config.DNS.MagicDomains) > 0 {
+			return fmt.Errorf("%w: exit %q for dns.magic_domains is not configured", ErrUnresolvedSplitExit, MainExit)
+		}
+		if config.Rules.Final != "" && config.Rules.Final != "direct" && config.Rules.Final != "proxy" && !config.hasExit(config.Rules.Final) {
+			return fmt.Errorf("%w: exit %q for unmatched traffic is not configured", ErrUnresolvedSplitExit, config.Rules.Final)
+		}
+		for _, route := range config.Rules.Routes {
+			if len(route.Domains)+len(route.IPs) > 0 && !config.hasExit(route.Exit) {
+				return fmt.Errorf("%w: exit %q for routing rules is not configured", ErrUnresolvedSplitExit, route.Exit)
+			}
+		}
+	}
+	if !requiresTrafficExit(config, config.TrafficExitID()) && config.Focus == "" {
+		return nil
+	}
+	if len(config.ExitIDs()) == 0 && config.Focus == "" {
+		return errors.New("configure an exit device before starting proxy routing")
+	}
+	id := config.TrafficExitID()
+	if id == UnsetExit {
+		return errors.New("select a default exit before connecting")
+	}
+	if !config.hasExit(id) {
+		return fmt.Errorf("traffic exit %q is not configured", id)
+	}
+	node := ""
+	if id == MainExit {
+		node = config.Tailscale.ExitNode
+	} else {
+		for _, exit := range config.Exits {
+			if exit.ID == id {
+				node = exit.ExitNode
+			}
+		}
+	}
+	if strings.TrimSpace(node) == "" {
+		return fmt.Errorf("select an exit node for exit %q before starting the proxy", id)
+	}
+	return nil
 }
 
 func resolver(tag, value string) object {

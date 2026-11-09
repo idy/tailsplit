@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.8.0
+
+- Run multiple saved exit devices in one embedded sing-box core, including exits
+  in different Tailnets. Route domain/CIDR groups through individual exits and
+  choose a separate default proxy exit for Split routing.
+- Run only the selected device in Global (Kill-Switch) mode while retaining Split
+  policy. Keep its traffic blocked when that exit goes offline; explicit
+  disconnect still restores managed system networking.
+- Make Exit Nodes the first desktop page, with a compact device list, automatic
+  `<exit-device-name>@<network name>` labels, individual Ping actions and a direct
+  default-gateway dropdown. Ask for an explicit gateway choice before connecting
+  when no default is set; never silently choose a replacement.
+- Support removing any saved exit, including the legacy primary and last device,
+  using scoped logout and revision-checked local configuration updates. Preserve
+  remaining device identities and routing policy. Tailnet admin-console device
+  records remain; remote management deletion is not included.
+- Refresh the desktop layout with system fonts, compact equal-height settings
+  rows, sidebar Settings categories and shared custom dropdowns. Put routing mode
+  and the connection switch in the titlebar with Refresh at the far right; remove
+  redundant count/status displays, node selection fills and empty-page scrollbars.
+- Preserve saved logins when adding another device, keep login shutdown work off
+  the macOS event loop, and show connection preflight as checking while peer
+  discovery is incomplete instead of prematurely asking for another exit.
+- Share new desktop defaults across macOS and Windows: Split/builtin routing,
+  system TUN and FakeIP enabled, direct Internet IPv6 disabled, MTU 1400, and
+  auto-connect after a device and gateway are configured. Keep existing user
+  configuration intact and ship no personal device identities.
+- Wait for the selected traffic device to finish authorization during connection
+  preflight, without discarding its login session. If another required final or
+  rule-group exit needs login, stop preflight with a recoverable sign-in error
+  rather than waiting without a usable authorization link. Unreferenced saved nodes
+  no longer have to be online for unrelated Split connections; explicitly selected
+  gateways still require readiness. Other retained guarded endpoints must validate
+  their identity. Omit signed-out optional devices from the running core and
+  refuse their private names without blocking a ready selected gateway. Preserve
+  readiness deadlines through non-authentication backend transitions; optional
+  authentication never pauses a required gateway's deadline.
+- Keep pending-primary private-name policy fail-closed and use consistent
+  longest-suffix MagicDNS ownership for DNS and traffic. Persist real DNS suffix
+  metadata separately from display names, reserve routing keywords in exit IDs,
+  focus primary login on its own device and accommodate full migration payloads.
+- Keep orphaned private-name policies fail-closed even when their owner is absent,
+  ignore credentials for omitted endpoints, and redirect native sign-in to Add exit
+  when no primary exists. Reject Windows device names as exit IDs, allow saved
+  inactive Global gateways to enter preflight, preserve surviving YAML references
+  during removal and keep tagged/untagged test contracts explicit.
+- Normalize directly constructed focused configurations before traffic validation,
+  reject oversized app-service inventories before migrating any saved identities,
+  and wait for fresh device status when restarting an additional exit's login.
+- Preserve scalar YAML exit IDs and route references as validated strings in
+  configuration responses, keeping saved devices visible and intact when adding
+  another exit, including leading-zero and large numeric identities.
+- Start focused primary login when another authenticated device owns the core,
+  while preserving an active device's authorization recovery and keeping macOS
+  helper shutdown off the event loop. Complete a saved device's login even when
+  its helper exits before the next desktop update.
+- Require confirmation before Add exit stops active Global protection. Disable
+  unsupported or invalid-document Add actions and invalidate pending Ping replies
+  when their device identity changes.
+- Retain removed exits' explicit final and route-group references until a user
+  chooses replacements; keep dormant policy editable without routing it directly.
+  Reject unsafe refocusing of an already projected device configuration.
+- Import newly encountered additional identities into initialized services without
+  overwriting existing service state or restoring a logged-out client.
+- Preserve comments and anchors inside edited exit/route lists, bound YAML alias
+  expansion and encoded size, and reject excessive patches without applying them.
+- Bound initial noninteractive preflight states and give every optional endpoint
+  an initial-status opportunity before isolation; required gateways must be ready.
+- Apply Global-disconnect consent to existing-device login and gateway changes;
+  preserve current-device authorization recovery without replacing its helper.
+- Validate candidates under the same operation gate as reconfiguration, before
+  stopping a protected helper. Keep incomplete stopped drafts saveable while
+  explicit runtime validation reports that they cannot connect yet.
+- Preserve lexical string fields such as numeric-looking route domains, reserve
+  dormant-policy IDs, include `main` in final routing, and keep direct-only startup
+  and empty-group behavior consistent with the traffic policy.
+- Preserve inherited YAML rules and explicit empty overrides; index list matching
+  without weakening alias budgets. Retain removed primary private DNS ownership
+  and custom-domain rules until an explicit replacement or deletion.
+- Order custom primary domains with MagicDNS by longest suffix, check saved suffix
+  metadata during traffic preflight, and allow explicit same-node metadata repair.
+- Track unused-primary import eligibility separately from cache initialization,
+  skip owned/unrelated legacy copies, and lease migration on both desktop systems.
+- Report the actual missing policy owner in connection errors; keep additional
+  implicit hostnames independent of primary renames and retain explicit names.
+- Keep the legacy state lease through graceful service cleanup after output or
+  transport errors. Preserve direct-only connection with unused pending devices,
+  without weakening a configured default's bare Tailnet-address fallback.
+- Guard all active Global reconfiguration, including same-device metadata applies,
+  with the shared disconnect consent, and clear stale optional runtime availability.
+- Preserve alias targets when anchor names are reused and route lists reordered;
+  adopt authenticated missing DNS suffixes in the runtime copy before traffic.
+- Preserve per-device migration, state leases and serialized Ping operations;
+  consolidate action/save handling and log redaction, and reduce repeated UI
+  rendering and configuration parsing without changing the saved-device contract.
+
 ## 0.7.16
 
 - Fix desktop login, network switching, exit discovery and connection preflight

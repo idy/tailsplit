@@ -130,12 +130,9 @@ func PingExitNode(ctx context.Context, executable string, config tailsplit.Confi
 
 func readPingReply(ctx context.Context, connection net.Conn) (tailsplit.ExitPingResult, error) {
 	// A reply is sent only after the service has finished device cleanup. On
-	// cancellation, ask it to stop but keep the connection (and Windows state
-	// lease) open until that reply or a transport failure arrives.
-	stop := context.AfterFunc(ctx, func() {
-		_ = connection.SetWriteDeadline(time.Now().Add(time.Second))
-		_, _ = io.WriteString(connection, "stop\n")
-	})
+	// cancellation, ask it to stop but keep the connection and saved-state
+	// lease open until that reply or a transport failure arrives.
+	stop := context.AfterFunc(ctx, func() { stopSession(connection) })
 	defer stop()
 	var reply tailsplit.ExitPingReply
 	err := json.NewDecoder(io.LimitReader(connection, 4096)).Decode(&reply)

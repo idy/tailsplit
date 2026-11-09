@@ -2,10 +2,14 @@ package tray
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/idy/tailsplit"
+	"gopkg.in/yaml.v3"
 )
 
 func TestConfigDocumentSaveChecksRevisionAndRetainsLiteralYAML(t *testing.T) {
@@ -100,6 +104,113 @@ func TestRuleSourcePatchPreservesSharedScalarValues(t *testing.T) {
 				if name == "multiple consumers" && !strings.Contains(string(updated), "state_dir: *subscription") {
 					t.Fatalf("source edit expanded a remaining shared alias: %s", updated)
 				}
+			}
+		})
+	}
+}
+
+func TestConfigListPatchRetainsEmptyInheritedOverrides(t *testing.T) {
+	const original = `tailscale: {}
+exits:
+  - id: office
+    exit_node: 100.101.0.11
+  - id: lab
+    exit_node: 100.102.0.12
+rules:
+  routes:
+    - &corporate
+      exit: office
+      domains: ['corp.example'] # Keep private match
+    - <<: *corporate # Keep inherited policy
+      exit: lab
+      domains: [] # Keep empty override
+      ips: [192.0.2.0/24]
+`
+	for _, removeAnchor := range []bool{false, true} {
+		t.Run(fmt.Sprintf("remove_anchor=%v", removeAnchor), func(t *testing.T) {
+			routes := []tailsplit.RouteConfig{{Exit: "lab", IPs: []string{"198.51.100.0/24"}}}
+			if !removeAnchor {
+				routes = append([]tailsplit.RouteConfig{{Exit: "office", Domains: []string{"corp.example"}}}, routes...)
+			}
+			updated, err := PatchConfigDocument([]byte(original), ConfigChange{"rules", "routes", routes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			config, err := ValidateConfigDocument(filepath.Join(t.TempDir(), "config.yaml"), updated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lab := config.Rules.Routes[len(config.Rules.Routes)-1]
+			if lab.Exit != "lab" || len(lab.Domains) != 0 || len(lab.IPs) != 1 || lab.IPs[0] != "198.51.100.0/24" {
+				t.Fatalf("empty override restored an inherited private match: %+v\n%s", lab, updated)
+			}
+			for _, text := range []string{"domains: []", "# Keep empty override", "# Keep inherited policy"} {
+				if !strings.Contains(string(updated), text) {
+					t.Fatalf("lost %q:\n%s", text, updated)
+				}
+			}
+			if !removeAnchor && (!strings.Contains(string(updated), "&corporate") || !strings.Contains(string(updated), "*corporate")) {
+				t.Fatalf("unrelated edit rewrote the shared anchor:\n%s", updated)
+			}
+		})
+	}
+}
+
+func TestConfigListPatchLargeOrdinaryRoutes(t *testing.T) {
+	const groups = 800
+	for _, operation := range []string{"unchanged", "edit", "delete", "reverse", "duplicates"} {
+		t.Run(operation, func(t *testing.T) {
+			var original strings.Builder
+			original.WriteString("tailscale: {}\nrules:\n  routes:\n")
+			routes := make([]tailsplit.RouteConfig, groups)
+			for i := range routes {
+				domain := fmt.Sprintf("group-%d.example", i)
+				if operation == "duplicates" {
+					domain = "same.example"
+				}
+				fmt.Fprintf(&original, "    - exit: main # Group %d\n      domains: ['%s']\n", i, domain)
+				routes[i] = tailsplit.RouteConfig{Exit: "main", Domains: []string{domain}}
+			}
+			switch operation {
+			case "edit":
+				for i := range routes {
+					routes[i].Domains = []string{fmt.Sprintf("edited-%d.example", i)}
+				}
+			case "delete":
+				routes = routes[1:]
+			case "reverse":
+				for i, j := 0, len(routes)-1; i < j; i, j = i+1, j-1 {
+					routes[i], routes[j] = routes[j], routes[i]
+				}
+			}
+			if original.Len() >= MaxConfigBytes {
+				t.Fatal("ordinary list fixture exceeds the file cap")
+			}
+			updated, err := PatchConfigDocument([]byte(original.String()), ConfigChange{"rules", "routes", routes})
+			if err != nil {
+				t.Fatal("ordinary route list exhausted its patch budget:", err)
+			}
+			var raw tailsplit.Config
+			if err := yaml.Unmarshal(updated, &raw); err != nil {
+				t.Fatal(err)
+			}
+			if len(raw.Rules.Routes) != len(routes) {
+				t.Fatal("list edit changed the number of groups")
+			}
+			for i, route := range raw.Rules.Routes {
+				if route.Exit != routes[i].Exit || len(route.Domains) != 1 || route.Domains[0] != routes[i].Domains[0] {
+					t.Fatalf("group %d changed: %+v", i, route)
+				}
+			}
+			first := 0
+			if operation == "delete" {
+				first = 1
+			} else if operation == "reverse" {
+				first = groups - 1
+			}
+			if !strings.Contains(string(updated), fmt.Sprintf("exit: main # Group %d\n", first)) ||
+				operation != "edit" && !strings.Contains(string(updated), "domains: ['") {
+				t.Fatalf("list edit lost source comments or quote style:\n%s", updated)
 			}
 		})
 	}

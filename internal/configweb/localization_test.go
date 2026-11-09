@@ -34,7 +34,10 @@ func TestLanguageAPIIsIndependentAndPersistent(t *testing.T) {
 	if err != nil || string(data) != fixtureConfig || after != revision || applied.Load() != 0 {
 		t.Fatal("language change touched configuration or runtime")
 	}
-	restarted, err := Start(Options{ConfigPath: path, Apply: func(context.Context, func() error) error { t.Error("unexpected apply"); return nil }})
+	restarted, err := Start(Options{ConfigPath: path, Apply: func(context.Context, func(tray.Snapshot) error, func() error) error {
+		t.Error("unexpected apply")
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +47,7 @@ func TestLanguageAPIIsIndependentAndPersistent(t *testing.T) {
 		t.Fatal(status, string(body))
 	}
 	shared := locale.NewStore(path)
-	another, err := Start(Options{ConfigPath: path, Language: shared, Apply: func(context.Context, func() error) error { return nil }})
+	another, err := Start(Options{ConfigPath: path, Language: shared, Apply: func(context.Context, func(tray.Snapshot) error, func() error) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}

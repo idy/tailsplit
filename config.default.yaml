@@ -1,0 +1,45 @@
+# New desktop installations start without any saved device or gateway.
+version: 1
+listen: 127.0.0.1:17890
+state_dir: ~/.local/share/letsolo/tailsplit
+log_level: info
+
+app:
+  # Takes effect on later launches once an exit and default gateway are configured.
+  connect_on_start: true
+  check_for_updates: true
+
+tailscale: null
+exits: []
+
+dns:
+  direct: system
+  # IPv4 for direct Internet traffic; proxy/Tailnet IPv6 policy is independent.
+  direct_ipv6: false
+  proxy: 8.8.8.8
+  fake_ip: true
+  magic_domains: []
+
+rules:
+  mode: split
+  # The user chooses a gateway before connecting. Never ship a real device ID.
+  default_exit: "-"
+  global_exit: "-"
+  source: builtin
+  proxy_domains:
+    - github.com
+    - youtube.com
+    - myexternalip.com
+    - idy.dev
+  proxy_ips:
+    - 8.8.8.8/32
+    - 8.8.4.4/32
+    - 1.1.1.1/32
+    - 1.0.0.1/32
+  direct_domains: []
+  direct_ips: []
+  final: direct
+
+tun:
+  enabled: true
+  mtu: 1400

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os/exec"
 	"runtime"
+
+	"github.com/idy/tailsplit"
 )
 
 // LoginFlow is owned by the UI event loop. A click can precede the new auth
@@ -41,13 +43,20 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 		f.message = "连接失败，请查看日志"
 		return ""
 	}
-	if snapshot.BackendState == "Direct" {
+	// The login helper can finish and clear Focus between polling ticks. Its
+	// terminal result belongs to this intent regardless of the primary's state.
+	completed := snapshot.Mode == "login" && snapshot.State == "authenticated"
+	backend := snapshot.BackendState
+	if exit := snapshot.LoginExitID(); exit != tailsplit.MainExit {
+		backend = snapshot.Exits[exit].BackendState
+	}
+	if backend == "Direct" && !completed {
 		f.pending = false
 		f.showMessage = true
 		f.message = "当前配置无需设备登录"
 		return ""
 	}
-	if snapshot.BackendState == "Running" && snapshot.LoginURL == "" {
+	if (completed || backend == "Running") && snapshot.LoginURL == "" {
 		f.pending = false
 		f.showMessage = false
 		f.message = "设备已登录"

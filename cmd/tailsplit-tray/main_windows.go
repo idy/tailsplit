@@ -46,6 +46,7 @@ type windowsApp struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	controller  *tray.Controller
+	configPath  string
 	window      *winui.Window
 	operations  chan windowsOperation
 	login       tray.LoginFlow
@@ -58,13 +59,6 @@ func desktopPipeDescriptor(sid string) string {
 	// The GUI owns this listener and needs create-instance access for Accept.
 	// Administrator maintenance only needs the fixed show/quit client protocol.
 	return "O:" + sid + "D:P(A;;GA;;;SY)(A;;0x12019b;;;BA)(A;;GA;;;" + sid + ")"
-}
-
-func windowsStartupAction(connectOnStart, noConnect bool) string {
-	if connectOnStart && !noConnect {
-		return "connect"
-	}
-	return "refresh-exits"
 }
 
 func main() {
@@ -185,7 +179,7 @@ func runWindowsDesktop() (runErr error) {
 	defer cancel()
 	// Keep one bounded pending request while the dispatcher handles its status
 	// tick. An unbuffered nonblocking send can reject a click while idle.
-	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
+	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
 	go app.operate()
 	preferences, err := tray.ReadPreferences(*config)
 	if err != nil {
@@ -199,9 +193,15 @@ func runWindowsDesktop() (runErr error) {
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode,
-		Apply: func(ctx context.Context, update func() error) error {
+		RemoveExit: func(ctx context.Context, id, revision string) error {
 			return app.do(ctx, func() error {
-				err := controller.Reconfigure(update)
+				app.login.Cancel()
+				return controller.RemoveExit(id, revision)
+			})
+		},
+		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
+			return app.do(ctx, func() error {
+				err := controller.ReconfigureChecked(check, update)
 				if preferences, readErr := tray.ReadPreferences(*config); readErr == nil {
 					app.updates.updater.SetAutomatic(preferences.CheckForUpdates)
 				}
@@ -246,7 +246,6 @@ func runWindowsDesktop() (runErr error) {
 		connect := addMenu(nil, "连接", "使用当前配置连接")
 		disconnect := addMenu(nil, "断开", "停止网络会话并恢复受管理的网络")
 		login := addMenu(nil, "登录 Tailnet…", "在默认浏览器中授权本机设备")
-		logout := addMenu(nil, "退出设备登录", "先断开，再退出当前设备登录")
 		refresh := addMenu(nil, "刷新出口节点", "只读取设备，不创建 TUN")
 		startup := addMenu(nil, "登录 Windows 后启动", "只启动界面；自动连接另行设置", tray.LoginItem() == tray.LoginItemEnabled)
 		systray.AddSeparator()
@@ -262,7 +261,11 @@ func runWindowsDesktop() (runErr error) {
 		}
 		preferences, _ := tray.ReadPreferences(*config)
 		// Load the saved device's login and exits even when startup must stay disconnected.
-		go func() { _ = app.action(ctx, windowsStartupAction(preferences.ConnectOnStart, *noConnect)) }()
+		go func() {
+			if action := desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect); action != "" {
+				_ = app.action(ctx, action)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -275,8 +278,6 @@ func runWindowsDesktop() (runErr error) {
 				go app.menuAction("disconnect")
 			case <-login.ClickedCh:
 				go app.menuAction("login")
-			case <-logout.ClickedCh:
-				go app.menuAction("logout")
 			case <-refresh.ClickedCh:
 				go app.menuAction("refresh-exits")
 			case <-startup.ClickedCh:
@@ -408,14 +409,21 @@ func (a *windowsApp) operate() {
 
 func (a *windowsApp) action(ctx context.Context, action string) error {
 	return a.do(ctx, func() error {
+		action, exit := splitExitAction(action)
 		switch action {
+		case "login-exit":
+			return requestDesktopExitLogin(a.controller, &a.login, exit)
+		case "logout-exit":
+			a.login.Cancel()
+			return a.controller.LogoutExit(exit)
 		case "connect":
 			return a.controller.Start()
 		case "disconnect":
 			a.login.Cancel()
 			return a.controller.Stop()
 		case "login":
-			return requestDesktopLogin(a.controller, &a.login)
+			return nativePrimarySignIn(a.configPath, a.window.Show,
+				func() error { return requestDesktopLogin(a.controller, &a.login) })
 		case "logout":
 			a.login.Cancel()
 			return a.controller.Logout()
@@ -561,7 +569,7 @@ func initializeWindowsConfig(path string) error {
 	if err != nil {
 		return err
 	}
-	_, writeErr := file.Write(tailsplit.ExampleYAML)
+	_, writeErr := file.Write(tailsplit.DefaultYAML)
 	return errors.Join(writeErr, file.Sync(), file.Close())
 }
 

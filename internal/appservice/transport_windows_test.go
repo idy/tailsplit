@@ -18,6 +18,24 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
+func TestWindowsMigratedExitRetainsPrivateRootACL(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "service")
+	files := Files{ExitStates: map[string][]byte{"office": []byte("cli-identity")}}
+	directory, err := prepareRuntimeUser(base, "fixture-user", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory made with os.MkdirTemp alone inherits an unprotected ACL;
+	// after publication it must satisfy the same root checks as other exits.
+	if err := privateDirectory(filepath.Join(directory, "exits", "office")); err != nil {
+		t.Fatal("migration published an exit without private root authority:", err)
+	}
+	if _, err := prepareRuntimeUser(base, "fixture-user", files); err != nil {
+		t.Fatal("published migration could not be reused:", err)
+	}
+	assertMigrationFile(t, filepath.Join(directory, "exits", "office", "tailscale", "tailscaled.state"), "cli-identity")
+}
+
 func TestWindowsRegisteredServiceUser(t *testing.T) {
 	for _, test := range []struct {
 		user  string

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -66,6 +67,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	flags.SetOutput(diagnostic)
 	path := flags.String("c", "config.yaml", "YAML configuration path")
 	target := flags.String("id", "", "discovered exit node ID to ping (ping only)")
+	exit := flags.String("exit", "", "limit login, discovery, logout or ping to one exit ID (main is the primary device)")
 	events := flags.Bool("events", false, "emit private connection events on stdout (run only)")
 	parentPID := flags.Int("parent-pid", 0, "stop if the owning app exits (run only)")
 	if err := flags.Parse(args); err != nil {
@@ -97,6 +99,28 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	config, err := tailsplit.Load(*path)
 	if err != nil {
 		return err
+	}
+	if command == "app-login" && *exit == "" {
+		*exit = tailsplit.MainExit
+	}
+	if *exit != "" {
+		switch command {
+		case "app-login", "discover", "app-discover", "logout", "app-logout", "ping", "app-ping":
+		default:
+			return errors.New("--exit is supported only by login, discovery, logout and ping")
+		}
+		if command == "ping" || command == "app-ping" {
+			// The service resolves the exit itself, including a running engine.
+			if *target != "" {
+				*target = *exit + "|" + *target
+			}
+		}
+		if config, err = config.FocusExit(*exit); err != nil {
+			return err
+		}
+	}
+	if *parentPID != 0 || strings.HasPrefix(command, "app-") {
+		prepareAppProcess()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -138,17 +162,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return runLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
 	}
 	if command == "app-run" {
-		if config.Tailscale != nil && config.Tailscale.ExitNode == "" {
-			_ = json.NewEncoder(out).Encode(map[string]string{"event": "error", "message": "请先从“选择出口节点”菜单选择一个出口"})
-			return errors.New("select an exit node before starting")
-		}
-		executable, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		// Both proxy-only and traffic-capture sessions create a DNS TUN.
-		// Device login/discovery still use the listener-free path above.
-		return appservice.Launch(ctx, executable, config, out)
+		return runAppCommand(ctx, config, out, appservice.Launch)
 	}
 	if command == "logout" || command == "app-logout" {
 		config = deviceLogoutConfig(config)
@@ -205,6 +219,25 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		}
 		return tailsplit.Run(ctx, config, compiled)
 	}
+}
+
+// Keep selection validation before the service boundary: an invalid draft must
+// neither install a service nor read device state. The launcher is injectable so
+// entrypoint regression tests never contact the installed application.
+func runAppCommand(ctx context.Context, config tailsplit.Config, out io.Writer, launch func(context.Context, string, tailsplit.Config, io.Writer) error) error {
+	if err := tailsplit.ValidateTrafficExit(config); err != nil {
+		// Selection validation contains static repair guidance and validated IDs,
+		// not authentication URLs or device-state contents.
+		_ = json.NewEncoder(out).Encode(map[string]string{"event": "error", "message": err.Error()})
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// Both proxy-only and traffic-capture sessions create a DNS TUN.
+	// Device login/discovery still use the listener-free path above.
+	return launch(ctx, executable, config, out)
 }
 
 // Logout uses only the saved device identity. Keep the on-disk configuration

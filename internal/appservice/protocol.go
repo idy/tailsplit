@@ -27,18 +27,30 @@ const (
 	SupportPath    = "/Library/Application Support/TailSplit"
 	InstallPackage = "TailSplit Network Service.pkg"
 	RemovePackage  = "Remove TailSplit Network Service.pkg"
-	maxRequest     = 20 << 20
-	maxState       = 1 << 20
-	maxCache       = 8 << 20
-	maxRules       = 2 << 20
+	// Base64 expands the primary state, eight exit states, cache and rules
+	// beyond 25 MiB; retain bounded room for the configuration and JSON framing.
+	maxRequest = 32 << 20
+	maxState   = 1 << 20
+	maxCache   = 8 << 20
+	maxRules   = 2 << 20
+	maxExits   = 8
 )
+
+// validExitID applies the shared configuration and state-directory policy at
+// the service boundary before an ID can become a directory name.
+func validExitID(id string) bool {
+	return tailsplit.ValidExitID(id)
+}
 
 // Files contains bounded copies read by the ordinary user's process. The root
 // service never opens a config, state, rules file or executable supplied by it.
 type Files struct {
 	TailscaleState []byte `json:"tailscale_state,omitempty"`
-	Cache          []byte `json:"cache,omitempty"`
-	Rules          []byte `json:"rules,omitempty"`
+	// ExitStates holds only eligible migration candidates selected by the
+	// service's per-identity import query. The service rechecks authority.
+	ExitStates map[string][]byte `json:"exit_states,omitempty"`
+	Cache      []byte            `json:"cache,omitempty"`
+	Rules      []byte            `json:"rules,omitempty"`
 }
 
 type Request struct {
@@ -48,6 +60,49 @@ type Request struct {
 	ActiveOnly bool              `json:"active_only,omitempty"`
 	Config     *tailsplit.Config `json:"config,omitempty"`
 	Files      Files             `json:"files,omitempty"`
+	ImportIDs  []string          `json:"import_ids,omitempty"`
+	SessionID  string            `json:"session_id,omitempty"`
+}
+
+// ImportPlan is bounded by the requested inventory, never the service's history.
+// Cache retains its original one-time, global initialization semantics.
+type ImportPlan struct {
+	IDs   []string `json:"ids,omitempty"`
+	Cache bool     `json:"cache,omitempty"`
+}
+
+type importReply struct {
+	Event    string     `json:"event"`
+	Protocol int        `json:"protocol"`
+	Plan     ImportPlan `json:"plan"`
+}
+
+// Session IDs are issued and registered before the client can send a runner
+// request. Cleanup cannot overtake an operation that is still being decoded.
+// They convey no filesystem authority and are used only on authenticated channels.
+type sessionReply struct {
+	Event     string `json:"event"`
+	Protocol  int    `json:"protocol"`
+	SessionID string `json:"session_id"`
+	Cleaned   bool   `json:"cleaned,omitempty"`
+}
+
+func validateImportIDs(ids []string) error {
+	if len(ids) > maxExits+1 {
+		return errors.New("migration inventory exceeds its size limit")
+	}
+	extras := 0
+	seen := make(map[string]bool)
+	for _, id := range ids {
+		if seen[id] || id != tailsplit.MainExit && !validExitID(id) {
+			return errors.New("invalid migration inventory")
+		}
+		seen[id] = true
+		if id != tailsplit.MainExit {
+			extras++
+		}
+	}
+	return validateExitInventory(extras)
 }
 
 type Info struct {
@@ -102,11 +157,28 @@ func readRequest(reader *bufio.Reader) (Request, error) {
 	if request.Protocol != Protocol {
 		return Request{}, errors.New("the app and network service protocols differ; reinstall the service")
 	}
-	if len(request.Files.TailscaleState) > maxState || len(request.Files.Cache) > maxCache ||
-		len(request.Files.Rules) > maxRules {
-		return Request{}, errors.New("network service state exceeds its size limit")
+	if err := validateFiles(request.Files); err != nil {
+		return Request{}, err
+	}
+	if err := validateImportIDs(request.ImportIDs); err != nil {
+		return Request{}, err
 	}
 	return request, nil
+}
+
+func validateFiles(files Files) error {
+	if err := validateExitInventory(len(files.ExitStates)); err != nil {
+		return err
+	}
+	if len(files.TailscaleState) > maxState || len(files.Cache) > maxCache || len(files.Rules) > maxRules {
+		return errors.New("network service state exceeds its size limit")
+	}
+	for id, state := range files.ExitStates {
+		if !validExitID(id) || len(state) > maxState {
+			return errors.New("network service state exceeds its size limit")
+		}
+	}
+	return nil
 }
 
 type eventWriter struct {

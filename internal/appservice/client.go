@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/idy/tailsplit"
@@ -111,8 +113,9 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 	}
 }
 
-// OpenSession transfers policy and, only during the first migration, a bounded
-// copy of the user's saved login/FakeIP cache. It never transfers path authority.
+// OpenSession transfers policy and eligible per-device migration candidates,
+// holding the ordinary-user state lease through privileged session cleanup.
+// It never transfers path authority.
 func OpenSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer) (net.Conn, error) {
 	return openSession(ctx, executable, operation, config, output, "")
 }
@@ -147,43 +150,316 @@ func openSession(ctx context.Context, executable, operation string, config tails
 	if operation == "ping" && !info.PingAvailable {
 		return nil, tailsplit.ErrPingUnavailable
 	}
+	return openLeasedSession(ctx, operation, config, target, info, func(ctx context.Context) (net.Conn, error) {
+		connection, err := (&net.Dialer{}).DialContext(ctx, "unix", SocketPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireUser(connection, "0"); err != nil {
+			_ = connection.Close()
+			return nil, err
+		}
+		return connection, nil
+	})
+}
+
+// migrationIDs scopes ordinary-user reads to engines this operation can open.
+// The complete configuration still crosses the boundary and retains its limit.
+func migrationIDs(config tailsplit.Config, operation, target string) ([]string, error) {
+	if err := validateExitInventory(len(config.Exits)); err != nil {
+		return nil, err
+	}
+	if err := validateImportIDs(config.ExitIDs()); err != nil {
+		return nil, err
+	}
+	focus := config.Focus
+	if operation == "ping" {
+		if exit, _ := tailsplit.SplitPingTarget(target); exit != "" {
+			focus = exit
+		}
+		if focus == "" {
+			focus = tailsplit.MainExit
+		}
+		if _, err := config.FocusExit(focus); err != nil {
+			return nil, err
+		}
+	} else if operation == "logout" && focus == "" {
+		focus = tailsplit.MainExit
+	} else if operation == "start" && config.Rules.Mode == tailsplit.RoutingGlobal && focus == "" {
+		focus = config.TrafficExitID()
+	}
+	if focus != "" {
+		for _, id := range config.ExitIDs() {
+			if id == focus {
+				return []string{id}, nil
+			}
+		}
+		return nil, errors.New("the selected migration exit is not configured")
+	}
+	if operation != "start" {
+		return config.ExitIDs(), nil
+	}
+	var ids []string
+	if config.Tailscale != nil && config.Tailscale.ExitNode != "" {
+		ids = append(ids, tailsplit.MainExit)
+	}
+	for _, exit := range config.Exits {
+		if exit.ExitNode != "" {
+			ids = append(ids, exit.ID)
+		}
+	}
+	return ids, nil
+}
+
+type sessionDial func(context.Context) (net.Conn, error)
+
+func queryImports(ctx context.Context, ids []string, dial sessionDial) (ImportPlan, error) {
+	connection, err := dial(ctx)
+	if err != nil {
+		return ImportPlan{}, err
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: "imports", ImportIDs: ids}); err != nil {
+		return ImportPlan{}, err
+	}
+	var reply importReply
+	if err := json.NewDecoder(io.LimitReader(connection, 4096)).Decode(&reply); err != nil {
+		return ImportPlan{}, err
+	}
+	// Old services cannot silently turn a missing capability into an empty
+	// migration plan. Build matching is also checked by each platform client.
+	if reply.Event != "imports" || reply.Protocol != Protocol {
+		return ImportPlan{}, errors.New("update the network service before migrating saved devices")
+	}
+	if err := validateImportIDs(reply.Plan.IDs); err != nil {
+		return ImportPlan{}, err
+	}
+	requested := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		requested[id] = true
+	}
+	for _, id := range reply.Plan.IDs {
+		if !requested[id] {
+			return ImportPlan{}, errors.New("the network service returned an unrelated migration identity")
+		}
+	}
+	return reply.Plan, nil
+}
+
+// Both authenticated transports use this path. In particular, no legacy file
+// may be opened before taking the same state lease as the ordinary-user CLI.
+func openLeasedSession(ctx context.Context, operation string, config tailsplit.Config, target string, info Info, dial sessionDial) (net.Conn, error) {
+	ids, err := migrationIDs(config, operation, target)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := tailsplit.LockSavedState(config.StateDir)
+	activeOnly := false
+	if err != nil {
+		if operation != "ping" || !info.Initialized {
+			return nil, err
+		}
+		activeOnly = true
+		unlock = func() error { return nil }
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = unlock()
+		}
+	}()
 	if operation == "start" {
 		if err := tailsplit.EnsureRules(ctx, config, nil); err != nil {
 			return nil, err
 		}
 	}
-	files, err := userFiles(&config, !info.Initialized)
-	if err != nil {
-		return nil, fmt.Errorf("read saved app state for migration: %w", err)
+	var files Files
+	if !activeOnly {
+		plan, err := queryImports(ctx, ids, dial)
+		if err != nil {
+			return nil, err
+		}
+		files, err = userFiles(&config, plan)
+		if err != nil {
+			return nil, fmt.Errorf("read saved app state for migration: %w", err)
+		}
 	}
+	// Active-only pings send no migration files and cannot start an idle engine.
 	// Never ask the service to resolve any of the user's filesystem paths.
 	config.StateDir = ""
-	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", SocketPath)
+	connection, err := dial(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := requireUser(connection, "0"); err != nil {
+	// No operation is sent until the service has registered this channel. A
+	// failed handshake therefore cannot open a migrated identity.
+	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: "session"}); err != nil {
 		_ = connection.Close()
 		return nil, err
 	}
-	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err = json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, Config: &config, Files: files})
-	if err != nil {
+	var session sessionReply
+	if err := json.NewDecoder(io.LimitReader(connection, 4096)).Decode(&session); err != nil {
 		_ = connection.Close()
 		return nil, err
 	}
-	_ = connection.SetWriteDeadline(time.Time{})
-	return connection, nil
+	if session.Event != "session" || session.Protocol != Protocol || session.SessionID == "" || len(session.SessionID) > 128 {
+		_ = connection.Close()
+		return nil, errors.New("update the network service before opening a saved-device session")
+	}
+	_ = connection.SetDeadline(time.Time{})
+	leased := &stateLeaseConnection{Conn: connection, release: unlock, sessionID: session.SessionID, dial: dial}
+	keep = true
+	_ = leased.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(leased).Encode(Request{Protocol: Protocol, Op: operation, Target: target, ActiveOnly: activeOnly, Config: &config, Files: files}); err != nil {
+		// Even a failed write may have delivered a complete request. Recovery
+		// must join this registered session before releasing the state lease.
+		leased.writeFailed = true
+		if closeErr := leased.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		return nil, err
+	}
+	_ = leased.SetWriteDeadline(time.Time{})
+	return leased, nil
+}
+
+// recoverSession cancels and joins the registered original channel through the
+// same authenticated endpoint. A service generation owns its private-state lease
+// until all handlers finish, so an unknown ID also confirms cleanup after restart.
+// Per-attempt deadlines only bound retries; they never release the user's lease.
+func recoverSession(dial sessionDial, id string) {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		connection, err := dial(ctx)
+		cleaned := false
+		if err == nil {
+			_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+			err = json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: "cleanup", SessionID: id})
+			if err == nil {
+				var reply sessionReply
+				err = json.NewDecoder(io.LimitReader(connection, 4096)).Decode(&reply)
+				cleaned = err == nil && reply.Event == "cleanup" && reply.Protocol == Protocol && reply.SessionID == id && reply.Cleaned
+			}
+			_ = connection.Close()
+		}
+		cancel()
+		if cleaned {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// stopSession uses the existing lifetime command without closing the read side:
+// the service sends its terminal event and EOF only after its runner returns.
+func stopSession(connection net.Conn) {
+	if leased, ok := connection.(*stateLeaseConnection); ok {
+		leased.stopOnce.Do(func() {
+			leased.stopErr = sendStop(leased.Conn)
+			if leased.stopErr != nil {
+				_ = leased.Conn.Close() // Unblock a pending reader; recover via its session ID.
+			}
+		})
+		return
+	}
+	_ = sendStop(connection)
+}
+
+func sendStop(connection net.Conn) error {
+	// An operation deadline may cancel its work, but it cannot certify cleanup.
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
+		return err
+	}
+	if err := connection.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		return err
+	}
+	_, err := io.WriteString(connection, "stop\n")
+	return err
+}
+
+type stateLeaseConnection struct {
+	net.Conn
+	release     func() error
+	sessionID   string
+	dial        sessionDial
+	writeFailed bool // Set before this connection is returned to callers.
+	stopOnce    sync.Once
+	stopErr     error
+	readMu      sync.Mutex
+	readErr     error
+	readEOF     atomic.Bool
+	once        sync.Once
+	err         error
+}
+
+func (c *stateLeaseConnection) Read(data []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	n, err := c.Conn.Read(data)
+	if errors.Is(err, io.EOF) {
+		c.readEOF.Store(true)
+	}
+	if err != nil && !errors.Is(err, io.EOF) && !readTimedOut(err) {
+		// Some broken transports return EOF on their next read. Remember
+		// the failure so Close cannot mistake that for orderly cleanup.
+		c.readErr = err
+	}
+	return n, err
+}
+
+func readTimedOut(err error) bool {
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
+func (c *stateLeaseConnection) Close() error {
+	c.once.Do(func() {
+		// Stop before taking readMu: an existing reader can be waiting for the
+		// runner, which in turn needs this command to begin cleanup.
+		confirmedEOF := c.readEOF.Load()
+		if !confirmedEOF {
+			stopSession(c)
+		}
+		c.readMu.Lock()
+		// The joined reader may have received orderly EOF while stop failed.
+		// Earlier hard failures remain poisoned through readErr/writeFailed.
+		confirmedEOF = c.readEOF.Load()
+		var err error
+		if !confirmedEOF && c.readErr == nil && !c.writeFailed && c.stopErr == nil {
+			for {
+				_, err = io.Copy(io.Discard, c.Conn)
+				if !readTimedOut(err) || c.Conn.SetReadDeadline(time.Time{}) != nil {
+					break
+				}
+			}
+		}
+		err = errors.Join(c.readErr, err)
+		closeErr := c.Conn.Close()
+		if errors.Is(closeErr, net.ErrClosed) {
+			closeErr = nil // A failed stop may already have closed the channel.
+		}
+		c.readMu.Unlock()
+		if err != nil || c.writeFailed || !confirmedEOF && c.stopErr != nil {
+			if err != nil || c.writeFailed {
+				_, _ = fmt.Fprintln(os.Stderr, "Network service channel failed; confirming cleanup while saved device state remains locked.")
+			}
+			recoverSession(c.dial, c.sessionID)
+		}
+		c.err = errors.Join(closeErr, c.release())
+	})
+	return c.err
 }
 
 // Forward keeps the app channel alive until privileged cleanup completes.
 func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
+	stop := sync.OnceFunc(func() { stopSession(connection) })
 	done := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = connection.SetWriteDeadline(time.Now().Add(time.Second))
-			_, _ = io.WriteString(connection, "stop\n")
+			stop()
 		case <-done:
 		}
 	}()
@@ -191,10 +467,14 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 	scanner := bufio.NewScanner(connection)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	stopped := false
+	var writeErr error
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if _, err := output.Write(append(append([]byte(nil), line...), '\n')); err != nil {
-			return err
+		if writeErr == nil {
+			if _, err := output.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+				writeErr = err
+				stop()
+			}
 		}
 		var event struct {
 			Event string `json:"event"`
@@ -203,13 +483,16 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 			stopped = true
 		}
 	}
-	if ctx.Err() != nil {
-		return nil
+	if writeErr != nil {
+		if err := scanner.Err(); err != nil {
+			return errors.Join(writeErr, err)
+		}
+		return writeErr
 	}
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	if stopped {
+	if ctx.Err() != nil || stopped {
 		return nil
 	}
 	return errors.New("the network service session ended; see its status in the app")

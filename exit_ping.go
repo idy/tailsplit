@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -104,16 +105,22 @@ type exitPingEndpoint interface {
 
 // PingExitNode always uses this engine's embedded device. It never closes or
 // reconfigures the core, changes the selected exit, or opens another identity.
-func (e *Engine) PingExitNode(ctx context.Context, id string) (ExitPingResult, error) {
+// The target may name an additional exit as "exit|node".
+func (e *Engine) PingExitNode(ctx context.Context, target string) (ExitPingResult, error) {
 	if !e.ping.TryLock() {
 		return ExitPingResult{}, ErrPingBusy
 	}
 	defer e.ping.Unlock()
+	exitID, id := SplitPingTarget(target)
+	exit, known := e.endpoint(exitID)
+	if !known {
+		return ExitPingResult{}, ErrPingUnavailable
+	}
 	ctx, cancel := context.WithTimeout(ctx, ExitPingTimeout)
 	defer cancel()
 	stop := context.AfterFunc(e.ctx, cancel)
 	defer stop()
-	endpoint, exists := e.box.Endpoint().Get("tailnet")
+	endpoint, exists := e.box.Endpoint().Get(exit.tag)
 	if !exists {
 		return ExitPingResult{}, ErrPingUnavailable
 	}
@@ -121,7 +128,7 @@ func (e *Engine) PingExitNode(ctx context.Context, id string) (ExitPingResult, e
 	if !ok {
 		return ExitPingResult{}, ErrPingUnavailable
 	}
-	return pingExitEndpoint(ctx, tailnet, e.expectedTailnet, id)
+	return pingExitEndpoint(ctx, tailnet, exit.tailnet, id)
 }
 
 func pingExitEndpoint(ctx context.Context, endpoint exitPingEndpoint, expectedTailnet, id string) (ExitPingResult, error) {
@@ -260,17 +267,44 @@ type pingLogWriter struct{}
 
 func (pingLogWriter) WriteMessage(singlog.Level, string) {}
 
+func savedExitPingConfig(config Config, exit string) (Config, error) {
+	if exit == "" {
+		exit = config.Focus
+		if exit == "" {
+			exit = MainExit
+		}
+	}
+	var err error
+	config, err = config.FocusExit(exit)
+	if err != nil || config.Tailscale == nil {
+		return Config{}, ErrPingUnavailable
+	}
+	endpoint := *config.Tailscale
+	endpoint.AuthKeyEnv, endpoint.ExitNode = "", ""
+	config.Tailscale = &endpoint
+	// Normalization reapplies Focus from this inventory. Sanitize its selected
+	// entry too, without changing the caller's saved selection or other exits.
+	config.Exits = slices.Clone(config.Exits)
+	for index := range config.Exits {
+		if config.Exits[index].ID == config.Focus {
+			config.Exits[index].ExitNode = ""
+		}
+	}
+	return config, nil
+}
+
 // PingSavedExitNode opens only the saved embedded device, with no listeners,
 // TUN, system DNS changes, rule downloads, auth key, or selected exit. The state
 // lock prevents a second identity session; callers must reuse any active engine.
-func PingSavedExitNode(ctx context.Context, config Config, id string) (result ExitPingResult, err error) {
+func PingSavedExitNode(ctx context.Context, config Config, target string) (result ExitPingResult, err error) {
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	exit, id := SplitPingTarget(target)
 	if id == "" || len(id) > 256 {
 		return result, ErrPingTarget
 	}
-	if !TailscaleEnabled || config.Tailscale == nil {
+	if !TailscaleEnabled || len(config.ExitIDs()) == 0 {
 		return result, ErrPingUnavailable
 	}
 	// The service can run concurrently with other operations, so never mutate
@@ -279,12 +313,13 @@ func PingSavedExitNode(ctx context.Context, config Config, id string) (result Ex
 	if pingenv.HasAuthentication(os.Environ()) {
 		return result, ErrPingUnavailable
 	}
+	config, err = savedExitPingConfig(config, exit)
+	if err != nil {
+		return result, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, ExitPingTimeout)
 	defer cancel()
-	endpoint := *config.Tailscale
-	endpoint.AuthKeyEnv, endpoint.ExitNode = "", ""
-	config.Tailscale = &endpoint
-	compiled, err := compilePreflight(config)
+	compiled, err := compilePreflight(config, true)
 	if err != nil {
 		return result, ErrPingUnavailable
 	}
@@ -296,5 +331,5 @@ func PingSavedExitNode(ctx context.Context, config Config, id string) (result Ex
 	if err := engine.Start(); err != nil {
 		return result, ErrPingUnavailable
 	}
-	return engine.PingExitNode(ctx, id)
+	return engine.PingExitNode(ctx, config.Focus+"|"+id)
 }

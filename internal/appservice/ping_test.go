@@ -4,16 +4,151 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/idy/tailsplit"
 )
+
+func TestLeasedPingContentionNeverReadsLegacyStateOrStartsAnIdleEngine(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprint(active), func(t *testing.T) {
+			config := migrationInventoryConfig(t, 2, tailsplit.RoutingGlobal, "")
+			for _, id := range config.ExitIDs() {
+				if err := os.Truncate(filepath.Join(config.ExitStateDir(id), "tailscaled.state"), maxState+1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			releaseCLI, err := tailsplit.LockSavedState(config.StateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer releaseCLI()
+			started := make(chan struct{})
+			path, server, cancel, done := testServer(t, os.Getuid(), func(ctx context.Context, _ tailsplit.Config, _ io.Writer) error {
+				unregister := RegisterExitPing(ctx, func(_ context.Context, target string) (tailsplit.ExitPingResult, error) {
+					return tailsplit.ExitPingResult{ID: target}, nil
+				})
+				defer unregister()
+				close(started)
+				<-ctx.Done()
+				return nil
+			})
+			server.Ping = func(context.Context, tailsplit.Config, string) (tailsplit.ExitPingResult, error) {
+				t.Error("contended legacy lease started an idle engine")
+				return tailsplit.ExitPingResult{}, nil
+			}
+			// Before initialization, lock contention cannot permit any request.
+			noDial := func(context.Context) (net.Conn, error) {
+				t.Error("uninitialized contended ping contacted the service")
+				return nil, errors.New("unexpected dial")
+			}
+			if connection, err := openLeasedSession(context.Background(), "ping", config, "exit-2|100.64.0.10", Info{}, noDial); err == nil {
+				_ = connection.Close()
+				t.Fatal("uninitialized ping bypassed the legacy lease")
+			}
+			if _, err := prepareRuntimeUser(server.Base, server.userKey(), Files{}); err != nil {
+				t.Fatal(err)
+			}
+			if active {
+				connection, _ := session(t, path, Request{Protocol: Protocol, Op: "start", Config: &tailsplit.Config{}})
+				defer connection.Close()
+				<-started
+			}
+			before := migrationRuntimeSnapshot(t, server.Base)
+			connection, err := openLeasedSession(context.Background(), "ping", config, "exit-2|100.64.0.10", Info{Initialized: true}, migrationDial(path))
+			if err != nil {
+				t.Fatal("active-only ping attempted to read oversized legacy state:", err)
+			}
+			result, err := readPingReply(context.Background(), connection)
+			_ = connection.Close()
+			if active && (err != nil || result.ID != "exit-2|100.64.0.10") || !active && !errors.Is(err, tailsplit.ErrPingBusy) {
+				t.Fatalf("contended ping active=%t: %+v %v", active, result, err)
+			}
+			if after := migrationRuntimeSnapshot(t, server.Base); !reflect.DeepEqual(after, before) {
+				t.Fatalf("active-only ping imported legacy state: before=%v after=%v", before, after)
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMigratingIdlePingKeepsLegacyLeaseThroughCancellationAndCleanup(t *testing.T) {
+	config := migrationInventoryConfig(t, 2, tailsplit.RoutingSplit, "")
+	started, canceled, cleanup := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	finish := sync.OnceFunc(func() { close(cleanup) })
+	defer finish()
+	path, server, cancelServer, serverDone := testServer(t, os.Getuid(), func(context.Context, tailsplit.Config, io.Writer) error { return nil })
+	server.Ping = func(ctx context.Context, received tailsplit.Config, _ string) (tailsplit.ExitPingResult, error) {
+		assertMigrationFile(t, filepath.Join(received.ExitStateDir("exit-2"), "tailscaled.state"), "identity-exit-2")
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-cleanup
+		return tailsplit.ExitPingResult{}, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connection, err := openLeasedSession(ctx, "ping", config, "exit-2|100.64.0.10", Info{}, migrationDial(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	pingDone := make(chan error, 1)
+	go func() {
+		_, err := readPingReply(ctx, connection)
+		_ = connection.Close()
+		pingDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle ping did not import and open its device")
+	}
+	assertLocked := func() {
+		t.Helper()
+		if release, err := tailsplit.LockSavedState(config.StateDir); err == nil {
+			_ = release()
+			t.Fatal("legacy identity became usable before ping cleanup")
+		}
+	}
+	assertLocked()
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle ping did not receive cancellation")
+	}
+	assertLocked()
+	finish()
+	select {
+	case err := <-pingDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("idle ping lost cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle ping did not join cleanup")
+	}
+	if release, err := tailsplit.LockSavedState(config.StateDir); err != nil {
+		t.Fatal("completed ping retained the legacy lease", err)
+	} else {
+		_ = release()
+	}
+	cancelServer()
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestExitPingServiceReusesActiveEngineWithoutStoppingIt(t *testing.T) {
 	started := make(chan struct{})

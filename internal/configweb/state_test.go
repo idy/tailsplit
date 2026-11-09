@@ -52,13 +52,14 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 			}
 			want := map[string]any{
 				"state": "running", "active": true, "mode": "tun", "routing_mode": "global",
-				"backend_state": "Running", "hostname": "preview-laptop",
-				"exit": "preview-exit", "network": "preview-tailnet.example",
+				"backend_state": "Running", "hostname": "preview-laptop", "phase": "",
+				"exit": "preview-exit", "network": "preview-tailnet.example", "magic_dns_suffix": "",
 				"error": "", "revision": revision, "preview": false,
 				"desktop": false, "startup": false, "logs_available": logsAvailable, "ping_available": false,
 				"exit_nodes": []any{map[string]any{
 					"id": "100.64.0.10", "name": "preview-exit", "online": true, "selected": true,
 				}},
+				"exits": map[string]any{}, "focus": "",
 			}
 			if !reflect.DeepEqual(state, want) {
 				t.Fatalf("unexpected public state: got=%v want=%v", state, want)
@@ -69,6 +70,34 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStateReportsIsolationAndOmissionSeparatelyFromSDKAuthentication(t *testing.T) {
+	server, _, _ := testServer(t)
+	server.options.Snapshot = func() tray.Snapshot {
+		return tray.Snapshot{State: "running", Phase: "isolated", BackendState: "Running", NetworkName: "actual.example",
+			Exits: map[string]tray.ExitSnapshot{"office": {Phase: "omitted"}, "lab": {Phase: "isolated", BackendState: "NeedsLogin"}}}
+	}
+	status, body := request(t, server, http.MethodGet, "/api/state", nil, nil)
+	var state struct {
+		Phase         string `json:"phase"`
+		BackendState  string `json:"backend_state"`
+		Network       string `json:"network"`
+		PingAvailable bool   `json:"ping_available"`
+		Exits         map[string]struct {
+			Phase         string `json:"phase"`
+			BackendState  string `json:"backend_state"`
+			PingAvailable bool   `json:"ping_available"`
+		} `json:"exits"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil || status != http.StatusOK {
+		t.Fatalf("isolation response: %d %s, %v", status, body, err)
+	}
+	if state.Phase != "isolated" || state.BackendState != "Running" || state.Network != "actual.example" || state.PingAvailable ||
+		state.Exits["office"].Phase != "omitted" || state.Exits["office"].BackendState != "" || state.Exits["office"].PingAvailable ||
+		state.Exits["lab"].Phase != "isolated" || state.Exits["lab"].BackendState != "NeedsLogin" || state.Exits["lab"].PingAvailable {
+		t.Fatalf("API conflated session isolation and SDK identity: %s", body)
 	}
 }
 

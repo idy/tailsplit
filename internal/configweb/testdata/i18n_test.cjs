@@ -43,9 +43,73 @@ test('language fallback and interpolation keep external values literal', () => {
   assert.equal(i18n.t('行数', { count: 7 }), '7 lines');
   assert.equal(i18n.t('当前版本 {version}', { version: '<v1.2.3>' }), 'Installed version <v1.2.3>');
   assert.equal(i18n.t('my-device.example.ts.net'), 'my-device.example.ts.net');
+  assert.equal(i18n.t('Rule-based'), 'Rule-based');
+  assert.equal(i18n.t('Global (Kill-Switch)'), 'Global (Kill-Switch)');
   i18n.setLanguage('zh');
+  assert.equal(i18n.t('Rule-based'), '规则分流');
+  assert.equal(i18n.t('Global (Kill-Switch)'), '全局（Kill-Switch）');
+  assert.equal(i18n.t('关闭'), '关闭');
   assert.equal(i18n.t('行数', { count: 1 }), '1 行');
   assert.equal(i18n.t('Save & apply'), '保存并应用');
+});
+
+test('Global Add consent explains the protection loss and failure behavior in both languages', () => {
+  const dialog = html.match(/<dialog id="add-exit-consent-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  assert.ok(dialog);
+  assert.match(dialog, /aria-labelledby="add-exit-consent-title" aria-describedby="add-exit-consent-description"/);
+  assert.match(dialog, /<form method="dialog">/);
+  assert.match(dialog, /value="cancel" autofocus/);
+  const title = dialog.match(/<h2[^>]*>([^<]+)<\/h2>/)[1];
+  const description = dialog.match(/<p[^>]*>([^<]+)<\/p>/)[1];
+  const confirm = dialog.match(/value="add">([^<]+)<\/button>/)[1];
+  const { i18n } = languagePage(['en']);
+  assert.equal(i18n.t(title), 'Disconnect Global protection and add an exit?');
+  assert.equal(i18n.t(confirm), 'Disconnect and add exit');
+  assert.match(i18n.t(description), /turns off Global \(Kill-Switch\) protection/);
+  assert.match(i18n.t(description), /traffic may go direct/);
+  assert.match(i18n.t(description), /stays disconnected even if saving or sign-in fails/);
+  assert.match(i18n.t(description), /Reconnect manually/);
+  i18n.setLanguage('zh');
+  for (const text of [title, description, confirm]) assert.equal(i18n.t(text), text);
+});
+
+test('Global login and gateway consent describe explicit disconnect and stopped failures in both languages', () => {
+  const { i18n } = languagePage(['en']);
+  for (const [title, description, confirm] of [
+    ['断开全局保护并登录？', '登录另一个设备会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使登录失败，也会保持未连接；准备好后请手动重新连接。', '断开并登录'],
+    ['断开全局保护并切换出口？', '切换到另一个设备前会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。仅保存选择，即使保存失败也会保持未连接；准备好后请手动重新连接。', '断开并保存选择'],
+  ]) {
+    i18n.setLanguage('en');
+    for (const text of [title, description, confirm]) assert.ok(Object.hasOwn(i18n.catalog, text));
+    assert.match(i18n.t(title), /Disconnect Global protection/);
+    assert.match(i18n.t(confirm), /Disconnect and/);
+    assert.match(i18n.t(description), /turns off Global \(Kill-Switch\) protection/);
+    assert.match(i18n.t(description), /traffic may go direct/);
+    assert.match(i18n.t(description), /stays disconnected even if/);
+    assert.match(i18n.t(description), /Reconnect manually/);
+    i18n.setLanguage('zh');
+    for (const text of [title, description, confirm]) assert.equal(i18n.t(text), text);
+  }
+});
+
+test('removal consent retains original rules and explains replacement and network restoration', () => {
+  const dialog = html.match(/<dialog id="remove-exit-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  assert.ok(dialog);
+  const description = dialog.match(/<p[^>]*>([^<]+)<\/p>/)[1];
+  const { i18n } = languagePage(['en']);
+  const english = i18n.t(description);
+  assert.match(english, /Sign out only this device and remove its local exit profile/);
+  assert.match(english, /current connection stops and system networking is restored/);
+  assert.match(english, /Existing rules are kept/);
+  assert.match(english, /choose a replacement for rules that use this exit before reconnecting/);
+  assert.match(english, /device record stays in the Tailscale admin console/);
+  i18n.setLanguage('zh');
+  const chinese = i18n.t(description);
+  assert.match(chinese, /仅注销该设备并移除其本地出口配置/);
+  assert.match(chinese, /当前连接将断开并恢复系统网络/);
+  assert.match(chinese, /原有规则会保留/);
+  assert.match(chinese, /引用此出口的规则须选择替代出口后才能重新连接/);
+  assert.match(chinese, /管理后台的设备记录会保留/);
 });
 
 test('static translation preserves text nodes and skips code and detached nodes', () => {

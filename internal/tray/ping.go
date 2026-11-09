@@ -16,11 +16,29 @@ import (
 )
 
 func (c *Controller) pingAvailableLocked() bool {
-	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || !c.snapshot.PingAvailable || c.snapshot.BackendState != "Running" {
+	return c.exitPingAvailableLocked("")
+}
+
+func (c *Controller) exitPingAvailableLocked(exit string) bool {
+	available, backend := c.snapshot.PingAvailable, c.snapshot.BackendState
+	if exit != "" {
+		state := c.snapshot.Exits[exit]
+		available, backend = state.PingAvailable, state.BackendState
+	}
+	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || !available || backend != "Running" {
 		return false
 	}
 	if c.command == nil {
 		return true
+	}
+	if c.snapshot.RoutingMode == tailsplit.RoutingGlobal {
+		selected := c.trafficExit
+		if selected == tailsplit.MainExit {
+			selected = ""
+		}
+		if exit != selected {
+			return false
+		}
 	}
 	// The native desktops use the service, whose active engine accepts ping
 	// requests. A standalone non-service CLI engine has no control channel.
@@ -38,17 +56,26 @@ func (c *Controller) pingAvailableLocked() bool {
 // PingExitNode is independent of Start/Stop and never reconnects the proxy.
 // The helper contacts the installed service's active engine or, when idle,
 // opens a scoped session for that same saved device. Its output is bounded.
-func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.ExitPingResult, error) {
+// The target may name an additional exit as "exit|node".
+func (c *Controller) PingExitNode(ctx context.Context, target string) (tailsplit.ExitPingResult, error) {
+	exit, id := tailsplit.SplitPingTarget(target)
+	if exit == tailsplit.MainExit {
+		exit = ""
+	}
 	c.mu.Lock()
 	if c.pingCancel != nil || c.reconfiguring {
 		c.mu.Unlock()
 		return tailsplit.ExitPingResult{}, tailsplit.ErrPingBusy
 	}
-	if !c.pingAvailableLocked() {
+	if !c.exitPingAvailableLocked(exit) {
 		c.mu.Unlock()
 		return tailsplit.ExitPingResult{}, tailsplit.ErrPingUnavailable
 	}
-	if err := tailsplit.ValidateExitPingTarget(c.snapshot.ExitNodes, id); err != nil {
+	nodes := c.snapshot.ExitNodes
+	if exit != "" {
+		nodes = c.snapshot.Exits[exit].ExitNodes
+	}
+	if err := tailsplit.ValidateExitPingTarget(nodes, id); err != nil {
 		c.mu.Unlock()
 		return tailsplit.ExitPingResult{}, err
 	}
@@ -63,7 +90,7 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 	}
 	responseCh := make(chan response, 1)
 	go func() {
-		result, err := c.runPingHelper(ctx, id)
+		result, err := c.runPingHelper(ctx, exit, id)
 		c.mu.Lock()
 		c.pingCancel, c.pingDone = nil, nil
 		close(done)
@@ -80,12 +107,15 @@ func (c *Controller) PingExitNode(ctx context.Context, id string) (tailsplit.Exi
 	}
 }
 
-func (c *Controller) runPingHelper(ctx context.Context, id string) (tailsplit.ExitPingResult, error) {
+func (c *Controller) runPingHelper(ctx context.Context, exit, id string) (tailsplit.ExitPingResult, error) {
 	operation := "ping"
 	if len(c.options.HelperArgs) == 0 && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
 		operation = "app-ping"
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), operation, "--id", id, "--parent-pid", fmt.Sprint(os.Getpid()), "-c", c.options.ConfigPath)
+	if exit != "" {
+		args = append(args, "--exit", exit)
+	}
 	command := exec.Command(c.options.Helper, args...)
 	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = pingenv.WithoutAuthentication(append(os.Environ(), c.options.ExtraEnv...))
