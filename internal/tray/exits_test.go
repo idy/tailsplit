@@ -71,6 +71,56 @@ func TestFocusedLoginPreservesPrimaryAuthentication(t *testing.T) {
 	}
 }
 
+func TestFocusedLoginWaitsForFreshAdditionalDeviceState(t *testing.T) {
+	const link = "https://login.tailscale.com/a/fresh-office"
+	for _, test := range []struct {
+		name, event, wantURL string
+	}{
+		{"expired session", `{"event":"status","exit":"office","backend_state":"NeedsLogin","auth_url":"` + link + `"}`, link},
+		{"saved session", `{"event":"status","exit":"office","backend_state":"Running"}`, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			controller := testController(t, "manual-events")
+			controller.snapshot = Snapshot{State: "stopped", BackendState: "Running", NetworkName: "home.ts.net",
+				Exits: map[string]ExitSnapshot{
+					"office": {BackendState: "Running", NetworkName: "office.ts.net"},
+					"lab":    {BackendState: "Running", NetworkName: "lab.ts.net"},
+				}}
+			if err := controller.StartExitLogin("office"); err != nil {
+				t.Fatal(err)
+			}
+			var flow LoginFlow
+			flow.Request()
+			assertWaiting := func() {
+				t.Helper()
+				snapshot := controller.Snapshot()
+				if got := flow.Next(snapshot); got != "" || !flow.pending || flow.Opening() {
+					t.Fatalf("cached Running consumed the new login intent: %+v", snapshot)
+				}
+				if snapshot.BackendState != "Running" || snapshot.NetworkName != "home.ts.net" ||
+					snapshot.Exits["lab"].BackendState != "Running" || snapshot.Exits["lab"].NetworkName != "lab.ts.net" {
+					t.Fatal("focused login changed another saved device", snapshot)
+				}
+			}
+			assertWaiting()
+			waitState(t, controller, "connecting")
+			assertWaiting()
+			controller.onEvent([]byte(`{"event":"preflight","mode":"login"}`))
+			assertWaiting()
+			controller.onEvent([]byte(test.event))
+			if got := flow.Next(controller.Snapshot()); got != test.wantURL || flow.pending {
+				t.Fatalf("fresh helper event did not complete the login request: got %q, pending=%t", got, flow.pending)
+			}
+			if flow.Next(controller.Snapshot()) != "" {
+				t.Fatal("the same authorization link opened more than once")
+			}
+			if test.wantURL != "" && !flow.Opening() || test.wantURL == "" && (flow.Opening() || flow.ShowMessage()) {
+				t.Fatal("fresh authentication result was not reflected in login flow", flow.Message())
+			}
+		})
+	}
+}
+
 func TestStartupPeerDiscoveryStaysInCheckingUntilReady(t *testing.T) {
 	for _, id := range []string{tailsplit.MainExit, "office"} {
 		controller, err := New(Options{Helper: "helper", ConfigPath: filepath.Join(t.TempDir(), "config.yaml"), LogPath: filepath.Join(t.TempDir(), "log")})

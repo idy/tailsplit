@@ -74,6 +74,65 @@ func focusedPreflightEndpoint(t *testing.T, config Config) map[string]any {
 	return endpoints[0].(map[string]any)
 }
 
+func TestCompileNormalizesDirectFocusedConfig(t *testing.T) {
+	for _, api := range []string{"Compile", "CompileContext", "ValidateTrafficExit"} {
+		for _, test := range []struct {
+			name    string
+			primary *TailscaleConfig
+			node    string
+			wantErr bool
+		}{
+			{name: "extras only", node: "100.101.0.11"},
+			{name: "pending primary ready extra", primary: &TailscaleConfig{Hostname: "primary"}, node: "100.101.0.11"},
+			{name: "ready primary pending extra", primary: &TailscaleConfig{Hostname: "primary", ExitNode: "100.64.0.10"}, wantErr: true},
+			{name: "extras only pending", wantErr: true},
+		} {
+			t.Run(api+"/"+test.name, func(t *testing.T) {
+				config := Config{
+					StateDir: t.TempDir(), Tailscale: test.primary, Focus: "office",
+					Exits: []ExitConfig{{ID: "office", Hostname: "office", ExitNode: test.node}},
+				}
+				var compiled Compiled
+				var err error
+				switch api {
+				case "Compile":
+					compiled, err = Compile(config)
+				case "CompileContext":
+					compiled, err = CompileContext(t.Context(), config)
+				case "ValidateTrafficExit":
+					err = ValidateTrafficExit(config)
+				}
+				if test.wantErr {
+					if err == nil {
+						t.Fatal("a ready primary hid the pending focused device")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if api == "ValidateTrafficExit" {
+					return
+				}
+				if TailscaleEnabled {
+					if err := Check(compiled); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var native map[string]any
+				if err := json.Unmarshal(compiled.JSON, &native); err != nil {
+					t.Fatal(err)
+				}
+				tags := endpointTags(native)
+				if len(tags) != 1 || tags["tailnet"]["exit_node"] != test.node ||
+					tags["tailnet"]["state_directory"] != config.ExitStateDir("office") {
+					t.Fatal("direct Config focus did not select its own node and state", tags)
+				}
+			})
+		}
+	}
+}
+
 func TestFocusedRuntimeRetainsEveryExitForMigration(t *testing.T) {
 	for _, id := range []string{MainExit, "office"} {
 		t.Run(id, func(t *testing.T) {

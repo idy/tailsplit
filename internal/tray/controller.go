@@ -316,6 +316,12 @@ func (c *Controller) start(mode, focus string) error {
 		(trafficExit == tailsplit.MainExit || mode == "login" || mode == "discovery") {
 		c.snapshot.BackendState = ""
 	}
+	if mode == "login" && focus != "" && focus != tailsplit.MainExit {
+		// LoginFlow must wait for this helper's status, not a previous session.
+		exit := c.snapshot.Exits[focus]
+		exit.BackendState = ""
+		c.setExit(focus, exit)
+	}
 	c.command, c.input = command, input
 	c.stopping = false
 	c.done = make(chan struct{})

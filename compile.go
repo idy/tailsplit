@@ -37,17 +37,12 @@ func Compile(config Config) (Compiled, error) {
 }
 
 func CompileContext(ctx context.Context, config Config) (Compiled, error) {
-	if config.Rules.Mode == RoutingGlobal && !config.TUN.Enabled {
-		return Compiled{}, fmt.Errorf("global Kill Switch mode requires tun.enabled: true")
-	}
-	if err := ValidateTrafficExit(config); err != nil {
-		return Compiled{}, err
-	}
-	return compile(ctx, config)
+	return compileWithOptions(ctx, config, compileOptions{validateTraffic: true})
 }
 
 type compileOptions struct {
-	blockedExits map[string]bool
+	blockedExits    map[string]bool
+	validateTraffic bool
 }
 
 func compile(ctx context.Context, config Config) (Compiled, error) {
@@ -61,6 +56,14 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	}
 	if err := config.normalize(base); err != nil {
 		return Compiled{}, err
+	}
+	if options.validateTraffic {
+		if config.Rules.Mode == RoutingGlobal && !config.TUN.Enabled {
+			return Compiled{}, fmt.Errorf("global Kill Switch mode requires tun.enabled: true")
+		}
+		if err := ValidateTrafficExit(config); err != nil {
+			return Compiled{}, err
+		}
 	}
 	isBlocked := func(id string) bool {
 		return !config.includePending && (options.blockedExits[id] || id == MainExit && options.blockedExits[""])
@@ -538,7 +541,7 @@ func ValidateTrafficExit(config Config) error {
 		return fmt.Errorf("traffic exit %q is not configured", id)
 	}
 	node := ""
-	if id == MainExit || config.Focus != "" {
+	if id == MainExit {
 		node = config.Tailscale.ExitNode
 	} else {
 		for _, exit := range config.Exits {

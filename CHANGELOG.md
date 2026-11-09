@@ -44,6 +44,9 @@
   when no primary exists. Reject Windows device names as exit IDs, allow saved
   inactive Global gateways to enter preflight, preserve surviving YAML references
   during removal and keep tagged/untagged test contracts explicit.
+- Normalize directly constructed focused configurations before traffic validation,
+  reject oversized app-service inventories before migrating any saved identities,
+  and wait for fresh device status when restarting an additional exit's login.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

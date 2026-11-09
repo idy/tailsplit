@@ -34,9 +34,19 @@ func prepareRuntimeUser(base, user string, files Files) (string, error) {
 	return prepareRuntimeUserWithRules(base, user, files, true)
 }
 
+func validateExitInventory(count int) error {
+	if count > maxExits {
+		return fmt.Errorf("the network service supports at most %d additional exits", maxExits)
+	}
+	return nil
+}
+
 func prepareRuntimeUserWithRules(base, user string, files Files, updateRules bool) (string, error) {
 	if user == "" || user == "." || user == ".." || strings.ContainsAny(user, `/\\:`) {
 		return "", errors.New("invalid registered service user")
+	}
+	if err := validateExitInventory(len(files.ExitStates)); err != nil {
+		return "", err
 	}
 	directory := runtimeUserDirectory(base, user)
 	for _, path := range []string{base, filepath.Join(base, "users"), directory} {
@@ -127,6 +137,9 @@ func ValidateAppConfig(config tailsplit.Config) error {
 }
 
 func serviceConfig(config tailsplit.Config, directory string) (tailsplit.Config, error) {
+	if err := validateExitInventory(len(config.Exits)); err != nil {
+		return config, err
+	}
 	// All on-disk engine paths come from this root-owned directory. Config
 	// contains no raw sing-box options, hooks, executable paths or plugins.
 	config.StateDir = directory
@@ -183,6 +196,11 @@ func readUserFile(path string, maximum int) ([]byte, error) {
 }
 
 func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
+	// Focus and Global mode still migrate every saved device. Reject the full
+	// inventory before reading files instead of committing a partial import.
+	if err := validateExitInventory(len(config.Exits)); err != nil {
+		return Files{}, err
+	}
 	if seed {
 		files.TailscaleState, err = readUserFile(filepath.Join(config.StateDir, "tailscale", "tailscaled.state"), maxState)
 		if err != nil {
@@ -193,7 +211,7 @@ func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
 			return files, err
 		}
 		for _, exit := range config.Exits {
-			if len(files.ExitStates) >= maxExits || !validExitID(exit.ID) {
+			if !validExitID(exit.ID) {
 				break
 			}
 			state, err := readUserFile(filepath.Join(config.ExitStateDir(exit.ID), "tailscaled.state"), maxState)
