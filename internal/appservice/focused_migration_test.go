@@ -6,14 +6,221 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/idy/tailsplit"
 )
+
+func migrationDial(path string) sessionDial {
+	return func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", path)
+	}
+}
+
+// This is the session path shared by the authenticated Unix and Windows clients.
+// Fixtures replace only their endpoint authentication/dialing and never open an
+// actual engine or any user state outside t.TempDir.
+func runMigrationSession(t *testing.T, path string, server *Server, operation string, config tailsplit.Config, target string) {
+	t.Helper()
+	info := Info{Initialized: runtimeInitialized(runtimeUserDirectory(server.Base, server.userKey()))}
+	connection, err := openLeasedSession(context.Background(), operation, config, target, info, migrationDial(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if operation == "ping" {
+		if _, err := readPingReply(context.Background(), connection); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		var event map[string]string
+		if err := json.NewDecoder(connection).Decode(&event); err != nil || event["event"] != "stopped" {
+			t.Fatalf("%s failed: %v, %v", operation, event, err)
+		}
+	}
+	if release, err := tailsplit.LockSavedState(config.StateDir); err == nil {
+		_ = release()
+		t.Fatal("session released the legacy state lease before its connection closed")
+	}
+}
+
+func TestExtrasFirstSessionKeepsPrimaryEligibleUntilImportOrLogout(t *testing.T) {
+	for _, firstOperation := range []string{"start", "login", "ping"} {
+		t.Run(firstOperation, func(t *testing.T) {
+			config := migrationInventoryConfig(t, 2, tailsplit.RoutingGlobal, "")
+			legacyPrimary := filepath.Join(config.StateDir, "tailscale", "tailscaled.state")
+			if err := os.RemoveAll(filepath.Dir(legacyPrimary)); err != nil {
+				t.Fatal(err)
+			}
+			logoutRequested := make(chan struct{}, 1)
+			path, server, cancel, done := testServer(t, os.Getuid(), func(_ context.Context, received tailsplit.Config, _ io.Writer) error {
+				select {
+				case <-logoutRequested:
+					assertMigrationFile(t, filepath.Join(received.StateDir, ".primary-initialized"), "1\n")
+					return os.RemoveAll(received.ExitStateDir(tailsplit.MainExit))
+				default:
+					return nil
+				}
+			})
+			server.Ping = func(_ context.Context, _ tailsplit.Config, target string) (tailsplit.ExitPingResult, error) {
+				return tailsplit.ExitPingResult{ID: target}, nil
+			}
+			first := config
+			if firstOperation == "login" {
+				var err error
+				first, err = config.FocusExit("exit-2")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			runMigrationSession(t, path, server, firstOperation, first, "exit-2|100.64.0.10")
+			directory := runtimeUserDirectory(server.Base, server.userKey())
+			assertMigrationFile(t, filepath.Join(directory, ".initialized"), identityInitialization)
+			plan, err := runtimeImports(directory, []string{tailsplit.MainExit})
+			if err != nil || !reflect.DeepEqual(plan.IDs, []string{tailsplit.MainExit}) || plan.Cache {
+				t.Fatalf("extras-only initialization claimed the primary or reseeded cache: %+v %v", plan, err)
+			}
+			primary, err := config.FocusExit(tailsplit.MainExit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A request with no legacy state must not spend future eligibility.
+			runMigrationSession(t, path, server, "discover", primary, "")
+			writeMigrationFile(t, legacyPrimary, "later-cli-primary")
+			runMigrationSession(t, path, server, "login", primary, "")
+			servicePrimary := filepath.Join(directory, "tailscale", "tailscaled.state")
+			assertMigrationFile(t, servicePrimary, "later-cli-primary")
+			writeMigrationFile(t, legacyPrimary, "stale-primary")
+			runMigrationSession(t, path, server, "login", primary, "")
+			assertMigrationFile(t, servicePrimary, "later-cli-primary")
+			logoutRequested <- struct{}{}
+			runMigrationSession(t, path, server, "logout", primary, "")
+			runMigrationSession(t, path, server, "login", primary, "")
+			if _, err := os.Stat(servicePrimary); !os.IsNotExist(err) {
+				t.Fatalf("actual primary logout was resurrected: %v", err)
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPrimaryLogoutWithoutStateClaimsAuthority(t *testing.T) {
+	for _, old := range []bool{false, true} {
+		t.Run(fmt.Sprint(old), func(t *testing.T) {
+			base := privateTestDirectory(t)
+			directory, err := prepareRuntimeUser(base, "fixture-user", Files{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if old {
+				writeMigrationFile(t, filepath.Join(directory, ".initialized"), "1\n")
+			}
+			if err := claimLogoutExit(tailsplit.Config{StateDir: directory}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := prepareRuntimeUser(base, "fixture-user", Files{TailscaleState: []byte("stale-primary")}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(directory, "tailscale")); !os.IsNotExist(err) {
+				t.Fatal("logout without primary state permitted later resurrection", err)
+			}
+		})
+	}
+}
+
+func TestPrimaryAuthorityPreservesOlderRuntimeCompatibility(t *testing.T) {
+	for _, old := range []string{"1\n", "existing-marker\n", strings.Repeat("x", 65), "markerless-directory"} {
+		t.Run(strings.TrimSpace(old), func(t *testing.T) {
+			base := privateTestDirectory(t)
+			directory := runtimeUserDirectory(base, "fixture-user")
+			if old == "markerless-directory" {
+				if err := os.MkdirAll(filepath.Join(directory, "tailscale"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				writeMigrationFile(t, filepath.Join(directory, ".initialized"), old)
+			}
+			plan, err := runtimeImports(directory, []string{tailsplit.MainExit})
+			if err != nil || len(plan.IDs) != 0 {
+				t.Fatalf("older runtime lost primary authority: %+v %v", plan, err)
+			}
+			if _, err := prepareRuntimeUser(base, "fixture-user", Files{TailscaleState: []byte("stale-primary")}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(directory, "tailscale", "tailscaled.state")); !os.IsNotExist(err) {
+				t.Fatal("older runtime resurrected the primary", err)
+			}
+		})
+	}
+}
+
+func TestSessionsIgnoreOwnedAndUnrelatedLegacyFiles(t *testing.T) {
+	for _, operation := range []string{"start", "login", "discover", "logout", "ping"} {
+		for _, badKind := range []string{"oversized", "nonregular"} {
+			t.Run(operation+"/"+badKind, func(t *testing.T) {
+				config := migrationInventoryConfig(t, 3, tailsplit.RoutingGlobal, "")
+				config.Rules.GlobalExit = "exit-2"
+				if operation != "start" {
+					var err error
+					config, err = config.FocusExit("exit-2")
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				path, server, cancel, done := testServer(t, os.Getuid(), func(context.Context, tailsplit.Config, io.Writer) error { return nil })
+				server.Ping = func(_ context.Context, _ tailsplit.Config, target string) (tailsplit.ExitPingResult, error) {
+					return tailsplit.ExitPingResult{ID: target}, nil
+				}
+				directory, err := prepareRuntimeUser(server.Base, server.userKey(), Files{
+					TailscaleState: []byte("service-primary"), ExitStates: map[string][]byte{"exit-1": []byte("service-extra")},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				makeBad := func(id string) {
+					t.Helper()
+					state := filepath.Join(config.ExitStateDir(id), "tailscaled.state")
+					if badKind == "nonregular" {
+						if err := os.Remove(state); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Mkdir(state, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := os.Truncate(state, maxState+1); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, id := range []string{tailsplit.MainExit, "exit-1", "exit-3"} {
+					makeBad(id)
+				}
+				runMigrationSession(t, path, server, operation, config, "exit-2|100.64.0.10")
+				assertMigrationFile(t, filepath.Join(directory, "exits", "exit-2", "tailscale", "tailscaled.state"), "identity-exit-2")
+				makeBad("exit-2")
+				runMigrationSession(t, path, server, operation, config, "exit-2|100.64.0.10")
+				assertMigrationFile(t, filepath.Join(directory, "tailscale", "tailscaled.state"), "service-primary")
+				assertMigrationFile(t, filepath.Join(directory, "exits", "exit-1", "tailscale", "tailscaled.state"), "service-extra")
+				if _, err := os.Stat(filepath.Join(directory, "exits", "exit-3")); !os.IsNotExist(err) {
+					t.Fatalf("unrelated exit was read or claimed: %v", err)
+				}
+				cancel()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
 
 func writeMigrationFile(t *testing.T, path, contents string) {
 	t.Helper()
@@ -62,11 +269,15 @@ func TestInitializedMigrationImportsOnlyUnclaimedExtraIdentities(t *testing.T) {
 			if err := os.Remove(lateState); err != nil {
 				t.Fatal(err)
 			}
-			// This is the seed=false call made by BOTH installed clients after
-			// hello reports Initialized, with the full focused/Global inventory.
-			files, err := userFiles(&config, false)
-			if err != nil || len(files.ExitStates) != 4 || len(files.TailscaleState) != 0 || len(files.Cache) != 0 {
-				t.Fatalf("initialized client omitted extra candidates or reseeded the primary/cache: %+v, %v", files, err)
+			// Query all identities here to exercise the shared authority contract.
+			// Clients further scope this query to their operation's devices.
+			plan, err := runtimeImports(directory, config.ExitIDs())
+			if err != nil {
+				t.Fatal(err)
+			}
+			files, err := userFiles(&config, plan)
+			if err != nil || len(files.ExitStates) != 1 || len(files.TailscaleState) != 0 || len(files.Cache) != 0 {
+				t.Fatalf("initialized client read owned identities or reseeded the cache: %+v, %v", files, err)
 			}
 			// An explicit empty candidate also must not claim future import.
 			files.ExitStates["exit-5"] = nil
@@ -108,7 +319,11 @@ func TestInitializedMigrationImportsOnlyUnclaimedExtraIdentities(t *testing.T) {
 			// CLI/fallback authentication can occur after an earlier request had
 			// no state for this ID, including outside the current runtime focus.
 			writeMigrationFile(t, lateState, "late-cli-identity")
-			files, err = userFiles(&config, false)
+			plan, err = runtimeImports(directory, config.ExitIDs())
+			if err != nil {
+				t.Fatal(err)
+			}
+			files, err = userFiles(&config, plan)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -182,7 +397,7 @@ func TestLogoutClaimsOnlyItsExitBeforeOpeningTheRunner(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				files, err := userFiles(&config, !scenario.initialized)
+				files, err := userFiles(&config, inventoryPlan(config, !scenario.initialized))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -254,7 +469,7 @@ func TestFocusedFirstMigrationImportsEverySavedExitOnce(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			files, err := userFiles(&focused, true)
+			files, err := userFiles(&focused, inventoryPlan(focused, true))
 			if err != nil {
 				t.Fatal(err)
 			}

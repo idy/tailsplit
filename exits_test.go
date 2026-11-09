@@ -210,12 +210,91 @@ func TestExitConfigRejectsUnsafeInput(t *testing.T) {
 		"duplicate hostname": "tailscale:\n  hostname: laptop\nexits:\n  - id: a\n    hostname: laptop\n",
 		"unsafe route exit":  "tailscale: {}\nrules:\n  routes:\n    - exit: ../nowhere\n      domains: [a.example]\n",
 		"unsafe final exit":  "tailscale: {}\nrules:\n  final: ../nowhere\n",
-		"main as final":      "tailscale: {}\nrules:\n  final: main\n",
 		"bad route CIDR":     "tailscale: {}\nexits:\n  - id: a\nrules:\n  routes:\n    - exit: a\n      ips: [10.0.0.1/8]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadTestConfig(t, text); err == nil {
 				t.Fatalf("accepted %s", name)
+			}
+		})
+	}
+}
+
+func TestExplicitMainFinalIsIndependentOfAdditionalDefault(t *testing.T) {
+	config := focusedExitTestConfig(t)
+	config.Rules.DefaultExit, config.Rules.Final = "office", MainExit
+	config.Rules.ProxyDomains = []string{"proxy.example"}
+	compiled, err := CompileContext(t.Context(), config)
+	if err != nil {
+		t.Fatal("explicit main final was rejected:", err)
+	}
+	if TailscaleEnabled {
+		if err := Check(compiled); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var native map[string]any
+	if err := json.Unmarshal(compiled.JSON, &native); err != nil {
+		t.Fatal(err)
+	}
+	if native["route"].(map[string]any)["final"] != "tailnet" || native["dns"].(map[string]any)["final"] != "dns-proxy" {
+		t.Fatal("named main final silently used the additional default")
+	}
+	if firstSuffixRuleValue(native["route"].(map[string]any)["rules"].([]any), "proxy.example", "outbound") != "exit-office" {
+		t.Fatal("explicit main final replaced the default used by proxy matches")
+	}
+	for tag, id := range map[string]string{"tailnet": MainExit, "exit-office": "office"} {
+		if endpointTags(native)[tag]["state_directory"] != config.ExitStateDir(id) {
+			t.Fatal("explicit main final changed the saved device's state path", tag)
+		}
+	}
+}
+
+func TestMainFinalDraftsRemainEditableAndDeviceSessionsWork(t *testing.T) {
+	for _, primary := range []string{"missing", "pending"} {
+		t.Run(primary, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.DefaultExit, config.Rules.GlobalExit, config.Rules.Final = "office", "office", MainExit
+			config.Rules.Routes, config.DNS.MagicDomains = nil, nil
+			if primary == "missing" {
+				config.Tailscale = nil
+			} else {
+				config.Tailscale.ExitNode = ""
+			}
+			config, err := Normalize(config, t.TempDir())
+			if err != nil || config.Rules.Final != MainExit {
+				t.Fatal("main final draft was rejected or replaced", err)
+			}
+			_, err = CompileContext(t.Context(), config)
+			if err == nil || !strings.Contains(err.Error(), `exit "main"`) || errors.Is(err, ErrUnresolvedSplitExit) != (primary == "missing") {
+				t.Fatal("missing/pending main final used a different default exit", err)
+			}
+			if primary == "missing" {
+				if _, err := PrepareConnection(t.Context(), config, Compiled{}, nil, nil); !errors.Is(err, ErrUnresolvedSplitExit) {
+					t.Fatal("connection preflight did not reject missing main before opening state", err)
+				}
+			}
+			if _, err := os.Stat(config.StateDir); !os.IsNotExist(err) {
+				t.Fatal("unready main final opened saved device state")
+			}
+			discovery, err := compilePreflight(config, true)
+			if err != nil {
+				t.Fatal("dormant main final prevented login/discovery", err)
+			}
+			if TailscaleEnabled {
+				if err := Check(discovery); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config.Rules.Mode = RoutingGlobal
+			global, err := CompileContext(t.Context(), config)
+			if err != nil || global.runtimeExit != "office" {
+				t.Fatal("Global activated dormant main final", err)
+			}
+			if TailscaleEnabled {
+				if err := Check(global); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}
@@ -577,6 +656,21 @@ func TestUnresolvedSplitExitClassification(t *testing.T) {
 			c.Exits = []ExitConfig{{ID: "replacement", Hostname: "replacement", ExitNode: "100.64.0.10"}}
 			c.Rules.DefaultExit, c.Rules.GlobalExit = "replacement", "replacement"
 			c.Rules.Routes = []RouteConfig{{Exit: MainExit, Domains: []string{"corp.example"}}}
+		}},
+		{name: "missing primary final owner", unresolved: true, wantExit: MainExit, configure: func(c *Config) {
+			c.Tailscale = nil
+			c.Exits = []ExitConfig{{ID: "replacement", Hostname: "replacement", ExitNode: "100.64.0.10"}}
+			c.Rules.DefaultExit, c.Rules.GlobalExit, c.Rules.Final = "replacement", "replacement", MainExit
+		}},
+		{name: "missing private-name owner", unresolved: true, wantExit: MainExit, configure: func(c *Config) {
+			c.Tailscale = nil
+			c.Exits = []ExitConfig{{ID: "replacement", Hostname: "replacement", ExitNode: "100.64.0.10"}}
+			c.Rules.DefaultExit, c.Rules.GlobalExit = "replacement", "replacement"
+			c.DNS.MagicDomains = []string{"primary.ts.net"}
+		}},
+		{name: "last private-name owner removed", unresolved: true, wantExit: MainExit, configure: func(c *Config) {
+			c.Tailscale = nil
+			c.DNS.MagicDomains = []string{"primary.ts.net"}
 		}},
 		{name: "empty missing group", compileOK: true, configure: func(c *Config) {
 			c.Rules.Routes = []RouteConfig{{Exit: "office"}}

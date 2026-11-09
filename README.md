@@ -56,7 +56,12 @@ idle app stopped.
 On **Exit Nodes**, the current Split default proxy exit or Global exit is shown
 in a compact text dropdown at the top right of the card list, or **Not set** if
 none is configured. Choose a gateway directly in that dropdown to save it, without
-an edit dialog. A disconnected app stays disconnected; an active session reconnects. Turning on without a default
+an edit dialog. A disconnected app stays disconnected; an active Split session
+reconnects. Switching devices during active Global mode first asks for consent
+to stop protection, then disconnects and saves the selection while staying stopped
+until you reconnect manually. Signing in to another saved device follows the
+same consent rule; native actions without that confirmation require disconnecting
+first. Recovery of the current device's pending authorization keeps its helper. Turning on without a default
 still opens a selection dialog with no preselected option. Choose an
 exit and confirm to save it and connect; Cancel or Escape changes nothing. A
 failed or stale save never starts traffic. Settings drafts must be resolved
@@ -78,7 +83,7 @@ unmatched-traffic setting (`rules.final`). It carries proxy matches from the
 builtin or custom rule source, `proxy_domains`, `proxy_ips`, `final: proxy`, and
 bare Tailnet addresses without a more specific route. Rule groups can send
 domains and CIDRs through other exits; unmatched traffic can go direct, use the
-default proxy exit, or use a named additional exit. Global runs only the device
+default proxy exit, or use any configured exit, including `main`. Global runs only the device
 selected by `rules.global_exit` for all captured traffic. Split rules remain
 saved while hidden in Global. Connection preflight checks node availability for
 the default gateway, explicit final exit and nonempty rule groups. Other retained
@@ -97,7 +102,10 @@ ready. Only the selected device's interactive authentication pauses the
 availability timeout; other backend transitions preserve its deadline.
 
 An extra's `tailnet` is its login identity guard; `magic_dns_suffix` stores the
-actual DNS suffix independently of its display network name. DNS and traffic
+actual DNS suffix independently of its display network name. Traffic preflight
+checks both the network guard and saved suffix metadata. After a legitimate DNS
+suffix change, refresh the saved device and explicitly apply its new DNS metadata
+in the picker; the node and account guard stay unchanged. DNS and traffic
 use the same longest-suffix ownership order, with the primary winning exact
 duplicates. Exit IDs `main`, `direct`, `proxy` and Windows device basenames such
 as `con`, `nul`, `com1` and `lpt1` are reserved. Pending or missing owners of live
@@ -127,9 +135,11 @@ Both modes create a DNS TUN and require the privileged network service:
 Windows Setup installs it; macOS requests administrator approval on first connection.
 
 Configuration and device state are retained across normal updates. The network
-service imports primary state once. Newly encountered additional exits can import
-saved CLI or fallback state later; existing service-owned exits, including
-logged-out devices, retain authority and are never overwritten by an old CLI copy.
+service checks import eligibility per device, reads only still-needed CLI or
+fallback copies, and holds their ordinary-user state lease through cleanup. An
+unused primary remains eligible after another device initializes the new service
+cache. Existing service-owned or logged-out devices retain authority, and legacy
+initialization markers are interpreted conservatively.
 
 New desktop profiles use [config.default.yaml](config.default.yaml): direct Internet
 IPv6 off, FakeIP and system TUN on, MTU 1400, Split/builtin rules, unmatched traffic

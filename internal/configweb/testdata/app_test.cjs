@@ -2185,30 +2185,42 @@ function activeGlobalGatewaySnapshot() {
     backend_state: '', network: '', hostname: '', exit: '', exit_nodes: [] };
 }
 
-for (const target of ['main', 'spare']) test(`active Global can switch to uncached saved ${target} through guarded preflight`, async () => {
-  const initial = activeGlobalGatewayDocument();
-  const app = await page(activeGlobalGatewaySnapshot(), '', {}, initial);
-  const select = app.$('#connection-exit');
-  assert.equal(select.value, 'office');
-  assert.equal(select.children.find(option => option.value === target).disabled, false);
-  let saves = 0;
-  app.override = request => {
-    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
-    saves++;
-    assert.deepEqual(request.data.changes, { 'rules.global_exit': target });
-    assert.equal(request.data.revision, 'original');
-    app.config = { ...initial, revision: 'saved', values: { ...initial.values, rules: { ...initial.values.rules, global_exit: target } } };
-    Object.assign(app.snapshot, { revision: 'saved', state: 'checking-exit' });
-    return response(app.config);
-  };
-  select.value = target;
-  await select.emit('change');
-  assert.equal(saves, 1);
-  assert.equal(select.value, target);
-  assert.equal(app.requests.some(request => request.path === '/api/action'), false, 'the backend config callback owns preflight and reconnection');
-  assert.equal(app.snapshot.backend_state, '', 'selection must not invent primary authentication');
-  assert.equal(app.snapshot.exits.spare, undefined, 'selection must not invent extra authentication');
-  assert.equal(app.snapshot.state, 'checking-exit');
+for (const target of ['main', 'spare']) test(`active Global requires consent and stays stopped when saving uncached ${target}`, async () => {
+  for (const failure of ['', 'disconnect', 'save']) {
+    const initial = activeGlobalGatewayDocument();
+    const app = await page(activeGlobalGatewaySnapshot(), '', {}, initial);
+    const select = app.$('#connection-exit');
+    assert.equal(select.value, 'office');
+    assert.equal(select.children.find(option => option.value === target).disabled, false);
+    assert.match(select.title, /保存后保持未连接/);
+    app.override = request => {
+      if (request.path === '/api/action') {
+        assert.equal(request.data.action, 'disconnect');
+        if (failure === 'disconnect') return response({ error: 'disconnect failed' }, false);
+        Object.assign(app.snapshot, { active: false, mode: '', state: 'stopped' });
+        return response({ ok: true });
+      }
+      if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+      assert.equal(app.snapshot.active, false);
+      assert.deepEqual(request.data.changes, { 'rules.global_exit': target });
+      assert.equal(request.data.revision, 'original');
+      if (failure === 'save') return response({ error: 'save failed' }, false);
+      app.config = { ...initial, revision: 'saved', values: { ...initial.values, rules: { ...initial.values.rules, global_exit: target } } };
+      app.snapshot.revision = 'saved';
+      return response(app.config);
+    };
+    select.value = target;
+    const changing = select.emit('change'); await settle();
+    assert.equal(app.$('#add-exit-consent-dialog').open, true);
+    assert.deepEqual(mutations(app), []);
+    answerAddConsent(app, 'gateway'); await changing;
+    assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action), failure === 'disconnect' ? ['disconnect'] : ['disconnect', 'save']);
+    assert.equal(select.value, failure ? 'office' : target);
+    assert.equal(app.snapshot.active, failure === 'disconnect');
+    assert.equal(app.snapshot.backend_state, '', 'selection must not invent primary authentication');
+    assert.equal(app.snapshot.exits.spare, undefined, 'selection must not invent extra authentication');
+    assert.ok(!app.$('#default-exit-dialog').open, 'no extra gateway-selection dialog');
+  }
 });
 
 test('active Global keeps known invalid or offline gateway states guarded', async () => {
@@ -2254,17 +2266,24 @@ test('active Global uncached gateway changes retain draft and revision protectio
   const app = await page(activeGlobalGatewaySnapshot(), '', {}, activeGlobalGatewayDocument());
   let saves = 0;
   app.override = request => {
+    if (request.path === '/api/action') {
+      assert.equal(request.data.action, 'disconnect');
+      Object.assign(app.snapshot, { active: false, mode: '', state: 'stopped' });
+      return response({ ok: true });
+    }
     if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
     saves++;
     assert.equal(request.data.revision, 'original');
     return response({ code: 'conflict', error: 'Config changed' }, false);
   };
   app.$('#connection-exit').value = 'spare';
-  await app.$('#connection-exit').emit('change');
+  const changing = app.$('#connection-exit').emit('change'); await settle();
+  answerAddConsent(app, 'gateway'); await changing;
   assert.equal(saves, 1);
   assert.equal(app.$('#connection-exit').value, 'office');
   assert.equal(app.$('#connection-exit').disabled, true);
-  assert.equal(app.requests.some(request => request.path === '/api/action'), false);
+  assert.equal(app.snapshot.active, false);
+  assert.deepEqual(app.requests.filter(request => request.path === '/api/action').map(request => request.data.action), ['disconnect']);
 });
 
 test('keeping the current dropdown gateway never writes or reconnects', async () => {
@@ -2544,6 +2563,197 @@ test('settings drafts block connection and retain the saved default display', as
   assert.equal(app.$('#desktop-connect').disabled, true);
   assert.equal(app.$('#connection-exit').value, 'main');
   assert.equal(app.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
+});
+
+test('retained final, route groups and gateway selectors reserve new device IDs', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.exits.push({ id: 'exit-1', exit_node: '' });
+  initial.values.rules = { mode: 'global', final: 'exit-2', default_exit: 'exit-3', global_exit: 'exit-4',
+    routes: [{ exit: 'exit-5', domains: ['private.example'] }, { exit: 'exit-6' }] };
+  const app = await page(exitsSnapshot(), '', {}, initial);
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.equal(request.data.changes.exits.at(-1).id, 'exit-7');
+    assert.equal(Object.hasOwn(request.data.changes, 'rules.routes'), false);
+    app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: request.data.changes.exits } };
+    app.snapshot.revision = 'added';
+    return response(app.config);
+  };
+  await invokeAdd(app);
+  assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action), ['save', 'login-exit']);
+  assert.deepEqual(app.config.values.rules, initial.values.rules);
+});
+
+test('empty route groups allow manual direct-only Connect without choosing an exit', async () => {
+  const initial = { ...doc(), values: { tailscale: null, exits: [], rules: { final: 'direct',
+    routes: [{ exit: 'removed' }, { exit: 'another', domains: [], ips: [] }] } } };
+  const app = await page({ desktop: true, active: false, state: 'stopped', backend_state: 'Direct' }, '', {}, initial);
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  await app.$('#desktop-connect').emit('click');
+  assert.ok(!app.$('#default-exit-dialog').open);
+  assert.deepEqual(mutations(app).map(request => request.data.action), ['connect']);
+  assert.equal(app.requests.some(request => request.path === '/api/config' && request.method === 'POST'), false);
+});
+
+test('the primary is an explicit final-route choice independent of an additional default', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', final: 'direct', default_exit: 'office' };
+  const app = await page(officeSnapshot(), '', {}, initial);
+  const options = app.$('#final-route').children;
+  assert.deepEqual(options.map(option => option.value), ['direct', 'proxy', 'main', 'office']);
+  assert.equal(options.find(option => option.value === 'main').textContent, '主出口');
+  assert.match(options.find(option => option.value === 'proxy').textContent, /Office/);
+  app.override = request => request.path === '/api/preview'
+    ? response({ ...initial, yaml: initial.yaml + '# final main\n', values: { ...initial.values, rules: { ...initial.values.rules, final: 'main' } } }) : undefined;
+  await app.input('#final-route', 'main'); await app.flushTimers();
+  assert.equal(app.$('#final-route').value, 'main');
+  assert.equal(app.$('#default-exit').value, 'office');
+  assert.deepEqual(app.requests.find(request => request.path === '/api/preview').data.changes, { 'rules.final': 'main' });
+});
+
+const savedExitLogin = (app, id) => app.$('#extra-exits').children.flatMap(item => item.children).find(child => child.dataset.exitLogin === id);
+const globalLoginDocument = () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'global', global_exit: 'main' };
+  return initial;
+};
+const globalLoginSnapshot = () => ({ ...officeSnapshot({ backend_state: 'NeedsLogin' }), active: true, mode: 'tun', state: 'running', routing_mode: 'global' });
+
+test('Global existing-exit login cancel and Escape preserve the active device and configuration', async () => {
+  for (const origin of ['row', 'picker']) for (const dismissal of ['cancel', 'escape']) {
+    const initial = globalLoginDocument();
+    const app = await page(globalLoginSnapshot(), '', {}, initial);
+    if (origin === 'picker') await extraRow(app, 'office').emit('click');
+    const signingIn = (origin === 'row' ? savedExitLogin(app, 'office') : app.$('#picker-login')).emit('click'); await settle();
+    const dialog = app.$('#add-exit-consent-dialog');
+    assert.equal(dialog.open, true);
+    assert.equal(app.$('#global-loss-confirm').value, 'login');
+    assert.deepEqual(mutations(app), []);
+    if (dismissal === 'escape') { await dialog.emit('cancel'); dialog.close(); }
+    else answerAddConsent(app, 'cancel');
+    await signingIn;
+    assert.deepEqual(mutations(app), []);
+    assert.equal(app.snapshot.active, true);
+    assert.equal(app.config, initial);
+  }
+});
+
+test('Global existing-exit login explicitly disconnects and never reconnects after success or failure', async () => {
+  for (const failure of ['', 'disconnect', 'login-exit']) {
+    const app = await page(globalLoginSnapshot(), '', {}, globalLoginDocument());
+    app.override = request => {
+      if (request.path !== '/api/action') return undefined;
+      if (request.data.action === failure) return response({ error: `${failure} failed` }, false);
+      if (request.data.action === 'disconnect') Object.assign(app.snapshot, { active: false, mode: '', state: 'stopped' });
+      return response({ ok: true });
+    };
+    const signingIn = savedExitLogin(app, 'office').emit('click'); await settle();
+    assert.deepEqual(mutations(app), []);
+    answerAddConsent(app, 'login'); await signingIn;
+    assert.deepEqual(mutations(app).map(request => request.data.action), failure === 'disconnect' ? ['disconnect'] : ['disconnect', 'login-exit']);
+    assert.equal(app.snapshot.active, failure === 'disconnect');
+    assert.equal(app.$('#notice').hidden, !failure);
+  }
+});
+
+test('Global current-device sign-in recovers the pending authorization without consent or disconnect', async () => {
+  const snapshot = activeGlobalGatewaySnapshot();
+  snapshot.state = 'blocked'; snapshot.exits.office.backend_state = 'NeedsLogin';
+  const app = await page(snapshot, '', {}, activeGlobalGatewayDocument());
+  await savedExitLogin(app, 'office').emit('click');
+  assert.deepEqual(mutations(app).map(request => request.data), [{ action: 'login-exit', exit: 'office' }]);
+  assert.ok(!app.$('#add-exit-consent-dialog').open);
+  assert.equal(app.snapshot.active, true);
+});
+
+test('Global gateway cancel and Escape keep the original direct text selector and active protection', async () => {
+  for (const dismissal of ['cancel', 'escape']) {
+    const initial = activeGlobalGatewayDocument();
+    const app = await page(activeGlobalGatewaySnapshot(), '', {}, initial);
+    app.$('#connection-exit').value = 'spare';
+    const changing = app.$('#connection-exit').emit('change'); await settle();
+    const dialog = app.$('#add-exit-consent-dialog');
+    assert.equal(dialog.open, true);
+    if (dismissal === 'escape') { await dialog.emit('cancel'); dialog.close(); }
+    else answerAddConsent(app, 'cancel');
+    await changing;
+    assert.deepEqual(mutations(app), []);
+    assert.equal(app.snapshot.active, true);
+    assert.equal(app.config, initial);
+    assert.equal(app.$('#connection-exit').value, 'office');
+    assert.ok(!app.$('#default-exit-dialog').open);
+  }
+});
+
+test('Global login and gateway consent recheck revisions, capability, busy state and drafts before disconnect', async () => {
+  for (const action of ['login', 'gateway']) for (const condition of ['revision', 'unsupported', 'transition', 'lost', 'draft']) {
+    const app = await page(action === 'login' ? globalLoginSnapshot() : activeGlobalGatewaySnapshot(), '', {},
+      action === 'login' ? globalLoginDocument() : activeGlobalGatewayDocument());
+    if (action === 'gateway') app.$('#connection-exit').value = 'spare';
+    const working = action === 'login' ? savedExitLogin(app, 'office').emit('click') : app.$('#connection-exit').emit('change');
+    await settle();
+    assert.equal(app.$('#add-exit-consent-dialog').open, true);
+    if (condition === 'revision') { app.snapshot.revision = 'newer'; app.config = { ...app.config, revision: 'newer' }; }
+    else if (condition === 'unsupported') app.snapshot.desktop = false;
+    else if (condition === 'transition') app.snapshot.state = 'stopping';
+    else if (condition === 'lost') app.override = request => request.path === '/api/state' ? response({ error: 'Unavailable' }, false) : undefined;
+    else await app.input('#level', 'debug');
+    await app.poll();
+    answerAddConsent(app, action); await working;
+    assert.deepEqual(mutations(app), [], `${action}/${condition}`);
+    assert.equal(app.snapshot.active, true);
+  }
+});
+
+test('same-node DNS metadata recovery requires explicit Apply and retains the saved account guard', async () => {
+  for (const dismissal of ['apply', 'cancel', 'escape']) {
+    const initial = multiExitDocument('100.101.0.11'); initial.values.exits[0].magic_dns_suffix = 'old.ts.net';
+    const app = await page(officeSnapshot({ network: 'office.ts.net', magic_dns_suffix: 'new.ts.net' }), '', {}, initial);
+    await extraRow(app, 'office').emit('click');
+    assert.equal(app.$('#apply-exit-picker').disabled, false);
+    assert.equal(app.$('#apply-exit-picker').textContent, '保存 DNS 信息');
+    assert.match(app.$('#exit-dialog-selection').textContent, /new.ts.net/);
+    assert.deepEqual(mutations(app), []);
+    if (dismissal === 'apply') {
+      app.override = request => {
+        if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+        assert.deepEqual(request.data.changes, { exits: [{ ...initial.values.exits[0], magic_dns_suffix: 'new.ts.net' }] });
+        app.config = { ...initial, revision: 'saved', values: { ...initial.values, exits: request.data.changes.exits } }; app.snapshot.revision = 'saved';
+        return response(app.config);
+      };
+      await app.$('#apply-exit-picker').emit('click');
+      assert.equal(app.config.values.exits[0].magic_dns_suffix, 'new.ts.net');
+      assert.equal(app.config.values.exits[0].exit_node, '100.101.0.11');
+      assert.equal(app.config.values.exits[0].tailnet, 'office.ts.net');
+    } else {
+      if (dismissal === 'escape') { await app.$('#exit-picker-dialog').emit('cancel'); app.$('#exit-picker-dialog').close(); }
+      else await app.$('#cancel-exit-picker').emit('click');
+      assert.deepEqual(mutations(app), []);
+      assert.equal(app.config, initial);
+    }
+  }
+});
+
+test('same-node DNS metadata comparison uses canonical and legacy effective suffixes', async () => {
+  for (const suffix of ['OLD.TS.NET.', undefined]) {
+    const initial = multiExitDocument('100.101.0.11');
+    initial.values.exits[0].tailnet = 'old.ts.net';
+    if (suffix) initial.values.exits[0].magic_dns_suffix = suffix;
+    const app = await page(officeSnapshot({ network: 'old.ts.net', magic_dns_suffix: 'old.ts.net' }), '', {}, initial);
+    await extraRow(app, 'office').emit('click');
+    assert.equal(app.$('#apply-exit-picker').disabled, true);
+    assert.deepEqual(mutations(app), []);
+  }
+});
+
+test('DNS metadata recovery cannot rewrite an unauthenticated or different Tailnet identity', async () => {
+  for (const status of [{ backend_state: 'NeedsLogin' }, { network: 'other.example' }]) {
+    const initial = multiExitDocument('100.101.0.11'); initial.values.exits[0].magic_dns_suffix = 'old.ts.net';
+    const app = await page(officeSnapshot({ magic_dns_suffix: 'new.ts.net', ...status }), '', {}, initial);
+    await extraRow(app, 'office').emit('click');
+    assert.equal(app.$('#apply-exit-picker').disabled, true);
+    assert.deepEqual(mutations(app), []);
+  }
 });
 
 test('default proxy exit is editable independently of unmatched traffic and keeps the rule list', async () => {

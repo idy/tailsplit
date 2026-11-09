@@ -103,6 +103,9 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	primaryBlocked := isBlocked(primaryID)
 	if !global && !config.includePending && !primaryActive {
 		if len(config.DNS.MagicDomains) > 0 {
+			if config.Tailscale == nil {
+				return Compiled{}, fmt.Errorf("%w: exit %q for dns.magic_domains is not configured", ErrUnresolvedSplitExit, MainExit)
+			}
 			return Compiled{}, fmt.Errorf("select an exit node for exit %q before using dns.magic_domains", MainExit)
 		}
 		if config.Tailscale != nil && len(config.Tailscale.Domains) > 0 {
@@ -114,8 +117,7 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	}
 	if config.Focus == "" {
 		for _, exit := range config.Exits {
-			if !global && !config.includePending && exit.ExitNode == "" &&
-				(exit.MagicDNSSuffix != "" || strings.HasSuffix(strings.ToLower(exit.Tailnet), ".ts.net")) {
+			if !global && !config.includePending && exit.ExitNode == "" && exit.magicDNSSuffix() != "" {
 				return Compiled{}, fmt.Errorf("select an exit node for exit %q before using its MagicDNS suffix", exit.ID)
 			}
 			if exit.ExitNode != "" || config.includePending {
@@ -153,8 +155,9 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 		blocked                  bool
 	}
 	var tailnetSuffixes []tailnetSuffix
-	// DNS and traffic share longest-suffix precedence. For exact duplicates,
-	// the primary device owns the suffix, followed by the first extra exit.
+	// MagicDNS and custom domains share longest-suffix precedence in both DNS
+	// and traffic. Primary ownership wins exact ties, with its MagicDNS resolver
+	// preferred over custom-domain resolution; then the first extra exit wins.
 	// Blocked owners keep that position so another device cannot claim their names.
 	ownedSuffixes := make(map[string]bool)
 	if primaryActive {
@@ -163,6 +166,17 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 			if !ownedSuffixes[suffix] {
 				ownedSuffixes[suffix] = true
 				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, "dns-tailnet", "tailnet", primaryBlocked})
+			}
+		}
+		// Custom names keep real answers, including Tailscale Service VIPs.
+		server := "dns-direct"
+		if global {
+			server = "dns-proxy"
+		}
+		for _, suffix := range config.Tailscale.Domains {
+			if !ownedSuffixes[suffix] {
+				ownedSuffixes[suffix] = true
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, server, "tailnet", primaryBlocked})
 			}
 		}
 	}
@@ -185,10 +199,7 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 				extra["detour"] = ExitTag(exit.ID)
 				servers = append(servers, extra)
 			}
-			suffix := strings.ToLower(exit.MagicDNSSuffix)
-			if suffix == "" && strings.HasSuffix(strings.ToLower(exit.Tailnet), ".ts.net") {
-				suffix = strings.ToLower(exit.Tailnet)
-			}
+			suffix := exit.magicDNSSuffix()
 			if suffix != "" && !ownedSuffixes[suffix] {
 				ownedSuffixes[suffix] = true
 				tag := "dns-tailnet-" + exit.ID
@@ -254,18 +265,6 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 			dnsRules = append(dnsRules, object{"domain_suffix": []string{suffix.suffix}, "action": "predefined", "rcode": "REFUSED"})
 		} else {
 			dnsRules = append(dnsRules, withAction(object{"domain_suffix": []string{suffix.suffix}}, "server", suffix.server))
-		}
-	}
-	if primaryActive && len(config.Tailscale.Domains) > 0 {
-		if primaryBlocked {
-			dnsRules = append(dnsRules, object{"domain_suffix": config.Tailscale.Domains, "action": "predefined", "rcode": "REFUSED"})
-		} else {
-			// Public custom names keep real answers, including Tailscale Service VIPs.
-			server := "dns-direct"
-			if global {
-				server = "dns-proxy"
-			}
-			dnsRules = append(dnsRules, withAction(object{"domain_suffix": config.Tailscale.Domains}, "server", server))
 		}
 	}
 	for _, match := range directMatchers {
@@ -353,20 +352,6 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 				routes = append(routes,
 					object{"domain_suffix": match["domain_suffix"], "action": "resolve", "server": suffix.server},
 					withAction(match, "outbound", suffix.outbound),
-				)
-			}
-		}
-		if primaryActive && len(config.Tailscale.Domains) > 0 {
-			if primaryBlocked {
-				routes = append(routes, object{"domain_suffix": config.Tailscale.Domains, "action": "reject"})
-			} else {
-				server := "dns-direct"
-				if global {
-					server = "dns-proxy"
-				}
-				routes = append(routes,
-					object{"domain_suffix": config.Tailscale.Domains, "action": "resolve", "server": server},
-					withAction(object{"domain_suffix": config.Tailscale.Domains}, "outbound", "tailnet"),
 				)
 			}
 		}
@@ -520,9 +505,9 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	return result, nil
 }
 
-// ErrUnresolvedSplitExit identifies a missing device referenced by a live Split
-// final or route group. Such policy can be saved as a draft, but cannot connect.
-// Missing default devices, pending nodes and private-name owners do not use it.
+// ErrUnresolvedSplitExit identifies a missing device referenced by live Split
+// final, route-group or private-name policy. Such policy can be saved as a draft,
+// but cannot connect. Missing defaults and pending nodes do not use it.
 var ErrUnresolvedSplitExit = errors.New("unresolved Split traffic policy")
 
 // ValidateTrafficExit requires a selected traffic device and configured owners
@@ -530,6 +515,9 @@ var ErrUnresolvedSplitExit = errors.New("unresolved Split traffic policy")
 // or check network availability. Dormant drafts remain usable for device sessions.
 func ValidateTrafficExit(config Config) error {
 	if config.Focus == "" && config.Rules.Mode != RoutingGlobal && !config.includePending {
+		if config.Tailscale == nil && len(config.DNS.MagicDomains) > 0 {
+			return fmt.Errorf("%w: exit %q for dns.magic_domains is not configured", ErrUnresolvedSplitExit, MainExit)
+		}
 		if config.Rules.Final != "" && config.Rules.Final != "direct" && config.Rules.Final != "proxy" && !config.hasExit(config.Rules.Final) {
 			return fmt.Errorf("%w: exit %q for unmatched traffic is not configured", ErrUnresolvedSplitExit, config.Rules.Final)
 		}

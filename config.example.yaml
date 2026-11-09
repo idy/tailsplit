@@ -37,6 +37,7 @@ tailscale:
 # Optional additional exits, usable with or without main. Each is a separate
 # embedded device that signs in to the same or another Tailnet and uses one node.
 # Keep each ID stable: device state lives at state_dir/exits/<id>/tailscale.
+# Do not reuse an ID still referenced by dormant routing policy.
 # Desktop Add exit asks for no name. It sets auto_name: true and saves
 # name as <exit-device-name>@<network name> when a node is confirmed.
 # Auto-named labels update on later node choices; omit auto_name for a custom name.
@@ -45,8 +46,9 @@ tailscale:
 # Legacy tailnet values ending in .ts.net still provide their DNS suffix.
 # IDs main, direct and proxy are reserved.
 # Desktop Remove exit works for main, extras and the last exit. It disconnects,
-# logs out only that device, revision-checks local removal, removes its explicit
-# route groups and adjusts selectors; it stays stopped. The remote Tailnet
+# logs out only that device and revision-checks local removal. Explicit route
+# groups/final references remain unresolved until replaced; affected selectors
+# become unset, and the app stays stopped. The remote Tailnet
 # device record remains: TailSplit has no management authority to delete it.
 # Zero-exit drafts retain remaining routing policy. Add exit then creates a new
 # additional profile and leaves rules.default_exit and rules.global_exit unset

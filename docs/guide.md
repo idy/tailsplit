@@ -101,9 +101,16 @@ admin-console device records remain. In active Global mode, Add exit first asks
 for consent to stop Kill-Switch protection and restore system networking; Cancel
 or Escape leaves the session unchanged. After consenting, reconnect manually when
 ready, including after a save or authorization failure. Save or discard any draft
-before changing exits. Removing the
+before changing exits. Existing-device sign-in and cross-device Global gateway
+changes obtain the same consent before a separate disconnect, and remain stopped
+afterward. Native sign-in that would replace a protected helper requires an
+explicit disconnect first; current-device authorization recovery reuses it.
+Removing the
 primary or last device preserves remaining identities and dormant policy; no
-other device is promoted or automatically selected as its replacement.
+other device is promoted or automatically selected as its replacement. Primary
+private DNS suffixes remain unresolved, and former primary custom domains become
+a retained `main` route group. Resolve or explicitly remove that policy before
+Split can reconnect, even when another default gateway is ready.
 Closing the window hides it to the tray, whose icon turns green while connected. Quit first
 disconnects and waits for the network service to clean up. Windows login startup
 is optional and separate from automatic connection.

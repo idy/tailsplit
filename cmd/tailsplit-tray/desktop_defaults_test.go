@@ -16,6 +16,10 @@ func TestDesktopStartupWaitsForConfiguredGateway(t *testing.T) {
 		want            string
 	}{
 		{"fresh profile", string(tailsplit.DefaultYAML), true, false, ""},
+		{"direct-only auto-connect", "rules:\n  final: direct\n", true, false, "connect"},
+		{"direct-only empty group", "rules:\n  final: direct\n  routes:\n    - exit: removed\n", true, false, "connect"},
+		{"direct-only auto-connect off", "rules:\n  final: direct\n", false, false, ""},
+		{"direct-only update override", "rules:\n  final: direct\n", true, true, ""},
 		{"auto-connect off", ready, false, false, "refresh-exits"},
 		{"ready auto-connect", ready, true, false, "connect"},
 		{"update override", ready, true, true, "refresh-exits"},

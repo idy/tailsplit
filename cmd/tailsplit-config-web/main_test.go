@@ -188,7 +188,7 @@ func TestDesktopPreviewApplyTracksSavedConfigurationAndIntent(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				done <- options.Apply(ctx, func() error {
+				done <- options.Apply(ctx, nil, func() error {
 					return tray.SaveConfigDocument(options.ConfigPath, revision, data)
 				})
 			}()
@@ -243,16 +243,47 @@ func TestDesktopPreviewConnectReadsLatestSavedConfiguration(t *testing.T) {
 	}
 }
 
+func TestPreviewApplyChecksCurrentStateBeforeWriting(t *testing.T) {
+	options := testDesktopPreview(t)
+	previewAction(t, options, "login")
+	if options.Snapshot().Active {
+		t.Fatal("fixture should begin inactive")
+	}
+	// Model Connect occurring after an HTTP handler's earlier inactive snapshot.
+	previewAction(t, options, "connect")
+	before := options.Snapshot()
+	data, revision, err := tray.ReadConfigDocument(options.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := errors.New("candidate cannot replace an active session")
+	checked, updated := false, false
+	err = options.Apply(context.Background(), func(current tray.Snapshot) error {
+		checked = true
+		if !current.Active || current.Mode != before.Mode {
+			t.Fatal("apply guard used the earlier inactive state", current)
+		}
+		return rejected
+	}, func() error { updated = true; return nil })
+	if !errors.Is(err, rejected) || !checked || updated || !reflect.DeepEqual(before, options.Snapshot()) {
+		t.Fatal("rejected guarded apply wrote or changed connection state", err, checked, updated)
+	}
+	after, afterRevision, err := tray.ReadConfigDocument(options.ConfigPath)
+	if err != nil || string(after) != string(data) || afterRevision != revision {
+		t.Fatal("guard rejection changed saved configuration", err)
+	}
+}
+
 func TestDesktopPreviewFailedOrCanceledOperationsKeepSnapshot(t *testing.T) {
 	options := testDesktopPreview(t)
 	before := previewAction(t, options, "login")
 	failed := errors.New("save failed")
-	if err := options.Apply(context.Background(), func() error { return failed }); !errors.Is(err, failed) || !reflect.DeepEqual(before, options.Snapshot()) {
+	if err := options.Apply(context.Background(), nil, func() error { return failed }); !errors.Is(err, failed) || !reflect.DeepEqual(before, options.Snapshot()) {
 		t.Fatalf("failed save changed preview state: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := options.Apply(ctx, func() error { t.Error("canceled save ran"); return nil }); !errors.Is(err, context.Canceled) {
+	if err := options.Apply(ctx, nil, func() error { t.Error("canceled save ran"); return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled Apply: %v", err)
 	}
 	if err := options.Action(ctx, "logout"); !errors.Is(err, context.Canceled) || !reflect.DeepEqual(before, options.Snapshot()) {

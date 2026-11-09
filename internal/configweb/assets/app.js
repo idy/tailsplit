@@ -155,7 +155,7 @@
     const current = String(fieldValue(values, 'rules.final'));
     const target = String(state.changes['rules.default_exit'] ?? fieldValue(values, 'rules.default_exit'));
     const options = [['direct', t('直连')], ['proxy', `${exitLabel(target, values)} · ${t('默认出口')}`],
-      ...exitList(values).map((exit) => [exit.id, exitLabel(exit.id, values)])];
+      ...configuredExits(values).map((exit) => [exit.id, exitLabel(exit.id, values)])];
     if (!options.some(([value]) => value === current)) options.push([current, current]);
     select.replaceChildren(...options.map(([value, label]) => {
       const option = document.createElement('option'); option.value = value; option.textContent = label; return option;
@@ -644,7 +644,8 @@
   $('#copy-raw').addEventListener('click', copy);
 
   let desktopPending = '';
-  const isDesktopBusy = () => desktopPending !== '';
+  let globalConsentPending = false;
+  const isDesktopBusy = () => desktopPending !== '' || globalConsentPending;
   let desktopLive = null;
   let connectionLost = false;
   let quickBusy = false;
@@ -728,8 +729,8 @@
   function gatewaySelectable(exit) {
     if (!networkActive()) return Boolean(exit?.exit_node);
     if (exitCanConnect(exit)) return true;
-    // Global observes only its chosen device. Uncached alternatives need to
-    // reach preflight before their authentication and availability are known.
+    // Global observes only its chosen device. Offer uncached alternatives with
+    // explicit consent to disconnect before saving; never test them by teardown.
     const live = exitLive(exit?.id);
     return savedMode() === 'global' && Boolean(exit?.exit_node) && exit.id !== connectionExitRecord()?.id &&
       !live.backend_state && !live.exit && !live.exit_nodes?.length && live.exit_online !== false;
@@ -748,7 +749,7 @@
     }
     select.value = connectionExitRecord()?.id || '';
     select.disabled = !desktopLive?.desktop || isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || Boolean(desktopLive?.active && !networkActive()) || !records.some(gatewaySelectable);
-    select.title = t(networkActive() ? '选择后保存并重新连接，网络会短暂中断。' : '仅保存选择，保持未连接。');
+    select.title = t(networkActive() ? savedMode() === 'global' ? '切换设备需先确认断开全局保护，保存后保持未连接。' : '选择后保存并重新连接，网络会短暂中断。' : '仅保存选择，保持未连接。');
     $('#connection-exit-control').hidden = state.page !== 'connection';
     $('#exit-label').hidden = state.page === 'connection';
     setStatusText('#connection-exit-label', t(savedMode() === 'global' ? '全局出口' : '默认出口'));
@@ -794,16 +795,31 @@
     $('#default-exit-manage').hidden = records.some(exitCanConnect);
     window.TailSplitSelect?.sync();
   }
-  const connectionChanges = () => ({
-    ...(selectedExit !== null && selectedExit !== savedExit(pickerExit) ? pickerExit ?
+  function pickerDNSUpdate() {
+    if (!exitDialog.open || !pickerExit) return null;
+    const exit = exitList().find((item) => item.id === pickerExit);
+    const live = exitLive(pickerExit);
+    if (!exit?.exit_node || !exitSignedIn(pickerExit) || !live.magic_dns_suffix) return null;
+    const equal = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+    if (exit.tailnet && !equal(exit.tailnet, live.network) && !equal(exit.tailnet, live.magic_dns_suffix)) return null;
+    const canonical = (value) => String(value || '').trim().replace(/\.$/, '').toLowerCase();
+    const savedSuffix = exit.magic_dns_suffix || (/\.ts\.net$/i.test(exit.tailnet || '') ? exit.tailnet : '');
+    if (canonical(savedSuffix) === canonical(live.magic_dns_suffix)) return null;
+    return { ...exit, magic_dns_suffix: canonical(live.magic_dns_suffix) };
+  }
+  const connectionChanges = () => {
+    if (selectedExit !== null && selectedExit !== savedExit(pickerExit)) return pickerExit ?
       { exits: exitList().map((exit) => exit.id === pickerExit ? namedExitSelection(exit, selectedExit) : exit) } :
-      { 'tailscale.exit_node': selectedExit, ...(fieldValue(state.savedValues, 'tailscale.tailnet') || !desktopLive?.network ? {} : { 'tailscale.tailnet': desktopLive.network }) } : {}),
-  });
+      { 'tailscale.exit_node': selectedExit, ...(fieldValue(state.savedValues, 'tailscale.tailnet') || !desktopLive?.network ? {} : { 'tailscale.tailnet': desktopLive.network }) };
+    const updated = pickerDNSUpdate();
+    return updated ? { exits: exitList().map((exit) => exit.id === pickerExit ? updated : exit) } : {};
+  };
   function modeNeedsExit(values) {
+    const routes = fieldValue(values, 'rules.routes');
     return fieldValue(values, 'rules.mode') === 'global' || fieldValue(values, 'rules.final') !== 'direct' ||
-      Boolean(fieldValue(values, 'rules.source')) || ['rules.proxy_domains', 'rules.proxy_ips', 'rules.routes', 'dns.magic_domains'].some((field) => {
+      Boolean(fieldValue(values, 'rules.source')) || ['rules.proxy_domains', 'rules.proxy_ips', 'dns.magic_domains'].some((field) => {
         const items = fieldValue(values, field); return Array.isArray(items) && items.length > 0;
-      });
+      }) || Array.isArray(routes) && routes.some((route) => route && (route.domains?.length || route.ips?.length));
   }
   function exitNodes(exit = '') {
     const live = exitLive(exit);
@@ -964,9 +980,11 @@
     $('#desktop-connect').title = hint || t('连接 TailSplit');
     $('#connection-apply').hidden = exitDialog.open || !changing && !quickBusy;
     const name = (pickerExit ? `${exitLabel(pickerExit)} · ` : '') + (chosenNode?.name || chosen || t('尚未选择出口'));
-    const selection = t('已选：{name} · {mode}', { name, mode: mode === 'global' ? t('全局代理') : t('规则分流') });
+    const dnsUpdate = selectedExit === null || selectedExit === savedExit(pickerExit) ? pickerDNSUpdate() : null;
+    const selection = dnsUpdate ? t('更新此出口的 DNS 信息：{suffix}', { suffix: dnsUpdate.magic_dns_suffix }) :
+      t('已选：{name} · {mode}', { name, mode: mode === 'global' ? t('全局代理') : t('规则分流') });
     const consequence = connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
-    const applyLabel = quickBusy ? t('正在应用…') : connected ? t('切换出口') : t('保存选择');
+    const applyLabel = quickBusy ? t('正在应用…') : dnsUpdate ? t('保存 DNS 信息') : connected ? t('切换出口') : t('保存选择');
     const cannotApply = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && (!chosenNode || !chosenNode.online || chosenNode.missing === true);
     for (const prefix of ['connection', 'exit-dialog']) {
       setStatusText(`#${prefix}-selection`, selection);
@@ -1222,6 +1240,15 @@
   $('#apply-exit-picker').addEventListener('click', applyConnectionChanges);
   async function desktopAction(action, exit = '') {
     if (isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop) return false;
+    const login = action === 'login' || action === 'login-exit';
+    const owner = desktopLive.focus || (networkActive() ? connectionExitRecord()?.id : '') || 'main';
+    if (login && networkActive() && savedMode() === 'global' && (exit || 'main') !== owner) {
+      const revision = state.revision;
+      if (!canManageExits() || !(await confirmGlobalLoss('login'))) return false;
+      if (!canManageExits() || state.revision !== revision) return false;
+      if (networkActive() && !(await desktopAction('disconnect'))) return false;
+      if (!canManageExits() || state.revision !== revision || desktopLive.active) return false;
+    }
     operationError = null; clearNotice();
     stateRequest++;
     desktopPending = action;
@@ -1260,7 +1287,12 @@
     } finally { quickBusy = false; state.busy = false; await refreshState(); updateActions(); }
   }
   function newExitID() {
-    const taken = new Set(exitList().map((exit) => exit.id));
+    const routes = fieldValue(state.savedValues, 'rules.routes');
+    const taken = new Set([
+      ...configuredExits().map((exit) => exit.id),
+      ...['rules.final', 'rules.default_exit', 'rules.global_exit'].map((field) => String(fieldValue(state.savedValues, field))),
+      ...(Array.isArray(routes) ? routes : []).map((route) => String(route?.exit || 'main')),
+    ]);
     for (let index = 1; ; index++) {
       const id = `exit-${index}`;
       if (!taken.has(id)) return id;
@@ -1272,18 +1304,32 @@
       !['starting', 'stopping', 'authorizing', 'logging-out'].includes(desktopLive.state) &&
       !(desktopLive.active && !networkActive());
   }
+  async function confirmGlobalLoss(action) {
+    if (globalConsentPending) return false;
+    const copy = {
+      add: ['断开全局保护并添加出口？', '添加出口会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使保存或登录失败，也会保持未连接；准备好后请手动重新连接。', '断开并添加出口'],
+      login: ['断开全局保护并登录？', '登录另一个设备会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使登录失败，也会保持未连接；准备好后请手动重新连接。', '断开并登录'],
+      gateway: ['断开全局保护并切换出口？', '切换到另一个设备前会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。仅保存选择，即使保存失败也会保持未连接；准备好后请手动重新连接。', '断开并保存选择'],
+    }[action];
+    const dialog = $('#add-exit-consent-dialog');
+    $('#add-exit-consent-title').textContent = t(copy[0]);
+    $('#add-exit-consent-description').textContent = t(copy[1]);
+    $('#global-loss-confirm').textContent = t(copy[2]);
+    $('#global-loss-confirm').value = action;
+    globalConsentPending = true; renderConnectionCenter();
+    try {
+      dialog.returnValue = 'cancel'; dialog.showModal();
+      const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
+      return answer === action;
+    } finally { globalConsentPending = false; renderConnectionCenter(); }
+  }
   $('#add-exit').addEventListener('click', async () => {
     if (addingExit || !canManageExits() || exitList().length >= 8) return;
     const revision = state.revision;
     const consentRequired = networkActive() && savedMode() === 'global';
     addingExit = true; renderConnectionCenter();
     try {
-      if (consentRequired) {
-        const dialog = $('#add-exit-consent-dialog');
-        dialog.returnValue = 'cancel'; dialog.showModal();
-        const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
-        if (answer !== 'add') return;
-      }
+      if (consentRequired && !(await confirmGlobalLoss('add'))) return;
       if (!canManageExits() || state.revision !== revision || exitList().length >= 8) return;
       // Login needs a stopped core to release its embedded device state. The
       // consent above covers loss of Global protection; never reconnect here.
@@ -1353,6 +1399,13 @@
     if (select.disabled || !gatewaySelectable(exit) || state.external) { renderConnectionExit(); return; }
     const field = connectionExitField();
     if (id === String(fieldValue(state.savedValues, field))) return;
+    if (networkActive() && savedMode() === 'global') {
+      const revision = state.revision;
+      if (!canManageExits() || !(await confirmGlobalLoss('gateway'))) { renderConnectionExit(); return; }
+      if (!canManageExits() || state.revision !== revision || connectionExitField() !== field) { renderConnectionExit(); return; }
+      if (networkActive() && !(await desktopAction('disconnect'))) return;
+      if (!canManageExits() || state.revision !== revision || desktopLive.active || connectionExitField() !== field) return;
+    }
     await saveExitChanges({ [field]: id }, '连接选项已保存');
   });
   async function openDefaultExitDialog() {

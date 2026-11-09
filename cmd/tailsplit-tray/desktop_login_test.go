@@ -38,6 +38,19 @@ func (c *desktopLoginFixture) StartLogin() error {
 	return nil
 }
 
+func (c *desktopLoginFixture) StartExitLogin(id string) error {
+	c.starts++
+	c.calls = append(c.calls, "start-exit-login:"+id)
+	if c.err != nil {
+		return c.err
+	}
+	if c.snapshot.Active {
+		return errors.New("fixture helper is already active")
+	}
+	c.snapshot = tray.Snapshot{State: "starting", Mode: "login", Focus: id, Active: true}
+	return nil
+}
+
 func (c *desktopLoginFixture) Stop() error {
 	c.stops++
 	c.calls = append(c.calls, "stop")
@@ -248,6 +261,74 @@ func TestDesktopLoginStartsOnlyAnIdleHelper(t *testing.T) {
 	}
 	if link := flow.Next(controller.snapshot); link != "" {
 		t.Fatal("login opened a browser before a fresh authorization URL arrived")
+	}
+}
+
+func TestDesktopGlobalLoginRequiresSeparateDisconnect(t *testing.T) {
+	for _, primary := range []bool{false, true} {
+		snapshot := tray.Snapshot{State: "running", Mode: "tun", RoutingMode: "global", Active: true,
+			TrafficExit: "office", Exits: map[string]tray.ExitSnapshot{"office": {BackendState: "Running"}}}
+		controller := &desktopLoginFixture{snapshot: snapshot}
+		var flow tray.LoginFlow
+		flow.Request()
+		var err error
+		if primary {
+			err = requestDesktopLogin(controller, &flow)
+		} else {
+			err = requestDesktopExitLogin(controller, &flow, "spare")
+		}
+		if !errors.Is(err, errDesktopGlobalLogin) || !strings.Contains(err.Error(), "Disconnect Global mode") || len(controller.calls) != 0 || !reflect.DeepEqual(controller.snapshot, snapshot) {
+			t.Fatal("native login stopped Global without separate consent", primary, controller.calls, err)
+		}
+		if flow.Next(tray.Snapshot{BackendState: "NeedsLogin", LoginURL: "https://login.tailscale.com/a/stale"}) != "" || flow.Message() != errDesktopGlobalLogin.Error() {
+			t.Fatal("rejected login left browser intent pending or hid the recovery action")
+		}
+	}
+}
+
+func TestDesktopGlobalPrimaryLoginRejectsUnknownOtherDevice(t *testing.T) {
+	for _, backend := range []string{"", "Starting", "Stopped"} {
+		snapshot := tray.Snapshot{State: "blocked", Mode: "tun", RoutingMode: "global", Active: true, TrafficExit: "office",
+			Exits: map[string]tray.ExitSnapshot{"office": {BackendState: backend}}}
+		controller := &desktopLoginFixture{snapshot: snapshot}
+		var flow tray.LoginFlow
+		if err := requestDesktopLogin(controller, &flow); !errors.Is(err, errDesktopGlobalLogin) || len(controller.calls) != 0 || !reflect.DeepEqual(controller.snapshot, snapshot) {
+			t.Fatal("unknown other-device state did not require explicit Global disconnect", backend, controller.calls, err)
+		}
+	}
+}
+
+func TestDesktopCurrentExitAuthorizationDoesNotReplaceGlobalHelper(t *testing.T) {
+	for _, state := range []string{"login", "blocked"} {
+		for _, link := range []string{"", "https://login.tailscale.com/a/current-office"} {
+			snapshot := tray.Snapshot{State: state, Mode: "tun", RoutingMode: "global", Active: true, TrafficExit: "office", LoginURL: link,
+				Exits: map[string]tray.ExitSnapshot{"office": {BackendState: "NeedsLogin"}}}
+			controller := &desktopLoginFixture{snapshot: snapshot}
+			var flow tray.LoginFlow
+			if err := requestDesktopExitLogin(controller, &flow, "office"); err != nil || len(controller.calls) != 0 || !reflect.DeepEqual(controller.snapshot, snapshot) {
+				t.Fatal("current device recovery replaced Global helper", controller.calls, err)
+			}
+			if flow.Next(snapshot) != link || flow.Next(snapshot) != "" {
+				t.Fatal("current authorization did not open exactly once")
+			}
+		}
+	}
+}
+
+func TestDesktopExitLoginAfterExplicitDisconnectStaysStoppedOnFailure(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		controller := &desktopLoginFixture{snapshot: tray.Snapshot{State: "stopped", RoutingMode: "global"}}
+		if fail {
+			controller.err = errors.New("login failed")
+		}
+		var flow tray.LoginFlow
+		err := requestDesktopExitLogin(controller, &flow, "office")
+		if (err != nil) != fail || !reflect.DeepEqual(controller.calls, []string{"start-exit-login:office"}) {
+			t.Fatal("explicitly disconnected login did unexpected operations", controller.calls, err)
+		}
+		if fail && (controller.snapshot.Active || flow.Next(tray.Snapshot{BackendState: "NeedsLogin", LoginURL: "https://login.tailscale.com/a/stale"}) != "") {
+			t.Fatal("failed login restarted traffic or retained browser intent")
+		}
 	}
 }
 

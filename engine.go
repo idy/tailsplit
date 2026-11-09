@@ -267,6 +267,9 @@ type ExitNode struct {
 
 type engineExit struct {
 	tag, id, exitNode, tailnet string
+	// magicDNSSuffix binds traffic preflight to the saved routing metadata.
+	// Device-only sessions authenticate the Tailnet guard independently.
+	magicDNSSuffix string
 }
 
 // WatchStatus reports every device; Status.Exit identifies additional exits.

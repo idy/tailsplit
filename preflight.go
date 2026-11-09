@@ -73,25 +73,7 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	if err := engine.Start(); err != nil {
 		return err
 	}
-	// A distinct DNS suffix also identifies an extra's Tailnet when no display
-	// network guard was configured; it is never inferred from a display label.
-	dnsIdentities := make(map[string]string)
-	for _, exit := range config.Exits {
-		dnsIdentities[exit.ID] = exit.MagicDNSSuffix
-	}
-	var required, optional []engineExit
-	for _, exit := range engine.exits {
-		if exit.tailnet == "" {
-			exit.tailnet = dnsIdentities[exit.id]
-		}
-		if !requireExit || requiresTrafficExit(config, exit.id) {
-			required = append(required, exit)
-		} else {
-			// Even unguarded devices need an initial status before we decide
-			// whether to retain or isolate their endpoint for this session.
-			optional = append(optional, exit)
-		}
-	}
+	required, optional := preflightExits(config, engine.exits, requireExit)
 	// Several devices report concurrently; keep only each one's latest status.
 	var latestMu sync.Mutex
 	latest := map[string]Status{}
@@ -177,6 +159,29 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	}
 }
 
+// preflightExits checks routing metadata only when starting client traffic.
+// Discovery and login must remain available to refresh stale suffix metadata;
+// their account binding still comes from each saved device's Tailnet guard.
+func preflightExits(config Config, exits []engineExit, requireExit bool) (required, optional []engineExit) {
+	suffixes := make(map[string]string)
+	if requireExit {
+		for _, exit := range config.Exits {
+			suffixes[exit.ID] = exit.magicDNSSuffix()
+		}
+	}
+	for _, exit := range exits {
+		exit.magicDNSSuffix = suffixes[exit.id]
+		if !requireExit || requiresTrafficExit(config, exit.id) {
+			required = append(required, exit)
+		} else {
+			// Even unguarded devices need an initial status before we decide
+			// whether to retain or isolate their endpoint for this session.
+			optional = append(optional, exit)
+		}
+	}
+	return
+}
+
 type preflightDeadline struct {
 	timer   *time.Timer
 	timeout <-chan time.Time
@@ -245,6 +250,14 @@ func connectionReadiness(interactiveExit string, required, optional []engineExit
 }
 
 func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled, optional []engineExit, snapshot map[string]Status) error {
+	// The deadline can win a race with the latest status callback. Recheck
+	// mismatches here too: merely blocking a stale suffix would still leave the
+	// device's newly reported private suffix unprotected in the runtime policy.
+	for _, exit := range optional {
+		if _, err := exitAuthenticationReady(exit, snapshot[exit.id]); err != nil {
+			return err
+		}
+	}
 	blocked := unavailableOptionalExits(optional, snapshot)
 	if len(blocked) == 0 {
 		return nil
@@ -264,7 +277,7 @@ func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled,
 func unavailableOptionalExits(exits []engineExit, snapshot map[string]Status) map[string]bool {
 	blocked := make(map[string]bool)
 	for _, exit := range exits {
-		ready, err := authenticationReady(exit.tailnet, snapshot[exit.id])
+		ready, err := exitAuthenticationReady(exit, snapshot[exit.id])
 		if !ready || err != nil {
 			id := exit.id
 			if id == "" {
@@ -325,9 +338,9 @@ func tailnetReadiness(exits []engineExit, snapshot map[string]Status, requireExi
 			}
 			continue
 		}
-		ready, checkErr := authenticationReady(exit.tailnet, status)
+		ready, checkErr := exitAuthenticationReady(exit, status)
 		if requireExit {
-			ready, checkErr = preflightReady(exit.tailnet, status)
+			ready = ready && status.ExitVisible && status.ExitOnline
 		}
 		if checkErr != nil {
 			return false, false, "", checkErr
@@ -421,6 +434,27 @@ func LogoutSavedTailnet(ctx context.Context, config Config) (err error) {
 		return errors.New("embedded Tailscale endpoint does not support logout")
 	}
 	return tailnet.Logout(ctx)
+}
+
+func exitAuthenticationReady(exit engineExit, status Status) (bool, error) {
+	ready, err := authenticationReady(exit.tailnet, status)
+	if !ready || err != nil || exit.magicDNSSuffix == "" {
+		return ready, err
+	}
+	// A suffix can change within the same authenticated account. It is routing
+	// metadata, so fail before traffic starts and let explicit picker Apply update
+	// the saved configuration rather than silently rewriting policy or signing out.
+	canonical := func(suffix string) string {
+		return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(suffix), "."))
+	}
+	if canonical(exit.magicDNSSuffix) != canonical(status.MagicDNSSuffix) {
+		id := exit.id
+		if id == "" {
+			id = MainExit
+		}
+		return false, fmt.Errorf("exit %q MagicDNS suffix %q does not match saved routing suffix %q; refresh this saved exit in Exit Nodes and apply its current DNS metadata, then connect again; TUN was not enabled", id, status.MagicDNSSuffix, exit.magicDNSSuffix)
+	}
+	return true, nil
 }
 
 func preflightReady(expected string, status Status) (bool, error) {

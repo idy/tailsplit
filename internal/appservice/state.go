@@ -26,6 +26,53 @@ func runtimeInitialized(directory string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// Older global markers also represented primary ownership, including logout.
+// Version 2 separates that authority from cache initialization. Never reinterpret
+// an old or unknown marker as permission to restore a possibly logged-out device.
+const identityInitialization = "2\n"
+
+func stateOwned(directory, id string) (bool, error) {
+	paths := []string{filepath.Join(directory, "exits", id)}
+	if id == tailsplit.MainExit {
+		paths = []string{filepath.Join(directory, ".primary-initialized"), filepath.Join(directory, "tailscale")}
+	}
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	if id == tailsplit.MainExit && runtimeInitialized(directory) {
+		marker, err := os.Open(filepath.Join(directory, ".initialized"))
+		if err != nil {
+			return true, nil
+		}
+		defer marker.Close()
+		data, err := io.ReadAll(io.LimitReader(marker, int64(len(identityInitialization)+1)))
+		// Unknown/oversized old markers are conservative primary authority too.
+		return err != nil || string(data) != identityInitialization, nil
+	}
+	return false, nil
+}
+
+func runtimeImports(directory string, ids []string) (ImportPlan, error) {
+	if err := validateImportIDs(ids); err != nil {
+		return ImportPlan{}, err
+	}
+	plan := ImportPlan{Cache: !runtimeInitialized(directory)}
+	for _, id := range ids {
+		owned, err := stateOwned(directory, id)
+		if err != nil {
+			return ImportPlan{}, err
+		}
+		if !owned {
+			plan.IDs = append(plan.IDs, id)
+		}
+	}
+	return plan, nil
+}
+
 func prepareRuntime(base string, uid int, files Files) (string, error) {
 	return prepareRuntimeUser(base, fmt.Sprint(uid), files)
 }
@@ -55,12 +102,15 @@ func prepareRuntimeUserWithRules(base, user string, files Files, updateRules boo
 		}
 	}
 	first := !runtimeInitialized(directory)
-	if first && len(files.TailscaleState) > 0 {
-		if err := privateDirectory(filepath.Join(directory, "tailscale")); err != nil {
+	if len(files.TailscaleState) > 0 {
+		owned, err := stateOwned(directory, tailsplit.MainExit)
+		if err != nil {
 			return "", err
 		}
-		if err := replacePrivate(filepath.Join(directory, "tailscale", "tailscaled.state"), files.TailscaleState); err != nil {
-			return "", err
+		if !owned {
+			if err := publishState(directory, filepath.Join(directory, "tailscale"), "", files.TailscaleState); err != nil {
+				return "", err
+			}
 		}
 	}
 	for id, state := range files.ExitStates {
@@ -77,9 +127,8 @@ func prepareRuntimeUserWithRules(base, user string, files Files, updateRules boo
 				return "", err
 			}
 		}
-		// Keep this marker through logout/reinstall so an old user-state copy
-		// cannot silently log the device back in on its next start.
-		if err := replacePrivate(filepath.Join(directory, ".initialized"), []byte("1\n")); err != nil {
+		// Cache initialization no longer claims an unused primary device.
+		if err := replacePrivate(filepath.Join(directory, ".initialized"), []byte(identityInitialization)); err != nil {
 			return "", err
 		}
 	}
@@ -113,7 +162,13 @@ func importExitState(directory, id string, state []byte) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	staged, err := os.MkdirTemp(exits, ".import-")
+	return publishState(exits, destination, "tailscale", state)
+}
+
+// Publish the complete state directory by rename, so a failed import never
+// exposes an empty directory that a later request would treat as authoritative.
+func publishState(parent, destination, stateSubdir string, state []byte) error {
+	staged, err := os.MkdirTemp(parent, ".import-")
 	if err != nil {
 		return err
 	}
@@ -126,10 +181,11 @@ func importExitState(directory, id string, state []byte) error {
 	if err := privateDirectory(staged); err != nil {
 		return err
 	}
-	if err := privateDirectory(filepath.Join(staged, "tailscale")); err != nil {
+	stateDirectory := filepath.Join(staged, stateSubdir)
+	if err := privateDirectory(stateDirectory); err != nil {
 		return err
 	}
-	if err := replacePrivate(filepath.Join(staged, "tailscale", "tailscaled.state"), state); err != nil {
+	if err := replacePrivate(filepath.Join(stateDirectory, "tailscaled.state"), state); err != nil {
 		return err
 	}
 	if err := replacePrivate(filepath.Join(staged, ".initialized"), []byte("1\n")); err != nil {
@@ -141,11 +197,11 @@ func importExitState(directory, id string, state []byte) error {
 // claimLogoutExit runs before the logout runner: it may remove its state file,
 // return an error, or be cancelled without ever creating one. Retain authority
 // outside the engine's tailscale directory even when no legacy state arrived.
-// The primary already has the global initialization marker.
+// Primary authority also lives outside its engine-owned directory.
 func claimLogoutExit(config tailsplit.Config) error {
 	id := config.Focus
 	if id == "" || id == tailsplit.MainExit {
-		return nil
+		return replacePrivate(filepath.Join(config.StateDir, ".primary-initialized"), []byte("1\n"))
 	}
 	if !validExitID(id) {
 		return errors.New("invalid logout exit")
@@ -252,38 +308,32 @@ func readUserFile(path string, maximum int) ([]byte, error) {
 	return data, err
 }
 
-func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
-	// Focus and Global mode still migrate every saved device. Reject the full
-	// inventory before reading files instead of committing a partial import.
+func userFiles(config *tailsplit.Config, plan ImportPlan) (files Files, err error) {
+	// Validate the full inventory even when this operation uses only one device.
 	if err := validateExitInventory(len(config.Exits)); err != nil {
 		return Files{}, err
 	}
-	if seed {
-		files.TailscaleState, err = readUserFile(filepath.Join(config.StateDir, "tailscale", "tailscaled.state"), maxState)
-		if err != nil {
-			return files, err
-		}
+	if err := validateImportIDs(plan.IDs); err != nil {
+		return Files{}, err
+	}
+	if plan.Cache {
 		files.Cache, err = readUserFile(filepath.Join(config.StateDir, "cache.db"), maxCache)
 		if err != nil {
 			return files, err
 		}
 	}
-	// Both Unix and Windows clients pass seed=false once the primary is
-	// initialized. Additional exits can still acquire CLI/fallback identities
-	// later; only the service can decide whether it already owns each one.
-	for _, exit := range config.Exits {
-		if !validExitID(exit.ID) {
-			return Files{}, errors.New("invalid migration exit")
-		}
-		state, err := readUserFile(filepath.Join(config.ExitStateDir(exit.ID), "tailscaled.state"), maxState)
+	for _, id := range plan.IDs {
+		state, err := readUserFile(filepath.Join(config.ExitStateDir(id), "tailscaled.state"), maxState)
 		if err != nil {
 			return Files{}, err
 		}
-		if len(state) > 0 {
+		if id == tailsplit.MainExit {
+			files.TailscaleState = state
+		} else if len(state) > 0 {
 			if files.ExitStates == nil {
 				files.ExitStates = map[string][]byte{}
 			}
-			files.ExitStates[exit.ID] = state
+			files.ExitStates[id] = state
 		}
 	}
 	if config.Rules.Mode == tailsplit.RoutingGlobal {

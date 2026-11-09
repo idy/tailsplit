@@ -45,11 +45,16 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 	snapshot := tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
 	options := configweb.Options{
 		ConfigPath: configPath, Listen: listen, Preview: true,
-		Apply: func(ctx context.Context, update func() error) error {
+		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
 			mutex.Lock()
 			defer mutex.Unlock()
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if check != nil {
+				if err := check(snapshot); err != nil {
+					return err
+				}
 			}
 			if err := update(); err != nil {
 				return err
@@ -351,6 +356,7 @@ func updatePreviewSnapshot(snapshot *tray.Snapshot, config tailsplit.Config) {
 		}
 	}
 	if snapshot.Active {
+		snapshot.TrafficExit = config.TrafficExitID()
 		snapshot.Mode = "proxy"
 		if config.TUN.Enabled {
 			snapshot.Mode = "tun"

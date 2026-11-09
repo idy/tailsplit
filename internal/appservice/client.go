@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/idy/tailsplit"
@@ -111,8 +112,8 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 	}
 }
 
-// OpenSession transfers policy and bounded additional-exit migration candidates.
-// The primary login/FakeIP cache is sent only before service initialization.
+// OpenSession transfers policy and eligible per-device migration candidates,
+// holding the ordinary-user state lease through privileged session cleanup.
 // It never transfers path authority.
 func OpenSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer) (net.Conn, error) {
 	return openSession(ctx, executable, operation, config, output, "")
@@ -148,33 +149,168 @@ func openSession(ctx context.Context, executable, operation string, config tails
 	if operation == "ping" && !info.PingAvailable {
 		return nil, tailsplit.ErrPingUnavailable
 	}
+	return openLeasedSession(ctx, operation, config, target, info, func(ctx context.Context) (net.Conn, error) {
+		connection, err := (&net.Dialer{}).DialContext(ctx, "unix", SocketPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireUser(connection, "0"); err != nil {
+			_ = connection.Close()
+			return nil, err
+		}
+		return connection, nil
+	})
+}
+
+// migrationIDs scopes ordinary-user reads to engines this operation can open.
+// The complete configuration still crosses the boundary and retains its limit.
+func migrationIDs(config tailsplit.Config, operation, target string) ([]string, error) {
+	if err := validateExitInventory(len(config.Exits)); err != nil {
+		return nil, err
+	}
+	if err := validateImportIDs(config.ExitIDs()); err != nil {
+		return nil, err
+	}
+	focus := config.Focus
+	if operation == "ping" {
+		if exit, _ := tailsplit.SplitPingTarget(target); exit != "" {
+			focus = exit
+		}
+		if focus == "" {
+			focus = tailsplit.MainExit
+		}
+		if _, err := config.FocusExit(focus); err != nil {
+			return nil, err
+		}
+	} else if operation == "logout" && focus == "" {
+		focus = tailsplit.MainExit
+	} else if operation == "start" && config.Rules.Mode == tailsplit.RoutingGlobal && focus == "" {
+		focus = config.TrafficExitID()
+	}
+	if focus != "" {
+		for _, id := range config.ExitIDs() {
+			if id == focus {
+				return []string{id}, nil
+			}
+		}
+		return nil, errors.New("the selected migration exit is not configured")
+	}
+	if operation != "start" {
+		return config.ExitIDs(), nil
+	}
+	var ids []string
+	if config.Tailscale != nil && config.Tailscale.ExitNode != "" {
+		ids = append(ids, tailsplit.MainExit)
+	}
+	for _, exit := range config.Exits {
+		if exit.ExitNode != "" {
+			ids = append(ids, exit.ID)
+		}
+	}
+	return ids, nil
+}
+
+type sessionDial func(context.Context) (net.Conn, error)
+
+func queryImports(ctx context.Context, ids []string, dial sessionDial) (ImportPlan, error) {
+	connection, err := dial(ctx)
+	if err != nil {
+		return ImportPlan{}, err
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: "imports", ImportIDs: ids}); err != nil {
+		return ImportPlan{}, err
+	}
+	var reply importReply
+	if err := json.NewDecoder(io.LimitReader(connection, 4096)).Decode(&reply); err != nil {
+		return ImportPlan{}, err
+	}
+	// Old services cannot silently turn a missing capability into an empty
+	// migration plan. Build matching is also checked by each platform client.
+	if reply.Event != "imports" || reply.Protocol != Protocol {
+		return ImportPlan{}, errors.New("update the network service before migrating saved devices")
+	}
+	if err := validateImportIDs(reply.Plan.IDs); err != nil {
+		return ImportPlan{}, err
+	}
+	requested := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		requested[id] = true
+	}
+	for _, id := range reply.Plan.IDs {
+		if !requested[id] {
+			return ImportPlan{}, errors.New("the network service returned an unrelated migration identity")
+		}
+	}
+	return reply.Plan, nil
+}
+
+// Both authenticated transports use this path. In particular, no legacy file
+// may be opened before taking the same state lease as the ordinary-user CLI.
+func openLeasedSession(ctx context.Context, operation string, config tailsplit.Config, target string, info Info, dial sessionDial) (net.Conn, error) {
+	ids, err := migrationIDs(config, operation, target)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := tailsplit.LockSavedState(config.StateDir)
+	activeOnly := false
+	if err != nil {
+		if operation != "ping" || !info.Initialized {
+			return nil, err
+		}
+		activeOnly = true
+		unlock = func() error { return nil }
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = unlock()
+		}
+	}()
 	if operation == "start" {
 		if err := tailsplit.EnsureRules(ctx, config, nil); err != nil {
 			return nil, err
 		}
 	}
-	files, err := userFiles(&config, !info.Initialized)
-	if err != nil {
-		return nil, fmt.Errorf("read saved app state for migration: %w", err)
+	var files Files
+	if !activeOnly {
+		plan, err := queryImports(ctx, ids, dial)
+		if err != nil {
+			return nil, err
+		}
+		files, err = userFiles(&config, plan)
+		if err != nil {
+			return nil, fmt.Errorf("read saved app state for migration: %w", err)
+		}
 	}
+	// Active-only pings send no migration files and cannot start an idle engine.
 	// Never ask the service to resolve any of the user's filesystem paths.
 	config.StateDir = ""
-	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", SocketPath)
+	connection, err := dial(ctx)
 	if err != nil {
-		return nil, err
-	}
-	if err := requireUser(connection, "0"); err != nil {
-		_ = connection.Close()
 		return nil, err
 	}
 	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err = json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, Config: &config, Files: files})
-	if err != nil {
+	if err := json.NewEncoder(connection).Encode(Request{Protocol: Protocol, Op: operation, Target: target, ActiveOnly: activeOnly, Config: &config, Files: files}); err != nil {
 		_ = connection.Close()
 		return nil, err
 	}
 	_ = connection.SetWriteDeadline(time.Time{})
-	return connection, nil
+	keep = true
+	return &stateLeaseConnection{Conn: connection, release: unlock}, nil
+}
+
+type stateLeaseConnection struct {
+	net.Conn
+	release func() error
+	once    sync.Once
+	err     error
+}
+
+func (c *stateLeaseConnection) Close() error {
+	c.once.Do(func() { c.err = errors.Join(c.Conn.Close(), c.release()) })
+	return c.err
 }
 
 // Forward keeps the app channel alive until privileged cleanup completes.

@@ -101,6 +101,18 @@ type ExitConfig struct {
 	MagicDNSSuffix string `yaml:"magic_dns_suffix,omitempty"`
 }
 
+// magicDNSSuffix is routing metadata, with legacy suffix-valued guards as a
+// fallback. A display network name never creates DNS ownership.
+func (e ExitConfig) magicDNSSuffix() string {
+	if e.MagicDNSSuffix != "" {
+		return strings.ToLower(e.MagicDNSSuffix)
+	}
+	if strings.HasSuffix(strings.ToLower(e.Tailnet), ".ts.net") {
+		return strings.ToLower(e.Tailnet)
+	}
+	return ""
+}
+
 type RouteConfig struct {
 	Exit    string   `yaml:"exit"`
 	Domains []string `yaml:"domains,omitempty"`
@@ -386,8 +398,8 @@ func (c *Config) normalize(base string) error {
 	}
 	// Retain explicit Split policy while devices are removed or replaced. Live
 	// references are checked when connecting, independently of draft inventory.
-	if c.Rules.Final != "direct" && c.Rules.Final != "proxy" && !ValidExitID(c.Rules.Final) {
-		return errors.New("rules.final must be direct, proxy or a valid additional exit ID")
+	if c.Rules.Final != "direct" && c.Rules.Final != "proxy" && c.Rules.Final != MainExit && !ValidExitID(c.Rules.Final) {
+		return errors.New("rules.final must be direct, proxy, main or a valid additional exit ID")
 	}
 	for index := range c.Rules.Routes {
 		route := &c.Rules.Routes[index]
@@ -577,11 +589,7 @@ func (c Config) trafficConfig() (Config, error) {
 			if exit.ID != id {
 				continue
 			}
-			suffix := exit.MagicDNSSuffix
-			if suffix == "" && strings.HasSuffix(strings.ToLower(exit.Tailnet), ".ts.net") {
-				suffix = strings.ToLower(exit.Tailnet)
-			}
-			if suffix != "" {
+			if suffix := exit.magicDNSSuffix(); suffix != "" {
 				focused.DNS.MagicDomains = []string{suffix}
 			}
 			break

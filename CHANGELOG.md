@@ -68,6 +68,21 @@
   expansion and encoded size, and reject excessive patches without applying them.
 - Bound initial noninteractive preflight states and give every optional endpoint
   an initial-status opportunity before isolation; required gateways must be ready.
+- Apply Global-disconnect consent to existing-device login and gateway changes;
+  preserve current-device authorization recovery without replacing its helper.
+- Validate candidates under the same operation gate as reconfiguration, before
+  stopping a protected helper. Keep incomplete stopped drafts saveable while
+  explicit runtime validation reports that they cannot connect yet.
+- Preserve lexical string fields such as numeric-looking route domains, reserve
+  dormant-policy IDs, include `main` in final routing, and keep direct-only startup
+  and empty-group behavior consistent with the traffic policy.
+- Preserve inherited YAML rules and explicit empty overrides; index list matching
+  without weakening alias budgets. Retain removed primary private DNS ownership
+  and custom-domain rules until an explicit replacement or deletion.
+- Order custom primary domains with MagicDNS by longest suffix, check saved suffix
+  metadata during traffic preflight, and allow explicit same-node metadata repair.
+- Track unused-primary import eligibility separately from cache initialization,
+  skip owned/unrelated legacy copies, and lease migration on both desktop systems.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

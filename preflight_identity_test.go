@@ -34,6 +34,112 @@ func TestOptionalEndpointIdentityIsCheckedWithoutRequiringItsNodeOnline(t *testi
 	}
 }
 
+func TestSavedRoutingSuffixIsCheckedAlongsideTailnetGuard(t *testing.T) {
+	for _, test := range []struct {
+		name, guard, saved, network, actual string
+		wantErr                             bool
+	}{
+		{name: "matching account and suffix", guard: "corp.example", saved: "old.ts.net", network: "corp.example", actual: "old.ts.net"},
+		{name: "canonical suffix", guard: "corp.example", saved: "old.ts.net", network: "corp.example", actual: "OLD.TS.NET."},
+		{name: "same account changed suffix", guard: "corp.example", saved: "old.ts.net", network: "corp.example", actual: "new.ts.net", wantErr: true},
+		{name: "same account missing suffix", guard: "corp.example", saved: "old.ts.net", network: "corp.example", wantErr: true},
+		{name: "unguarded routing suffix", saved: "old.ts.net", network: "corp.example", actual: "old.ts.net"},
+		{name: "unguarded changed suffix", saved: "old.ts.net", network: "corp.example", actual: "new.ts.net", wantErr: true},
+		{name: "legacy suffix guard still checks actual DNS", guard: "old.ts.net", saved: "old.ts.net", network: "old.ts.net", actual: "new.ts.net", wantErr: true},
+		{name: "wrong account matching suffix", guard: "corp.example", saved: "old.ts.net", network: "other.example", actual: "old.ts.net", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exit := engineExit{id: "office", tailnet: test.guard, magicDNSSuffix: test.saved}
+			status := Status{BackendState: "Running", NetworkName: test.network, MagicDNSSuffix: test.actual, ExitVisible: true, ExitOnline: true}
+			for _, optional := range []bool{false, true} {
+				var required, retained []engineExit
+				if optional {
+					retained = []engineExit{exit}
+				} else {
+					required = []engineExit{exit}
+				}
+				done, _, _, err := connectionReadiness("office", required, retained, map[string]Status{"office": status}, true, false)
+				if (err != nil) != test.wantErr || done == test.wantErr {
+					t.Fatalf("optional=%v: unverified routing suffix accepted or matching suffix rejected: done=%v err=%v", optional, done, err)
+				}
+				if err != nil && test.network == test.guard && (!strings.Contains(err.Error(), "apply its current DNS metadata") || strings.Contains(err.Error(), "sign in")) {
+					t.Fatalf("suffix metadata mismatch must offer recovery without reauthentication: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestOptionalSuffixMismatchCannotBeIsolatedAtReadinessDeadline(t *testing.T) {
+	config := focusedExitTestConfig(t)
+	config.Rules.Final, config.Rules.Routes = "direct", nil
+	config.Exits[0].Tailnet, config.Exits[0].MagicDNSSuffix = "corp.example", "old.ts.net"
+	_, optional := preflightExits(config, []engineExit{{id: "office", tailnet: "corp.example"}}, true)
+	runtime, err := CompileContext(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := bytes.Clone(runtime.JSON)
+	// Simulate the deadline seeing a new status before its change notification
+	// has been handled. Refusing only old.ts.net would leak new.ts.net.
+	latest := map[string]Status{"office": {BackendState: "Running", NetworkName: "corp.example", MagicDNSSuffix: "new.ts.net"}}
+	if err := isolateOptionalExits(t.Context(), config, &runtime, optional, latest); err == nil || !strings.Contains(err.Error(), "apply its current DNS metadata") {
+		t.Fatal("timeout path accepted stale DNS ownership instead of requiring repair", err)
+	}
+	if !bytes.Equal(before, runtime.JSON) {
+		t.Fatal("suffix mismatch replaced the original runtime before rejection")
+	}
+}
+
+func TestPreflightBindsSuffixMetadataToTrafficDeviceOnly(t *testing.T) {
+	for _, scope := range []string{"optional Split", "default Split", "Global", "focused"} {
+		t.Run(scope, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.Final, config.Rules.Routes = "direct", nil
+			config.Exits[0].Tailnet, config.Exits[0].MagicDNSSuffix = "corp.example", "old.ts.net"
+			exits := []engineExit{{id: "", tailnet: "primary.ts.net"}, {id: "office", tailnet: "corp.example"}}
+			switch scope {
+			case "default Split":
+				config.Rules.DefaultExit = "office"
+			case "Global":
+				config.Rules.Mode, config.Rules.GlobalExit = RoutingGlobal, "office"
+				exits = exits[1:]
+			case "focused":
+				var err error
+				config, err = config.FocusExit("office")
+				if err != nil {
+					t.Fatal(err)
+				}
+				exits = exits[1:]
+			}
+			before, _ := json.Marshal(config)
+			required, optional := preflightExits(config, exits, true)
+			latest := map[string]Status{
+				"":       {BackendState: "Running", NetworkName: "primary.ts.net", ExitVisible: true, ExitOnline: true},
+				"office": {BackendState: "Running", NetworkName: "corp.example", MagicDNSSuffix: "new.ts.net", ExitVisible: true, ExitOnline: true},
+			}
+			if done, _, _, err := connectionReadiness(config.TrafficExitID(), required, optional, latest, true, false); done || err == nil || !strings.Contains(err.Error(), `exit "office"`) {
+				t.Fatalf("traffic preflight lost the saved suffix for %s: done=%v err=%v", scope, done, err)
+			}
+			// Discovery and login still enforce the account guard, but must allow
+			// the picker to observe and explicitly apply changed DNS metadata.
+			for _, discover := range []bool{true, false} {
+				required, optional = preflightExits(config, exits, false)
+				if done, _, _, err := connectionReadiness(config.TrafficExitID(), required, optional, latest, false, discover); err != nil || !done {
+					t.Fatalf("stale routing metadata prevented its own explicit repair: done=%v err=%v", done, err)
+				}
+			}
+			latest["office"] = Status{BackendState: "Running", NetworkName: "other.example", MagicDNSSuffix: "new.ts.net"}
+			if done, _, _, err := connectionReadiness(config.TrafficExitID(), required, optional, latest, false, true); done || err == nil {
+				t.Fatal("routing metadata recovery discarded the saved account binding", done, err)
+			}
+			if after, _ := json.Marshal(config); !bytes.Equal(before, after) {
+				t.Fatal("preflight rewrote saved configuration without an explicit Apply")
+			}
+		})
+	}
+}
+
 func TestSignedOutOptionalDeviceProducesIsolatedRuntime(t *testing.T) {
 	config := focusedExitTestConfig(t)
 	config.Rules.Final, config.Rules.Routes = "direct", nil
@@ -165,6 +271,30 @@ func TestRequiredSecondaryLoginReturnsRecoverableError(t *testing.T) {
 	latest["office"] = Status{BackendState: "Running", NetworkName: "office.ts.net", ExitVisible: true, ExitOnline: true}
 	if done, _, _, err := connectionReadiness(config.TrafficExitID(), required, nil, latest, true, false); err != nil || !done {
 		t.Fatal("retry did not complete after required office signed in and became ready", done, err)
+	}
+}
+
+func TestExplicitMainFinalRequiresPrimaryReadiness(t *testing.T) {
+	config := focusedExitTestConfig(t)
+	config.Rules.DefaultExit, config.Rules.Final, config.Rules.Routes = "office", MainExit, nil
+	devices := []engineExit{{id: "", tailnet: "primary.ts.net"}, {id: "office", tailnet: "office.ts.net"}}
+	required, optional := preflightExits(config, devices, true)
+	if len(required) != 2 || len(optional) != 0 {
+		t.Fatal("explicit main final was treated as an optional primary", required, optional)
+	}
+	latest := map[string]Status{
+		"":       {BackendState: "NeedsLogin"},
+		"office": {BackendState: "Running", NetworkName: "office.ts.net", MagicDNSSuffix: "office.ts.net", ExitVisible: true, ExitOnline: true},
+	}
+	if done, waiting, pending, err := connectionReadiness(config.TrafficExitID(), required, optional, latest, true, false); done || waiting || pending != MainExit || err == nil || !strings.Contains(err.Error(), "sign in") {
+		t.Fatal("required main login did not return an actionable recovery", done, waiting, pending, err)
+	}
+	for _, ready := range []bool{false, true} {
+		latest[""] = Status{BackendState: "Running", NetworkName: "primary.ts.net", ExitVisible: true, ExitOnline: ready}
+		done, waiting, _, err := connectionReadiness(config.TrafficExitID(), required, optional, latest, true, false)
+		if err != nil || done != ready || waiting == ready {
+			t.Fatal("additional default bypassed explicit main final readiness", done, waiting, err)
+		}
 	}
 }
 

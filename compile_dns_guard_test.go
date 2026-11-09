@@ -2,6 +2,7 @@ package tailsplit
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -178,6 +179,76 @@ func TestMagicDNSLongestSuffixOwnsResolutionAndTraffic(t *testing.T) {
 	}
 }
 
+func TestPrimaryCustomDomainsSharePrivateSuffixOwnership(t *testing.T) {
+	type lookup struct{ host, server, outbound string }
+	for _, test := range []struct {
+		name, extra, blocked string
+		magic, custom        []string
+		lookups              []lookup
+	}{
+		{
+			name: "narrow custom and broad extra", custom: []string{"service.office.ts.net"}, extra: "office.ts.net",
+			lookups: []lookup{{"host.service.office.ts.net", "dns-direct", "tailnet"}, {"host.office.ts.net", "dns-tailnet-office", "exit-office"}},
+		},
+		{
+			name: "broad custom and narrow extra", custom: []string{"office.ts.net"}, extra: "secure.office.ts.net",
+			lookups: []lookup{{"host.office.ts.net", "dns-direct", "tailnet"}, {"host.secure.office.ts.net", "dns-tailnet-office", "exit-office"}},
+		},
+		{
+			name: "custom primary owns exact tie", custom: []string{"office.ts.net"}, extra: "office.ts.net",
+			lookups: []lookup{{"office.ts.net", "dns-direct", "tailnet"}, {"host.office.ts.net", "dns-direct", "tailnet"}},
+		},
+		{
+			name: "primary MagicDNS resolver owns exact tie", magic: []string{"office.ts.net"}, custom: []string{"office.ts.net"}, extra: "office.ts.net",
+			lookups: []lookup{{"host.office.ts.net", "dns-tailnet", "tailnet"}},
+		},
+		{
+			name: "custom inside extra inside primary MagicDNS", magic: []string{"ts.net"}, custom: []string{"service.office.ts.net"}, extra: "office.ts.net",
+			lookups: []lookup{{"host.service.office.ts.net", "dns-direct", "tailnet"}, {"host.office.ts.net", "dns-tailnet-office", "exit-office"}, {"host.other.ts.net", "dns-tailnet", "tailnet"}},
+		},
+		{
+			name: "primary MagicDNS inside custom", magic: []string{"secure.office.ts.net"}, custom: []string{"office.ts.net"},
+			lookups: []lookup{{"host.office.ts.net", "dns-direct", "tailnet"}, {"host.secure.office.ts.net", "dns-tailnet", "tailnet"}},
+		},
+		{
+			name: "blocked narrow custom before broad extra", custom: []string{"service.office.ts.net"}, extra: "office.ts.net", blocked: MainExit,
+			lookups: []lookup{{"host.service.office.ts.net", "", ""}, {"host.office.ts.net", "dns-tailnet-office", "exit-office"}},
+		},
+		{
+			name: "blocked custom primary owns exact tie", custom: []string{"office.ts.net"}, extra: "office.ts.net", blocked: MainExit,
+			lookups: []lookup{{"office.ts.net", "", ""}, {"host.office.ts.net", "", ""}},
+		},
+		{
+			name: "blocked narrow extra before broad custom", custom: []string{"office.ts.net"}, extra: "secure.office.ts.net", blocked: "office",
+			lookups: []lookup{{"host.office.ts.net", "dns-direct", "tailnet"}, {"host.secure.office.ts.net", "", ""}},
+		},
+		{
+			name: "ready custom primary owns blocked extra tie", custom: []string{"office.ts.net"}, extra: "office.ts.net", blocked: "office",
+			lookups: []lookup{{"host.office.ts.net", "dns-direct", "tailnet"}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.Final, config.Rules.Routes = "direct", nil
+			config.DNS.MagicDomains, config.Tailscale.Domains = test.magic, test.custom
+			config.Exits[0].Tailnet, config.Exits[0].MagicDNSSuffix = "Office network", test.extra
+			// Even explicit direct matches cannot bypass private-domain ownership.
+			config.Rules.DirectDomains = []string{"office.ts.net"}
+			blocked := map[string]bool{}
+			if test.blocked != "" {
+				blocked[test.blocked] = true
+			}
+			if test.blocked == MainExit {
+				config.Rules.DefaultExit = "office"
+			}
+			_, native := blockedExitNative(t, config, blocked)
+			for _, lookup := range test.lookups {
+				assertBlockedExitDomainPolicy(t, native, lookup.host, lookup.server, lookup.outbound)
+			}
+		})
+	}
+}
+
 func TestExtraMagicDNSSuffixPrefersIdentityMetadata(t *testing.T) {
 	for _, test := range []struct {
 		name, suffix, tailnet, wantSuffix string
@@ -238,6 +309,9 @@ func TestOrphanedPrivateSuffixPolicyFailsClosed(t *testing.T) {
 				}
 				if err == nil || !strings.Contains(err.Error(), `exit "`+test.exit+`"`) {
 					t.Fatalf("preflight=%v: orphaned private DNS policy was silently dropped: %v", preflight, err)
+				}
+				if errors.Is(err, ErrUnresolvedSplitExit) != test.missingPrimary {
+					t.Fatalf("preflight=%v: missing private owner was classified differently from a missing route owner: %v", preflight, err)
 				}
 			}
 

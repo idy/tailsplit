@@ -165,6 +165,8 @@ func TestBlockedRequiredTrafficExitIsRejected(t *testing.T) {
 		{name: "primary default status alias", blockedID: ""},
 		{name: "extra default", blockedID: "office", defaultExit: "office"},
 		{name: "named final", blockedID: "office", final: "office"},
+		{name: "named primary final", blockedID: MainExit, defaultExit: "office", final: MainExit},
+		{name: "named primary final status alias", blockedID: "", defaultExit: "office", final: MainExit},
 		{name: "domain group", blockedID: "office", routes: []RouteConfig{{Exit: "office", Domains: []string{"corp.example"}}}},
 		{name: "IP group", blockedID: "office", routes: []RouteConfig{{Exit: "office", IPs: []string{"203.0.113.0/24"}}}},
 		{name: "Global selected extra", blockedID: "office", mode: RoutingGlobal, globalExit: "office"},

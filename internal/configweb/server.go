@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -35,12 +36,14 @@ var assets embed.FS
 var ErrBusy = errors.New("another app operation is in progress")
 
 type Options struct {
-	Language     *locale.Store
-	ConfigPath   string
-	Listen       string
-	Preview      bool
-	Snapshot     func() tray.Snapshot
-	Apply        func(context.Context, func() error) error
+	Language   *locale.Store
+	ConfigPath string
+	Listen     string
+	Preview    bool
+	Snapshot   func() tray.Snapshot
+	// Apply must run check against its current snapshot under the same operation
+	// gate as update, before stopping a helper or changing the saved document.
+	Apply        func(context.Context, func(tray.Snapshot) error, func() error) error
 	Action       func(context.Context, string) error
 	RemoveExit   func(context.Context, string, string) error
 	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)
@@ -191,8 +194,22 @@ func (s *Server) describe(data []byte) document {
 	doc.Parsed = true
 	config, err := tray.ValidateConfigDocument(s.options.ConfigPath, data)
 	if err == nil {
-		normalizeExitReferences(doc.Values, config)
-		err = appservice.ValidateAppConfig(config)
+		// Decode without normalization so the form retains lexical strings and
+		// source omissions rather than exposing defaults as explicit settings.
+		var source tailsplit.Config
+		if err = yaml.Unmarshal(data, &source); err == nil {
+			// Logical identities keep their validated spelling, including trimming.
+			// Presence is still determined by doc.Values, so no defaults are added.
+			for index := range source.Exits {
+				source.Exits[index].ID = config.Exits[index].ID
+			}
+			source.Rules.DefaultExit, source.Rules.GlobalExit, source.Rules.Final = config.Rules.DefaultExit, config.Rules.GlobalExit, config.Rules.Final
+			for index := range source.Rules.Routes {
+				source.Rules.Routes[index].Exit = config.Rules.Routes[index].Exit
+			}
+			restoreStringValues(doc.Values, reflect.ValueOf(source))
+			err = appservice.ValidateAppConfig(config)
+		}
 	}
 	if err != nil {
 		doc.Error = err.Error()
@@ -202,29 +219,43 @@ func (s *Server) describe(data []byte) document {
 	return doc
 }
 
-// Preserve the validated string identities instead of YAML's numeric/boolean
-// interpretation. Keep source text and all unrelated values as written.
-func normalizeExitReferences(values map[string]any, config tailsplit.Config) {
-	exits, _ := values["exits"].([]any)
-	for index, raw := range exits {
-		if exit, ok := raw.(map[string]any); ok {
-			exit["id"] = config.Exits[index].ID
+// Restore schema-known strings from the typed source decode. Generic YAML
+// scalars otherwise turn domains such as 1.10 into numbers and lose their text.
+// Only visit fields already present in the source; never inject typed defaults.
+func restoreStringValues(raw any, typed reflect.Value) any {
+	if raw == nil {
+		return nil
+	}
+	if typed.Kind() == reflect.Pointer {
+		if typed.IsNil() {
+			return raw
+		}
+		return restoreStringValues(raw, typed.Elem())
+	}
+	switch typed.Kind() {
+	case reflect.String:
+		return typed.String()
+	case reflect.Struct:
+		values, ok := raw.(map[string]any)
+		if !ok {
+			return raw
+		}
+		for index := 0; index < typed.NumField(); index++ {
+			key, _, _ := strings.Cut(typed.Type().Field(index).Tag.Get("yaml"), ",")
+			if value, present := values[key]; present && key != "" && key != "-" {
+				values[key] = restoreStringValues(value, typed.Field(index))
+			}
+		}
+	case reflect.Slice:
+		values, ok := raw.([]any)
+		if !ok || len(values) != typed.Len() {
+			return raw
+		}
+		for index, value := range values {
+			values[index] = restoreStringValues(value, typed.Index(index))
 		}
 	}
-	rules, _ := values["rules"].(map[string]any)
-	for key, id := range map[string]string{
-		"default_exit": config.Rules.DefaultExit, "global_exit": config.Rules.GlobalExit, "final": config.Rules.Final,
-	} {
-		if _, present := rules[key]; present {
-			rules[key] = id
-		}
-	}
-	routes, _ := rules["routes"].([]any)
-	for index, raw := range routes {
-		if route, ok := raw.(map[string]any); ok {
-			route["exit"] = config.Rules.Routes[index].Exit
-		}
-	}
+	return raw
 }
 
 func (s *Server) readConfig(w http.ResponseWriter, _ *http.Request) {
@@ -399,47 +430,53 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.describe(data))
 }
 
-func (s *Server) validateRuntime(ctx context.Context, data []byte) error {
+func (s *Server) candidateConfig(data []byte) (tailsplit.Config, error) {
 	config, err := tray.ValidateConfigDocument(s.options.ConfigPath, data)
-	if err != nil {
-		return err
+	if err == nil {
+		err = appservice.ValidateAppConfig(config)
 	}
-	if err := appservice.ValidateAppConfig(config); err != nil {
-		return err
-	}
-	if err := tailsplit.ValidateTrafficExit(config); errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
-		// Removal retains explicit Split policy until the user selects replacement
-		// owners. Permit editing that draft only without a helper to reconnect;
-		// reject active-session saves before Apply can stop the existing session.
-		if s.options.Snapshot != nil && s.options.Snapshot().Active {
-			return err
-		}
-		return nil
-	}
-	// Empty-device and pending-node drafts remain editable before login. Full
-	// connection validation still runs in the helper before opening any device.
-	if len(config.ExitIDs()) == 0 {
-		return nil
-	}
-	id := config.TrafficExitID()
-	node := ""
-	if id == tailsplit.MainExit && config.Tailscale != nil {
-		node = config.Tailscale.ExitNode
-	}
-	for _, exit := range config.Exits {
-		if exit.ID == id {
-			node = exit.ExitNode
-		}
-	}
-	if node == "" {
-		return nil
-	}
+	return config, err
+}
+
+func compileCandidate(ctx context.Context, config tailsplit.Config) error {
 	compiled, err := tailsplit.CompileContext(ctx, config)
 	if err != nil {
 		return err
 	}
 	return tailsplit.Check(compiled)
 }
+
+func (s *Server) validateRuntime(ctx context.Context, data []byte) error {
+	config, err := s.candidateConfig(data)
+	if err == nil {
+		err = tailsplit.ValidateTrafficExit(config)
+	}
+	if err != nil {
+		return err
+	}
+	return compileCandidate(ctx, config)
+}
+
+// Drafts may be saved while stopped, but cannot replace an active helper. Global
+// opens only its traffic device; other devices' cached status cannot verify a
+// replacement without first disconnecting the protected session.
+func checkCandidateSession(snapshot tray.Snapshot, config tailsplit.Config, draftErr error) error {
+	if !snapshot.Active {
+		return nil
+	}
+	if draftErr != nil {
+		return draftErr
+	}
+	if config.Rules.Mode == tailsplit.RoutingGlobal && snapshot.RoutingMode == tailsplit.RoutingGlobal &&
+		(snapshot.Mode == "tun" || snapshot.Mode == "proxy") && config.TrafficExitID() != snapshot.TrafficExit {
+		return errors.New("disconnect before changing the active Global gateway device")
+	}
+	return nil
+}
+
+type applyValidationError struct{ error }
+
+func (err applyValidationError) Unwrap() error { return err.error }
 
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	edit, ok := decodeEdit(w, r)
@@ -463,8 +500,27 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := applyChanges(edit)
+	var config tailsplit.Config
+	var draftErr error
 	if err == nil {
-		err = s.validateRuntime(r.Context(), data)
+		config, err = s.candidateConfig(data)
+	}
+	if err == nil {
+		// Selection and retained-owner drafts need no runnable configuration to
+		// be saved while idle. Explicit /api/validate never uses this exception.
+		draftErr = tailsplit.ValidateTrafficExit(config)
+		if draftErr == nil {
+			err = compileCandidate(r.Context(), config)
+			if errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
+				draftErr, err = err, nil
+			}
+		}
+	}
+	check := func(snapshot tray.Snapshot) error {
+		return checkCandidateSession(snapshot, config, draftErr)
+	}
+	if err == nil && s.options.Snapshot != nil {
+		err = check(s.options.Snapshot())
 	}
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "validation", err.Error())
@@ -481,12 +537,20 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "conflict", "配置文件已由其他操作修改，请重新读取后再保存。")
 		return
 	}
-	err = s.options.Apply(r.Context(), func() error {
+	err = s.options.Apply(r.Context(), func(snapshot tray.Snapshot) error {
+		if err := check(snapshot); err != nil {
+			return applyValidationError{err}
+		}
+		return nil
+	}, func() error {
 		return tray.SaveConfigDocument(s.options.ConfigPath, edit.Revision, data)
 	})
 	if err != nil {
 		status, code := http.StatusInternalServerError, "apply"
-		if errors.Is(err, tray.ErrConfigChanged) {
+		var validationErr applyValidationError
+		if errors.As(err, &validationErr) {
+			status, code = http.StatusUnprocessableEntity, "validation"
+		} else if errors.Is(err, tray.ErrConfigChanged) {
 			status, code = http.StatusConflict, "conflict"
 		} else if errors.Is(err, ErrBusy) {
 			status, code = http.StatusConflict, "busy"

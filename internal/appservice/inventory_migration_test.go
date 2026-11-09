@@ -49,6 +49,19 @@ func migrationInventoryConfig(t *testing.T, count int, mode, focus string) tails
 	return config
 }
 
+// inventoryPlan exercises aggregate collection/import independently of the
+// operation-scoped client query, including its maximum supported payload.
+func inventoryPlan(config tailsplit.Config, primary bool) ImportPlan {
+	plan := ImportPlan{Cache: primary}
+	if primary {
+		plan.IDs = append(plan.IDs, tailsplit.MainExit)
+	}
+	for _, exit := range config.Exits {
+		plan.IDs = append(plan.IDs, exit.ID)
+	}
+	return plan
+}
+
 func TestMigrationInventoryBoundaryKeepsFocusedAndGlobalInventory(t *testing.T) {
 	for _, scenario := range []struct{ name, mode, focus string }{
 		{"split", tailsplit.RoutingSplit, ""},
@@ -67,7 +80,7 @@ func TestMigrationInventoryBoundaryKeepsFocusedAndGlobalInventory(t *testing.T) 
 				_, serviceErr := serviceConfig(config, directory)
 				validationErr := ValidateAppConfig(config)
 				for _, seed := range []bool{true, false} {
-					files, err := userFiles(&config, seed)
+					files, err := userFiles(&config, inventoryPlan(config, seed))
 					if count > maxExits {
 						if serviceErr == nil || validationErr == nil || err == nil {
 							t.Fatalf("oversized inventory was accepted: service=%v validation=%v collection=%v", serviceErr, validationErr, err)

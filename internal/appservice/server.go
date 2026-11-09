@@ -98,6 +98,15 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 			PingAvailable: s.Ping != nil})
 		return
 	}
+	if request.Op == "imports" {
+		plan, err := runtimeImports(runtimeUserDirectory(s.Base, s.userKey()), request.ImportIDs)
+		if err != nil {
+			fail("could not inspect private network service ownership")
+			return
+		}
+		_ = stream.send(importReply{Event: "imports", Protocol: Protocol, Plan: plan})
+		return
+	}
 	if request.Op == "ping" {
 		s.handlePing(ctx, connection, reader, request, stream)
 		return

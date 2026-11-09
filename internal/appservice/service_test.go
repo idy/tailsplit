@@ -414,7 +414,7 @@ func TestUserFilesSelectsTheConfiguredSubscriptionCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	files, err := userFiles(&config, false)
+	files, err := userFiles(&config, ImportPlan{})
 	if err != nil || string(files.Rules) != "[AutoProxy 0.2.9]\n||b.fixture.example\n" {
 		t.Fatal("desktop transfer selected a different subscription's cache:", err)
 	}
@@ -423,11 +423,11 @@ func TestUserFilesSelectsTheConfiguredSubscriptionCache(t *testing.T) {
 func TestMissingLocalRulesDoNotSilentlySelectBuiltin(t *testing.T) {
 	directory := t.TempDir()
 	config := tailsplit.Config{StateDir: directory, Rules: tailsplit.RulesConfig{GFWList: filepath.Join(directory, "missing")}}
-	if _, err := userFiles(&config, false); err == nil {
+	if _, err := userFiles(&config, ImportPlan{}); err == nil {
 		t.Fatal("a missing custom policy silently selected builtin routes")
 	}
 	config.Rules.GFWList = "builtin"
-	if _, err := userFiles(&config, false); err != nil {
+	if _, err := userFiles(&config, ImportPlan{}); err != nil {
 		t.Fatal("device login and discovery must allow a missing user rules cache")
 	}
 }
@@ -437,7 +437,7 @@ func TestGlobalServiceRequestDoesNotOpenIgnoredSplitRules(t *testing.T) {
 		StateDir: t.TempDir(),
 		Rules:    tailsplit.RulesConfig{Mode: tailsplit.RoutingGlobal, GFWList: "/missing-split-rules"},
 	}
-	files, err := userFiles(&config, false)
+	files, err := userFiles(&config, ImportPlan{})
 	if err != nil || len(files.Rules) != 0 || config.Rules.GFWList != "" {
 		t.Fatal("global mode still requires or transfers a split rule source:", err)
 	}

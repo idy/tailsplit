@@ -29,6 +29,7 @@ import (
 
 type configurationApply struct {
 	ctx    context.Context
+	check  func(tray.Snapshot) error
 	update func() error
 	direct bool
 	action string
@@ -235,7 +236,9 @@ func main() {
 		RemoveExit: func(ctx context.Context, id, revision string) error {
 			return apply(ctx, func() error { return controller.RemoveExit(id, revision) }, true)
 		},
-		Apply:       func(ctx context.Context, update func() error) error { return apply(ctx, update, false) },
+		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
+			return submit(configurationApply{ctx: ctx, check: check, update: update})
+		},
 		UpdateState: updates.snapshot, UpdateAction: updates.action,
 		Action: func(ctx context.Context, action string) error {
 			return submit(configurationApply{ctx: ctx, action: action})
@@ -536,7 +539,7 @@ func main() {
 						flow.Cancel()
 						operation = request.update
 						if !request.direct {
-							operation = func() error { return controller.Reconfigure(request.update) }
+							operation = func() error { return controller.ReconfigureChecked(request.check, request.update) }
 						}
 					}
 					pendingRequest, pendingAction = request.done, request.action

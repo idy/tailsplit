@@ -73,6 +73,25 @@ test('Global Add consent explains the protection loss and failure behavior in bo
   for (const text of [title, description, confirm]) assert.equal(i18n.t(text), text);
 });
 
+test('Global login and gateway consent describe explicit disconnect and stopped failures in both languages', () => {
+  const { i18n } = languagePage(['en']);
+  for (const [title, description, confirm] of [
+    ['断开全局保护并登录？', '登录另一个设备会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使登录失败，也会保持未连接；准备好后请手动重新连接。', '断开并登录'],
+    ['断开全局保护并切换出口？', '切换到另一个设备前会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。仅保存选择，即使保存失败也会保持未连接；准备好后请手动重新连接。', '断开并保存选择'],
+  ]) {
+    i18n.setLanguage('en');
+    for (const text of [title, description, confirm]) assert.ok(Object.hasOwn(i18n.catalog, text));
+    assert.match(i18n.t(title), /Disconnect Global protection/);
+    assert.match(i18n.t(confirm), /Disconnect and/);
+    assert.match(i18n.t(description), /turns off Global \(Kill-Switch\) protection/);
+    assert.match(i18n.t(description), /traffic may go direct/);
+    assert.match(i18n.t(description), /stays disconnected even if/);
+    assert.match(i18n.t(description), /Reconnect manually/);
+    i18n.setLanguage('zh');
+    for (const text of [title, description, confirm]) assert.equal(i18n.t(text), text);
+  }
+});
+
 test('removal consent retains original rules and explains replacement and network restoration', () => {
   const dialog = html.match(/<dialog id="remove-exit-dialog"[\s\S]*?<\/dialog>/)?.[0];
   assert.ok(dialog);

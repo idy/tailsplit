@@ -167,8 +167,8 @@ func (c *Controller) Start() error {
 	return c.start("proxy", "")
 }
 
-// beginReconfigure keeps independent Ping requests out of the gap between
-// stopping a device and starting its replacement.
+// beginReconfigure keeps independent starts and Ping requests out of the gap
+// between checking a candidate, stopping a device and starting its replacement.
 func (c *Controller) beginReconfigure() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -195,7 +195,7 @@ func (c *Controller) Restart() error {
 	if err := c.Stop(); err != nil {
 		return err
 	}
-	return c.Start()
+	return c.startReconfigured()
 }
 
 // StartLogin authenticates the embedded device without installing a service or
@@ -225,18 +225,30 @@ func (c *Controller) RefreshExitNodes() error {
 // then reconnects only if the proxy was running. A failed edit restores the old
 // running configuration instead of leaving a previously connected user offline.
 func (c *Controller) Reconfigure(update func() error) error {
+	return c.ReconfigureChecked(nil, update)
+}
+
+// ReconfigureChecked checks the candidate against the current session before
+// stopping it. Independent starts cannot change that decision until the update
+// and any internal restart finish. A rejected check leaves the helper untouched.
+func (c *Controller) ReconfigureChecked(check func(Snapshot) error, update func() error) error {
 	if err := c.beginReconfigure(); err != nil {
 		return err
 	}
 	defer c.endReconfigure()
 	before := c.Snapshot()
+	if check != nil {
+		if err := check(before); err != nil {
+			return err
+		}
+	}
 	reconnect := before.Active && (before.Mode == "tun" || before.Mode == "proxy")
 	if err := c.Stop(); err != nil {
 		return err
 	}
 	err := update()
 	if reconnect {
-		err = errors.Join(err, c.Start())
+		err = errors.Join(err, c.startReconfigured())
 	}
 	return err
 }
@@ -244,6 +256,20 @@ func (c *Controller) Reconfigure(update func() error) error {
 func (c *Controller) start(mode, focus string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.reconfiguring {
+		return tailsplit.ErrPingBusy
+	}
+	return c.startLocked(mode, focus)
+}
+
+// Only the owner of the reconfiguration gate may bypass the public-start guard.
+func (c *Controller) startReconfigured() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.startLocked("proxy", "")
+}
+
+func (c *Controller) startLocked(mode, focus string) error {
 	if c.closed {
 		return errors.New("controller is closed")
 	}

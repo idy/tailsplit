@@ -262,7 +262,11 @@ func TestRemovedSplitPolicyCanAddReplacementWhileStopped(t *testing.T) {
 					"yaml": doc.YAML, "revision": doc.Revision,
 					"changes": map[string]any{"exits": []map[string]any{{"id": "replacement", "exit_node": ""}}},
 				}, nil)
-				if status != http.StatusOK {
+				want := http.StatusOK
+				if endpoint == "/api/validate" {
+					want = http.StatusUnprocessableEntity
+				}
+				if status != want {
 					t.Fatalf("add replacement to retained draft at %s: %d %s", endpoint, status, body)
 				}
 			}

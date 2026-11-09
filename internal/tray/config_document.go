@@ -336,6 +336,10 @@ func mergeYAMLEntry(old, next *yaml.Node, before, after map[string]*yaml.Node, b
 			}
 			incoming, exists := after[key.Value]
 			if !exists {
+				if hasMerge && yamlZeroValue(key.Value, value) {
+					// An omitted empty override must still mask the retained merge.
+					merged.Content = append(merged.Content, key, value)
+				}
 				continue
 			}
 			same, err := yamlValueEqual(value, incoming, key.Value == "id" || key.Value == "exit", budget, 0)
@@ -373,6 +377,65 @@ func mergeYAMLEntry(old, next *yaml.Node, before, after map[string]*yaml.Node, b
 	return merged, nil
 }
 
+type yamlMatchValue struct {
+	node     *yaml.Node
+	identity bool
+}
+
+// Hash the same values used by equality so ordinary lists need only inspect
+// matching candidates. Memoization avoids repeatedly walking shared aliases.
+func yamlValueDigest(node *yaml.Node, identity bool, memo map[yamlMatchValue][32]byte, budget *yamlPatchBudget, depth int) ([32]byte, error) {
+	if err := budget.step(depth); err != nil {
+		return [32]byte{}, err
+	}
+	key := yamlMatchValue{node, identity}
+	if digest, ok := memo[key]; ok {
+		return digest, nil
+	}
+	if node.Kind == yaml.AliasNode {
+		return yamlValueDigest(node.Alias, identity, memo, budget, depth+1)
+	}
+	tag := node.Tag
+	if identity {
+		tag = ""
+	}
+	hash := sha256.New()
+	fmt.Fprintf(hash, "%d:%d:%s%d:%s", node.Kind, len(tag), tag, len(node.Value), node.Value)
+	for _, child := range node.Content {
+		digest, err := yamlValueDigest(child, false, memo, budget, depth+1)
+		if err != nil {
+			return [32]byte{}, err
+		}
+		hash.Write(digest[:])
+	}
+	var digest [32]byte
+	copy(digest[:], hash.Sum(nil))
+	memo[key] = digest
+	return digest, nil
+}
+
+func yamlEntryDigest(fields map[string]*yaml.Node, memo map[yamlMatchValue][32]byte, budget *yamlPatchBudget) ([32]byte, error) {
+	keys := make([]string, 0, len(fields))
+	for key, value := range fields {
+		if !yamlZeroValue(key, value) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	hash := sha256.New()
+	for _, key := range keys {
+		digest, err := yamlValueDigest(fields[key], key == "id" || key == "exit", memo, budget, 0)
+		if err != nil {
+			return [32]byte{}, err
+		}
+		fmt.Fprintf(hash, "%d:%s", len(key), key)
+		hash.Write(digest[:])
+	}
+	var digest [32]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
+}
+
 func mergeYAMLList(old, next *yaml.Node, identity string, budget *yamlPatchBudget) (*yaml.Node, error) {
 	sequence := old
 	for sequence.Kind == yaml.AliasNode {
@@ -407,34 +470,64 @@ func mergeYAMLList(old, next *yaml.Node, identity string, budget *yamlPatchBudge
 	}
 	// Match unchanged routes first, so removing an earlier group with the same
 	// exit does not transfer its comments to a surviving group.
+	memo := make(map[yamlMatchValue][32]byte)
 	for pass := 0; pass < 2; pass++ {
+		keyFor := func(fields map[string]*yaml.Node) ([32]byte, error) {
+			if pass == 0 {
+				return yamlEntryDigest(fields, memo, budget)
+			}
+			if value := fields[identity]; value != nil {
+				return yamlValueDigest(value, true, memo, budget, 0)
+			}
+			return [32]byte{}, nil
+		}
+		buckets := make(map[[32]byte][]int)
+		positions := make(map[[32]byte]int)
+		for j, fields := range before {
+			if used[j] {
+				continue
+			}
+			key, err := keyFor(fields)
+			if err != nil {
+				return nil, err
+			}
+			buckets[key] = append(buckets[key], j)
+		}
 		for i, fields := range after {
 			if matches[i] >= 0 {
 				continue
 			}
-			for j, previous := range before {
+			key, err := keyFor(fields)
+			if err != nil {
+				return nil, err
+			}
+			candidates := buckets[key]
+			for position := positions[key]; position < len(candidates); position++ {
 				if err := budget.step(0); err != nil {
 					return nil, err
 				}
+				j := candidates[position]
 				if used[j] {
+					if position == positions[key] {
+						positions[key]++
+					}
 					continue
 				}
+				previous := before[j]
 				equal := false
 				if pass == 0 {
-					var err error
 					equal, err = yamlEntryEqual(previous, fields, budget)
-					if err != nil {
-						return nil, err
-					}
 				} else if previous[identity] != nil && fields[identity] != nil {
-					var err error
 					equal, err = yamlValueEqual(previous[identity], fields[identity], true, budget, 0)
-					if err != nil {
-						return nil, err
-					}
+				}
+				if err != nil {
+					return nil, err
 				}
 				if equal {
 					matches[i], used[j] = j, true
+					if position == positions[key] {
+						positions[key]++
+					}
 					break
 				}
 			}
@@ -442,14 +535,13 @@ func mergeYAMLList(old, next *yaml.Node, identity string, budget *yamlPatchBudge
 	}
 	if identity == "exit" && len(before) == len(after) {
 		// With no stable group ID, pair remaining edits in their existing order.
+		j := 0
 		for i := range matches {
 			if matches[i] < 0 {
-				for j := range used {
-					if !used[j] {
-						matches[i], used[j] = j, true
-						break
-					}
+				for used[j] {
+					j++
 				}
+				matches[i], used[j] = j, true
 			}
 		}
 	}
@@ -548,7 +640,20 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 				}
 			}
 			if nested == nil {
-				nested = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				fields, err := yamlFields(mapping, budget, 0)
+				if err != nil {
+					return nil, err
+				}
+				if inherited := fields[change.Section]; inherited != nil {
+					// A local section replaces the entire inherited mapping. Retain
+					// its values before adding an override; leave the source intact.
+					nested, err = expandYAMLAliases(inherited, make(map[*yaml.Node]bool), budget, 0)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					nested = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				}
 				mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: change.Section}, nested)
 			}
 			if nested.Kind != yaml.MappingNode {
@@ -763,10 +868,44 @@ func PrepareExitRemoval(path, id, revision string) ([]byte, error) {
 	var remaining []string
 	if id == tailsplit.MainExit {
 		changes = append(changes, ConfigChange{Key: "tailscale", Value: nil})
-		// These suffixes belong to the primary device. Keeping them without
-		// that client would send its MagicDNS names to an unrelated resolver.
-		if len(raw.DNS.MagicDomains) > 0 {
-			changes = append(changes, ConfigChange{Section: "dns", Key: "magic_domains", Value: []string{}})
+		// Keep dns.magic_domains owned by the missing primary. Custom primary
+		// domains retain their explicit traffic policy as an unresolved group.
+		if raw.Tailscale != nil && len(raw.Tailscale.Domains) > 0 {
+			budget := new(yamlPatchBudget)
+			fields, err := yamlFields(rawDocument.Content[0], budget, 0)
+			if err != nil {
+				return nil, err
+			}
+			primary, err := yamlFields(fields["tailscale"], budget, 0)
+			if err != nil {
+				return nil, err
+			}
+			domains, err := expandYAMLAliases(primary["domains"], make(map[*yaml.Node]bool), budget, 0)
+			if err != nil {
+				return nil, err
+			}
+			routes := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			if len(raw.Rules.Routes) > 0 {
+				rules, err := yamlFields(fields["rules"], budget, 0)
+				if err != nil {
+					return nil, err
+				}
+				previous := rules["routes"]
+				for previous.Kind == yaml.AliasNode {
+					if err := budget.step(0); err != nil {
+						return nil, err
+					}
+					previous = previous.Alias
+				}
+				*routes = *previous
+				routes.Content = append([]*yaml.Node{}, previous.Content...)
+			}
+			routes.Content = append(routes.Content, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+				{Kind: yaml.ScalarNode, Tag: "!!str", Value: "exit"},
+				{Kind: yaml.ScalarNode, Tag: "!!str", Value: tailsplit.MainExit},
+				{Kind: yaml.ScalarNode, Tag: "!!str", Value: "domains"}, domains,
+			}})
+			changes = append(changes, ConfigChange{Section: "rules", Key: "routes", Value: routes})
 		}
 	} else if raw.Tailscale != nil {
 		remaining = append(remaining, tailsplit.MainExit)

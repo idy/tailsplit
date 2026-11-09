@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,6 +89,121 @@ rules:
 	}
 	if strings.Count(string(data), "exit_node:") != 1 || strings.Contains(string(data), "hostname:") {
 		t.Fatalf("removal serialized defaults into the surviving profile:\n%s", data)
+	}
+}
+
+func TestExitRemovalRetainsRulesInheritedFromTopLevelMerge(t *testing.T) {
+	const original = `<<: &policy
+  rules: &routing
+    default_exit: office # Reset selected exit
+    global_exit: lab # Keep other selection
+    source: ./rules.txt # Keep source
+    final: office # Keep unresolved final
+    proxy_domains: &proxy_domains ['proxy.example']
+    routes:
+      - exit: office # Keep unresolved group
+        domains: ['corp.example']
+      - exit: office
+        domains: *proxy_domains # Keep shared policy alias
+      - exit: lab
+        ips: [192.0.2.0/24]
+tailscale: null
+exits:
+  - id: office
+    exit_node: 100.101.0.11
+  - id: lab
+    exit_node: 100.102.0.12
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, _ := ReadConfigDocument(path)
+	if err := RemoveExitDocument(path, "office", revision, func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	config, err := tailsplit.LoadDraft(path)
+	if err != nil || config.Rules.DefaultExit != tailsplit.UnsetExit || config.Rules.GlobalExit != "lab" ||
+		config.Rules.Final != "office" || len(config.Rules.ProxyDomains) != 1 || len(config.Rules.Routes) != 3 ||
+		config.Rules.Routes[0].Exit != "office" || len(config.Rules.Routes[0].Domains) != 1 ||
+		config.Rules.Routes[1].Exit != "office" || len(config.Rules.Routes[1].Domains) != 1 || config.Rules.Routes[1].Domains[0] != "proxy.example" ||
+		config.Rules.Routes[2].Exit != "lab" || len(config.Rules.Routes[2].IPs) != 1 {
+		t.Fatalf("removal replaced inherited Split policy: %+v, %v", config.Rules, err)
+	}
+	if err := tailsplit.ValidateTrafficExit(config); !errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
+		t.Fatal("inherited policy no longer blocks traffic after removal:", err)
+	}
+	data, _, _ := ReadConfigDocument(path)
+	for _, text := range []string{"<<: &policy", "&routing", "&proxy_domains", "*proxy_domains", "# Keep shared policy alias", "# Reset selected exit", "# Keep other selection", "source: ./rules.txt # Keep source", "final: office # Keep unresolved final", "# Keep unresolved group", "domains: ['corp.example']"} {
+		if !strings.Contains(string(data), text) {
+			t.Fatalf("removal lost %q:\n%s", text, data)
+		}
+	}
+	if strings.Contains(string(data), "mode:") || strings.Contains(string(data), "direct_domains:") {
+		t.Fatalf("removal serialized omitted defaults:\n%s", data)
+	}
+}
+
+func TestPrimaryRemovalRetainsUnresolvedPrivateSuffixOwnership(t *testing.T) {
+	for _, policy := range []string{"magic", "custom", "both"} {
+		t.Run(policy, func(t *testing.T) {
+			original := "tailscale:\n  exit_node: 100.64.0.10\n"
+			if policy != "magic" {
+				original += "  domains: ['service.example'] # Keep custom primary policy\n"
+			}
+			if policy != "custom" {
+				original += "dns:\n  magic_domains: ['primary.ts.net'] # Keep private primary policy\n"
+			}
+			original += `exits:
+  - id: lab
+    exit_node: 100.102.0.12
+rules:
+  default_exit: main
+  global_exit: main
+  final: direct
+  routes:
+    - exit: lab # Keep existing group
+      domains: ['lab.example']
+`
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, revision, _ := ReadConfigDocument(path)
+			if err := RemoveExitDocument(path, "main", revision, func(string) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			config, err := tailsplit.LoadDraft(path)
+			if err != nil || config.Tailscale != nil || len(config.Exits) != 1 || config.Exits[0].ID != "lab" ||
+				config.Rules.DefaultExit != tailsplit.UnsetExit || config.Rules.GlobalExit != tailsplit.UnsetExit || config.Rules.Final != "direct" {
+				t.Fatalf("main removal changed inventory or selectors: %+v, %v", config, err)
+			}
+			if policy != "custom" && (len(config.DNS.MagicDomains) != 1 || config.DNS.MagicDomains[0] != "primary.ts.net") {
+				t.Fatal("main removal discarded its private suffix:", config.DNS.MagicDomains)
+			}
+			if policy != "magic" && (len(config.Rules.Routes) != 2 || config.Rules.Routes[1].Exit != "main" ||
+				len(config.Rules.Routes[1].Domains) != 1 || config.Rules.Routes[1].Domains[0] != "service.example") {
+				t.Fatal("main removal discarded custom primary policy:", config.Rules.Routes)
+			}
+			// Re-selecting the ready remaining default must not resolve the old owner.
+			config.Rules.DefaultExit, config.Rules.GlobalExit = "lab", "lab"
+			if err := tailsplit.ValidateTrafficExit(config); !errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
+				t.Fatal("removed primary names can fall through to the ready default:", err)
+			}
+			if _, err := tailsplit.Compile(config); !errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
+				t.Fatal("compiler accepted orphan primary policy:", err)
+			}
+			data, _, _ := ReadConfigDocument(path)
+			for _, text := range []string{"tailscale: null", "# Keep existing group", "domains: ['lab.example']"} {
+				if !strings.Contains(string(data), text) {
+					t.Fatalf("removal lost %q:\n%s", text, data)
+				}
+			}
+			if policy != "magic" && !strings.Contains(string(data), "domains: ['service.example'] # Keep custom primary policy") ||
+				policy != "custom" && !strings.Contains(string(data), "magic_domains: ['primary.ts.net'] # Keep private primary policy") {
+				t.Fatalf("removal lost retained policy comments or scalar style:\n%s", data)
+			}
+		})
 	}
 }
 

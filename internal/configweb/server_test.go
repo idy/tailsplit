@@ -27,13 +27,17 @@ func testServer(t *testing.T) (*Server, string, *atomic.Int32) {
 	}
 	var applied atomic.Int32
 	var mutex sync.Mutex
+	var server *Server
 	server, err := Start(Options{
 		ConfigPath: path,
 		Snapshot:   func() tray.Snapshot { return tray.Snapshot{LoginURL: "https://secret.example/auth", State: "stopped"} },
-		Apply: func(ctx context.Context, update func() error) error {
+		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
 			mutex.Lock()
 			defer mutex.Unlock()
 			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := check(server.options.Snapshot()); err != nil {
 				return err
 			}
 			if err := update(); err != nil {
@@ -283,7 +287,7 @@ func TestUnsupportedYAMLValuesRemainReadableInSourceEditor(t *testing.T) {
 
 func TestBusyApplyLeavesSavedConfigurationUntouched(t *testing.T) {
 	server, path, _ := testServer(t)
-	server.options.Apply = func(context.Context, func() error) error { return ErrBusy }
+	server.options.Apply = func(context.Context, func(tray.Snapshot) error, func() error) error { return ErrBusy }
 	_, revision, _ := tray.ReadConfigDocument(path)
 	status, body := request(t, server, "POST", "/api/config", map[string]string{"yaml": strings.Replace(fixtureConfig, "log_level: info", "log_level: debug", 1), "revision": revision}, nil)
 	if status != 409 || !bytes.Contains(body, []byte(`"code":"busy"`)) {

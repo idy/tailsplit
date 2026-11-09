@@ -46,8 +46,8 @@ func validExitID(id string) bool {
 // service never opens a config, state, rules file or executable supplied by it.
 type Files struct {
 	TailscaleState []byte `json:"tailscale_state,omitempty"`
-	// ExitStates holds migration candidates for every saved additional exit,
-	// including after primary initialization. The service owns import authority.
+	// ExitStates holds only eligible migration candidates selected by the
+	// service's per-identity import query. The service rechecks authority.
 	ExitStates map[string][]byte `json:"exit_states,omitempty"`
 	Cache      []byte            `json:"cache,omitempty"`
 	Rules      []byte            `json:"rules,omitempty"`
@@ -60,6 +60,38 @@ type Request struct {
 	ActiveOnly bool              `json:"active_only,omitempty"`
 	Config     *tailsplit.Config `json:"config,omitempty"`
 	Files      Files             `json:"files,omitempty"`
+	ImportIDs  []string          `json:"import_ids,omitempty"`
+}
+
+// ImportPlan is bounded by the requested inventory, never the service's history.
+// Cache retains its original one-time, global initialization semantics.
+type ImportPlan struct {
+	IDs   []string `json:"ids,omitempty"`
+	Cache bool     `json:"cache,omitempty"`
+}
+
+type importReply struct {
+	Event    string     `json:"event"`
+	Protocol int        `json:"protocol"`
+	Plan     ImportPlan `json:"plan"`
+}
+
+func validateImportIDs(ids []string) error {
+	if len(ids) > maxExits+1 {
+		return errors.New("migration inventory exceeds its size limit")
+	}
+	extras := 0
+	seen := make(map[string]bool)
+	for _, id := range ids {
+		if seen[id] || id != tailsplit.MainExit && !validExitID(id) {
+			return errors.New("invalid migration inventory")
+		}
+		seen[id] = true
+		if id != tailsplit.MainExit {
+			extras++
+		}
+	}
+	return validateExitInventory(extras)
 }
 
 type Info struct {
@@ -115,6 +147,9 @@ func readRequest(reader *bufio.Reader) (Request, error) {
 		return Request{}, errors.New("the app and network service protocols differ; reinstall the service")
 	}
 	if err := validateFiles(request.Files); err != nil {
+		return Request{}, err
+	}
+	if err := validateImportIDs(request.ImportIDs); err != nil {
 		return Request{}, err
 	}
 	return request, nil

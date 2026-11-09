@@ -199,9 +199,9 @@ func runWindowsDesktop() (runErr error) {
 				return controller.RemoveExit(id, revision)
 			})
 		},
-		Apply: func(ctx context.Context, update func() error) error {
+		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
 			return app.do(ctx, func() error {
-				err := controller.Reconfigure(update)
+				err := controller.ReconfigureChecked(check, update)
 				if preferences, readErr := tray.ReadPreferences(*config); readErr == nil {
 					app.updates.updater.SetAutomatic(preferences.CheckForUpdates)
 				}
