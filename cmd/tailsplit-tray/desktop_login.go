@@ -83,24 +83,29 @@ func requestDesktopExitLogin(controller desktopExitLoginController, flow *tray.L
 	return finishDesktopExitLogin(flow, prepareDesktopExitLogin(controller, id))
 }
 
-// Called on the desktop event loop. Discovery cannot supply authorization URLs,
-// so replace only that listener-free helper. Keep active connections and
-// interactive login helpers intact when requesting their browser flow.
-func requestDesktopLogin(controller desktopLoginController, flow *tray.LoginFlow) error {
+// A signed-in helper for another device cannot authorize main. Preserve pending
+// authorization from the active device, including its existing browser link.
+func desktopLoginReplacesHelper(snapshot tray.Snapshot) bool {
+	owner := snapshot.LoginExitID()
+	otherSignedIn := owner != tailsplit.MainExit && snapshot.Exits[owner].BackendState == "Running" && snapshot.LoginURL == ""
+	return snapshot.Active && (snapshot.Mode == "discovery" || otherSignedIn)
+}
+
+// Workers may replace a helper; only the event loop mutates LoginFlow.
+func prepareDesktopLogin(controller desktopLoginController) error {
 	snapshot := controller.Snapshot()
-	if snapshot.Active && snapshot.Mode == "discovery" {
+	if desktopLoginReplacesHelper(snapshot) {
 		if err := controller.Stop(); err != nil {
-			flow.Fail("无法准备登录，请查看日志")
-			return errors.New(tr("无法准备登录，请查看日志"))
+			return err
 		}
-		snapshot = controller.Snapshot()
+		return controller.StartLogin()
 	}
 	if !snapshot.Active {
-		if err := controller.StartLogin(); err != nil {
-			flow.Fail("无法准备登录，请查看日志")
-			return errors.New(tr("无法准备登录，请查看日志"))
-		}
+		return controller.StartLogin()
 	}
-	flow.Request()
 	return nil
+}
+
+func requestDesktopLogin(controller desktopLoginController, flow *tray.LoginFlow) error {
+	return finishDesktopExitLogin(flow, prepareDesktopLogin(controller))
 }

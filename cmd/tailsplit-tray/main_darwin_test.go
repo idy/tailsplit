@@ -220,6 +220,41 @@ func TestDesktopLoginFailureKeepsPrivateDetailsOutOfActionError(t *testing.T) {
 	}
 }
 
+func TestPrimaryLoginDefersReplacementAndCompletesFlowOnEventLoop(t *testing.T) {
+	const link = "https://login.tailscale.com/a/fixture-main"
+	for _, mode := range []string{"tun", "login", "discovery"} {
+		for _, fail := range []bool{false, true} {
+			controller := &desktopActionFixture{snapshot: tray.Snapshot{Active: true, Mode: mode, State: "running", TrafficExit: "office", BackendState: "NeedsLogin",
+				Exits: map[string]tray.ExitSnapshot{"office": {BackendState: "Running"}}}}
+			if mode == "login" {
+				controller.snapshot.Focus = "office"
+			}
+			if fail {
+				controller.err = errors.New("https://login.tailscale.com/a/private tskey-auth-private")
+			}
+			var flow tray.LoginFlow
+			flow.Request()
+			operation, err := desktopActionOperation("login", controller, &flow, nil)
+			if err != nil || operation == nil || len(controller.calls) != 0 {
+				t.Fatal("primary login blocked the dispatcher while replacing another helper", mode, err, controller.calls)
+			}
+			snapshot := tray.Snapshot{State: "login", Mode: "login", Focus: "main", BackendState: "NeedsLogin", LoginURL: link}
+			err = operation()
+			if flow.Next(snapshot) != "" {
+				t.Fatal("primary worker mutated event-loop login intent")
+			}
+			err = finishDesktopExitLogin(&flow, err)
+			if fail {
+				if err == nil || strings.Contains(err.Error(), "private") || flow.Next(snapshot) != "" || !slices.Equal(controller.calls, []string{"disconnect"}) {
+					t.Fatal("failed primary worker exposed private details or continued login", err, controller.calls)
+				}
+			} else if err != nil || !slices.Equal(controller.calls, []string{"disconnect", "start-login"}) || flow.Next(snapshot) != link {
+				t.Fatal("primary worker lost stop/login/browser ordering", mode, err, controller.calls)
+			}
+		}
+	}
+}
+
 func TestAdditionalExitLoginDefersShutdownAndCompletesFlowOnEventLoop(t *testing.T) {
 	const link = "https://login.tailscale.com/a/fixture-office"
 	for _, fail := range []bool{false, true} {

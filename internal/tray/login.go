@@ -43,18 +43,20 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 		f.message = "连接失败，请查看日志"
 		return ""
 	}
+	// The login helper can finish and clear Focus between polling ticks. Its
+	// terminal result belongs to this intent regardless of the primary's state.
+	completed := snapshot.Mode == "login" && snapshot.State == "authenticated"
 	backend := snapshot.BackendState
-	if snapshot.Focus != "" && snapshot.Focus != tailsplit.MainExit {
-		// An additional exit's login reports that device's state.
-		backend = snapshot.Exits[snapshot.Focus].BackendState
+	if exit := snapshot.LoginExitID(); exit != tailsplit.MainExit {
+		backend = snapshot.Exits[exit].BackendState
 	}
-	if backend == "Direct" {
+	if backend == "Direct" && !completed {
 		f.pending = false
 		f.showMessage = true
 		f.message = "当前配置无需设备登录"
 		return ""
 	}
-	if backend == "Running" && snapshot.LoginURL == "" {
+	if (completed || backend == "Running") && snapshot.LoginURL == "" {
 		f.pending = false
 		f.showMessage = false
 		f.message = "设备已登录"

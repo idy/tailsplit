@@ -52,6 +52,10 @@
 - Preserve scalar YAML exit IDs and route references as validated strings in
   configuration responses, keeping saved devices visible and intact when adding
   another exit, including leading-zero and large numeric identities.
+- Start focused primary login when another authenticated device owns the core,
+  while preserving an active device's authorization recovery and keeping macOS
+  helper shutdown off the event loop. Complete a saved device's login even when
+  its helper exits before the next desktop update.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

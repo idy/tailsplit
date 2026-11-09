@@ -37,12 +37,15 @@ type Snapshot struct {
 	MagicDNSSuffix string
 	Mode           string
 	RoutingMode    string
-	BackendState   string
-	Error          string
-	Hostname       string
-	ExitNodes      []tailsplit.ExitNode
-	Active         bool
-	PingAvailable  bool
+	// TrafficExit is the logical device selected by the current helper, which
+	// can differ from configuration saved since that helper started.
+	TrafficExit   string
+	BackendState  string
+	Error         string
+	Hostname      string
+	ExitNodes     []tailsplit.ExitNode
+	Active        bool
+	PingAvailable bool
 	// Exits holds additional devices' latest status, keyed by exit ID. The
 	// identity fields above always describe the primary device; State, Active,
 	// Mode and RoutingMode describe the overall connection.
@@ -61,6 +64,17 @@ type ExitSnapshot struct {
 	ExitVisible    bool
 	ExitNodes      []tailsplit.ExitNode
 	PingAvailable  bool
+}
+
+// LoginExitID identifies the device supplying the current helper's authorization.
+func (s Snapshot) LoginExitID() string {
+	if s.Focus != "" {
+		return s.Focus
+	}
+	if (s.Mode == "proxy" || s.Mode == "tun") && s.TrafficExit != "" {
+		return s.TrafficExit
+	}
+	return tailsplit.MainExit
 }
 
 func (s Snapshot) clone() Snapshot {
@@ -120,6 +134,7 @@ func (c *Controller) Snapshot() Snapshot {
 	defer c.mu.Unlock()
 	snapshot := c.snapshot.clone()
 	snapshot.Active = c.command != nil || c.loggingOut
+	snapshot.TrafficExit = c.trafficExit
 	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
 }
@@ -316,11 +331,15 @@ func (c *Controller) start(mode, focus string) error {
 		(trafficExit == tailsplit.MainExit || mode == "login" || mode == "discovery") {
 		c.snapshot.BackendState = ""
 	}
-	if mode == "login" && focus != "" && focus != tailsplit.MainExit {
+	authExit := focus
+	if mode == "proxy" || mode == "tun" {
+		authExit = trafficExit
+	}
+	if authExit != "" && authExit != tailsplit.MainExit {
 		// LoginFlow must wait for this helper's status, not a previous session.
-		exit := c.snapshot.Exits[focus]
+		exit := c.snapshot.Exits[authExit]
 		exit.BackendState = ""
-		c.setExit(focus, exit)
+		c.setExit(authExit, exit)
 	}
 	c.command, c.input = command, input
 	c.stopping = false

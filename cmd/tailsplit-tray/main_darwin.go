@@ -89,6 +89,10 @@ func desktopActionOperation(action string, controller desktopActionController, f
 		flow.Cancel()
 		return controller.Stop, nil
 	case "login":
+		if desktopLoginReplacesHelper(controller.Snapshot()) {
+			flow.Cancel()
+			return func() error { return prepareDesktopLogin(controller) }, nil
+		}
 		return nil, requestDesktopLogin(controller, flow)
 	case "logout":
 		flow.Cancel()
@@ -337,11 +341,12 @@ func main() {
 			var pendingRequest chan error
 			var pendingAction string
 			completeRequest := func(err error) bool {
-				if pendingRequest == nil {
+				reply := pendingRequest
+				pendingRequest, pendingAction = nil, ""
+				if reply == nil {
 					return false
 				}
-				pendingRequest <- err
-				pendingRequest, pendingAction = nil, ""
+				reply <- err
 				return true
 			}
 			reloadPreferences := func() {
@@ -359,7 +364,15 @@ func main() {
 			requestLogin := func() error {
 				return nativePrimarySignIn(*config,
 					func() error { showConfiguration(); return nil },
-					func() error { return requestDesktopLogin(controller, &flow) })
+					func() error {
+						operation, err := desktopActionOperation("login", controller, &flow, nil)
+						if err != nil || operation == nil {
+							return err
+						}
+						editing, pendingAction = true, "login"
+						go func() { settingsDone <- operation() }()
+						return nil
+					})
 			}
 			loginItemStatus := tray.LoginItemUnavailable
 			refreshLoginItem := func() {
@@ -543,7 +556,7 @@ func main() {
 						// panel sees the actual status before its request completes.
 						refreshLoginItem()
 					}
-					if action, _ := splitExitAction(pendingAction); action == "login-exit" {
+					if action, _ := splitExitAction(pendingAction); action == "login-exit" || action == "login" {
 						err = finishDesktopExitLogin(&flow, err)
 						if err == nil {
 							openReadyLogin(controller.Snapshot())
