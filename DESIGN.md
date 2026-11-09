@@ -319,11 +319,15 @@ Chat is disabled, and all runtime assets are embedded and served locally.
 
 Settings › General includes an immediate Page companion switch, independent of
 network configuration and settings drafts. The menu's Hide action updates that
-switch too. The visibility preference is stored for the browser origin when
-storage is available. Hiding the document or leaving the page destroys the
-companion and its listeners; returning restores it if enabled. Peetty suppresses
-autonomous walking and jumping under reduced motion. Companion controls follow
-the panel's English/Chinese language in place.
+switch too. Visibility is saved in the app's persistent UI preferences, preserving
+language and network configuration across ports, restarts and updates. Mounting
+waits for that preference to load; failed saves restore the saved choice and show
+a localized error. Hiding the document or leaving the page destroys the companion
+and its listeners; returning restores it if enabled. Reduced motion uses immediate
+safe placement instead of falling, walking or jumping, including input-focus
+avoidance and live preference changes. Companion controls follow the panel's
+English/Chinese language in place. Long log text is measured as one conservative
+clipped obstacle, retaining safe landing spots without enumerating every line.
 
 The build extracts the upstream shadow-root CSS into a same-origin stylesheet;
 the panel keeps its existing restrictive Content Security Policy. Provenance and

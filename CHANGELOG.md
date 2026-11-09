@@ -6,7 +6,7 @@
   local walking, jumping, dragging and hover actions. No AI connection or API key
   is required, and the existing Content Security Policy is preserved.
 - Add an immediate Page companion switch under Settings › General, synchronized
-  with the companion's Hide action. Remember visibility for the browser origin,
+  with the companion's Hide action. Remember visibility across app restarts,
   follow English/Chinese UI language, respect reduced motion, and stop the
   companion while the page is hidden.
 

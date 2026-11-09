@@ -42,6 +42,35 @@ func (s *Server) setLanguage(w http.ResponseWriter, r *http.Request) {
 	s.readLanguage(w, r)
 }
 
+func (s *Server) readCompanion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, struct {
+		Enabled bool `json:"enabled"`
+	}{Enabled: s.options.Language.CompanionEnabled()})
+}
+
+func (s *Server) setCompanion(w http.ResponseWriter, r *http.Request) {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		fail(w, http.StatusUnsupportedMediaType, "content_type", "请求必须使用 JSON。")
+		return
+	}
+	var request struct {
+		Enabled *bool `json:"enabled"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	var extra any
+	if decoder.Decode(&request) != nil || decoder.Decode(&extra) != io.EOF || request.Enabled == nil {
+		fail(w, http.StatusBadRequest, "request", "页面伙伴设置必须包含 enabled 布尔值。")
+		return
+	}
+	if err := s.options.Language.SetCompanionEnabled(*request.Enabled); err != nil {
+		fail(w, http.StatusInternalServerError, "companion", "无法保存页面伙伴设置："+err.Error())
+		return
+	}
+	s.readCompanion(w, r)
+}
+
 type languageResponseWriter struct {
 	http.ResponseWriter
 	english bool
@@ -94,6 +123,7 @@ var errorTranslations = map[string]string{
 	"无法读取日志。":                              "Could not read logs.",
 	"无法读取语言设置。":                            "Could not read language preferences.",
 	"语言设置必须为 auto、en 或 zh。":                "Language preference must be auto, en, or zh.",
+	"页面伙伴设置必须包含 enabled 布尔值。":              "Companion preferences must include an enabled boolean.",
 	"后台服务没有响应；请从“设置与工具 → 后台网络服务 → 更新或修复…”恢复服务": "The background service is not responding. Restore it from Settings & Tools → Background Network Service → Update or Repair…",
 }
 
@@ -103,6 +133,7 @@ var errorPrefixes = []struct{ chinese, english string }{
 	{"无法读取编辑内容：", "Could not read the edits: "},
 	{"无法应用配置：", "Could not apply the configuration: "},
 	{"无法保存语言设置：", "Could not save language preferences: "},
+	{"无法保存页面伙伴设置：", "Could not save companion preferences: "},
 }
 
 func translateError(message string) string {

@@ -36,6 +36,8 @@ var assets embed.FS
 var ErrBusy = errors.New("another app operation is in progress")
 
 type Options struct {
+	// Language shares persisted UI preferences with the desktop app, including
+	// companion visibility. A nil store is loaded from ConfigPath by Start.
 	Language   *locale.Store
 	ConfigPath string
 	Listen     string
@@ -123,6 +125,8 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/language", s.readLanguage)
 	mux.HandleFunc("POST /api/language", s.setLanguage)
+	mux.HandleFunc("GET /api/companion", s.readCompanion)
+	mux.HandleFunc("POST /api/companion", s.setCompanion)
 	mux.HandleFunc("GET /api/config", s.readConfig)
 	mux.HandleFunc("GET /api/state", s.readState)
 	mux.HandleFunc("POST /api/preview", s.preview)

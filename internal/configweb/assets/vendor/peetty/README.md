@@ -11,7 +11,13 @@ assets. Normal TailSplit builds embed the committed assets and need no Node.js,
 npm, GitHub Packages authentication or CDN access.
 
 The build moves the upstream shadow-root stylesheet into `peetty.css`, loaded by
-a same-origin link. No inline-style CSP exception is needed. Other upstream
-behavior is retained. The host integration in `../../companion.js` uses the
-bundled Miru preset and disables chat. Chat chunks and provider packages are not
-included; do not enable chat using this bundle.
+a same-origin link. No inline-style CSP exception is needed. Additional
+adaptations in `scripts/peetty-vendor-tools.mjs` place the figure immediately
+instead of falling or jumping under reduced motion, interrupt motion when that
+preference changes, and treat oversized text as one clipped obstacle so long
+logs do not invalidate a complete page scan.
+
+The builder invokes npm's JavaScript entry through Node on Windows and stages
+all output until the build succeeds. The host integration in `../../companion.js`
+uses the bundled Miru preset and disables chat. Chat chunks and provider packages
+are not included; do not enable chat using this bundle.

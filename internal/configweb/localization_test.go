@@ -107,6 +107,184 @@ func TestLanguageAPIRestrictions(t *testing.T) {
 	}
 }
 
+func TestCompanionAPIIsIndependentAndPersistent(t *testing.T) {
+	server, path, applied := testServer(t)
+	_, revision, err := tray.ReadConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := request(t, server, "GET", "/api/companion", nil, nil)
+	if status != 200 || strings.TrimSpace(string(body)) != `{"enabled":true}` {
+		t.Fatal("companion did not default to enabled", status, string(body))
+	}
+	status, body = request(t, server, "POST", "/api/language", map[string]string{"preference": "zh"}, nil)
+	if status != 200 {
+		t.Fatal(status, string(body))
+	}
+	for _, enabled := range []bool{false, true, false} {
+		status, body = request(t, server, "POST", "/api/companion", map[string]bool{"enabled": enabled}, map[string]string{
+			"Content-Type": "application/json; charset=utf-8", "Origin": "http://" + server.address,
+		})
+		var state struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if json.Unmarshal(body, &state) != nil || status != 200 || state.Enabled == nil || *state.Enabled != enabled {
+			t.Fatal(status, string(body))
+		}
+	}
+	status, body = request(t, server, "GET", "/api/language", nil, nil)
+	if status != 200 || !bytes.Contains(body, []byte(`"preference":"zh"`)) {
+		t.Fatal("companion change lost language", status, string(body))
+	}
+	status, body = request(t, server, "POST", "/api/language", map[string]string{"preference": "en"}, nil)
+	if status != 200 {
+		t.Fatal(status, string(body))
+	}
+	status, body = request(t, server, "GET", "/api/companion", nil, nil)
+	if status != 200 || strings.TrimSpace(string(body)) != `{"enabled":false}` {
+		t.Fatal("language change lost companion preference", status, string(body))
+	}
+	data, after, err := tray.ReadConfigDocument(path)
+	if err != nil || string(data) != fixtureConfig || after != revision || applied.Load() != 0 {
+		t.Fatal("UI preference touched configuration or runtime")
+	}
+	// Keep the old listener alive to ensure a different loopback port is used.
+	restarted, err := Start(Options{ConfigPath: path, Apply: func(context.Context, func(tray.Snapshot) error, func() error) error {
+		t.Error("companion preference invoked apply")
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if restarted.address == server.address {
+		t.Fatal("restart test did not use a different port")
+	}
+	status, body = request(t, restarted, "GET", "/api/companion", nil, nil)
+	if status != 200 || strings.TrimSpace(string(body)) != `{"enabled":false}` {
+		t.Fatal("companion preference did not survive new server/port", status, string(body))
+	}
+	status, body = request(t, restarted, "GET", "/api/language", nil, nil)
+	if status != 200 || !bytes.Contains(body, []byte(`"preference":"en"`)) {
+		t.Fatal("restart lost language", status, string(body))
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+	afterRestart := locale.NewStore(path)
+	if afterRestart.CompanionEnabled() || afterRestart.Get().Preference != "en" {
+		t.Fatal("UI preferences did not survive server shutdown")
+	}
+}
+
+func TestCompanionAPIUsesSharedLanguageStore(t *testing.T) {
+	_, path, _ := testServer(t)
+	shared := locale.NewStore(path)
+	server, err := Start(Options{ConfigPath: path, Language: shared, Apply: func(context.Context, func(tray.Snapshot) error, func() error) error {
+		t.Error("companion preference invoked apply")
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := shared.SetCompanionEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	status, body := request(t, server, "GET", "/api/companion", nil, nil)
+	if status != 200 || strings.TrimSpace(string(body)) != `{"enabled":false}` {
+		t.Fatal("shared store ignored", status, string(body))
+	}
+	status, body = request(t, server, "POST", "/api/companion", map[string]bool{"enabled": true}, nil)
+	if status != 200 || !shared.CompanionEnabled() {
+		t.Fatal("API did not update shared UI store", status, string(body))
+	}
+}
+
+func TestCompanionAPIRestrictions(t *testing.T) {
+	server, path, applied := testServer(t)
+	for _, test := range []struct {
+		name, method, body, header, value string
+		status                            int
+		code                              string
+	}{
+		{"get unauthorized", "GET", "", "Authorization", "", 401, "authorization"},
+		{"get origin", "GET", "", "Origin", "https://foreign.example", 403, "origin"},
+		{"get host", "GET", "", "Host", "foreign.example", 403, "origin"},
+		{"post unauthorized", "POST", `{"enabled":false}`, "Authorization", "", 401, "authorization"},
+		{"post origin", "POST", `{"enabled":false}`, "Origin", "https://foreign.example", 403, "origin"},
+		{"post host", "POST", `{"enabled":false}`, "Host", "foreign.example", 403, "origin"},
+		{"content type", "POST", `{"enabled":false}`, "Content-Type", "text/plain", 415, "content_type"},
+		{"content type prefix", "POST", `{"enabled":false}`, "Content-Type", "application/json-invalid", 415, "content_type"},
+		{"missing enabled", "POST", `{}`, "", "", 400, "request"},
+		{"null", "POST", `null`, "", "", 400, "request"},
+		{"null enabled", "POST", `{"enabled":null}`, "", "", 400, "request"},
+		{"string enabled", "POST", `{"enabled":"false"}`, "", "", 400, "request"},
+		{"number enabled", "POST", `{"enabled":0}`, "", "", 400, "request"},
+		{"array enabled", "POST", `{"enabled":[]}`, "", "", 400, "request"},
+		{"array", "POST", `[]`, "", "", 400, "request"},
+		{"empty", "POST", ``, "", "", 400, "request"},
+		{"malformed", "POST", `{"enabled":`, "", "", 400, "request"},
+		{"unknown field", "POST", `{"enabled":false,"other":true}`, "", "", 400, "request"},
+		{"trailing", "POST", `{"enabled":false} {}`, "", "", 400, "request"},
+		{"oversized", "POST", `{"enabled":false}` + strings.Repeat(" ", 1024), "", "", 400, "request"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(test.method, "http://"+server.address+"/api/companion", strings.NewReader(test.body))
+			req.Header.Set("Authorization", "Bearer "+server.token)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept-Language", "en")
+			if test.header == "Host" {
+				req.Host = test.value
+			} else if test.header != "" {
+				req.Header.Set(test.header, test.value)
+			}
+			response := httptest.NewRecorder()
+			server.handler().ServeHTTP(response, req)
+			var failure struct {
+				Code  string            `json:"code"`
+				Error string            `json:"error"`
+				I18n  map[string]string `json:"error_i18n"`
+			}
+			if response.Code != test.status || json.Unmarshal(response.Body.Bytes(), &failure) != nil || failure.Code != test.code {
+				t.Fatal(response.Code, response.Body.String())
+			}
+			if failure.Error == "" || failure.Error != failure.I18n["en"] || failure.I18n["en"] == failure.I18n["zh"] {
+				t.Fatal("error was not localized", response.Body.String())
+			}
+		})
+	}
+	if applied.Load() != 0 || !server.options.Language.CompanionEnabled() {
+		t.Fatal("invalid request changed state")
+	}
+	if _, err := os.Stat(path + ".ui.json"); !os.IsNotExist(err) {
+		t.Fatal("invalid request wrote UI preferences", err)
+	}
+	// Fail a save after an explicit false so the client can retain its last state.
+	if err := server.options.Language.Set("zh"); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.options.Language.SetCompanionEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path + ".ui.json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".ui.json", 0700); err != nil {
+		t.Fatal(err)
+	}
+	status, body := request(t, server, "POST", "/api/companion", map[string]bool{"enabled": true}, map[string]string{"Accept-Language": "en"})
+	if status != 500 || !bytes.Contains(body, []byte(`"code":"companion"`)) || !bytes.Contains(body, []byte("Could not save companion preferences: ")) {
+		t.Fatal(status, string(body))
+	}
+	if server.options.Language.CompanionEnabled() || server.options.Language.Get().Preference != "zh" || applied.Load() != 0 {
+		t.Fatal("save failure changed UI state or runtime")
+	}
+}
+
 func TestEnglishErrorsPreserveDiagnosticsAndOtherContent(t *testing.T) {
 	server, _, _ := testServer(t)
 	for _, language := range []string{"", "zh", "en"} {

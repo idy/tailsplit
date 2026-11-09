@@ -161,8 +161,8 @@ The CLI example uses the same portable preferences with an illustrative exit.
 The local configuration page includes a [Peetty](https://github.com/idy/peetty)
 Miru companion that walks and jumps between safe page edges. Drag it to move it,
 or hover for actions. **Settings › General › Page companion** hides or restores
-it immediately; the preference is remembered for the page's browser origin.
-The companion runs locally with bundled assets, respects reduced motion, and
+it immediately; the preference is saved with the app's UI preferences and survives
+restarts and updates. The companion runs locally with bundled assets, respects reduced motion, and
 requires no AI connection or API key.
 
 ## CLI

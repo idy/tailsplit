@@ -33,8 +33,10 @@ stylesheet and complete license are in
 `internal/configweb/assets/vendor/peetty/`. Source revision:
 `ba28bf822a1fee9f1961b2427b38548f23f27612`.
 
-The only source adaptation moves the overlay's shadow-root stylesheet into a
-same-origin CSS file to preserve the panel's restrictive Content Security Policy.
+TailSplit adaptations move the overlay's shadow-root stylesheet into a same-origin
+CSS file to preserve the restrictive Content Security Policy, make reduced-motion
+placement immediate, and bound long-text scans using a clipped bounding rectangle.
+The deterministic adaptations are in `scripts/peetty-vendor-tools.mjs`.
 Chat is disabled; no chat or provider dependencies are shipped. Regenerate the
 assets with `node scripts/vendor-peetty.mjs` (Node.js 22.19+, Git, npm and network
 access are needed only when updating the vendored assets).
