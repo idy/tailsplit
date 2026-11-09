@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/idy/tailsplit/internal/privatefs"
@@ -288,8 +290,7 @@ func TestDownloadCancellationAndTimeoutRemovePartialArtifacts(t *testing.T) {
 	}{
 		{name: "manifest", manifest: true},
 		{name: "package"},
-		{name: "package timeout", timeout: true},
-		{name: "manifest timeout", manifest: true, timeout: true},
+		{name: "overall timeout", manifest: true, timeout: true},
 	} {
 		t.Run(stage.name, func(t *testing.T) {
 			f := fixture(t, "v0.6.2", "darwin", "arm64")
@@ -337,6 +338,94 @@ func TestDownloadCancellationAndTimeoutRemovePartialArtifacts(t *testing.T) {
 				t.Fatalf("unexpected canceled download: err=%v state=%+v", err, u.Snapshot())
 			}
 			requireEmptyTemp(t, u)
+		})
+	}
+}
+
+// stagedTimeoutBody returns real fixture bytes, then waits for the updater's
+// actual context deadline. No socket or wall-clock scheduling is involved.
+type stagedTimeoutBody struct {
+	ctx    context.Context
+	reader *bytes.Reader
+}
+
+func (body *stagedTimeoutBody) Read(data []byte) (int, error) {
+	if body.reader.Len() > 0 {
+		return body.reader.Read(data)
+	}
+	<-body.ctx.Done()
+	return 0, body.ctx.Err()
+}
+
+func (*stagedTimeoutBody) Close() error { return nil }
+
+func TestDownloadStageTimeoutsRemovePartialArtifacts(t *testing.T) {
+	for _, stage := range []string{"manifest", "package"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := fixture(t, "v0.6.2", "darwin", "arm64")
+				started := make(chan struct{})
+				partial := f.payload[:len(f.payload)/2]
+				u := New("0.6.1", false)
+				u.goos, u.goarch = "darwin", "arm64"
+				u.tempRoot = t.TempDir()
+				u.downloadTimeout = 75 * time.Millisecond
+				u.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					isSums := strings.HasSuffix(request.URL.Path, "/SHA256SUMS")
+					isPackage := strings.HasSuffix(request.URL.Path, ".zip")
+					if stage == "manifest" && isSums || stage == "package" && isPackage {
+						close(started)
+						if isSums {
+							<-request.Context().Done()
+							return nil, request.Context().Err()
+						}
+						return &http.Response{
+							StatusCode:    http.StatusOK,
+							ContentLength: int64(len(f.payload)),
+							Body:          &stagedTimeoutBody{ctx: request.Context(), reader: bytes.NewReader(partial)},
+						}, nil
+					}
+					recorder := httptest.NewRecorder()
+					f.serve(recorder, request)
+					return recorder.Result(), nil
+				})}
+				requireCheck(t, u)
+				done := make(chan error, 1)
+				go func() {
+					pkg, err := u.Download(context.Background())
+					if pkg.Path != "" {
+						_ = pkg.Cleanup()
+					}
+					done <- err
+				}()
+
+				// Wait keeps virtual time still until setup reaches the blocked stage.
+				// Slow Windows ACL setup cannot consume the 75ms budget.
+				synctest.Wait()
+				select {
+				case <-started:
+				default:
+					t.Fatal("the intended request did not start before the deadline")
+				}
+				if !u.Snapshot().Downloading {
+					t.Fatal("download ended before the intended stage timed out")
+				}
+				if stage == "package" {
+					if got := u.Snapshot().DownloadedBytes; got != int64(len(partial)) {
+						t.Fatalf("partial package was not written before timeout: %d", got)
+					}
+					entries, err := os.ReadDir(u.tempRoot)
+					if err != nil || len(entries) != 1 {
+						t.Fatalf("partial download directory missing before timeout: %v, %v", entries, err)
+					}
+				}
+				time.Sleep(u.downloadTimeout)
+				err := waitError(t, done)
+				if !errors.Is(err, context.DeadlineExceeded) || u.Snapshot().Downloading || u.Snapshot().Error == "" {
+					t.Fatalf("unexpected timed out download: err=%v state=%+v", err, u.Snapshot())
+				}
+				requireEmptyTemp(t, u)
+			})
 		})
 	}
 }
