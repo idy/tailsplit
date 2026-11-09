@@ -30,7 +30,10 @@
     pet = next;
     try {
       await next.mount();
-      if (current !== generation || pet !== next) return;
+      if (current !== generation || pet !== next) {
+        next.destroy();
+        return;
+      }
       // The companion's own Hide action shares the General settings switch.
       document.querySelector('peetty-companion').shadowRoot
         .querySelector('[data-action="hide"]').addEventListener('click', () => {
