@@ -499,19 +499,26 @@ Website-only pull requests run CI too, so required checks cannot remain pending
 because of path filters. The repository supports squash auto-merge: enable it on
 a pull request to merge once all required checks and conversations are satisfied.
 
-[The OpenAI PR review workflow](../.github/workflows/codex-review.yml) calls the
+[The OpenAI PR review workflow](../.github/workflows/openai-review.yml) calls the
 shared [GizClaw reviewer](https://github.com/GizClaw/github-workflows) at its
-`latest` tag. It reviews ready pull requests when they are opened, reopened,
-edited, marked ready or updated, and on request: post `@codex review` on its own
-line in a new PR comment, or run the workflow manually with the PR number. Each
-review publishes the `OpenAI PR Review`, `OpenAI Issue Review` and
-`OpenAI Code Review` checks on the reviewed head with one combined review report.
-The reviewer checks out only the trusted base and reads the PR diff as data; it
-never runs PR code. Actions reruns are rejected; post a new request instead.
-A request comment can name a focus on the same line, for example
-`@codex review for DNS restoration`.
+`latest` tag. Automatic reviews run directly on `push` for current internal PR
+updates targeting the default branch, and on `pull_request_target` for PR
+lifecycle/metadata changes and fork updates. The resolver rejects stale, draft,
+foreign and ambiguous pushed targets. The shared reviewer checks out only the
+trusted base and reads the PR diff as data; it never runs proposed project code.
+Each review publishes `OpenAI PR Review`, `OpenAI Issue Review` and
+`OpenAI Code Review` on the reviewed head with one combined report.
 
-The workflow takes effect from the default branch and needs the `OPENAI_API_KEY`
+GitHub does not count checks from `workflow_dispatch` or `issue_comment` workflow
+jobs as required merge checks. Those entry points remain available for review
+reports: post `@codex review` on its own line in a PR comment, optionally followed
+by a focus, or manually run `openai-review.yml` with the PR number. To refresh
+merge-gated results without a code update, edit the PR metadata to start an
+eligible `pull_request_target` run. Actions reruns are rejected by the shared
+reviewer; create a fresh request instead. See [GitHub's required-check event
+restrictions](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated).
+
+Fork review uses the default-branch caller and needs the `OPENAI_API_KEY`
 Actions secret. Because this repository is public, pull requests from forks are
 reviewed automatically with that key, so use a dedicated key with a spending
 limit. Diffs over 5,000,000 bytes wait until an admin comments
