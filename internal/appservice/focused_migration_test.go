@@ -71,8 +71,9 @@ func (c failedRequestConnection) Write(data []byte) (int, error) {
 }
 
 func TestMigratingSessionKeepsLeaseThroughEarlyExitCleanup(t *testing.T) {
-	for _, exit := range []string{"output error", "cancel", "close", "request error"} {
+	for _, exit := range []string{"output error", "cancel", "deadline", "close", "request error"} {
 		t.Run(exit, func(t *testing.T) {
+			t.Parallel()
 			config := migrationInventoryConfig(t, 2, tailsplit.RoutingSplit, "exit-2")
 			started, canceled, cleanup := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			finish := sync.OnceFunc(func() { close(cleanup) })
@@ -110,6 +111,12 @@ func TestMigratingSessionKeepsLeaseThroughEarlyExitCleanup(t *testing.T) {
 						err = Forward(ctx, connection, failingEventWriter{writeErr})
 					case "cancel":
 						err = Forward(ctx, connection, io.Discard)
+					case "deadline":
+						<-started
+						// Logout applies its context deadline to both directions.
+						// Cleanup must clear it and keep waiting for actual EOF.
+						_ = connection.SetDeadline(time.Now())
+						err = Forward(ctx, connection, io.Discard)
 					case "close":
 						<-started
 						err = connection.Close()
@@ -133,14 +140,17 @@ func TestMigratingSessionKeepsLeaseThroughEarlyExitCleanup(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("service did not receive stop")
 			}
-			if release, err := tailsplit.LockSavedState(config.StateDir); err == nil {
-				_ = release()
-				t.Fatal("legacy identity became usable during runner cleanup")
-			}
+			// Hold the live runner beyond the former five-second cleanup budget.
+			// Cancellation has already arrived, so this is cleanup time rather
+			// than a request that has not yet started.
 			select {
 			case err := <-done:
 				t.Fatalf("client finished before cleanup: %v", err)
-			default:
+			case <-time.After(5*time.Second + 100*time.Millisecond):
+			}
+			if release, err := tailsplit.LockSavedState(config.StateDir); err == nil {
+				_ = release()
+				t.Fatal("legacy identity became usable during runner cleanup")
 			}
 			finish()
 			select {
@@ -148,6 +158,10 @@ func TestMigratingSessionKeepsLeaseThroughEarlyExitCleanup(t *testing.T) {
 				if exit == "output error" || exit == "request error" {
 					if err != writeErr {
 						t.Fatalf("original write error was lost: %v", err)
+					}
+				} else if exit == "deadline" {
+					if !readTimedOut(err) {
+						t.Fatalf("operation read deadline was lost: %v", err)
 					}
 				} else if err != nil {
 					t.Fatal(err)

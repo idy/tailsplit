@@ -17,7 +17,7 @@ func TestOptionalEndpointIdentityIsCheckedWithoutRequiringItsNodeOnline(t *testi
 	if _, _, _, err := connectionReadiness(MainExit, required, identityOnly, latest, true, false); err == nil {
 		t.Fatal("a retained optional endpoint could use the wrong Tailnet")
 	}
-	latest["office"] = Status{BackendState: "Running", NetworkName: "office.example", ExitVisible: true, ExitOnline: false}
+	latest["office"] = Status{BackendState: "Running", NetworkName: "office.example", MagicDNSSuffix: "office.ts.net", ExitVisible: true, ExitOnline: false}
 	if done, _, _, err := connectionReadiness(MainExit, required, identityOnly, latest, true, false); err != nil || !done {
 		t.Fatal("a guarded optional device incorrectly required its node to be online", done, err)
 	}
@@ -412,7 +412,7 @@ func TestRequiredSecondaryLoginReturnsRecoverableError(t *testing.T) {
 	if done, waiting, pending, err := connectionReadiness(config.TrafficExitID(), required, nil, latest, true, false); err != nil || done || !waiting || pending != "office" {
 		t.Fatal("reauthorized required device bypassed exit readiness", done, waiting, pending, err)
 	}
-	latest["office"] = Status{BackendState: "Running", NetworkName: "office.ts.net", ExitVisible: true, ExitOnline: true}
+	latest["office"] = Status{BackendState: "Running", NetworkName: "office.ts.net", MagicDNSSuffix: "office.ts.net", ExitVisible: true, ExitOnline: true}
 	if done, _, _, err := connectionReadiness(config.TrafficExitID(), required, nil, latest, true, false); err != nil || !done {
 		t.Fatal("retry did not complete after required office signed in and became ready", done, err)
 	}

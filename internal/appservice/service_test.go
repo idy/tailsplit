@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -154,31 +157,162 @@ func TestStateLeaseCloseJoinsPendingReaderAndDuplicateClose(t *testing.T) {
 	}
 }
 
-func TestStateLeaseCloseBoundsBrokenService(t *testing.T) {
-	client, service := net.Pipe()
-	defer service.Close()
-	released := make(chan struct{})
-	connection := &stateLeaseConnection{Conn: client, release: func() error { close(released); return nil }}
-	closed := make(chan error, 1)
-	// The peer neither reads stop nor acknowledges cleanup. Both directions
-	// must be bounded, and duplicate Close must not restart that budget.
-	go func() { closed <- connection.Close() }()
-	select {
-	case err := <-closed:
-		var timeout net.Error
-		if !errors.As(err, &timeout) || !timeout.Timeout() {
-			t.Fatalf("unacknowledged cleanup did not report a timeout: %v", err)
-		}
-		if again := connection.Close(); again != err {
-			t.Fatalf("duplicate Close changed its result: %v, %v", err, again)
-		}
-	case <-time.After(7 * time.Second):
-		t.Fatal("Close hung on an unresponsive service")
+type timedOutReadConnection struct {
+	net.Conn
+	timedOut bool
+}
+
+func (c *timedOutReadConnection) Read(data []byte) (int, error) {
+	if !c.timedOut {
+		c.timedOut = true
+		return 0, os.ErrDeadlineExceeded
 	}
-	select {
-	case <-released:
-	default:
-		t.Fatal("failed transport retained its local lease after the bounded wait")
+	return c.Conn.Read(data)
+}
+
+func TestStateLeaseCloseAcceptsConfirmedEOF(t *testing.T) {
+	for _, path := range []string{"already EOF", "drain timeout"} {
+		t.Run(path, func(t *testing.T) {
+			client, service := net.Pipe()
+			defer service.Close()
+			released := make(chan struct{})
+			connection := &stateLeaseConnection{Conn: client, release: func() error { close(released); return nil }}
+			if path == "already EOF" {
+				_ = service.Close()
+				if _, err := connection.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+					t.Fatal("missing orderly EOF", err)
+				}
+			} else {
+				connection.Conn = &timedOutReadConnection{Conn: client}
+				go func() {
+					defer service.Close()
+					var command [5]byte
+					_, _ = io.ReadFull(service, command[:])
+					_, _ = io.WriteString(service, "{\"event\":\"stopped\"}\n")
+				}()
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- connection.Close() }()
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("confirmed cleanup retained its lease")
+			}
+			select {
+			case <-released:
+			default:
+				t.Fatal("confirmed cleanup did not release its lease")
+			}
+		})
+	}
+}
+
+// A hard failure followed by EOF models transports whose next read reports EOF
+// after losing the channel, while the service can still be cleaning up.
+type failedCleanupConnection struct {
+	net.Conn
+	failed bool
+	closed chan struct{}
+}
+
+func (c *failedCleanupConnection) Read([]byte) (int, error) {
+	if !c.failed {
+		c.failed = true
+		return 0, errors.New("fixture transport failure before cleanup acknowledgement")
+	}
+	return 0, io.EOF
+}
+
+func (c *failedCleanupConnection) Close() error {
+	defer close(c.closed)
+	return c.Conn.Close()
+}
+
+func TestStateLeaseCloseRetainsUnconfirmedCleanup(t *testing.T) {
+	if mode := os.Getenv("TAILSPLIT_TEST_LEASE_FAILURE"); mode != "" {
+		unlock, err := tailsplit.LockSavedState(os.Getenv("TAILSPLIT_TEST_LEASE_DIRECTORY"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		client, service := net.Pipe()
+		defer service.Close()
+		failed := &failedCleanupConnection{Conn: client, closed: make(chan struct{})}
+		connection := &stateLeaseConnection{Conn: failed, release: unlock}
+		if mode == "prior read" {
+			if _, err := connection.Read(make([]byte, 1)); err == nil {
+				t.Fatal("fixture read did not fail")
+			}
+		}
+		go func() {
+			<-failed.closed
+			// The peer never reads stop, so reaching Close also proves the stop
+			// write was bounded. Collect after the transport failure to ensure
+			// the parked Close keeps the real lock file rooted.
+			for range 5 {
+				runtime.GC()
+			}
+			_, _ = fmt.Fprintln(os.Stdout, "lease retained after GC")
+		}()
+		_ = connection.Close()
+		t.Fatal("Close returned without confirmed cleanup")
+	}
+
+	for _, mode := range []string{"close read", "prior read"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			directory := privateTestDirectory(t)
+			command := exec.Command(os.Args[0], "-test.run=^TestStateLeaseCloseRetainsUnconfirmedCleanup$", "-test.timeout=30s")
+			command.Env = append(os.Environ(), "TAILSPLIT_TEST_LEASE_FAILURE="+mode, "TAILSPLIT_TEST_LEASE_DIRECTORY="+directory)
+			var diagnostic bytes.Buffer
+			command.Stderr = &diagnostic
+			output, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			ready := make(chan bool, 1)
+			go func() {
+				reader := bufio.NewScanner(output)
+				ready <- reader.Scan() && reader.Text() == "lease retained after GC"
+			}()
+			waited := make(chan struct{})
+			var childErr error
+			go func() { childErr = command.Wait(); close(waited) }()
+			stop := sync.OnceFunc(func() { _ = command.Process.Kill(); <-waited })
+			defer stop()
+			select {
+			case ok := <-ready:
+				if !ok {
+					stop()
+					t.Fatalf("child did not retain cleanup: %v, %s", childErr, diagnostic.String())
+				}
+			case <-time.After(10 * time.Second):
+				stop()
+				t.Fatalf("stop write did not finish: %s", diagnostic.String())
+			}
+			if release, err := tailsplit.LockSavedState(directory); err == nil {
+				_ = release()
+				t.Fatal("unconfirmed cleanup allowed an overlapping CLI lease")
+			}
+			select {
+			case <-waited:
+				t.Fatalf("broker exited without confirmed cleanup: %v, %s", childErr, diagnostic.String())
+			default:
+			}
+			// Forced process termination is explicitly outside the in-process
+			// guarantee. It also leaves no parked goroutine in this test process.
+			stop()
+			if release, err := tailsplit.LockSavedState(directory); err != nil {
+				t.Fatal("terminated helper retained its OS lease", err)
+			} else {
+				_ = release()
+			}
+		})
 	}
 }
 

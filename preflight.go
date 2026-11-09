@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -78,54 +77,32 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 		return err
 	}
 	required, optional := preflightExits(config, engine.exits, requireExit)
-	// Several devices report concurrently; keep only each one's latest status.
-	var latestMu sync.Mutex
-	latest := map[string]Status{}
-	var callbackMu sync.Mutex
-	finished := false
-	finish := func(snapshot map[string]Status) error {
-		callbackMu.Lock()
-		defer callbackMu.Unlock()
-		finished = true
-		return isolateOptionalExits(ctx, config, runtime, optional, snapshot, callback)
+	session := preflightSession{
+		config: config, runtime: runtime, required: required, optional: optional,
+		requireExit: requireExit, discover: discover, callback: callback,
+		latest: make(map[string]Status),
 	}
 	changed := make(chan struct{}, 1)
 	watchError := make(chan error, 1)
 	go func() {
 		watchError <- engine.WatchStatus(ctx, func(status Status) {
-			callbackMu.Lock()
-			defer callbackMu.Unlock()
-			if finished {
-				return
-			}
-			status.Phase = "preflight"
-			if discover {
-				status.Phase = "discovery"
-				status.AuthURL = ""
-			}
-			if callback != nil {
-				callback(status)
-			}
-			latestMu.Lock()
-			latest[status.Exit] = status
-			latestMu.Unlock()
-			select {
-			case changed <- struct{}{}:
-			default:
+			if session.report(status) {
+				select {
+				case changed <- struct{}{}:
+				default:
+				}
 			}
 		})
 	}()
-	var deadline preflightDeadline
-	defer deadline.stop()
+	defer session.deadline.stop()
 	// Bound initial status delivery too; no callback must not mean no timeout.
-	deadline.update(len(required)+len(optional) > 0, false)
+	session.deadline.update(len(required)+len(optional) > 0, false)
 	label := func(id string) string {
 		if id == "" {
 			return "the primary exit"
 		}
 		return fmt.Sprintf("exit %q", id)
 	}
-	pending := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -135,48 +112,89 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 				return errors.New("Tailnet status ended before confirming the exit; TUN was not enabled")
 			}
 			return err
-		case <-deadline.timeout:
+		case <-session.deadline.timeout:
+			done, pending, err := session.check(ctx, true)
+			if err != nil || done {
+				return err
+			}
 			if !requireExit {
 				return errors.New("the device did not become ready or report its expected Tailnet identity")
 			}
-			latestMu.Lock()
-			snapshot := maps.Clone(latest)
-			latestMu.Unlock()
-			// Optional endpoints get the same bounded opportunity to report an
-			// authenticated state. After that budget, isolate only those still
-			// unavailable; required gateways must independently be fully ready.
-			ready, _, requiredPending, checkErr := connectionReadiness(config.TrafficExitID(), required, nil, snapshot, true, false)
-			if checkErr != nil {
-				return checkErr
-			}
-			if ready {
-				return finish(snapshot)
-			}
-			pending = requiredPending
 			if pending != "" {
 				return fmt.Errorf("the selected node for %s is unavailable in its Tailnet; TUN was not enabled", label(pending))
 			}
 			return errors.New("configured exit is unavailable in this Tailnet; TUN was not enabled")
 		case <-changed:
-			latestMu.Lock()
-			snapshot := maps.Clone(latest)
-			latestMu.Unlock()
-			var done, waiting bool
-			done, waiting, pending, err = connectionReadiness(config.TrafficExitID(), required, optional, snapshot, requireExit, discover)
-			if err != nil {
+			if done, _, err := session.check(ctx, false); err != nil || done {
 				return err
 			}
-			if done {
-				if !requireExit {
-					return nil
-				}
-				return finish(snapshot)
-			}
-			// Only an actual interactive login pauses the deadline. Backend
-			// Starting/Stopped transitions must not discard a running timeout.
-			deadline.update(waiting, awaitingInteractiveLogin(required, snapshot, discover))
 		}
 	}
+}
+
+// preflightSession serializes status publication with readiness and runtime
+// finalization. No callback can publish a newer identity between the final check
+// and adopting its protected runtime, or overwrite the final isolation status.
+// The deadline is owned by the waiting goroutine, independently of report.
+type preflightSession struct {
+	config             Config
+	runtime            *Compiled
+	required, optional []engineExit
+	requireExit        bool
+	discover           bool
+	callback           func(Status)
+	deadline           preflightDeadline
+
+	mu       sync.Mutex
+	latest   map[string]Status
+	finished bool
+}
+
+func (s *preflightSession) report(status Status) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return false
+	}
+	status.Phase = "preflight"
+	if s.discover {
+		status.Phase, status.AuthURL = "discovery", ""
+	}
+	if s.callback != nil {
+		s.callback(status)
+	}
+	s.latest[status.Exit] = status
+	return true
+}
+
+func (s *preflightSession) check(ctx context.Context, expired bool) (done bool, pending string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	optional := s.optional
+	if expired {
+		// Only optional endpoints may be isolated after their bounded wait.
+		// Required gateways still need their latest identity, DNS and node state.
+		optional = nil
+	}
+	// latest is a stable snapshot for this entire check and finalization; report
+	// uses the same lock, including while delivering its caller-visible callback.
+	done, waiting, pending, err := connectionReadiness(s.config.TrafficExitID(), s.required, optional, s.latest, s.requireExit, s.discover)
+	if err != nil {
+		return false, pending, err
+	}
+	if !done {
+		// Only an actual interactive login pauses the deadline. Backend
+		// Starting/Stopped transitions must not discard a running timeout.
+		if !expired {
+			s.deadline.update(waiting, awaitingInteractiveLogin(s.required, s.latest, s.discover))
+		}
+		return false, pending, nil
+	}
+	s.finished = true
+	if s.requireExit {
+		err = isolateOptionalExits(ctx, s.config, s.runtime, s.optional, s.latest, s.callback)
+	}
+	return true, "", err
 }
 
 // preflightExits checks routing metadata only when starting client traffic.
@@ -266,13 +284,35 @@ func connectionReadiness(interactiveExit string, required, optional []engineExit
 			pending = identityPending
 		}
 	}
+	if requireExit && !discover {
+		for _, exits := range [][]engineExit{required, optional} {
+			for _, exit := range exits {
+				status := snapshot[exit.id]
+				if status.BackendState == "Running" && !exitRoutingDNSReady(exit, status) {
+					done, waiting = false, true
+					if pending == "" {
+						pending = exit.id
+					}
+				}
+			}
+		}
+	}
 	return
 }
 
+// Running alone does not establish an extra's private DNS namespace: the SDK
+// fills the suffix separately from backend state, using the netmap's self name.
+// Wait for that routing metadata before retaining the endpoint, even without a
+// saved suffix or account guard. Primary DNS ownership has its own configuration;
+// login and discovery do not route traffic and do not need this additional check.
+func exitRoutingDNSReady(exit engineExit, status Status) bool {
+	return exit.id == "" || exit.id == MainExit || status.MagicDNSSuffix != ""
+}
+
 func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled, optional []engineExit, snapshot map[string]Status, callback func(Status)) error {
-	// The deadline can win a race with the latest status callback. Recheck
-	// mismatches here too: merely blocking a stale suffix would still leave the
-	// device's newly reported private suffix unprotected in the runtime policy.
+	// At the deadline, optional readiness no longer gates the connection. Still
+	// reject identity and suffix mismatches: blocking a stale saved suffix would
+	// leave the device's newly reported private suffix unprotected.
 	for _, exit := range optional {
 		if _, err := exitAuthenticationReady(exit, snapshot[exit.id]); err != nil {
 			return err
@@ -337,8 +377,9 @@ func isolateOptionalExits(ctx context.Context, config Config, runtime *Compiled,
 func unavailableOptionalExits(exits []engineExit, snapshot map[string]Status) map[string]bool {
 	blocked := make(map[string]bool)
 	for _, exit := range exits {
-		ready, err := exitAuthenticationReady(exit, snapshot[exit.id])
-		if !ready || err != nil {
+		status := snapshot[exit.id]
+		ready, err := exitAuthenticationReady(exit, status)
+		if !ready || err != nil || !exitRoutingDNSReady(exit, status) {
 			id := exit.id
 			if id == "" {
 				id = MainExit

@@ -305,9 +305,10 @@ func openLeasedSession(ctx context.Context, operation string, config tailsplit.C
 	return leased, nil
 }
 
-// Bound the cleanup handshake separately from the operation's context. A broken
-// service must not keep Close or a cancelled Forward blocked indefinitely.
-const sessionCleanupTimeout = 5 * time.Second
+// A broken transport cannot confirm that the service has stopped using the
+// migrated identity. Keep its lease and broker alive until process termination;
+// a forced kill or crash is an outer lifetime boundary this lock cannot prevent.
+var unconfirmedSessionCleanup <-chan struct{} = make(chan struct{})
 
 // stopSession uses the existing lifetime command without closing the read side:
 // the service sends its terminal event and EOF only after its runner returns.
@@ -316,9 +317,9 @@ func stopSession(connection net.Conn) {
 		leased.stopOnce.Do(func() { stopSession(leased.Conn) })
 		return
 	}
-	now := time.Now()
-	if connection.SetReadDeadline(now.Add(sessionCleanupTimeout)) != nil || connection.SetWriteDeadline(now.Add(time.Second)) != nil {
-		_ = connection.Close()
+	// An operation deadline may cancel its work, but it cannot certify cleanup.
+	_ = connection.SetReadDeadline(time.Time{})
+	if connection.SetWriteDeadline(time.Now().Add(time.Second)) != nil {
 		return
 	}
 	_, _ = io.WriteString(connection, "stop\n")
@@ -329,6 +330,7 @@ type stateLeaseConnection struct {
 	release  func() error
 	stopOnce sync.Once
 	readMu   sync.Mutex
+	readErr  error
 	once     sync.Once
 	err      error
 }
@@ -336,23 +338,44 @@ type stateLeaseConnection struct {
 func (c *stateLeaseConnection) Read(data []byte) (int, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
-	return c.Conn.Read(data)
+	n, err := c.Conn.Read(data)
+	if err != nil && !errors.Is(err, io.EOF) && !readTimedOut(err) {
+		// Some broken transports return EOF on their next read. Remember
+		// the failure so Close cannot mistake that for orderly cleanup.
+		c.readErr = err
+	}
+	return n, err
+}
+
+func readTimedOut(err error) bool {
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
 func (c *stateLeaseConnection) Close() error {
 	c.once.Do(func() {
 		// Stop before taking readMu: an existing reader can be waiting for the
-		// runner, which in turn needs this command to begin cleanup. Its read
-		// shares the cleanup deadline and finishes before we take over draining.
+		// runner, which in turn needs this command to begin cleanup.
 		stopSession(c)
 		c.readMu.Lock()
-		_, err := io.Copy(io.Discard, c.Conn)
+		var err error
+		for {
+			_, err = io.Copy(io.Discard, c.Conn)
+			if !readTimedOut(err) || c.Conn.SetReadDeadline(time.Time{}) != nil {
+				break
+			}
+		}
+		err = errors.Join(c.readErr, err)
 		closeErr := c.Conn.Close()
 		c.readMu.Unlock()
 		if err != nil {
-			err = fmt.Errorf("wait for network service cleanup: %w", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Network service cleanup could not be confirmed; saved device state remains locked. Stop the network service before terminating this helper: %v\n", err)
+			<-unconfirmedSessionCleanup
+			// Keep the release closure (including its lock file) rooted while
+			// blocked, even if the caller drops the connection and GC runs.
+			runtime.KeepAlive(c)
 		}
-		c.err = errors.Join(err, closeErr, c.release())
+		c.err = errors.Join(closeErr, c.release())
 	})
 	return c.err
 }
