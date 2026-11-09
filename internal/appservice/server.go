@@ -123,6 +123,12 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		fail("could not prepare private network service state")
 		return
 	}
+	if request.Op == "logout" {
+		if err := claimLogoutExit(config); err != nil {
+			fail("could not record private device logout")
+			return
+		}
+	}
 	// Start the lifetime monitor before opening any core. Both explicit stop
 	// and a vanished app close the engine, DNS session and routes.
 	watched := make(chan struct{})

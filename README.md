@@ -39,8 +39,12 @@ default exit on the right; no saved-exit count is shown. Each added exit is a se
 different Tailnet and needs its own authorization. Each device's login is saved
 locally and reused after restarting the app. Authorizing another exit does not
 sign out existing devices. Adding an exit disconnects an active session, opens
-browser sign-in to choose the network, then opens the
-node picker, without asking for a name first. Confirming the first node binds
+browser sign-in to choose the network, then opens the node picker, without asking
+for a name first. In active Global mode, a confirmation explains that this stops
+Kill-Switch protection and restores system networking. Cancel or Escape changes
+nothing. After confirmation the app stays disconnected, including after a save
+or login failure, until you explicitly reconnect. Add requires the desktop app;
+the standalone configuration page cannot authorize or add devices. Confirming the first node binds
 the exit's Tailnet guard and names it `<exit-device-name>@<network name>`.
 Automatically named profiles keep `auto_name: true`, so later node choices update
 the label without changing the profile ID or device identity. Existing custom
@@ -85,7 +89,11 @@ profiles or blocking the selected gateway. Reconnecting reevaluates them. The
 selected traffic device keeps its interactive login session alive until sign-in
 completes. If another required final or rule-group exit needs login, preflight
 stops with a recoverable sign-in error: open that saved exit, sign in, then retry
-connecting. Only the selected device's interactive authentication pauses the
+connecting. Initial device states, including Starting, Stopped and missing status,
+have a 45-second readiness budget. Optional devices without an identity guard
+also get that opportunity to report their login state; after the budget only
+unavailable optional endpoints are isolated, and required gateways must still be
+ready. Only the selected device's interactive authentication pauses the
 availability timeout; other backend transitions preserve its deadline.
 
 An extra's `tailnet` is its login identity guard; `magic_dns_suffix` stores the
@@ -101,9 +109,12 @@ removable. Additional exits keep their IDs and device state under
 `state_dir/exits/<id>/tailscale`, even when `main` is removed. **Remove exit** at
 the bottom of every picker also supports the last exit. After confirmation it
 disconnects, signs out only that device, and revision-checks removal of the local
-profile and its explicit route groups. Selectors that reference it become
-explicitly unset (`"-"`), so the next connection asks for a new choice; an explicit
-`rules.final` reference to it resets to `direct`. The app stays stopped. The
+profile. Selectors that reference it become explicitly unset (`"-"`), so the next
+connection asks for a new choice. Explicit `rules.final` and route-group references
+remain as dormant policy: choose replacements or explicitly edit those rules
+before another Split connection can start, even when the default is still ready.
+Adding a different device remains possible without deleting the retained policy.
+The app stays stopped. The
 remote device record remains in the Tailnet admin console; TailSplit has no
 management authority to delete it. There are no separate switch-network or
 sign-out controls; use Add exit to choose another network. Removing the last
@@ -115,7 +126,10 @@ listeners. **System routing** captures system traffic when `tun.enabled` is set.
 Both modes create a DNS TUN and require the privileged network service:
 Windows Setup installs it; macOS requests administrator approval on first connection.
 
-Configuration and device state are retained across normal updates.
+Configuration and device state are retained across normal updates. The network
+service imports primary state once. Newly encountered additional exits can import
+saved CLI or fallback state later; existing service-owned exits, including
+logged-out devices, retain authority and are never overwritten by an old CLI copy.
 
 New desktop profiles use [config.default.yaml](config.default.yaml): direct Internet
 IPv6 off, FakeIP and system TUN on, MTU 1400, Split/builtin rules, unmatched traffic

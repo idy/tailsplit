@@ -230,6 +230,33 @@ func TestInvalidEditsNeverApplyAndBrokenYAMLRemainsReadable(t *testing.T) {
 	}
 }
 
+func TestAliasExpansionRejectionNeverAppliesOrChangesRevision(t *testing.T) {
+	server, path, applied := testServer(t)
+	original := "a: &a [x]\n"
+	for depth := 1; depth <= 30; depth++ {
+		previous, anchor := strings.Repeat("a", depth), strings.Repeat("a", depth+1)
+		original += anchor + ": &" + anchor + " [*" + previous + ", *" + previous + "]\n"
+	}
+	original += "rules:\n  proxy_domains: &policy [*" + strings.Repeat("a", 31) + "]\ndns:\n  magic_domains: *policy\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, _ := tray.ReadConfigDocument(path)
+	for _, endpoint := range []string{"/api/preview", "/api/config"} {
+		status, body := request(t, server, "POST", endpoint, map[string]any{
+			"yaml": original, "revision": revision, "changes": map[string]any{"rules.proxy_domains": []string{}},
+		}, nil)
+		want := http.StatusBadRequest
+		if endpoint == "/api/config" {
+			want = http.StatusUnprocessableEntity
+		}
+		current, currentRevision, err := tray.ReadConfigDocument(path)
+		if status != want || !bytes.Contains(body, []byte("limit")) || applied.Load() != 0 || err != nil || currentRevision != revision || string(current) != original {
+			t.Fatalf("alias rejection crossed the apply/revision boundary: %d %s, %v", status, body, err)
+		}
+	}
+}
+
 func TestUnsupportedYAMLValuesRemainReadableInSourceEditor(t *testing.T) {
 	server, path, _ := testServer(t)
 	for _, text := range []string{

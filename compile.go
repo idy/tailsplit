@@ -520,14 +520,29 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	return result, nil
 }
 
-// ValidateTrafficExit requires a selected node on the traffic device before a
-// connection starts. It does not open saved state or check network availability.
-// Drafts without a node may still be saved and used for login and discovery.
+// ErrUnresolvedSplitExit identifies a missing device referenced by a live Split
+// final or route group. Such policy can be saved as a draft, but cannot connect.
+// Missing default devices, pending nodes and private-name owners do not use it.
+var ErrUnresolvedSplitExit = errors.New("unresolved Split traffic policy")
+
+// ValidateTrafficExit requires a selected traffic device and configured owners
+// for live Split policy before a connection starts. It does not open saved state
+// or check network availability. Dormant drafts remain usable for device sessions.
 func ValidateTrafficExit(config Config) error {
+	if config.Focus == "" && config.Rules.Mode != RoutingGlobal && !config.includePending {
+		if config.Rules.Final != "" && config.Rules.Final != "direct" && config.Rules.Final != "proxy" && !config.hasExit(config.Rules.Final) {
+			return fmt.Errorf("%w: exit %q for unmatched traffic is not configured", ErrUnresolvedSplitExit, config.Rules.Final)
+		}
+		for _, route := range config.Rules.Routes {
+			if len(route.Domains)+len(route.IPs) > 0 && !config.hasExit(route.Exit) {
+				return fmt.Errorf("%w: exit %q for routing rules is not configured", ErrUnresolvedSplitExit, route.Exit)
+			}
+		}
+	}
 	ids := config.ExitIDs()
 	if len(ids) == 0 && config.Focus == "" {
 		if config.Rules.Mode == RoutingGlobal || config.Rules.GFWList != "" || config.Rules.Source != nil && *config.Rules.Source != "" ||
-			len(config.Rules.ProxyDomains)+len(config.Rules.ProxyIPs)+len(config.Rules.Routes)+len(config.DNS.MagicDomains) > 0 ||
+			len(config.Rules.ProxyDomains)+len(config.Rules.ProxyIPs)+len(config.DNS.MagicDomains) > 0 ||
 			config.Rules.Final != "" && config.Rules.Final != "direct" {
 			return errors.New("configure an exit device before starting proxy routing")
 		}

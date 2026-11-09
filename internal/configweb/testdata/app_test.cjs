@@ -1462,6 +1462,211 @@ test('Add signs in and names the first exit without assigning a traffic default'
   assert.equal(app.config.values.rules.global_exit, '-');
 });
 
+const activeGlobalDocument = () => {
+  const initial = exitDocument('100.64.0.10', 'global');
+  initial.values.tun.enabled = true;
+  initial.yaml = initial.yaml.replace('enabled: false', 'enabled: true');
+  return initial;
+};
+const activeGlobalSnapshot = () => exitsSnapshot({ active: true, mode: 'tun', state: 'running' });
+const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/action'].includes(request.path));
+// Call the listener directly to verify its guards independently of disabled UI.
+const invokeAdd = (app) => app.$('#add-exit').listeners.click[0]();
+const answerAddConsent = (app, answer) => {
+  const dialog = app.$('#add-exit-consent-dialog');
+  dialog.returnValue = answer; dialog.close();
+};
+
+test('Global Add cancellation and Escape preserve protection and configuration without any mutation', async () => {
+  for (const dismissal of ['cancel', 'escape']) {
+    const initial = activeGlobalDocument();
+    const app = await page(activeGlobalSnapshot(), '', {}, initial);
+    const adding = invokeAdd(app);
+    await settle();
+    assert.equal(app.$('#add-exit-consent-dialog').open, true);
+    assert.equal(app.$('#add-exit').disabled, true);
+    assert.deepEqual(mutations(app), []);
+    await invokeAdd(app);
+    if (dismissal === 'escape') {
+      await app.$('#add-exit-consent-dialog').emit('cancel');
+      app.$('#add-exit-consent-dialog').close();
+    } else answerAddConsent(app, 'cancel');
+    await adding;
+    assert.deepEqual(mutations(app), []);
+    assert.equal(app.snapshot.active, true);
+    assert.equal(app.config, initial);
+    assert.equal(app.$('#raw-yaml').value, initial.yaml);
+    assert.equal(app.$('#add-exit').disabled, false);
+  }
+});
+
+test('confirmed Global Add stops before saving and sign-in, and never reconnects after success or failure', async () => {
+  for (const failure of ['', 'disconnect', 'save', 'login-exit']) {
+    const initial = activeGlobalDocument();
+    const app = await page(activeGlobalSnapshot(), '', {}, initial);
+    app.override = request => {
+      if (request.path === '/api/action') {
+        if (request.data.action === failure) return response({ error: `${failure} failed` }, false);
+        if (request.data.action === 'disconnect') Object.assign(app.snapshot, { active: false, mode: '', state: 'stopped' });
+        return response({ ok: true });
+      }
+      if (request.path === '/api/config' && request.method === 'POST') {
+        assert.equal(app.snapshot.active, false);
+        assert.deepEqual(request.data.changes, { exits: [{ id: 'exit-1', auto_name: true, exit_node: '' }] });
+        if (failure === 'save') return response({ error: 'save failed' }, false);
+        app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: request.data.changes.exits } };
+        app.snapshot.revision = 'added';
+        return response(app.config);
+      }
+      return undefined;
+    };
+    const adding = invokeAdd(app); await settle();
+    assert.equal(app.$('#add-exit-consent-dialog').open, true);
+    assert.deepEqual(mutations(app), []);
+    answerAddConsent(app, 'add'); await adding;
+    const steps = mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action);
+    assert.deepEqual(steps, failure === 'disconnect' ? ['disconnect'] : failure === 'save' ? ['disconnect', 'save'] : ['disconnect', 'save', 'login-exit']);
+    assert.equal(app.snapshot.active, failure === 'disconnect');
+    if (failure === 'disconnect' || failure === 'save') assert.equal(app.config, initial);
+    assert.equal(app.$('#notice').hidden, !failure);
+    assert.equal(app.$('#add-exit').disabled, false);
+  }
+});
+
+test('Add is disabled and its listener cannot save or act in unsupported or transitioning modes', async () => {
+  for (const change of [
+    { desktop: false },
+    ...['starting', 'stopping', 'authorizing', 'logging-out'].map(state => ({ state })),
+    { active: true, mode: 'discovery', state: 'checking' },
+    { active: true, mode: 'login', state: 'login' },
+  ]) {
+    const app = await page(exitsSnapshot(change), '', {}, exitDocument());
+    assert.equal(app.$('#add-exit').disabled, true, JSON.stringify(change));
+    await invokeAdd(app);
+    assert.deepEqual(mutations(app), []);
+    assert.ok(!app.$('#add-exit-consent-dialog').open);
+  }
+});
+
+test('invalid saved configurations disable Add and cannot be rewritten by its handler', async () => {
+  for (const active of [false, true]) {
+    const initial = { ...activeGlobalDocument(), valid: false, error: 'Invalid saved configuration' };
+    const app = await page(active ? activeGlobalSnapshot() : exitsSnapshot(), '', {}, initial);
+    assert.equal(app.$('#add-exit').disabled, true);
+    await invokeAdd(app);
+    assert.deepEqual(mutations(app), []);
+    assert.equal(app.config, initial);
+    assert.equal(app.$('#raw-yaml').value, initial.yaml);
+    assert.ok(!app.$('#add-exit-consent-dialog').open);
+  }
+});
+
+test('valid dormant references still permit adding a replacement without changing the retained rules', async () => {
+  const initial = exitDocument();
+  initial.values.rules = { mode: 'split', final: 'removed', routes: [{ exit: 'removed', domains: ['corp.example'] }] };
+  initial.yaml = initial.yaml.replace('mode: split\n', 'mode: split\n  final: removed\n  routes:\n    - exit: removed\n      domains: [corp.example]\n');
+  const app = await page(exitsSnapshot(), '', {}, initial);
+  assert.equal(app.$('#add-exit').disabled, false);
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.deepEqual(request.data.changes, { exits: [{ id: 'exit-1', auto_name: true, exit_node: '' }] });
+    app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: request.data.changes.exits } };
+    app.snapshot.revision = 'added';
+    return response(app.config);
+  };
+  await invokeAdd(app);
+  assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action), ['save', 'login-exit']);
+  assert.deepEqual(app.config.values.rules, initial.values.rules);
+});
+
+test('Add handler blocks drafts, stale documents, lost connections, pending actions and full lists', async () => {
+  for (const condition of ['draft', 'external', 'stale', 'lost', 'busy', 'full']) {
+    const initial = exitDocument();
+    if (condition === 'full') initial.values.exits = Array.from({ length: 8 }, (_, index) => ({ id: `saved-${index}`, exit_node: '' }));
+    const app = await page(exitsSnapshot(), '', {}, initial);
+    const pending = deferred();
+    let working;
+    if (['draft', 'external'].includes(condition)) await app.input('#level', 'debug');
+    if (['external', 'stale'].includes(condition)) {
+      app.snapshot = { ...app.snapshot, revision: 'external' };
+      if (condition === 'stale') {
+        app.override = request => request.path === '/api/config' ? pending.promise : undefined;
+        working = app.poll(); await settle();
+      } else await app.poll();
+    }
+    if (condition === 'lost') {
+      app.override = request => request.path === '/api/state' ? response({ error: 'Unavailable' }, false) : undefined;
+      await app.poll();
+    }
+    if (condition === 'busy') {
+      app.override = request => request.path === '/api/action' ? pending.promise : undefined;
+      working = app.$('#refresh-exits').emit('click'); await settle();
+    }
+    const before = mutations(app).length;
+    assert.equal(app.$('#add-exit').disabled, true, condition);
+    await invokeAdd(app);
+    assert.equal(mutations(app).length, before, condition);
+    if (working) {
+      pending.resolve(response(condition === 'stale' ? { ...initial, revision: 'external' } : { ok: true }));
+      await working;
+    }
+  }
+});
+
+test('Global Add rechecks capability, revision and busy state after consent before stopping anything', async () => {
+  for (const condition of ['revision', 'unsupported', 'transition', 'lost', 'draft']) {
+    const app = await page(activeGlobalSnapshot(), '', {}, activeGlobalDocument());
+    const adding = invokeAdd(app); await settle();
+    assert.equal(app.$('#add-exit-consent-dialog').open, true);
+    if (condition === 'revision') {
+      app.snapshot = { ...app.snapshot, revision: 'newer' };
+      app.config = { ...app.config, revision: 'newer' };
+    } else if (condition === 'unsupported') app.snapshot = { ...app.snapshot, desktop: false };
+    else if (condition === 'transition') app.snapshot = { ...app.snapshot, state: 'stopping' };
+    else if (condition === 'lost') app.override = request => request.path === '/api/state' ? response({ error: 'Unavailable' }, false) : undefined;
+    else await app.input('#level', 'debug');
+    await app.poll();
+    answerAddConsent(app, 'add'); await adding;
+    assert.deepEqual(mutations(app), [], condition);
+    assert.equal(app.snapshot.active, true);
+  }
+});
+
+test('Add cannot save after disconnect when state is stale, unavailable or still active', async () => {
+  for (const condition of ['revision', 'unsupported', 'lost', 'active']) {
+    const app = await page(activeGlobalSnapshot(), '', {}, activeGlobalDocument());
+    app.override = request => {
+      if (request.path === '/api/action' && request.data.action === 'disconnect') {
+        app.snapshot = { ...app.snapshot, active: condition === 'active', mode: condition === 'active' ? 'tun' : '', state: condition === 'active' ? 'running' : 'stopped' };
+        if (condition === 'revision') {
+          app.config = { ...app.config, revision: 'newer' }; app.snapshot.revision = 'newer';
+        } else if (condition === 'unsupported') app.snapshot.desktop = false;
+        return response({ ok: true });
+      }
+      if (condition === 'lost' && request.path === '/api/state') return response({ error: 'Unavailable' }, false);
+      return undefined;
+    };
+    const adding = invokeAdd(app); await settle();
+    answerAddConsent(app, 'add'); await adding;
+    assert.deepEqual(mutations(app).map(request => request.data.action), ['disconnect'], condition);
+  }
+});
+
+test('Add cannot authorize after its saved profile is superseded or desktop capability is lost', async () => {
+  for (const condition of ['revision', 'unsupported']) {
+    const app = await page(exitsSnapshot(), '', {}, exitDocument());
+    app.override = request => {
+      if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+      const saved = { ...app.config, revision: 'added', values: { ...app.config.values, exits: request.data.changes.exits } };
+      app.config = condition === 'revision' ? { ...saved, revision: 'newer' } : saved;
+      app.snapshot = { ...app.snapshot, revision: app.config.revision, desktop: condition !== 'unsupported' };
+      return response(saved);
+    };
+    await invokeAdd(app);
+    assert.deepEqual(mutations(app).map(request => request.path), ['/api/config']);
+  }
+});
+
 test('automatic names follow later node changes without changing the profile ID', async () => {
   const document = multiExitDocument('100.101.0.11');
   Object.assign(document.values.exits[0], { name: 'hk-gateway@office.ts.net', auto_name: true });
@@ -1599,6 +1804,68 @@ test('old Tailnet ping results cannot appear after network switching or sign-out
     assert.equal(nodeLatency(app, '100.64.0.20').children[0].textContent, '—');
     assert.equal(app.$('#ping-announcement').textContent, '');
   }
+});
+
+test('additional device identity changes discard in-flight ping successes and failures, even after identity returns', async () => {
+  for (const change of [{ network: 'other.ts.net' }, { hostname: 'replacement' }, { backend_state: 'NeedsLogin' }, null]) {
+    for (const failed of [false, true]) {
+      const app = await page(officeSnapshot(), '', { language: 'en' }, multiExitDocument('100.101.0.11'));
+      await extraRow(app, 'office').emit('click');
+      const pending = deferred();
+      app.override = request => request.path === '/api/exit-ping' ? pending.promise : undefined;
+      const pinging = pickerPingButton(app, '100.101.0.12').emit('click'); await settle();
+      const original = app.snapshot.exits.office;
+      app.snapshot = { ...app.snapshot, exits: change ? { office: { ...original, ...change } } : {} };
+      await app.poll();
+      app.snapshot = { ...app.snapshot, exits: { office: original } }; await app.poll();
+      pending.resolve(failed ? response({ error: 'Old failure' }, false) : response({ id: '100.101.0.12', latency_ms: 24, direct: true }));
+      await pinging;
+      assert.equal(pickerLatency(app, '100.101.0.12').children[0].textContent, '—');
+      assert.equal(app.$('#picker-ping-announcement').textContent, '');
+      assert.equal(app.$('#ping-announcement').textContent, '');
+      assert.equal(pickerPingButton(app, '100.101.0.12').disabled, false);
+    }
+  }
+});
+
+test('device-specific ping invalidation preserves other cached results and in-flight requests', async () => {
+  const app = await page(officeSnapshot(), '', { language: 'en' }, multiExitDocument('100.101.0.11'));
+  app.override = request => request.path === '/api/exit-ping' ? response({ id: request.data.id, latency_ms: 12, direct: true }) : undefined;
+  await pingButton(app, '100.64.0.20').emit('click');
+  await extraRow(app, 'office').emit('click');
+  await pickerPingButton(app, '100.101.0.11').emit('click');
+  app.snapshot = { ...app.snapshot, exits: { office: { ...app.snapshot.exits.office, hostname: 'replacement' } } }; await app.poll();
+  assert.equal(pickerLatency(app, '100.101.0.11').children[0].textContent, '—');
+  await app.$('#cancel-exit-picker').emit('click');
+  assert.equal(nodeLatency(app, '100.64.0.20').children[0].textContent, '12 ms');
+  await extraRow(app, 'office').emit('click');
+  const pending = deferred();
+  app.override = request => request.path === '/api/exit-ping' ? pending.promise : undefined;
+  const pinging = pickerPingButton(app, '100.101.0.12').emit('click'); await settle();
+  app.snapshot = { ...app.snapshot, network: 'other-primary.ts.net' }; await app.poll();
+  assert.equal(app.$('#picker-ping-announcement').textContent, 'Pinging us-gateway');
+  pending.resolve(response({ id: '100.101.0.12', latency_ms: 30, direct: true })); await pinging;
+  assert.equal(pickerLatency(app, '100.101.0.12').children[0].textContent, '30 ms');
+  await app.$('#cancel-exit-picker').emit('click');
+  assert.equal(nodeLatency(app, '100.64.0.20').children[0].textContent, '—');
+});
+
+test('an invalidated ping cannot overwrite or finish a newer request for the same device and node', async () => {
+  const app = await page(officeSnapshot(), '', { language: 'en' }, multiExitDocument('100.101.0.11'));
+  await extraRow(app, 'office').emit('click');
+  const old = deferred(), fresh = deferred();
+  app.override = request => request.path === '/api/exit-ping' ? old.promise : undefined;
+  const oldPing = pickerPingButton(app, '100.101.0.12').emit('click'); await settle();
+  app.snapshot = { ...app.snapshot, exits: { office: { ...app.snapshot.exits.office, network: 'replacement.ts.net' } } }; await app.poll();
+  assert.equal(pickerPingButton(app, '100.101.0.12').disabled, false);
+  app.override = request => request.path === '/api/exit-ping' ? fresh.promise : undefined;
+  const freshPing = pickerPingButton(app, '100.101.0.12').emit('click'); await settle();
+  assert.equal(app.requests.filter(request => request.path === '/api/exit-ping').length, 2);
+  old.resolve(response({ id: '100.101.0.12', latency_ms: 90, direct: true })); await oldPing;
+  assert.equal(pickerLatency(app, '100.101.0.12').children[0].textContent, 'Testing…');
+  assert.equal(app.$('#picker-ping-announcement').textContent, 'Pinging us-gateway');
+  fresh.resolve(response({ id: '100.101.0.12', latency_ms: 20, direct: true })); await freshPing;
+  assert.equal(pickerLatency(app, '100.101.0.12').children[0].textContent, '20 ms');
 });
 
 test('offline nodes and unavailable backends never issue ping requests', async () => {

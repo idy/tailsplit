@@ -46,7 +46,8 @@ func validExitID(id string) bool {
 // service never opens a config, state, rules file or executable supplied by it.
 type Files struct {
 	TailscaleState []byte `json:"tailscale_state,omitempty"`
-	// ExitStates holds additional exits' saved logins, keyed by exit ID.
+	// ExitStates holds migration candidates for every saved additional exit,
+	// including after primary initialization. The service owns import authority.
 	ExitStates map[string][]byte `json:"exit_states,omitempty"`
 	Cache      []byte            `json:"cache,omitempty"`
 	Rules      []byte            `json:"rules,omitempty"`
@@ -113,16 +114,25 @@ func readRequest(reader *bufio.Reader) (Request, error) {
 	if request.Protocol != Protocol {
 		return Request{}, errors.New("the app and network service protocols differ; reinstall the service")
 	}
-	if len(request.Files.TailscaleState) > maxState || len(request.Files.Cache) > maxCache ||
-		len(request.Files.Rules) > maxRules || len(request.Files.ExitStates) > maxExits {
-		return Request{}, errors.New("network service state exceeds its size limit")
-	}
-	for id, state := range request.Files.ExitStates {
-		if !validExitID(id) || len(state) > maxState {
-			return Request{}, errors.New("network service state exceeds its size limit")
-		}
+	if err := validateFiles(request.Files); err != nil {
+		return Request{}, err
 	}
 	return request, nil
+}
+
+func validateFiles(files Files) error {
+	if err := validateExitInventory(len(files.ExitStates)); err != nil {
+		return err
+	}
+	if len(files.TailscaleState) > maxState || len(files.Cache) > maxCache || len(files.Rules) > maxRules {
+		return errors.New("network service state exceeds its size limit")
+	}
+	for id, state := range files.ExitStates {
+		if !validExitID(id) || len(state) > maxState {
+			return errors.New("network service state exceeds its size limit")
+		}
+	}
+	return nil
 }
 
 type eventWriter struct {

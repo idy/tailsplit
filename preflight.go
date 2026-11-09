@@ -79,7 +79,7 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	for _, exit := range config.Exits {
 		dnsIdentities[exit.ID] = exit.MagicDNSSuffix
 	}
-	var required, identityOnly, optional []engineExit
+	var required, optional []engineExit
 	for _, exit := range engine.exits {
 		if exit.tailnet == "" {
 			exit.tailnet = dnsIdentities[exit.id]
@@ -87,10 +87,9 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 		if !requireExit || requiresTrafficExit(config, exit.id) {
 			required = append(required, exit)
 		} else {
+			// Even unguarded devices need an initial status before we decide
+			// whether to retain or isolate their endpoint for this session.
 			optional = append(optional, exit)
-			if exit.tailnet != "" {
-				identityOnly = append(identityOnly, exit)
-			}
 		}
 	}
 	// Several devices report concurrently; keep only each one's latest status.
@@ -119,6 +118,8 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	}()
 	var deadline preflightDeadline
 	defer deadline.stop()
+	// Bound initial status delivery too; no callback must not mean no timeout.
+	deadline.update(len(required)+len(optional) > 0, false)
 	label := func(id string) string {
 		if id == "" {
 			return "the primary exit"
@@ -137,8 +138,22 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			return err
 		case <-deadline.timeout:
 			if !requireExit {
-				return errors.New("the logged-in device did not report its expected Tailnet identity")
+				return errors.New("the device did not become ready or report its expected Tailnet identity")
 			}
+			latestMu.Lock()
+			snapshot := maps.Clone(latest)
+			latestMu.Unlock()
+			// Optional endpoints get the same bounded opportunity to report an
+			// authenticated state. After that budget, isolate only those still
+			// unavailable; required gateways must independently be fully ready.
+			ready, _, requiredPending, checkErr := connectionReadiness(config.TrafficExitID(), required, nil, snapshot, true, false)
+			if checkErr != nil {
+				return checkErr
+			}
+			if ready {
+				return isolateOptionalExits(ctx, config, runtime, optional, snapshot)
+			}
+			pending = requiredPending
 			if pending != "" {
 				return fmt.Errorf("the selected node for %s is unavailable in its Tailnet; TUN was not enabled", label(pending))
 			}
@@ -148,7 +163,7 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			snapshot := maps.Clone(latest)
 			latestMu.Unlock()
 			var done, waiting bool
-			done, waiting, pending, err = connectionReadiness(config.TrafficExitID(), required, identityOnly, snapshot, requireExit, discover)
+			done, waiting, pending, err = connectionReadiness(config.TrafficExitID(), required, optional, snapshot, requireExit, discover)
 			if err != nil {
 				return err
 			}
@@ -195,7 +210,7 @@ func awaitingInteractiveLogin(exits []engineExit, snapshot map[string]Status, di
 	return false
 }
 
-func connectionReadiness(interactiveExit string, required, identityOnly []engineExit, snapshot map[string]Status, requireExit, discover bool) (done, waiting bool, pending string, err error) {
+func connectionReadiness(interactiveExit string, required, optional []engineExit, snapshot map[string]Status, requireExit, discover bool) (done, waiting bool, pending string, err error) {
 	if requireExit && !discover {
 		for _, exit := range required {
 			id := exit.id
@@ -216,7 +231,7 @@ func connectionReadiness(interactiveExit string, required, identityOnly []engine
 	}
 	// A signed-out optional identity is handled by runtime isolation. The selected
 	// gateway retains interactive login; other required devices sign in explicitly.
-	identityReady, _, identityPending, identityErr := tailnetReadiness(identityOnly, snapshot, false, true)
+	identityReady, _, identityPending, identityErr := tailnetReadiness(optional, snapshot, false, true)
 	if identityErr != nil {
 		return false, false, "", identityErr
 	}
@@ -291,7 +306,10 @@ func tailnetReadiness(exits []engineExit, snapshot map[string]Status, requireExi
 	for _, exit := range exits {
 		status, seen := snapshot[exit.id]
 		if !seen {
-			done = false
+			done, waiting = false, true
+			if pending == "" {
+				pending = exit.id
+			}
 			continue
 		}
 		if discover && status.BackendState == "NeedsLogin" {
@@ -301,7 +319,10 @@ func tailnetReadiness(exits []engineExit, snapshot map[string]Status, requireExi
 			// Every required device may finish interactive authorization. Do not
 			// discard its auth URL by terminating an additional exit's helper.
 			awaitingLogin = awaitingLogin || status.BackendState == "NeedsLogin"
-			done = false
+			done, waiting = false, true
+			if pending == "" {
+				pending = exit.id
+			}
 			continue
 		}
 		ready, checkErr := authenticationReady(exit.tailnet, status)

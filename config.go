@@ -384,15 +384,16 @@ func (c *Config) normalize(base string) error {
 			return fmt.Errorf("%s must name a configured exit", name)
 		}
 	}
-	if c.Rules.Final != "direct" && c.Rules.Final != "proxy" &&
-		(c.Rules.Final == MainExit || !c.hasExit(c.Rules.Final) && (len(c.ExitIDs()) > 0 || !exitID.MatchString(c.Rules.Final))) {
-		return errors.New("rules.final must be direct, proxy or a configured exit ID")
+	// Retain explicit Split policy while devices are removed or replaced. Live
+	// references are checked when connecting, independently of draft inventory.
+	if c.Rules.Final != "direct" && c.Rules.Final != "proxy" && !ValidExitID(c.Rules.Final) {
+		return errors.New("rules.final must be direct, proxy or a valid additional exit ID")
 	}
 	for index := range c.Rules.Routes {
 		route := &c.Rules.Routes[index]
 		route.Exit = strings.TrimSpace(route.Exit)
-		if !c.hasExit(route.Exit) && (len(c.ExitIDs()) > 0 || !exitID.MatchString(route.Exit)) {
-			return fmt.Errorf("rules.routes[%d].exit must name a configured exit", index)
+		if route.Exit != MainExit && !ValidExitID(route.Exit) {
+			return fmt.Errorf("rules.routes[%d].exit must be main or a valid additional exit ID", index)
 		}
 		name := fmt.Sprintf("rules.routes[%d]", index)
 		if err := normalizeDomains(name+".domains", &route.Domains); err != nil {
@@ -529,10 +530,14 @@ func (c *Config) applyFocus() error {
 }
 
 // FocusExit returns a single-device runtime configuration for exit id while
-// retaining all additional exits for saved-state migration.
+// retaining all additional exits for saved-state migration. Refocusing an extra
+// requires the original configuration: its primary identity has been replaced.
 func (c Config) FocusExit(id string) (Config, error) {
 	if id == "" {
 		return c, nil
+	}
+	if c.Focus != "" && c.Focus != MainExit && c.Focus != id {
+		return c, errors.New("cannot switch a focused exit without the original configuration")
 	}
 	c.Focus = id
 	err := c.applyFocus()

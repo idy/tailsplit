@@ -649,6 +649,7 @@
   let connectionLost = false;
   let quickBusy = false;
   let removingExit = false;
+  let addingExit = false;
   let stateRequest = 0;
   let selectedExit = null;
   // The picker edits one exit at a time: '' is the primary device.
@@ -662,6 +663,8 @@
   let pingBusy = '';
   let pingGeneration = 0;
   const pingResults = new Map();
+  const pingExitGenerations = new Map();
+  const exitPingGeneration = (exit) => pingExitGenerations.get(exit) || 0;
   const exitDialog = $('#exit-picker-dialog');
   const networkActive = (live = desktopLive) => Boolean(live?.active && ['tun', 'proxy'].includes(live.mode));
   const needsAuthentication = (live = desktopLive) => live?.backend_state === 'NeedsLogin' || live?.state === 'login' && !live?.focus;
@@ -823,21 +826,30 @@
     const pending = pingBusy && exitNodes(pickerExit).find((node) => pingKey(node.id) === pingBusy);
     announcePing(pending ? t('正在 Ping {name}', { name: pending.name }) : '');
   }
-  function clearPingResults() {
-    pingGeneration++;
-    pingResults.clear();
-    announcePing('');
+  function clearPingResults(exit) {
+    if (exit === undefined) {
+      pingGeneration++;
+      pingExitGenerations.clear(); pingResults.clear(); pingBusy = '';
+      announcePing('');
+      return;
+    }
+    // Invalidate this device's requests as well as its cache, even if its old
+    // identity later returns. Other devices keep their results and requests.
+    pingExitGenerations.set(exit, exitPingGeneration(exit) + 1);
+    const belongsToExit = (key) => exit ? key.startsWith(`${exit}|`) : !key.includes('|');
+    for (const key of [...pingResults.keys()]) if (belongsToExit(key)) pingResults.delete(key);
+    if (pingBusy && belongsToExit(pingBusy)) { pingBusy = ''; announcePing(''); }
+    else if (pickerExit === exit) announcePing('');
   }
   function updateDesktop(live) {
-    if (desktopLive && (live.network !== desktopLive.network || live.hostname !== desktopLive.hostname || signedIn(live) !== signedIn())) clearPingResults();
-    // A device that signs out or changes Tailnet invalidates its own results.
+    if (desktopLive && (live.network !== desktopLive.network || live.hostname !== desktopLive.hostname ||
+        live.backend_state !== desktopLive.backend_state || signedIn(live) !== signedIn())) clearPingResults('');
+    // A device that signs out, disappears or changes identity invalidates itself.
     const previous = desktopLive?.exits || {};
     desktopLive = live;
     for (const [id, exit] of Object.entries(previous)) {
       const current = exitLive(id);
-      if (current.network !== exit.network || current.hostname !== exit.hostname || current.backend_state !== exit.backend_state) {
-        for (const key of [...pingResults.keys()]) if (key.startsWith(`${id}|`)) pingResults.delete(key);
-      }
+      if (current.network !== exit.network || current.hostname !== exit.hostname || current.backend_state !== exit.backend_state) clearPingResults(id);
     }
     const online = new Set(['', ...exitList().map((exit) => exit.id)].flatMap((exit) =>
       exitNodes(exit).filter((node) => node.online).map((node) => pingKey(node.id, exit))));
@@ -931,8 +943,8 @@
     $('#main-exit-status').className = `exit-status ${exitStatus('')}`;
     $('#main-exit-badge').hidden = activeExit !== '';
     $('#main-exit-badge').textContent = mode === 'global' ? t('全局出口') : t('默认');
-    $('#add-exit').disabled = locked || !state.loaded || state.dirty || exitList().length >= 8;
-    $('#add-exit').title = state.dirty ? t('请先保存或放弃更改，再添加出口。') : '';
+    $('#add-exit').disabled = addingExit || !canManageExits() || exitList().length >= 8;
+    $('#add-exit').title = !live.desktop ? t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。') : state.dirty ? t('请先保存或放弃更改，再添加出口。') : '';
     renderExtraExits(locked || transitioning);
     const current = connected && !activeExit ? live.exit || savedExit() : savedExit();
     const currentNode = nodes.find((node) => node.id === current || node.name === current) || (!connected || !live.exit ? nodes.find((node) => node.configured) : undefined);
@@ -1136,20 +1148,21 @@
     const key = pingKey(id, exit);
     const node = exitNodes(exit).find((node) => node.id === id);
     if (pingBusy || !node?.online || !exitSignedIn(exit) || !exitLive(exit).ping_available || isDesktopBusy() || quickBusy || isLocked() || connectionLost) return;
-    const generation = pingGeneration;
+    const generation = pingGeneration, exitGeneration = exitPingGeneration(exit);
+    const currentRequest = () => generation === pingGeneration && exitGeneration === exitPingGeneration(exit);
     pingBusy = key; pingResults.delete(key); renderConnectionCenter();
     announcePing(t('正在 Ping {name}', { name: node.name }));
     try {
       const result = await api('exit-ping', exit ? { id, exit } : { id });
-      if (generation !== pingGeneration || !exitNodes(exit).some((node) => node.id === id && node.online)) return;
+      if (!currentRequest() || !exitNodes(exit).some((node) => node.id === id && node.online)) return;
       if (result.id !== id || !Number.isFinite(result.latency_ms) || result.latency_ms < 0 || typeof result.direct !== 'boolean') throw new Error(t('未收到有效的 Ping 结果，请重试。'));
       pingResults.set(key, result);
       announcePing(t('{name}：{latency}', { name: node.name, latency: pingLabel(result) }));
     } catch (error) {
-      if (generation !== pingGeneration) return;
+      if (!currentRequest()) return;
       pingResults.set(key, { error });
       announcePing(`${t('{name}：测试失败，可重新 Ping。', { name: node.name })} ${message(error)}`);
-    } finally { pingBusy = ''; renderConnectionCenter(); }
+    } finally { if (currentRequest()) pingBusy = ''; renderConnectionCenter(); }
   }
   function openExitPicker(opener = $('#choose-exit'), exit = '') {
     if (isLocked() || isDesktopBusy() || quickBusy || connectionLost || !state.loaded) return false;
@@ -1235,7 +1248,7 @@
     quickBusy = true; state.busy = true; updateActions();
     try {
       const doc = await api('config', { yaml: state.saved, changes, revision: state.revision });
-      onSaved?.();
+      onSaved?.(doc);
       useDocument(doc);
       toast(t(success));
       return true;
@@ -1253,18 +1266,42 @@
       if (!taken.has(id)) return id;
     }
   }
+  function canManageExits() {
+    return desktopLive?.desktop && state.loaded && state.savedValid && !isLocked() && !isDesktopBusy() && !quickBusy && !connectionLost &&
+      !state.dirty && !state.external && (!desktopLive.revision || desktopLive.revision === state.revision) &&
+      !['starting', 'stopping', 'authorizing', 'logging-out'].includes(desktopLive.state) &&
+      !(desktopLive.active && !networkActive());
+  }
   $('#add-exit').addEventListener('click', async () => {
-    if ($('#add-exit').disabled) return;
-    const id = newExitID();
-    // Login needs a stopped core. Stop first, so saving a first pending exit
-    // never tries to reconnect through a device that is not authorized yet.
-    if (networkActive() && !(await desktopAction('disconnect'))) return;
-    const exits = [...exitList(), { id, auto_name: true, exit_node: '' }];
-    const changes = { exits };
-    if (!configuredExits().length) { changes['rules.default_exit'] = '-'; changes['rules.global_exit'] = '-'; }
-    if (!(await saveExitChanges(changes, '出口已添加'))) return;
-    pendingExitPicker = id;
-    if (!(await exitAction('login-exit', id))) pendingExitPicker = '';
+    if (addingExit || !canManageExits() || exitList().length >= 8) return;
+    const revision = state.revision;
+    const consentRequired = networkActive() && savedMode() === 'global';
+    addingExit = true; renderConnectionCenter();
+    try {
+      if (consentRequired) {
+        const dialog = $('#add-exit-consent-dialog');
+        dialog.returnValue = 'cancel'; dialog.showModal();
+        const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
+        if (answer !== 'add') return;
+      }
+      if (!canManageExits() || state.revision !== revision || exitList().length >= 8) return;
+      // Login needs a stopped core to release its embedded device state. The
+      // consent above covers loss of Global protection; never reconnect here.
+      if (networkActive() && !(await desktopAction('disconnect'))) return;
+      if (!canManageExits() || state.revision !== revision || desktopLive.active || exitList().length >= 8) return;
+      const id = newExitID();
+      const exits = [...exitList(), { id, auto_name: true, exit_node: '' }];
+      const changes = { exits };
+      if (!configuredExits().length) { changes['rules.default_exit'] = '-'; changes['rules.global_exit'] = '-'; }
+      let addedRevision;
+      if (!(await saveExitChanges(changes, '出口已添加', (doc) => { addedRevision = doc.revision; }))) return;
+      if (!canManageExits() || desktopLive.active || state.revision !== addedRevision || !exitList().some((exit) => exit.id === id)) return;
+      pendingExitPicker = id;
+      if (!(await exitAction('login-exit', id))) pendingExitPicker = '';
+    } finally {
+      addingExit = false; renderConnectionCenter();
+      if (consentRequired && !exitDialog.open && !$('#add-exit').disabled) $('#add-exit').focus({ preventScroll: true });
+    }
   });
   $('#picker-login').addEventListener('click', async () => {
     const exit = pickerExit;

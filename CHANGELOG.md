@@ -56,6 +56,18 @@
   while preserving an active device's authorization recovery and keeping macOS
   helper shutdown off the event loop. Complete a saved device's login even when
   its helper exits before the next desktop update.
+- Require confirmation before Add exit stops active Global protection. Disable
+  unsupported or invalid-document Add actions and invalidate pending Ping replies
+  when their device identity changes.
+- Retain removed exits' explicit final and route-group references until a user
+  chooses replacements; keep dormant policy editable without routing it directly.
+  Reject unsafe refocusing of an already projected device configuration.
+- Import newly encountered additional identities into initialized services without
+  overwriting existing service state or restoring a logged-out client.
+- Preserve comments and anchors inside edited exit/route lists, bound YAML alias
+  expansion and encoded size, and reject excessive patches without applying them.
+- Bound initial noninteractive preflight states and give every optional endpoint
+  an initial-status opportunity before isolation; required gateways must be ready.
 - Preserve per-device migration, state leases and serialized Ping operations;
   consolidate action/save handling and log redaction, and reduce repeated UI
   rendering and configuration parsing without changing the saved-device contract.

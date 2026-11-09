@@ -80,16 +80,19 @@ func TestMigrationInventoryBoundaryKeepsFocusedAndGlobalInventory(t *testing.T) 
 					if serviceErr != nil || validationErr != nil || err != nil {
 						t.Fatalf("supported inventory rejected: service=%v validation=%v collection=%v", serviceErr, validationErr, err)
 					}
-					if !seed {
-						if !reflect.DeepEqual(files, Files{}) {
-							t.Fatal("initialized service was sent stale migration state")
-						}
-						continue
+					primary := ""
+					if seed {
+						primary = "identity-main"
 					}
-					if len(files.ExitStates) != maxExits || string(files.TailscaleState) != "identity-main" {
+					if len(files.ExitStates) != maxExits || string(files.TailscaleState) != primary {
 						t.Fatalf("supported migration lost identities: primary=%q extras=%d", files.TailscaleState, len(files.ExitStates))
 					}
 					base := privateTestDirectory(t)
+					if !seed {
+						if _, err := prepareRuntimeUser(base, "fixture-user", Files{TailscaleState: []byte("identity-main")}); err != nil {
+							t.Fatal(err)
+						}
+					}
 					imported, err := prepareRuntimeUser(base, "fixture-user", files)
 					if err != nil || !runtimeInitialized(imported) {
 						t.Fatalf("supported migration did not initialize: %v", err)
@@ -162,6 +165,31 @@ func existingMigrationRuntime(t *testing.T, base, user, state string) {
 	if state == "initialized" {
 		if err := os.WriteFile(filepath.Join(directory, ".initialized"), []byte("existing-marker\n"), 0o600); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestInvalidMigrationFilesRejectBeforeAnyRuntimeWrite(t *testing.T) {
+	for _, state := range []string{"fresh", "uninitialized", "initialized"} {
+		for name, files := range map[string]Files{
+			"invalid-id":      {ExitStates: map[string][]byte{"office": []byte("valid"), "../escape": []byte("invalid")}},
+			"oversized-extra": {ExitStates: map[string][]byte{"office": []byte("valid"), "spare": make([]byte, maxState+1)}},
+			"oversized-primary": {TailscaleState: make([]byte, maxState+1),
+				ExitStates: map[string][]byte{"office": []byte("valid")}},
+			"oversized-cache": {Cache: make([]byte, maxCache+1), ExitStates: map[string][]byte{"office": []byte("valid")}},
+			"oversized-rules": {Rules: make([]byte, maxRules+1), ExitStates: map[string][]byte{"office": []byte("valid")}},
+		} {
+			t.Run(state+"/"+name, func(t *testing.T) {
+				base := filepath.Join(privateTestDirectory(t), "runtime")
+				existingMigrationRuntime(t, base, "fixture-user", state)
+				before := migrationRuntimeSnapshot(t, base)
+				if _, err := prepareRuntimeUser(base, "fixture-user", files); err == nil {
+					t.Fatal("invalid migration was accepted")
+				}
+				if after := migrationRuntimeSnapshot(t, base); !reflect.DeepEqual(after, before) {
+					t.Fatalf("invalid migration partially changed runtime state: before=%v after=%v", before, after)
+				}
+			})
 		}
 	}
 }

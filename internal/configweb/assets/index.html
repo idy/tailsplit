@@ -198,7 +198,8 @@
   <p class="field-hint update-error" id="default-exit-error" role="alert" hidden></p>
   <div class="dialog-actions"><button class="button" id="cancel-default-exit">取消</button><button class="button primary" id="confirm-default-exit" disabled>确认并连接</button></div>
 </dialog>
-<dialog id="remove-exit-dialog" aria-labelledby="remove-exit-title"><form method="dialog"><h2 id="remove-exit-title">删除这个出口？</h2><p>注销该设备并移除本地出口及引用它的规则组，当前连接将断开。Tailscale 管理后台的设备记录会保留。</p><div class="dialog-actions"><button class="button" value="cancel">取消</button><button class="button primary" value="remove">删除出口</button></div></form></dialog>
+<dialog id="add-exit-consent-dialog" aria-labelledby="add-exit-consent-title" aria-describedby="add-exit-consent-description"><form method="dialog"><h2 id="add-exit-consent-title">断开全局保护并添加出口？</h2><p id="add-exit-consent-description">添加出口会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使保存或登录失败，也会保持未连接；准备好后请手动重新连接。</p><div class="dialog-actions"><button class="button" value="cancel" autofocus>取消</button><button class="button primary" value="add">断开并添加出口</button></div></form></dialog>
+<dialog id="remove-exit-dialog" aria-labelledby="remove-exit-title"><form method="dialog"><h2 id="remove-exit-title">删除这个出口？</h2><p>仅注销该设备并移除其本地出口配置。当前连接将断开并恢复系统网络。原有规则会保留；引用此出口的规则须选择替代出口后才能重新连接。Tailscale 管理后台的设备记录会保留。</p><div class="dialog-actions"><button class="button" value="cancel">取消</button><button class="button primary" value="remove">删除出口</button></div></form></dialog>
 <dialog id="discard-dialog"><form method="dialog"><h2>放弃未保存的更改？</h2><p>重新读取磁盘中的配置，当前草稿将被替换。</p><div class="dialog-actions"><button class="button" value="cancel">继续编辑</button><button class="button primary" value="discard">放弃并重新读取</button></div></form></dialog>
 </body>
 </html>

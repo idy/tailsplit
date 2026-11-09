@@ -333,10 +333,15 @@ func openWindowsSession(ctx context.Context, executable, operation string, confi
 			return nil, err
 		}
 	}
-	files, err := userFiles(&config, !info.Initialized)
-	if err != nil {
-		return nil, fmt.Errorf("read private device state: %w", err)
+	var files Files
+	if !activeOnly {
+		files, err = userFiles(&config, !info.Initialized)
+		if err != nil {
+			return nil, fmt.Errorf("read private device state: %w", err)
+		}
 	}
+	// An active-only ping has no legacy-state lease and cannot seed a saved
+	// session. It must not read additional-exit candidates from an active CLI.
 	config.StateDir = ""
 	connection, err := windowsDial(ctx)
 	if err != nil {

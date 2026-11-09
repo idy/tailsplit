@@ -3,6 +3,7 @@ package tailsplit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -207,8 +208,8 @@ func TestExitConfigRejectsUnsafeInput(t *testing.T) {
 		"reserved id":        "tailscale: {}\nexits:\n  - id: main\n    exit_node: a\n",
 		"duplicate id":       "tailscale: {}\nexits:\n  - id: a\n  - id: a\n",
 		"duplicate hostname": "tailscale:\n  hostname: laptop\nexits:\n  - id: a\n    hostname: laptop\n",
-		"unknown route exit": "tailscale: {}\nrules:\n  routes:\n    - exit: nowhere\n      domains: [a.example]\n",
-		"unknown final exit": "tailscale: {}\nrules:\n  final: nowhere\n",
+		"unsafe route exit":  "tailscale: {}\nrules:\n  routes:\n    - exit: ../nowhere\n      domains: [a.example]\n",
+		"unsafe final exit":  "tailscale: {}\nrules:\n  final: ../nowhere\n",
 		"main as final":      "tailscale: {}\nrules:\n  final: main\n",
 		"bad route CIDR":     "tailscale: {}\nexits:\n  - id: a\nrules:\n  routes:\n    - exit: a\n      ips: [10.0.0.1/8]\n",
 	} {
@@ -454,6 +455,245 @@ func TestExtrasOnlyCompileDiscoveryAndStatusKeepStableIdentity(t *testing.T) {
 				t.Fatal("extras-only focused ping changed state identity or restored node")
 			}
 		})
+	}
+}
+
+func TestDormantSplitReferencesSurviveInventoryChanges(t *testing.T) {
+	for _, inventory := range []string{"empty", "primary", "replacement extra"} {
+		for _, policy := range []string{"final", "domain group", "IP group", "empty group"} {
+			t.Run(inventory+"/"+policy, func(t *testing.T) {
+				config := Config{StateDir: filepath.Join(t.TempDir(), "state")}
+				switch inventory {
+				case "primary":
+					config.Tailscale = &TailscaleConfig{Hostname: "primary", ExitNode: "100.64.0.10"}
+				case "replacement extra":
+					config.Exits = []ExitConfig{{ID: "replacement", Hostname: "replacement", ExitNode: "100.64.0.10"}}
+					config.Rules.DefaultExit, config.Rules.GlobalExit = "replacement", "replacement"
+				}
+				switch policy {
+				case "final":
+					config.Rules.Final = "office"
+				case "domain group":
+					config.Rules.Routes = []RouteConfig{{Exit: "office", Domains: []string{"corp.example"}}}
+				case "IP group":
+					config.Rules.Routes = []RouteConfig{{Exit: "office", IPs: []string{"203.0.113.0/24"}}}
+				case "empty group":
+					config.Rules.Routes = []RouteConfig{{Exit: "office"}}
+				}
+				config, err := Normalize(config, t.TempDir())
+				if err != nil {
+					t.Fatalf("inventory made retained Split policy unsaveable: %v", err)
+				}
+				data, err := json.Marshal(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var received Config
+				if err := json.Unmarshal(data, &received); err != nil {
+					t.Fatal(err)
+				}
+				received, err = Normalize(received, t.TempDir())
+				if err != nil || received.Rules.Final != config.Rules.Final || !slices.EqualFunc(received.Rules.Routes, config.Rules.Routes, func(a, b RouteConfig) bool {
+					return a.Exit == b.Exit && slices.Equal(a.Domains, b.Domains) && slices.Equal(a.IPs, b.IPs)
+				}) {
+					t.Fatalf("wire normalization discarded retained policy: %+v, %v", received.Rules, err)
+				}
+				live := policy != "empty group"
+				for _, check := range []struct {
+					name string
+					run  func(Config) error
+				}{
+					{"validation", ValidateTrafficExit},
+					{"compile", func(c Config) error { _, err := Compile(c); return err }},
+					{"connection preflight compile", func(c Config) error { _, err := compilePreflight(c, false); return err }},
+					{"connection preflight", func(c Config) error {
+						if !live {
+							return nil
+						}
+						return PrepareTailnet(t.Context(), c, nil, nil)
+					}},
+				} {
+					err := check.run(received)
+					if live && (err == nil || !strings.Contains(err.Error(), `"office"`)) {
+						t.Fatalf("%s allowed unresolved live policy to fall through: %v", check.name, err)
+					}
+					if !live && err != nil {
+						t.Fatalf("%s activated an empty dormant group: %v", check.name, err)
+					}
+				}
+				if _, err := os.Stat(config.StateDir); !os.IsNotExist(err) {
+					t.Fatal("unresolved policy opened saved state before rejection")
+				}
+				deviceSession, err := compilePreflight(received, true)
+				if err != nil {
+					t.Fatalf("retained policy blocked login/discovery: %v", err)
+				}
+				if TailscaleEnabled {
+					if err := Check(deviceSession); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Explicitly restoring the referenced ID resolves the policy. Adding
+				// another ready device alone must never reassign its traffic.
+				received.Exits = append(received.Exits, ExitConfig{ID: "office", Hostname: "office", ExitNode: "100.101.0.11"})
+				if inventory == "empty" {
+					received.Rules.DefaultExit, received.Rules.GlobalExit = "office", "office"
+				}
+				received, err = Normalize(received, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				compiled, err := Compile(received)
+				if err != nil {
+					t.Fatalf("explicitly resolved policy did not compile: %v", err)
+				}
+				if TailscaleEnabled {
+					if err := Check(compiled); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestUnresolvedSplitExitClassification(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configure  func(*Config)
+		unresolved bool
+		wantExit   string
+		compileOK  bool
+	}{
+		{name: "missing final owner", unresolved: true, wantExit: "office", configure: func(c *Config) { c.Rules.Final = "office" }},
+		{name: "missing domain group owner", unresolved: true, wantExit: "office", configure: func(c *Config) {
+			c.Rules.Routes = []RouteConfig{{Exit: "office", Domains: []string{"corp.example"}}}
+		}},
+		{name: "missing IP group owner", unresolved: true, wantExit: "office", configure: func(c *Config) {
+			c.Rules.Routes = []RouteConfig{{Exit: "office", IPs: []string{"203.0.113.0/24"}}}
+		}},
+		{name: "missing primary group owner", unresolved: true, wantExit: MainExit, configure: func(c *Config) {
+			c.Tailscale = nil
+			c.Exits = []ExitConfig{{ID: "replacement", Hostname: "replacement", ExitNode: "100.64.0.10"}}
+			c.Rules.DefaultExit, c.Rules.GlobalExit = "replacement", "replacement"
+			c.Rules.Routes = []RouteConfig{{Exit: MainExit, Domains: []string{"corp.example"}}}
+		}},
+		{name: "empty missing group", compileOK: true, configure: func(c *Config) {
+			c.Rules.Routes = []RouteConfig{{Exit: "office"}}
+		}},
+		{name: "pending default node", configure: func(c *Config) { c.Tailscale.ExitNode = "" }},
+		{name: "missing default device", configure: func(c *Config) { c.Tailscale = nil; c.Rules.Final = "proxy" }},
+		{name: "pending final node", configure: func(c *Config) {
+			c.Exits = []ExitConfig{{ID: "office", Hostname: "office"}}
+			c.Rules.Final = "office"
+		}},
+		{name: "pending group node", configure: func(c *Config) {
+			c.Exits = []ExitConfig{{ID: "office", Hostname: "office"}}
+			c.Rules.Routes = []RouteConfig{{Exit: "office", Domains: []string{"corp.example"}}}
+		}},
+		{name: "pending private-name owner", configure: func(c *Config) {
+			c.Exits = []ExitConfig{{ID: "office", Hostname: "office", ExitNode: "100.101.0.11"}}
+			c.Rules.DefaultExit = "office"
+			c.Tailscale.ExitNode = ""
+			c.DNS.MagicDomains = []string{"primary.ts.net"}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := Config{
+				StateDir:  filepath.Join(t.TempDir(), "state"),
+				Tailscale: &TailscaleConfig{Hostname: "primary", ExitNode: "100.64.0.10"},
+			}
+			test.configure(&config)
+			config, err := Normalize(config, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, api := range []string{"ValidateTrafficExit", "CompileContext"} {
+				err := ValidateTrafficExit(config)
+				if api == "CompileContext" {
+					_, err = CompileContext(t.Context(), config)
+					if (err == nil) != test.compileOK {
+						t.Fatalf("connection compilation changed readiness behavior: %v", err)
+					}
+				}
+				if errors.Is(err, ErrUnresolvedSplitExit) != test.unresolved {
+					t.Fatalf("%s classified the wrong draft condition: %v", api, err)
+				}
+				if test.unresolved && !strings.Contains(err.Error(), `"`+test.wantExit+`"`) {
+					t.Fatalf("%s lost the actionable missing exit ID: %v", api, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRetainedSplitPolicyDoesNotAffectGlobalOrFocusedSessions(t *testing.T) {
+	for _, selected := range []string{MainExit, "replacement"} {
+		for _, session := range []string{"global", "focused"} {
+			t.Run(selected+"/"+session, func(t *testing.T) {
+				config := Config{
+					StateDir: filepath.Join(t.TempDir(), "state"),
+					Rules: RulesConfig{DefaultExit: selected, GlobalExit: selected, Final: "office", Routes: []RouteConfig{
+						{Exit: "office", Domains: []string{"corp.example"}},
+					}},
+					TUN: TUNConfig{Enabled: true},
+				}
+				if selected == MainExit {
+					config.Tailscale = &TailscaleConfig{Hostname: "primary", ExitNode: "100.64.0.10"}
+				} else {
+					config.Exits = []ExitConfig{{ID: selected, Hostname: "replacement", ExitNode: "100.64.0.10"}}
+				}
+				config, err := Normalize(config, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if session == "global" {
+					config.Rules.Mode = RoutingGlobal
+				} else {
+					config, err = config.FocusExit(selected)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := ValidateTrafficExit(config); err != nil {
+					t.Fatal("device session activated retained Split policy:", err)
+				}
+				compiled, err := Compile(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(compiled.JSON), "corp.example") || strings.Contains(string(compiled.JSON), "exit-office") {
+					t.Fatal("device session compiled retained Split policy")
+				}
+				if TailscaleEnabled {
+					if err := Check(compiled); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestMissingPrimaryRouteOwnerRemainsSaveableButCannotConnect(t *testing.T) {
+	config, err := Normalize(Config{
+		StateDir: t.TempDir(),
+		Exits:    []ExitConfig{{ID: "replacement", ExitNode: "100.101.0.11"}},
+		Rules: RulesConfig{DefaultExit: "replacement", GlobalExit: "replacement", Routes: []RouteConfig{
+			{Exit: MainExit, Domains: []string{"primary.example"}},
+		}},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatal("removed primary's explicit policy became unsaveable:", err)
+	}
+	if config.Tailscale != nil {
+		t.Fatal("retained route invented a replacement primary")
+	}
+	if err := ValidateTrafficExit(config); err == nil || !strings.Contains(err.Error(), `"main"`) {
+		t.Fatal("a ready replacement hid the removed primary route owner:", err)
+	}
+	if _, err := Compile(config); err == nil {
+		t.Fatal("removed primary's explicit traffic fell through to the replacement")
 	}
 }
 

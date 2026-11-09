@@ -45,7 +45,7 @@ func prepareRuntimeUserWithRules(base, user string, files Files, updateRules boo
 	if user == "" || user == "." || user == ".." || strings.ContainsAny(user, `/\\:`) {
 		return "", errors.New("invalid registered service user")
 	}
-	if err := validateExitInventory(len(files.ExitStates)); err != nil {
+	if err := validateFiles(files); err != nil {
 		return "", err
 	}
 	directory := runtimeUserDirectory(base, user)
@@ -54,28 +54,24 @@ func prepareRuntimeUserWithRules(base, user string, files Files, updateRules boo
 			return "", err
 		}
 	}
-	if !runtimeInitialized(directory) {
-		if len(files.TailscaleState) > 0 {
-			if err := privateDirectory(filepath.Join(directory, "tailscale")); err != nil {
-				return "", err
-			}
-			if err := replacePrivate(filepath.Join(directory, "tailscale", "tailscaled.state"), files.TailscaleState); err != nil {
-				return "", err
-			}
+	first := !runtimeInitialized(directory)
+	if first && len(files.TailscaleState) > 0 {
+		if err := privateDirectory(filepath.Join(directory, "tailscale")); err != nil {
+			return "", err
 		}
-		for id, state := range files.ExitStates {
-			if !validExitID(id) || len(state) == 0 {
-				continue
-			}
-			for _, path := range []string{filepath.Join(directory, "exits"), filepath.Join(directory, "exits", id), filepath.Join(directory, "exits", id, "tailscale")} {
-				if err := privateDirectory(path); err != nil {
-					return "", err
-				}
-			}
-			if err := replacePrivate(filepath.Join(directory, "exits", id, "tailscale", "tailscaled.state"), state); err != nil {
-				return "", err
-			}
+		if err := replacePrivate(filepath.Join(directory, "tailscale", "tailscaled.state"), files.TailscaleState); err != nil {
+			return "", err
 		}
+	}
+	for id, state := range files.ExitStates {
+		if len(state) == 0 {
+			continue
+		}
+		if err := importExitState(directory, id, state); err != nil {
+			return "", err
+		}
+	}
+	if first {
 		if len(files.Cache) > 0 {
 			if err := replacePrivate(filepath.Join(directory, "cache.db"), files.Cache); err != nil {
 				return "", err
@@ -100,6 +96,67 @@ func prepareRuntimeUserWithRules(base, user string, files Files, updateRules boo
 		return "", err
 	}
 	return directory, nil
+}
+
+// importExitState publishes an identity and its authority together. An existing
+// exit directory belongs to the service, including directories made by older
+// helpers that have no marker or whose logout removed the state file. Never
+// replace those identities with a possibly stale ordinary-user copy.
+func importExitState(directory, id string, state []byte) error {
+	exits := filepath.Join(directory, "exits")
+	if err := privateDirectory(exits); err != nil {
+		return err
+	}
+	destination := filepath.Join(exits, id)
+	if _, err := os.Lstat(destination); err == nil {
+		return privateDirectory(destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	staged, err := os.MkdirTemp(exits, ".import-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staged)
+	// Recreate the reserved name through the platform's private-directory
+	// helper so Windows gives the published exit a protected root ACL too.
+	if err := os.Remove(staged); err != nil {
+		return err
+	}
+	if err := privateDirectory(staged); err != nil {
+		return err
+	}
+	if err := privateDirectory(filepath.Join(staged, "tailscale")); err != nil {
+		return err
+	}
+	if err := replacePrivate(filepath.Join(staged, "tailscale", "tailscaled.state"), state); err != nil {
+		return err
+	}
+	if err := replacePrivate(filepath.Join(staged, ".initialized"), []byte("1\n")); err != nil {
+		return err
+	}
+	return os.Rename(staged, destination)
+}
+
+// claimLogoutExit runs before the logout runner: it may remove its state file,
+// return an error, or be cancelled without ever creating one. Retain authority
+// outside the engine's tailscale directory even when no legacy state arrived.
+// The primary already has the global initialization marker.
+func claimLogoutExit(config tailsplit.Config) error {
+	id := config.Focus
+	if id == "" || id == tailsplit.MainExit {
+		return nil
+	}
+	if !validExitID(id) {
+		return errors.New("invalid logout exit")
+	}
+	directory := filepath.Join(config.StateDir, "exits", id)
+	for _, path := range []string{filepath.Join(config.StateDir, "exits"), directory} {
+		if err := privateDirectory(path); err != nil {
+			return err
+		}
+	}
+	return replacePrivate(filepath.Join(directory, ".initialized"), []byte("1\n"))
 }
 
 func replacePrivate(path string, data []byte) (err error) {
@@ -210,20 +267,23 @@ func userFiles(config *tailsplit.Config, seed bool) (files Files, err error) {
 		if err != nil {
 			return files, err
 		}
-		for _, exit := range config.Exits {
-			if !validExitID(exit.ID) {
-				break
+	}
+	// Both Unix and Windows clients pass seed=false once the primary is
+	// initialized. Additional exits can still acquire CLI/fallback identities
+	// later; only the service can decide whether it already owns each one.
+	for _, exit := range config.Exits {
+		if !validExitID(exit.ID) {
+			return Files{}, errors.New("invalid migration exit")
+		}
+		state, err := readUserFile(filepath.Join(config.ExitStateDir(exit.ID), "tailscaled.state"), maxState)
+		if err != nil {
+			return Files{}, err
+		}
+		if len(state) > 0 {
+			if files.ExitStates == nil {
+				files.ExitStates = map[string][]byte{}
 			}
-			state, err := readUserFile(filepath.Join(config.ExitStateDir(exit.ID), "tailscaled.state"), maxState)
-			if err != nil {
-				return files, err
-			}
-			if len(state) > 0 {
-				if files.ExitStates == nil {
-					files.ExitStates = map[string][]byte{}
-				}
-				files.ExitStates[exit.ID] = state
-			}
+			files.ExitStates[exit.ID] = state
 		}
 	}
 	if config.Rules.Mode == tailsplit.RoutingGlobal {

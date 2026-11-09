@@ -111,8 +111,9 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 	}
 }
 
-// OpenSession transfers policy and, only during the first migration, a bounded
-// copy of the user's saved login/FakeIP cache. It never transfers path authority.
+// OpenSession transfers policy and bounded additional-exit migration candidates.
+// The primary login/FakeIP cache is sent only before service initialization.
+// It never transfers path authority.
 func OpenSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer) (net.Conn, error) {
 	return openSession(ctx, executable, operation, config, output, "")
 }

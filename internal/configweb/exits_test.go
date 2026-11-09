@@ -3,8 +3,10 @@ package configweb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -231,6 +233,218 @@ func TestRemoveExitEndpointChecksRevisionAndReturnsSavedDocument(t *testing.T) {
 	}
 	if strings.Join(calls, ",") != "main,office" {
 		t.Fatalf("wrong local device logout calls: %v", calls)
+	}
+}
+
+func TestRemovedSplitPolicyCanAddReplacementWhileStopped(t *testing.T) {
+	for name, policy := range map[string]string{
+		"final": "  final: office # Retained final\n",
+		"group": "  routes:\n    - exit: office # Retained group\n      domains: [private.example]\n",
+		"both":  "  final: office # Retained final\n  routes:\n    - exit: office # Retained group\n      domains: [private.example]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, path, applied := testServer(t)
+			original := "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\nexits:\n  - id: office\n    exit_node: 100.101.0.11\nrules:\n  default_exit: main\n  global_exit: main\n" + policy
+			if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			server.options.RemoveExit = func(_ context.Context, id, revision string) error {
+				return tray.RemoveExitDocument(path, id, revision, func(string) error { return nil })
+			}
+			_, revision, _ := tray.ReadConfigDocument(path)
+			status, body := request(t, server, "POST", "/api/exit-remove", map[string]string{"exit": "office", "revision": revision}, nil)
+			var doc document
+			if status != http.StatusOK || json.Unmarshal(body, &doc) != nil || !doc.Valid {
+				t.Fatalf("remove policy owner: %d %s", status, body)
+			}
+			for _, endpoint := range []string{"/api/validate", "/api/config"} {
+				status, body = request(t, server, "POST", endpoint, map[string]any{
+					"yaml": doc.YAML, "revision": doc.Revision,
+					"changes": map[string]any{"exits": []map[string]any{{"id": "replacement", "exit_node": ""}}},
+				}, nil)
+				if status != http.StatusOK {
+					t.Fatalf("add replacement to retained draft at %s: %d %s", endpoint, status, body)
+				}
+			}
+			config, err := tailsplit.LoadDraft(path)
+			if err != nil || applied.Load() != 1 || config.TrafficExitID() != "main" || len(config.Exits) != 1 || config.Exits[0].ID != "replacement" {
+				t.Fatalf("replacement changed the selected remaining gateway: %+v, %v", config, err)
+			}
+			if name != "group" && config.Rules.Final != "office" || name != "final" && (len(config.Rules.Routes) != 1 || config.Rules.Routes[0].Exit != "office") {
+				t.Fatalf("adding a replacement discarded unresolved policy: %+v", config.Rules)
+			}
+			if _, err := tailsplit.CompileContext(context.Background(), config); !errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
+				t.Fatalf("editable draft became eligible for live traffic: %v", err)
+			}
+		})
+	}
+}
+
+func TestActiveHelperRejectsUnresolvedSplitSaveBeforeApply(t *testing.T) {
+	for name, policy := range map[string]string{
+		"final": "  final: office\n",
+		"group": "  routes:\n    - exit: office\n      domains: [private.example]\n",
+	} {
+		for _, mode := range []string{"tun", "proxy", "login"} {
+			for _, pending := range []bool{false, true} {
+				t.Run(name+"/"+mode+map[bool]string{false: "/ready", true: "/pending"}[pending], func(t *testing.T) {
+					server, path, applied := testServer(t)
+					original := "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\nrules:\n  mode: global\n  default_exit: main\n  global_exit: main\n" + policy + "tun:\n  enabled: true\n"
+					if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					server.options.Snapshot = func() tray.Snapshot { return tray.Snapshot{Active: true, Mode: mode} }
+					_, revision, _ := tray.ReadConfigDocument(path)
+					changes := map[string]any{"rules.mode": "split"}
+					if pending {
+						changes["tailscale.exit_node"] = ""
+					}
+					for _, endpoint := range []string{"/api/validate", "/api/config"} {
+						status, body := request(t, server, "POST", endpoint, map[string]any{"yaml": original, "revision": revision, "changes": changes}, nil)
+						current, currentRevision, _ := tray.ReadConfigDocument(path)
+						if status != http.StatusUnprocessableEntity || applied.Load() != 0 || currentRevision != revision || string(current) != original {
+							t.Fatalf("active unresolved save reached Apply or changed saved state: %d %s", status, body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestStoppedDraftExceptionDoesNotBypassOtherRuntimeErrors(t *testing.T) {
+	for name, extra := range map[string]string{
+		"pending explicit owner": "exits:\n  - id: office\nrules:\n  final: office\n",
+		"pending private owner":  "exits:\n  - id: office\n    tailnet: office.ts.net\n",
+		"missing rule source":    "rules:\n  source: ./missing-rules.txt\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, path, applied := testServer(t)
+			original, revision, _ := tray.ReadConfigDocument(path)
+			candidate := "state_dir: ./state\ntailscale:\n  exit_node: 100.64.0.10\n" + extra
+			config, err := tray.ValidateConfigDocument(path, []byte(candidate))
+			if err != nil {
+				t.Fatal("fixture failed general validation:", err)
+			}
+			if _, err := tailsplit.CompileContext(context.Background(), config); err == nil || errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
+				t.Fatalf("fixture must exercise a different runtime error: %v", err)
+			}
+			status, body := request(t, server, "POST", "/api/config", map[string]string{"yaml": candidate, "revision": revision}, nil)
+			current, currentRevision, _ := tray.ReadConfigDocument(path)
+			if status != http.StatusUnprocessableEntity || applied.Load() != 0 || currentRevision != revision || string(current) != string(original) {
+				t.Fatalf("unrelated runtime error used the draft exception: %d %s", status, body)
+			}
+		})
+	}
+}
+
+func TestStructuredListEditsPreserveCommentsAnchorsAndOmittedFields(t *testing.T) {
+	const original = `state_dir: ./state
+tailscale: null
+exits: # Saved devices
+  - &office
+    id: office # Office identity
+    name: &label 'Office' # Office label
+  - id: lab # Lab identity
+    name: *label # Shared label
+rules:
+  default_exit: office
+  global_exit: office
+  routes: # Saved groups
+    - &first
+      exit: office # First owner
+      domains: &domains [first.example] # First matches
+    - exit: office # Second owner
+      domains: [second.example] # Second matches
+    - <<: *first # Inherited group
+      domains: [third.example] # Third matches
+  proxy_domains: *domains # Retain old domains
+`
+	for _, operation := range []string{"add exit", "edit route", "remove route", "edit aliased field", "reorder aliases"} {
+		t.Run(operation, func(t *testing.T) {
+			server, path, applied := testServer(t)
+			if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			status, body := request(t, server, "GET", "/api/config", nil, nil)
+			var doc document
+			if status != http.StatusOK || json.Unmarshal(body, &doc) != nil || !doc.Valid {
+				t.Fatalf("fixture must be readable: %d %s", status, body)
+			}
+			exits := doc.Values["exits"].([]any)
+			routes := doc.Values["rules"].(map[string]any)["routes"].([]any)
+			changes := map[string]any{}
+			wantDomains := []string{"first.example", "second.example", "third.example"}
+			switch operation {
+			case "add exit":
+				changes["exits"] = append(exits, map[string]any{"id": "new", "auto_name": true, "exit_node": ""})
+			case "edit route":
+				routes[0].(map[string]any)["domains"] = []string{"changed.example"}
+				changes["rules.routes"] = routes
+				wantDomains[0] = "changed.example"
+			case "remove route":
+				changes["rules.routes"] = routes[1:]
+				wantDomains = wantDomains[1:]
+			case "edit aliased field":
+				exits[1].(map[string]any)["name"] = "Lab"
+				changes["exits"] = exits
+			case "reorder aliases":
+				changes["exits"] = []any{exits[1], exits[0]}
+			}
+			status, body = request(t, server, "POST", "/api/config", map[string]any{
+				"yaml": original, "revision": doc.Revision, "changes": changes,
+			}, nil)
+			if status != http.StatusOK || json.Unmarshal(body, &doc) != nil || !doc.Valid || applied.Load() != 1 {
+				t.Fatalf("structured save: %d %s", status, body)
+			}
+			for _, comment := range []string{"# Saved devices", "# Office identity", "# Office label", "# Lab identity", "# Shared label", "# Saved groups", "# Second owner", "# Second matches", "# Inherited group", "# Third matches", "# Retain old domains"} {
+				if !strings.Contains(doc.YAML, comment) {
+					t.Fatalf("save lost %s:\n%s", comment, doc.YAML)
+				}
+			}
+			for _, anchor := range []string{"&office", "&label"} {
+				if !strings.Contains(doc.YAML, anchor) {
+					t.Fatalf("save lost an unchanged anchor %s:\n%s", anchor, doc.YAML)
+				}
+			}
+			if strings.Contains(doc.YAML, "hostname:") || strings.Contains(doc.YAML, "auto_name: false") || strings.Count(doc.YAML, "exit_node:") != map[bool]int{true: 1, false: 0}[operation == "add exit"] {
+				t.Fatalf("save serialized defaults into unrelated entries:\n%s", doc.YAML)
+			}
+			config, err := tailsplit.LoadDraft(path)
+			if err != nil || !reflect.DeepEqual(config.Rules.ProxyDomains, []string{"first.example"}) || len(config.Rules.Routes) != len(wantDomains) {
+				t.Fatalf("aliases or saved groups changed: %+v, %v", config.Rules, err)
+			}
+			for index, domain := range wantDomains {
+				if !reflect.DeepEqual(config.Rules.Routes[index].Domains, []string{domain}) {
+					t.Fatalf("group %d changed: %+v", index, config.Rules.Routes)
+				}
+			}
+			// Structured edits retain the same atomic revision boundary.
+			_, savedRevision, _ := tray.ReadConfigDocument(path)
+			status, _ = request(t, server, "POST", "/api/config", map[string]any{
+				"yaml": original, "revision": "stale", "changes": changes,
+			}, nil)
+			_, currentRevision, _ := tray.ReadConfigDocument(path)
+			if status != http.StatusConflict || applied.Load() != 1 || currentRevision != savedRevision {
+				t.Fatal("stale structured save crossed the apply/revision boundary")
+			}
+		})
+	}
+}
+
+func TestStructuredListReuseDoesNotTreatFalseIdentityAsAnOmittedDefault(t *testing.T) {
+	server, path, applied := testServer(t)
+	const original = "tailscale: null\nexits:\n  - id: false\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, _ := tray.ReadConfigDocument(path)
+	status, body := request(t, server, "POST", "/api/config", map[string]any{
+		"yaml": original, "revision": revision, "changes": map[string]any{"exits": []map[string]any{{}}},
+	}, nil)
+	current, currentRevision, _ := tray.ReadConfigDocument(path)
+	if status != http.StatusUnprocessableEntity || applied.Load() != 0 || string(current) != original || currentRevision != revision {
+		t.Fatalf("missing identity reused the old false identity: %d %s", status, body)
 	}
 }
 

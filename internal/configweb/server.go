@@ -349,6 +349,16 @@ func applyChanges(edit editRequest) ([]byte, error) {
 			if err := decoder.Decode(target); err != nil {
 				return nil, fmt.Errorf("%s: %w", path, err)
 			}
+			// Keep the submitted field presence after schema checking. Encoding
+			// the Go structs would insert defaults into otherwise untouched entries.
+			var sequence yaml.Node
+			if err := yaml.Unmarshal(raw, &sequence); err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			if err := formatStructuredJSON(sequence.Content[0]); err != nil {
+				return nil, err
+			}
+			target = sequence.Content[0]
 		} else if err := json.Unmarshal(raw, target); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
@@ -359,6 +369,21 @@ func applyChanges(edit editRequest) ([]byte, error) {
 		changes = append(changes, tray.ConfigChange{Section: section, Key: key, Value: target})
 	}
 	return tray.PatchConfigDocument([]byte(edit.YAML), changes...)
+}
+
+// Render new JSON entries as ordinary YAML, with only ambiguous strings quoted.
+// Existing entries retain their source styles when the document patch reuses them.
+func formatStructuredJSON(node *yaml.Node) error {
+	node.Style = 0
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
+		return node.Encode(node.Value)
+	}
+	for _, child := range node.Content {
+		if err := formatStructuredJSON(child); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
@@ -381,6 +406,15 @@ func (s *Server) validateRuntime(ctx context.Context, data []byte) error {
 	}
 	if err := appservice.ValidateAppConfig(config); err != nil {
 		return err
+	}
+	if err := tailsplit.ValidateTrafficExit(config); errors.Is(err, tailsplit.ErrUnresolvedSplitExit) {
+		// Removal retains explicit Split policy until the user selects replacement
+		// owners. Permit editing that draft only without a helper to reconnect;
+		// reject active-session saves before Apply can stop the existing session.
+		if s.options.Snapshot != nil && s.options.Snapshot().Active {
+			return err
+		}
+		return nil
 	}
 	// Empty-device and pending-node drafts remain editable before login. Full
 	// connection validation still runs in the helper before opening any device.

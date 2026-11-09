@@ -1,10 +1,12 @@
 package tray
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idy/tailsplit"
 	"gopkg.in/yaml.v3"
@@ -46,6 +48,49 @@ func TestPrimaryRemovalPreservesSurvivingContainerAndNestedAliases(t *testing.T)
 	}
 }
 
+func TestExtraRemovalPreservesOmissionsAliasesAndUnresolvedPolicy(t *testing.T) {
+	const original = `tailscale: null
+exits:
+  - id: office
+    name: &label Office
+  - id: lab # Surviving device
+    name: *label # Surviving label
+    exit_node: 100.101.0.10
+rules:
+  default_exit: lab
+  global_exit: office
+  final: office # Explicit final policy
+  routes:
+    - exit: office # Explicit group policy
+      domains: [private.example]
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, _ := ReadConfigDocument(path)
+	if err := RemoveExitDocument(path, "office", revision, func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	config, err := tailsplit.LoadDraft(path)
+	if err != nil || len(config.Exits) != 1 || config.Exits[0].ID != "lab" || config.Exits[0].Name != "Office" ||
+		config.Rules.DefaultExit != "lab" || config.Rules.GlobalExit != tailsplit.UnsetExit || config.Rules.Final != "office" || len(config.Rules.Routes) != 1 || config.Rules.Routes[0].Exit != "office" {
+		t.Fatalf("removal changed surviving state or unresolved policy: %+v, %v", config, err)
+	}
+	if err := tailsplit.ValidateTrafficExit(config); err == nil {
+		t.Fatal("a remaining selected gateway hid unresolved Split policy")
+	}
+	data, _, _ := ReadConfigDocument(path)
+	for _, retained := range []string{"&label", "# Surviving device", "# Surviving label", "# Explicit final policy", "# Explicit group policy"} {
+		if !strings.Contains(string(data), retained) {
+			t.Fatalf("removal lost %q:\n%s", retained, data)
+		}
+	}
+	if strings.Count(string(data), "exit_node:") != 1 || strings.Contains(string(data), "hostname:") {
+		t.Fatalf("removal serialized defaults into the surviving profile:\n%s", data)
+	}
+}
+
 func TestContainerReplacementPreservesExternalSequenceAliases(t *testing.T) {
 	original := []byte("items: &list [one, &shared two]\nretained: *list\nvalue: *shared\n")
 	updated, err := PatchConfigDocument(original, ConfigChange{Key: "items", Value: nil})
@@ -61,5 +106,93 @@ func TestContainerReplacementPreservesExternalSequenceAliases(t *testing.T) {
 	}
 	if len(values.Retained) != 2 || values.Retained[1] != "two" || values.Value != "two" {
 		t.Fatal("sequence or nested reference changed", values)
+	}
+}
+
+func TestAliasExpansionRejectsCompactExponentialDocuments(t *testing.T) {
+	for _, test := range []struct {
+		name, leaf, limit string
+		levels            int
+	}{
+		{"nodes", "x", "node or byte limit", 30},
+		{"bytes", strings.Repeat("x", 4096), "node or byte limit", 30},
+		{"depth", "x", "depth limit", 80},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var original strings.Builder
+			fmt.Fprintf(&original, "base: &a0 [%s]\n", test.leaf)
+			for i := 1; i <= test.levels; i++ {
+				fmt.Fprintf(&original, "a%d: &a%d [*a%d, *a%d]\n", i, i, i-1, i-1)
+			}
+			fmt.Fprintf(&original, "items: &selected [*a%d]\nretained: *selected\n", test.levels)
+			started := time.Now()
+			updated, err := PatchConfigDocument([]byte(original.String()), ConfigChange{Key: "items", Value: nil})
+			if err == nil || !strings.Contains(err.Error(), test.limit) || updated != nil {
+				t.Fatalf("unbounded alias expansion accepted: %d bytes, %v", len(updated), err)
+			}
+			if time.Since(started) > 2*time.Second {
+				t.Fatal("compact alias expansion did not fail promptly")
+			}
+			// Inspect the budget independently of elapsed time: no branch can
+			// allocate more than the cumulative node/text allowance before failing.
+			var document yaml.Node
+			if err := yaml.Unmarshal([]byte(original.String()), &document); err != nil {
+				t.Fatal(err)
+			}
+			selected := document.Content[0].Content[len(document.Content[0].Content)-3]
+			budget := new(yamlPatchBudget)
+			_, err = expandYAMLAliases(selected, make(map[*yaml.Node]bool), budget, 0)
+			if err == nil || budget.nodes > maxYAMLExpansionNodes+1 || budget.bytes > MaxConfigBytes+len(test.leaf)+64 || budget.work > maxYAMLPatchWork+1 {
+				t.Fatalf("expansion exceeded its allocation budget: %+v, %v", budget, err)
+			}
+		})
+	}
+}
+
+func TestAliasExpansionBudgetsAreSharedAcrossPatchChanges(t *testing.T) {
+	original := "leaf: &leaf [x]\nbranch: &branch [" + strings.TrimSuffix(strings.Repeat("*leaf, ", 100), ", ") + "]\n"
+	for _, key := range []string{"one", "two"} {
+		original += key + ": &" + key + " [" + strings.TrimSuffix(strings.Repeat("*branch, ", 90), ", ") + "]\nretained_" + key + ": *" + key + "\n"
+	}
+	for _, key := range []string{"one", "two"} {
+		if _, err := PatchConfigDocument([]byte(original), ConfigChange{Key: key, Value: nil}); err != nil {
+			t.Fatalf("one bounded expansion must fit: %s: %v", key, err)
+		}
+	}
+	if data, err := PatchConfigDocument([]byte(original), ConfigChange{Key: "one", Value: nil}, ConfigChange{Key: "two", Value: nil}); err == nil || data != nil || !strings.Contains(err.Error(), "node or byte limit") {
+		t.Fatalf("patch changes reset their shared expansion budget: %d bytes, %v", len(data), err)
+	}
+}
+
+func TestAliasExpansionWorkAndCyclesAreBounded(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		work  int
+		cycle bool
+	}{
+		{name: "work", work: maxYAMLPatchWork},
+		{name: "cycle", cycle: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			node := &yaml.Node{Kind: yaml.SequenceNode}
+			if test.cycle {
+				node.Content = []*yaml.Node{{Kind: yaml.AliasNode, Alias: node}}
+			}
+			budget := &yamlPatchBudget{work: test.work}
+			if _, err := expandYAMLAliases(node, make(map[*yaml.Node]bool), budget, 0); err == nil {
+				t.Fatal("expansion accepted exhausted work or a cycle")
+			}
+		})
+	}
+}
+
+func TestConfigPatchBoundsEncodedOutputAndDocumentDepth(t *testing.T) {
+	original := []byte("value: " + strings.Repeat("x", MaxConfigBytes/2) + "\n")
+	if data, err := PatchConfigDocument(original, ConfigChange{Key: "other", Value: strings.Repeat("x", MaxConfigBytes/2)}); err == nil || data != nil || !strings.Contains(err.Error(), "exceeds 1 MiB") {
+		t.Fatalf("oversized output was returned: %d bytes, %v", len(data), err)
+	}
+	deep := []byte("value: " + strings.Repeat("[", maxYAMLDepth+1) + "x" + strings.Repeat("]", maxYAMLDepth+1) + "\n")
+	if _, err := PatchConfigDocument(deep); err == nil || !strings.Contains(err.Error(), "depth limit") {
+		t.Fatalf("deep document bypassed the patch depth bound: %v", err)
 	}
 }

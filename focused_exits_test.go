@@ -180,6 +180,7 @@ func TestSavedExitPingScopesAndSanitizesOnlyItsDevice(t *testing.T) {
 		{name: "default main", wantFocus: MainExit},
 		{name: "explicit main", requestedExit: MainExit, wantFocus: MainExit},
 		{name: "additional exit", requestedExit: "office", wantFocus: "office"},
+		{name: "main focus to additional exit", initialFocus: MainExit, requestedExit: "office", wantFocus: "office"},
 		{name: "already focused exit", initialFocus: "office", wantFocus: "office"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -226,5 +227,88 @@ func TestSavedExitPingScopesAndSanitizesOnlyItsDevice(t *testing.T) {
 func TestSavedExitPingRejectsUnknownFocus(t *testing.T) {
 	if _, err := savedExitPingConfig(focusedExitTestConfig(t), "unknown"); !errors.Is(err, ErrPingUnavailable) {
 		t.Fatalf("unknown focused device accepted: %v", err)
+	}
+}
+
+func TestFocusedExtraCannotSwitchIdentity(t *testing.T) {
+	for _, primary := range []bool{true, false} {
+		for _, wire := range []bool{false, true} {
+			name := "primary and extras"
+			if !primary {
+				name = "extras only"
+			}
+			if wire {
+				name += "/service normalization"
+			}
+			t.Run(name, func(t *testing.T) {
+				original := focusedExitTestConfig(t)
+				if !primary {
+					original.Tailscale = nil
+					original.DNS.MagicDomains = nil
+					original.Rules.DefaultExit, original.Rules.GlobalExit = "office", "office"
+				}
+				focused, err := original.FocusExit("office")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if wire {
+					data, err := json.Marshal(focused)
+					if err != nil {
+						t.Fatal(err)
+					}
+					focused = Config{}
+					if err := json.Unmarshal(data, &focused); err != nil {
+						t.Fatal(err)
+					}
+					focused, err = Normalize(focused, t.TempDir())
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				before, _ := json.Marshal(focused)
+				for _, target := range []string{MainExit, "spare"} {
+					rejected, err := focused.FocusExit(target)
+					if err == nil || rejected.Focus != "office" {
+						t.Fatalf("focused office switched to %q without its original config: %+v, %v", target, rejected, err)
+					}
+					if _, err := savedExitPingConfig(focused, target); !errors.Is(err, ErrPingUnavailable) {
+						t.Fatalf("ping refocused office to %q: %v", target, err)
+					}
+					if _, err := PingSavedExitNode(t.Context(), focused, target+"|100.64.0.10"); !errors.Is(err, ErrPingUnavailable) {
+						t.Fatalf("saved ping opened another identity for %q: %v", target, err)
+					}
+				}
+				if after, _ := json.Marshal(focused); string(after) != string(before) || !reflect.DeepEqual(focused.Exits, original.Exits) {
+					t.Fatal("rejected refocus changed identity or migration inventory")
+				}
+				if _, err := os.Stat(original.StateDir); !os.IsNotExist(err) {
+					t.Fatal("rejected refocus opened saved-device state")
+				}
+				endpoint := focusedPreflightEndpoint(t, focused)
+				if endpoint["state_directory"] != original.ExitStateDir("office") || endpoint["hostname"] != "laptop-office" {
+					t.Fatal("rejected refocus changed the surviving runtime identity", endpoint)
+				}
+				if !TailscaleEnabled {
+					return
+				}
+				compiled, err := compilePreflight(focused, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				engine, err := Open(t.Context(), focused, compiled)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer engine.Close()
+				if len(engine.exits) != 1 || engine.exits[0].id != "office" || engine.exits[0].tailnet != "office.ts.net" || engine.exits[0].exitNode != "100.101.0.11" {
+					t.Fatalf("focused status watches another identity: %+v", engine.exits)
+				}
+				for _, target := range []string{MainExit, "spare"} {
+					if _, ok := engine.endpoint(target); ok {
+						t.Fatalf("focused status/ping maps %q to the office endpoint", target)
+					}
+				}
+			})
+		}
 	}
 }

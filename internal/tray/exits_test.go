@@ -312,7 +312,7 @@ func TestRemoveExitMainExtraAndLastPreservesDormantPolicyAndStatePaths(t *testin
 		if len(calls) != 1 || calls[0] != id {
 			t.Fatalf("removal did not focus exactly its local client: %v", calls)
 		}
-		config, err = tailsplit.Load(path)
+		config, err = tailsplit.LoadDraft(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -332,16 +332,12 @@ func TestRemoveExitMainExtraAndLastPreservesDormantPolicyAndStatePaths(t *testin
 			len(config.Rules.DirectDomains) != 1 || config.Rules.GFWList == "" {
 			t.Fatal("removal discarded dormant Split policy")
 		}
-		for _, route := range config.Rules.Routes {
-			if route.Exit == id {
-				t.Fatal("explicit group still targets a removed device")
-			}
-		}
-		if id == "office" && config.Rules.Final != "direct" {
-			t.Fatal("explicit final pointing to removed extra was not reset to direct")
+		if len(config.Rules.Routes) != 3 || config.Rules.Routes[0].Exit != "main" ||
+			config.Rules.Routes[1].Exit != "office" || config.Rules.Routes[2].Exit != "lab" || config.Rules.Final != "office" {
+			t.Fatalf("removal discarded unresolved Split policy: %+v", config.Rules)
 		}
 	}
-	if len(config.ExitIDs()) != 0 || len(config.Rules.Routes) != 0 {
+	if len(config.ExitIDs()) != 0 {
 		t.Fatal("last local device was not removed")
 	}
 	if err := tailsplit.ValidateTrafficExit(config); err == nil {

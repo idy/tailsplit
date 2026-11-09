@@ -94,9 +94,14 @@ bounded diagnostic logs. On both macOS and Windows, **Add exit** creates a separ
 embedded device and opens browser authorization to choose its Tailnet. Choose its
 exit node afterward; the profile is named `<exit-device-name>@<network name>`.
 To use another network, add another exit. **Remove exit** at the bottom of each
-picker disconnects, logs out only that client, removes its local profile and
-explicit rule groups, and leaves the app stopped. Tailnet admin-console device
-records remain. Save or discard any draft before changing exits. Removing the
+picker disconnects, logs out only that client, removes its local profile, and
+leaves the app stopped. Explicit final and route-group references remain; choose
+replacements or edit those rules before reconnecting in Split mode. Tailnet
+admin-console device records remain. In active Global mode, Add exit first asks
+for consent to stop Kill-Switch protection and restore system networking; Cancel
+or Escape leaves the session unchanged. After consenting, reconnect manually when
+ready, including after a save or authorization failure. Save or discard any draft
+before changing exits. Removing the
 primary or last device preserves remaining identities and dormant policy; no
 other device is promoted or automatically selected as its replacement.
 Closing the window hides it to the tray, whose icon turns green while connected. Quit first
@@ -105,8 +110,10 @@ is optional and separate from automatic connection.
 
 Configuration remains in the user's `TailSplit` configuration directory. The
 service stores per-SID runtime state in protected `ProgramData\\TailSplit` and
-imports existing private CLI state once as bounded contents. It retains its
-initialization marker through logout, upgrade and uninstall. A live desktop
+imports primary private CLI state once as bounded contents. Additional exits are
+imported independently when first encountered, including after a service upgrade;
+existing service-owned or logged-out exits are never overwritten by an old CLI
+copy. Initialization and per-exit authority survive logout, upgrade and uninstall. A live desktop
 session holds the legacy state lock, so the CLI cannot use that identity at the
 same time. Upgrades and default uninstall retain user configuration, registration
 and device state.
