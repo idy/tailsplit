@@ -13,7 +13,8 @@ npm, GitHub Packages authentication or CDN access.
 The build moves the upstream shadow-root stylesheet into `peetty.css`, loaded by
 a same-origin link. No inline-style CSP exception is needed. Additional
 adaptations in `scripts/peetty-vendor-tools.mjs` place the figure immediately
-at the nearest safe spot instead of falling or jumping under reduced motion,
+at the nearest supported spot instead of falling or jumping under reduced motion,
+validating the exact landing point and searching inward from unsupported rounded edges,
 keep explicit moves available through immediate repositioning, interrupt motion
 when that preference changes, and treat oversized text as one clipped obstacle so long
 logs do not invalidate a complete page scan.

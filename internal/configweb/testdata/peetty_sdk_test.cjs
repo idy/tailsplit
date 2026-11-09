@@ -6,10 +6,19 @@ const { pathToFileURL } = require('node:url');
 const { runInNewContext } = require('node:vm');
 
 function sdk() {
-  const context = { document: { currentScript: null }, navigator: { language: 'en' }, requestAnimationFrame: () => 1 };
+  let perches = [];
+  const document = {
+    currentScript: null, nodeType: 9,
+    elementsFromPoint: (x, y) => perches.filter((perch) => perch.el &&
+      x >= perch.left && x <= perch.right && y >= perch.y && y <= perch.y + 3 &&
+      (!perch.supportedAt || perch.supportedAt(x))).map((perch) => perch.el),
+  };
+  const context = { document, navigator: { language: 'en' }, requestAnimationFrame: () => 1 };
   const bundle = readFileSync(join(__dirname, '../assets/vendor/peetty/peetty.global.js'), 'utf8');
   runInNewContext(bundle, context);
-  return context.Peetty.Peetty;
+  const Companion = context.Peetty.Peetty;
+  Companion.setTestPerches = (value) => { perches = value; };
+  return Companion;
 }
 
 function stationary(Companion, perches, x = 150, y = 440) {
@@ -21,6 +30,15 @@ function stationary(Companion, perches, x = 150, y = 440) {
     land(perch) { this.perch = perch; this.mode = 'ground'; },
     park() { this.mode = 'paused'; },
   };
+  pet.overlay.host.contains = () => false;
+  pet.perchOptions = { host: pet.overlay.host, width: 60, height: 88, anchor: [30, 85] };
+  for (const { el } of perches) {
+    if (!el) continue;
+    el.contains ||= (node) => node === el;
+    el.closest ||= () => null;
+    el.getRootNode ||= () => ({ nodeType: 9 });
+  }
+  Companion.setTestPerches(perches);
   pet.settle = (...args) => Companion.prototype.settle.call(pet, ...args);
   pet.leap = (...args) => Companion.prototype.leap.call(pet, ...args);
   pet.startFall = (...args) => Companion.prototype.startFall.call(pet, ...args);
@@ -48,6 +66,42 @@ test('reduced-motion drops snap to the nearest safe spot and retain horizontal p
   assert.equal(pet.x, 150);
   assert.equal(pet.y, 450);
   assert.equal(pet.mode, 'ground');
+});
+
+for (const [side, release] of [['left', 80], ['right', 220]]) {
+  test(`a reduced-motion drop near the ${side} rounded corner finds actual support`, () => {
+    const Companion = sdk();
+    const panel = { el: {}, left: 100, right: 200, y: 450, clear: true,
+      supportedAt: (x) => x >= 112 && x <= 188 };
+    const pet = stationary(Companion, [panel], release, 448);
+    pet.startFall();
+    assert.equal(pet.perch, panel);
+    assert.ok(panel.supportedAt(pet.x));
+    assert.ok(side === 'left' ? pet.x < 113 : pet.x > 187, 'landing stays close to the nearest supported edge');
+    const landed = pet.x;
+    pet.startFall();
+    assert.equal(pet.x, landed, 'a support recheck does not repeat an unsupported landing');
+    assert.equal(pet.mode, 'ground');
+  });
+}
+
+test('an unsupported panel is skipped in favor of clear floor', () => {
+  const Companion = sdk();
+  const panel = { el: {}, left: 100, right: 200, y: 450, clear: true, supportedAt: () => false };
+  const floor = { el: null, left: 30, right: 970, y: 700, clear: true };
+  const pet = stationary(Companion, [panel, floor]);
+  pet.startFall();
+  assert.equal(pet.perch, floor);
+  assert.equal(pet.mode, 'ground');
+});
+
+test('no supported landing parks instead of repeating an invalid drop', () => {
+  const Companion = sdk();
+  const panel = { el: {}, left: 100, right: 200, y: 450, clear: true, supportedAt: () => false };
+  const pet = stationary(Companion, [panel]);
+  pet.startFall();
+  assert.equal(pet.perch, undefined);
+  assert.equal(pet.mode, 'paused');
 });
 
 test('the explicit move menu action selects another safe surface without an animated jump', () => {

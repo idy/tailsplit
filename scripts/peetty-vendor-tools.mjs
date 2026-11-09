@@ -19,10 +19,23 @@ export function adaptPet(source) {
   source = replaceOnce(source, '  private enter() {', `  /** Instantly choose the nearest safe spot; explicit moves choose another surface. */
   private settle(exclude: Element | null = null, another = false): boolean {
     let best: { perch: Perch; x: number; distance: number } | null = null;
+    const opts = this.perchOptions;
     for (const perch of this.scan(true)) {
       if (!perch.clear || (another && perch.el === this.perch?.el)) continue;
       if (exclude && (perch.el === exclude || (perch.el && exclude.contains(perch.el)))) continue;
-      const x = clamp(this.x, perch.left, perch.right);
+      let x = clamp(this.x, perch.left, perch.right);
+      if (!clearAt(perch, x, opts)) {
+        // A span's center can be supported while its rounded endpoints are not.
+        let supported = (perch.left + perch.right) / 2;
+        if (!clearAt(perch, supported, opts)) continue;
+        let blocked = x;
+        for (let step = 0; step < 8 && Math.abs(supported - blocked) > 0.5; step++) {
+          const point = (supported + blocked) / 2;
+          if (clearAt(perch, point, opts)) supported = point;
+          else blocked = point;
+        }
+        x = supported;
+      }
       const distance = Math.hypot(x - this.x, perch.y - this.y);
       if (!best || distance < best.distance) best = { perch, x, distance };
     }
