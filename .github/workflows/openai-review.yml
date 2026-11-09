@@ -13,6 +13,11 @@ on:
         description: Open internal pull request to review.
         required: true
         type: string
+      dispatch_source_run_id:
+        description: Original non-default target-event run; leave empty for manual reports.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: write
@@ -52,6 +57,11 @@ jobs:
             if (!base || context.ref !== `refs/heads/${base}`
               || process.env.CODEX_REVIEW_REF_PROTECTED !== 'true') {
               core.info('Secret-bearing review requires the protected default workflow revision.');
+              core.setOutput('number', '');
+              return;
+            }
+            if (event === 'pull_request_target'
+              && context.payload.pull_request?.base?.ref !== base) {
               core.setOutput('number', '');
               return;
             }
@@ -105,8 +115,52 @@ jobs:
         present.
       # Preserve the shared issue-comment request/approval validator.
       pull_request_number: ${{ inputs.pull_request_number }}
+      dispatch_source_run_id: ${{ inputs.dispatch_source_run_id }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  dispatch_nondefault_review:
+    if: >-
+      github.event_name == 'pull_request_target'
+      && github.event.pull_request.base.ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No provider secret is exposed on a non-default workflow revision.
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Route non-default targets to the trusted default workflow
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            if (context.eventName !== 'pull_request_target'
+              || Number(process.env.GITHUB_RUN_ATTEMPT) !== 1) {
+              throw new Error('Create a fresh non-default review request');
+            }
+            const number = Number(context.payload.pull_request?.number);
+            if (!Number.isSafeInteger(number) || number < 1) throw new Error('Invalid pull request number');
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
+            if (pr.state !== 'open' || pr.draft
+              || pr.head.sha !== context.payload.pull_request.head.sha
+              || pr.base.ref !== context.payload.pull_request.base.ref) {
+              core.info('The target is no longer the current open PR head.');
+              return;
+            }
+            const [{ data: repository }, { data: run }] = await Promise.all([
+              github.rest.repos.get(context.repo),
+              github.rest.actions.getWorkflowRun({ ...context.repo, run_id: context.runId }),
+            ]);
+            if (!repository.default_branch || run.id !== context.runId
+              || run.event !== 'pull_request_target' || run.head_sha !== pr.head.sha
+              || !Number.isSafeInteger(run.workflow_id) || run.workflow_id < 1) {
+              throw new Error('Could not establish the trusted review source');
+            }
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo, workflow_id: run.workflow_id, ref: repository.default_branch,
+              inputs: { pull_request_number: String(number), dispatch_source_run_id: String(context.runId) },
+            });
 
   resolve_linked_prs:
     if: github.event_name == 'issues'
