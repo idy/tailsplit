@@ -499,14 +499,18 @@ Website-only pull requests run CI too, so required checks cannot remain pending
 because of path filters. The repository supports squash auto-merge: enable it on
 a pull request to merge once all required checks and conversations are satisfied.
 
-[The OpenAI PR review workflow](../.github/workflows/openai-review.yml) calls the
+[The OpenAI PR review workflow](../.github/workflows/codex-review.yml) calls the
 shared [GizClaw reviewer](https://github.com/GizClaw/github-workflows) at its
 `latest` tag. Default-target automatic reviews run directly on
 `pull_request_target` from the protected default-branch workflow, including every
 synchronization event. They do not depend on a caller in the proposed branch.
 Non-default targets use a metadata-only dispatcher, with no provider secret, to
 request actual review on the trusted default workflow; source-run fencing rejects
-stale requests. These fallback reports are subject to the dispatch-origin gate
+stale requests. The stable `codex-review.yml` path preserves older target-branch
+callers. New dispatches capture the original base ref and SHA, which are rechecked
+after the shared whole-workflow PR queue admits the worker. Legacy dispatches
+without a base capture are accepted only while the PR remains non-default, so
+they cannot overwrite eligible default-target results after retargeting. These fallback reports are subject to the dispatch-origin gate
 restriction described below. Secret-bearing review jobs reject unprotected or
 non-default workflow refs. The shared reviewer checks out
 only the trusted base and reads the PR diff as data; it never runs proposed
@@ -519,7 +523,7 @@ Each review publishes `OpenAI PR Review`, `OpenAI Issue Review` and
 GitHub does not count checks from `workflow_dispatch` or `issue_comment` workflow
 jobs as required merge checks. Those entry points remain available for review
 reports: post `@codex review` on its own line in a PR comment, optionally followed
-by a focus, or manually run `openai-review.yml` with the PR number. To refresh
+by a focus, or manually run `codex-review.yml` with the PR number. To refresh
 merge-gated results without a code update, edit the PR metadata to start an
 eligible `pull_request_target` run. Actions reruns are rejected by the shared
 reviewer; create a fresh request instead. See [GitHub's required-check event

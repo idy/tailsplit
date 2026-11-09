@@ -18,6 +18,16 @@ on:
         required: false
         default: ''
         type: string
+      dispatch_base_ref:
+        description: Original automatic-request base branch; empty for legacy callers.
+        required: false
+        default: ''
+        type: string
+      dispatch_base_sha:
+        description: Original automatic-request base commit; empty for legacy callers.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: write
@@ -41,7 +51,8 @@ jobs:
       || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      pull-requests: read
     outputs:
       number: ${{ steps.target.outputs.number }}
     steps:
@@ -49,6 +60,9 @@ jobs:
         env:
           CODEX_REVIEW_PR_INPUT: ${{ inputs.pull_request_number }}
           CODEX_REVIEW_REF_PROTECTED: ${{ github.ref_protected }}
+          CODEX_DISPATCH_SOURCE_RUN: ${{ inputs.dispatch_source_run_id }}
+          CODEX_DISPATCH_BASE_REF: ${{ inputs.dispatch_base_ref }}
+          CODEX_DISPATCH_BASE_SHA: ${{ inputs.dispatch_base_sha }}
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
@@ -78,6 +92,27 @@ jobs:
             }
             if (!Number.isSafeInteger(number) || number < 1) {
               throw new Error('A positive safe integer pull request number is required');
+            }
+            if (event === 'workflow_dispatch' && process.env.CODEX_DISPATCH_SOURCE_RUN) {
+              // The whole caller holds the per-PR workflow queue through review.
+              // Recheck the original base after queue admission, not just dispatch.
+              const { data: pr } = await github.rest.pulls.get({
+                ...context.repo, pull_number: number,
+                headers: { 'cache-control': 'no-cache' },
+                cache_bust: `${context.runId}-${Date.now()}`,
+              });
+              const originalRef = process.env.CODEX_DISPATCH_BASE_REF || '';
+              const originalSha = process.env.CODEX_DISPATCH_BASE_SHA || '';
+              const captured = originalRef || originalSha;
+              // Legacy callers did not capture a base; never let their dispatch
+              // overwrite an eligible default-target result after retargeting.
+              if (pr.state !== 'open' || pr.draft || pr.base.ref === base
+                || (captured && (!originalRef || !originalSha
+                  || pr.base.ref !== originalRef || pr.base.sha !== originalSha))) {
+                core.info('The queued automatic request no longer matches its original base.');
+                core.setOutput('number', '');
+                return;
+              }
             }
             core.setOutput('number', String(number));
 
@@ -144,7 +179,8 @@ jobs:
             const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
             if (pr.state !== 'open' || pr.draft
               || pr.head.sha !== context.payload.pull_request.head.sha
-              || pr.base.ref !== context.payload.pull_request.base.ref) {
+              || pr.base.ref !== context.payload.pull_request.base.ref
+              || pr.base.sha !== context.payload.pull_request.base.sha) {
               core.info('The target is no longer the current open PR head.');
               return;
             }
@@ -159,7 +195,10 @@ jobs:
             }
             await github.rest.actions.createWorkflowDispatch({
               ...context.repo, workflow_id: run.workflow_id, ref: repository.default_branch,
-              inputs: { pull_request_number: String(number), dispatch_source_run_id: String(context.runId) },
+              inputs: {
+                pull_request_number: String(number), dispatch_source_run_id: String(context.runId),
+                dispatch_base_ref: pr.base.ref, dispatch_base_sha: pr.base.sha,
+              },
             });
 
   resolve_linked_prs:

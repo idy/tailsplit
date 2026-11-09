@@ -15,15 +15,18 @@ const data = JSON.parse(fs.readFileSync(0, 'utf8'));
 const outputs = {}, dispatches = [];
 const core = {setOutput: (key, value) => {outputs[key] = value;}, info() {}};
 const github = {rest: {
-  pulls: {get: async () => ({data: data.pr || {state:'open',draft:false,head:{sha:'current-head'},base:{ref:'release'}}})},
+  pulls: {get: async () => ({data: data.pr || {state:'open',draft:false,head:{sha:'current-head'},base:{ref:'release',sha:'release-base'}}})},
   repos: {get: async () => ({data: {default_branch:'main'}})},
   actions: {
-    getWorkflowRun: async () => ({data: data.source || {id:100,event:'pull_request_target',head_sha:'current-head',workflow_id:412537871}}),
+    getWorkflowRun: async () => ({data: data.source || {id:100,event:'pull_request_target',head_sha:'current-head',workflow_id:11}}),
     createWorkflowDispatch: async (value) => {dispatches.push(value);},
   },
 }};
 process.env.CODEX_REVIEW_PR_INPUT = data.input || '';
 process.env.CODEX_REVIEW_REF_PROTECTED = data.protected ? 'true' : 'false';
+process.env.CODEX_DISPATCH_SOURCE_RUN = data.source_id || '';
+process.env.CODEX_DISPATCH_BASE_REF = data.original_ref || '';
+process.env.CODEX_DISPATCH_BASE_SHA = data.original_sha || '';
 process.env.GITHUB_RUN_ATTEMPT = String(data.attempt || 1);
 (async () => {
   let error = '';
@@ -40,7 +43,7 @@ process.env.GITHUB_RUN_ATTEMPT = String(data.attempt || 1);
 class ReviewTargetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.workflow = (ROOT / ".github/workflows/openai-review.yml").read_text()
+        cls.workflow = (ROOT / ".github/workflows/codex-review.yml").read_text()
         match = re.search(
             r"(?ms)^  resolve_review_target:.*?^          script: \|\n(.*?)(?=^  review:)",
             cls.workflow,
@@ -58,6 +61,7 @@ class ReviewTargetTests(unittest.TestCase):
 
     def context(self, event, **payload):
         return {"eventName": event, "ref": "refs/heads/main",
+                "repo": {"owner": "idy", "repo": "tailsplit"}, "runId": 900,
                 "payload": {"repository": {"default_branch": "main"}, **payload}}
 
     def resolve(self, context, request="", protected=True, fallback=False, **fixtures):
@@ -105,7 +109,7 @@ class ReviewTargetTests(unittest.TestCase):
 
     def fallback_context(self):
         context = self.context("pull_request_target", pull_request={
-            "number": 29, "base": {"ref": "release"}, "head": {"sha": "current-head"},
+            "number": 29, "base": {"ref": "release", "sha": "release-base"}, "head": {"sha": "current-head"},
         })
         context.update(ref="refs/heads/release", repo={"owner": "idy", "repo": "tailsplit"}, runId=100)
         return context
@@ -117,8 +121,9 @@ class ReviewTargetTests(unittest.TestCase):
         result = self.resolve(self.fallback_context(), fallback=True)
         self.assertEqual(result["error"], "")
         self.assertEqual(result["dispatches"], [{
-            "owner": "idy", "repo": "tailsplit", "workflow_id": 412537871, "ref": "main",
-            "inputs": {"pull_request_number": "29", "dispatch_source_run_id": "100"},
+            "owner": "idy", "repo": "tailsplit", "workflow_id": 11, "ref": "main",
+            "inputs": {"pull_request_number": "29", "dispatch_source_run_id": "100",
+                       "dispatch_base_ref": "release", "dispatch_base_sha": "release-base"},
         }])
 
     def test_nondefault_stale_closed_and_draft_requests_are_skipped(self):
@@ -137,10 +142,37 @@ class ReviewTargetTests(unittest.TestCase):
         self.assertIn("fresh", result["error"])
         self.assertEqual(result["dispatches"], [])
         result = self.resolve(self.fallback_context(), fallback=True, source={
-            "id": 100, "event": "pull_request_target", "head_sha": "older-head", "workflow_id": 412537871,
+            "id": 100, "event": "pull_request_target", "head_sha": "older-head", "workflow_id": 11,
         })
         self.assertIn("trusted review source", result["error"])
         self.assertEqual(result["dispatches"], [])
+
+    def test_captured_base_is_rechecked_after_workflow_queue_admission(self):
+        context = self.context("workflow_dispatch")
+        captured = {"source_id": "100", "original_ref": "release", "original_sha": "release-base"}
+        result = self.resolve(context, request="29", **captured)
+        self.assertEqual(result["outputs"], {"number": "29"})
+        for ref, sha in (("main", "release-base"), ("other-release", "release-base"), ("release", "new-base")):
+            result = self.resolve(context, request="29", pr={
+                "state": "open", "draft": False, "base": {"ref": ref, "sha": sha},
+            }, **captured)
+            self.assertEqual(result["outputs"], {"number": ""})
+
+    def test_legacy_dispatch_cannot_overwrite_default_target_review(self):
+        context = self.context("workflow_dispatch")
+        result = self.resolve(context, request="29", source_id="100")
+        self.assertEqual(result["outputs"], {"number": "29"}, "legacy non-default callers remain compatible")
+        result = self.resolve(context, request="29", source_id="100", pr={
+            "state": "open", "draft": False, "base": {"ref": "main", "sha": "base"},
+        })
+        self.assertEqual(result["outputs"], {"number": ""})
+        result = self.resolve(context, request="29", source_id="100", original_ref="release")
+        self.assertEqual(result["outputs"], {"number": ""}, "partial base captures fail closed")
+
+    def test_whole_workflow_queue_is_shared_by_target_and_dispatch(self):
+        queue = self.workflow.split("\njobs:", 1)[0].split("\nconcurrency:", 1)[1]
+        self.assertIn("github.event.pull_request.number || github.event.issue.number || inputs.pull_request_number", queue)
+        self.assertIn("cancel-in-progress: false", queue)
 
     def test_push_event_cannot_invoke_the_reviewer(self):
         events = self.workflow.split("\npermissions:", 1)[0]
