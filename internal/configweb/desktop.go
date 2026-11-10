@@ -43,7 +43,22 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "add-exit":
-		config, err := tailsplit.Load(s.options.ConfigPath)
+		if s.options.AddExit == nil {
+			http.NotFound(w, r)
+			return
+		}
+		original, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "config", err.Error())
+			return
+		}
+		if request.Revision == "" || request.Revision != revision {
+			fail(w, http.StatusConflict, "conflict", "配置文件已更新，请重新读取后重试。")
+			return
+		}
+		// Validate the same document whose revision the page confirmed. Stale
+		// inventory must produce a reload conflict before capacity/ID checks.
+		config, err := tray.ValidateConfigDocument(s.options.ConfigPath, original)
 		if err != nil || !tailsplit.ValidExitID(request.Exit) || len(config.Exits) >= 8 {
 			fail(w, http.StatusBadRequest, "action", "无法添加出口，请先检查配置。")
 			return
@@ -53,19 +68,6 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 				fail(w, http.StatusBadRequest, "action", "这个出口已存在。")
 				return
 			}
-		}
-		if s.options.AddExit == nil {
-			http.NotFound(w, r)
-			return
-		}
-		_, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)
-		if err != nil {
-			fail(w, http.StatusBadRequest, "config", err.Error())
-			return
-		}
-		if request.Revision == "" || request.Revision != revision {
-			fail(w, http.StatusConflict, "conflict", "配置文件已更新，请重新读取后重试。")
-			return
 		}
 		operation = func() error { return s.options.AddExit(r.Context(), request.Exit, request.Revision) }
 	case "login-exit", "logout-exit":

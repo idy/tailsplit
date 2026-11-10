@@ -88,18 +88,27 @@ func validateExitInventory(count int) error {
 	return nil
 }
 
-func prepareRuntimeUserWithRules(base, user string, files Files, updateRules bool) (string, error) {
+// Directory setup alone does not finalize identity or FakeIP cache migration.
+func prepareRuntimeUserDirectory(base, user string) (string, error) {
 	if user == "" || user == "." || user == ".." || strings.ContainsAny(user, `/\\:`) {
 		return "", errors.New("invalid registered service user")
-	}
-	if err := validateFiles(files); err != nil {
-		return "", err
 	}
 	directory := runtimeUserDirectory(base, user)
 	for _, path := range []string{base, filepath.Join(base, "users"), directory} {
 		if err := privateDirectory(path); err != nil {
 			return "", err
 		}
+	}
+	return directory, nil
+}
+
+func prepareRuntimeUserWithRules(base, user string, files Files, updateRules bool) (string, error) {
+	if err := validateFiles(files); err != nil {
+		return "", err
+	}
+	directory, err := prepareRuntimeUserDirectory(base, user)
+	if err != nil {
+		return "", err
 	}
 	first := !runtimeInitialized(directory)
 	if len(files.TailscaleState) > 0 {
@@ -160,7 +169,7 @@ func prepareNewExitRuntime(base, user string, config tailsplit.Config, files Fil
 	if len(files.TailscaleState) != 0 || len(files.ExitStates) != 0 || len(files.Cache) != 0 || len(files.Rules) != 0 {
 		return errors.New("new device authentication cannot import saved files")
 	}
-	directory, err := prepareRuntimeUserWithRules(base, user, Files{}, false)
+	directory, err := prepareRuntimeUserDirectory(base, user)
 	if err != nil {
 		return err
 	}

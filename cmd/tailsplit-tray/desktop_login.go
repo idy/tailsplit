@@ -97,6 +97,10 @@ func finishDesktopExitLogin(flow *tray.LoginFlow, err error) error {
 			flow.Fail(err.Error())
 			return err
 		}
+		if errors.Is(err, tray.ErrConfigChanged) {
+			flow.Fail("配置文件已更新，请重新读取后重试。")
+			return tray.ErrConfigChanged
+		}
 		flow.Fail("无法准备登录，请查看日志")
 		return errors.New(tr("无法准备登录，请查看日志"))
 	}

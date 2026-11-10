@@ -60,7 +60,7 @@ func newExitPipeServer(t *testing.T, login Runner) (*Server, sessionDial) {
 		return errors.New("unexpected runner")
 	}
 	server := &Server{UserID: "fixture-user", Base: base, Login: login, Run: unexpected, Logout: unexpected}
-	directory, err := prepareRuntimeUserWithRules(base, server.userKey(), Files{}, false)
+	directory, err := prepareRuntimeUserDirectory(base, server.userKey())
 	if err != nil {
 		t.Fatal(err)
 	}

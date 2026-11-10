@@ -198,6 +198,9 @@ var englishUI = map[string]string{
 	"已请求浏览器打开":        "Browser open requested",
 	"无法准备登录，请查看日志":    "Could not prepare sign-in; view logs",
 	"无法重新登录，请查看日志":    "Could not sign in again; view logs",
+
+	"配置文件已更新，请重新读取后重试。": "The configuration changed. Reload it and try again.",
+
 	"App 更新失败，已保留原版本。请重新检查更新，或从 GitHub Release 安装。": "App update failed. The previous version was kept. Check again or install from GitHub Releases.",
 	"无法准备配置文件": "Could not prepare the configuration file",
 	"无法打开日志文件": "Could not open the log file",
