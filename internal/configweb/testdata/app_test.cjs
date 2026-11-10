@@ -120,7 +120,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     return button;
   });
   $('#window-controls').hidden = true;
-  const app = { $, requests, messages, windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', ...snapshot },
+  const app = { $, requests, messages, windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
     language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: () => undefined };
   const document = {
     documentElement: new Element(), hidden: false, querySelector: $, createElement: (tag) => { const element = new Element(); element.tagName = tag; return element; },
@@ -153,6 +153,11 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
         return response(app.language);
       }
       if (path === '/api/state') return response(app.snapshot);
+      if (path === '/api/connect-request') {
+        const claimed = Boolean(request.data.request) && request.data.request === app.snapshot.connect_request;
+        if (claimed) app.snapshot.connect_request = '';
+        return response({ claimed });
+      }
       if (path === '/api/config') return response(app.config);
       if (path === '/api/preview') {
         let text = request.data.yaml;
@@ -2145,7 +2150,7 @@ test('Global connection uses its selected extra while unrelated primary and exit
   assert.equal(app.$('#desktop-login').hidden, false, 'primary sign-in still belongs to primary row');
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'connect' });
+    assert.deepEqual(request.data, { action: 'connect', revision: app.config.revision });
     Object.assign(app.snapshot, { active: true, state: 'running', mode: 'tun', routing_mode: 'global' });
     return response({ ok: true });
   };
@@ -2535,7 +2540,7 @@ for (const mode of ['split', 'global']) test(`${mode} connect requires explicit 
     }
     if (request.path === '/api/action') {
       calls.push('connect');
-      assert.deepEqual(request.data, { action: 'connect' });
+      assert.deepEqual(request.data, { action: 'connect', revision: app.config.revision });
       assert.equal(app.config.values.rules[field], 'office');
       return response({ ok: true });
     }
@@ -2675,7 +2680,7 @@ test('the explicit no-device direct-only Windows fixture connects without a gate
   const app = await page({ desktop: true, active: false, state: 'stopped', backend_state: 'Direct' }, '', {}, initial);
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'connect' });
+    assert.deepEqual(request.data, { action: 'connect', revision: app.config.revision });
     app.snapshot = { ...app.snapshot, active: true, state: 'running', mode: 'proxy', backend_state: 'Direct' };
     return response({ ok: true });
   };
@@ -3147,6 +3152,70 @@ test('service installation while signing in explains the system Installer and re
   }
 });
 
+test('guided Connect waits for primary or additional device approval without relaunching login', async () => {
+  for (const id of ['main', 'office']) {
+    const initial = multiExitDocument('100.101.0.11');
+    initial.values.rules = { mode: 'split', source: 'builtin', final: 'direct', default_exit: id };
+    const snapshot = officeSnapshot();
+    (id === 'main' ? snapshot : snapshot.exits.office).backend_state = 'NeedsMachineAuth';
+    const app = await page(snapshot, '', { page: 'home' }, initial);
+    app.override = request => {
+      if (request.path !== '/api/action') return undefined;
+      assert.equal(request.data.action, 'connect', 'approval must never launch another browser login');
+      Object.assign(app.snapshot, { active: true, mode: 'proxy', state: 'running', traffic_exit: id });
+      return response({ ok: true });
+    };
+    await app.$('#home-connect').emit('click');
+    assert.equal(app.$('#connection-setup-title').textContent, '等待管理员批准设备');
+    await app.poll(); await app.poll();
+    assert.equal(mutations(app).length, 0);
+    (id === 'main' ? app.snapshot : app.snapshot.exits.office).backend_state = 'Running';
+    await app.poll();
+    assert.deepEqual(mutations(app).map(r => r.data.action), ['connect']);
+  }
+});
+
+test('approval status follows the login helper owner rather than a different saved gateway', async () => {
+  for (const mode of ['login', 'discovery']) {
+    const initial = multiExitDocument('100.101.0.11');
+    initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'office' };
+    const snapshot = officeSnapshot();
+    Object.assign(snapshot, { active: true, mode, state: 'authenticating', backend_state: 'NeedsMachineAuth', traffic_exit: 'office' });
+    const app = await page(snapshot, '', { page: 'home' }, initial);
+    assert.equal(app.$('#home-status').textContent, '等待管理员批准设备');
+    assert.equal(app.$('#connection-status span').textContent, '等待管理员批准设备');
+    app.snapshot.backend_state = 'Running';
+    app.snapshot.exits.office.backend_state = 'NeedsMachineAuth';
+    await app.poll();
+    assert.notEqual(app.$('#connection-status span').textContent, '等待管理员批准设备', 'approval on another device must not be attributed to this helper');
+  }
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main' };
+  const app = await page({ ...officeSnapshot({ backend_state: 'NeedsMachineAuth' }), active: true, mode: 'proxy', state: 'authenticating', traffic_exit: 'office' }, '', {}, initial);
+  assert.equal(app.$('#connection-status span').textContent, '等待管理员批准设备', 'traffic approval follows the running helper, not newly saved routing');
+});
+
+test('missing default can be selected even when another referenced device needs login', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: '-', final: 'direct', routes: [{ exit: 'office', domains: ['work.example'] }] };
+  const app = await page(officeSnapshot({ backend_state: 'NeedsLogin' }), '', {}, initial);
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#default-exit-dialog').open, true);
+  assert.equal(mutations(app).length, 0);
+});
+
+test('native window show wakes a visible page immediately without waiting for its polling timer', async () => {
+  const app = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  guidedBackend(app);
+  app.snapshot.connect_request = 'native-show-immediate';
+  await app.windowEvents.emit('tailsplit-window-shown');
+  assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1);
+  assert.equal(app.$('#exit-picker-dialog').open, true);
+  await app.windowEvents.emit('tailsplit-window-shown');
+  assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1, 'repeated Show does not replay the request');
+});
+
 test('pending primary machine approval explains the administrator action and does not relaunch login', async () => {
   const initial = { ...doc(), values: { ...doc().values, tailscale: { exit_node: '100.64.0.10' } } };
   const app = await page({ desktop: true, state: 'authenticating', active: true, mode: 'login', backend_state: 'NeedsMachineAuth' }, '', {}, initial);
@@ -3314,7 +3383,7 @@ test('home fans out saved destinations and only marks confirmed routes as in eff
   const summary = (app) => rows(app).map(row => [row.dataset.route, row.children[0].textContent, row.children[1].textContent]);
 
   const idle = await page(officeSnapshot(), '', { page: 'home' }, documentWith(split));
-  assert.deepEqual(summary(idle), [['direct', '直连', '直连规则 · 未匹配流量'], ['exit', '主出口', '默认代理出口'], ['exit', 'Office', '2 个规则组']]);
+  assert.deepEqual(summary(idle), [['direct', '直连', '直连规则 · 未匹配流量'], ['exit', '主出口', '默认代理出口'], ['exit', 'Office', '私有域名 · 2 个规则组']]);
   assert.ok(rows(idle).every(row => row.className.endsWith('tone-planned')), 'saved routes stay planned while disconnected');
   assert.equal(idle.$('#home-wires').children.length, 3);
   assert.equal(idle.$('#home-wires-live').children.length, 0, 'no confirmed wire before a running session');
@@ -3407,6 +3476,105 @@ test('route flow follows only positive per-route byte deltas and stops without f
   assert.deepEqual(active(), [], 'disconnect removes the active flow overlay');
   const html = readFileSync(join(__dirname, '../assets/index.html'), 'utf8');
   assert.doesNotMatch(html, /id="(?:home-final-route|home-policy-note|home-preview)"/);
+});
+
+test('native connection intent is globally consumed and cannot replay in another page', async () => {
+  const app = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  guidedBackend(app, { deferAdd: true });
+  app.snapshot.connect_request = 'claimed-once';
+  await app.windowEvents.emit('tailsplit-window-shown');
+  assert.equal(app.snapshot.connect_request, '', 'the controller acknowledgment clears the intent');
+  assert.equal(app.requests.filter(r => r.path === '/api/connect-request').length, 1);
+  await app.$('#connection-setup-cancel').emit('click');
+  const fresh = await page(app.snapshot, '', { page: 'home', storage: new Map() }, app.config);
+  assert.equal(mutations(fresh).length, 0, 'a fresh WebView must not connect after cancellation');
+  fresh.override = request => request.path === '/api/connect-request' ? response({ claimed: false }) : undefined;
+  fresh.snapshot.connect_request = 'claimed-once';
+  await fresh.windowEvents.emit('tailsplit-window-shown');
+  assert.equal(mutations(fresh).length, 0, 'a delayed stale state cannot replay a globally claimed token');
+});
+
+test('home compares saved routes with the running revision after an external edit', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct' };
+  const app = await page({ ...officeSnapshot(), active: true, mode: 'proxy', state: 'running', active_revision: 'original' }, '', { page: 'home' }, initial);
+  assert.equal(app.$('#split-map').dataset.connected, 'true');
+  app.config = { ...initial, revision: 'external', yaml: initial.yaml + '# external change\n' };
+  app.snapshot.revision = 'external';
+  await app.poll();
+  assert.equal(app.$('#split-map').dataset.connected, 'false');
+  assert.equal(app.$('#home-description').textContent, '已保存的配置尚未应用；当前连接仍使用之前的配置。');
+  assert.equal(app.$('#home-wires-live').children.length, 0);
+  app.snapshot.active_revision = 'external';
+  await app.poll();
+  assert.equal(app.$('#split-map').dataset.connected, 'true', 'the diagram becomes active only after the engine uses the new revision');
+});
+
+test('home marks an offline or missing secondary node unavailable while the default stays connected', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct', routes: [{ exit: 'office', domains: ['work.example'] }] };
+  const snapshot = { ...officeSnapshot(), active: true, mode: 'tun', state: 'running' };
+  snapshot.exits.office.exit_nodes[0].online = false;
+  const app = await page(snapshot, '', { page: 'home' }, initial);
+  const office = () => app.$('#home-routes').children.map(item => item.children[0]).find(row => row.dataset.exit === 'office');
+  assert.equal(app.$('#home-status').textContent, '已连接');
+  assert.match(office().className, /tone-warn/);
+  assert.equal(office().children[1].textContent, '出口不可用');
+  assert.equal(app.$('#home-wires-flow').children.some(path => path.dataset.exit === 'office'), false);
+  app.snapshot.exits.office.exit_nodes = [];
+  await app.poll();
+  assert.match(office().className, /tone-warn/, 'a missing selected node is not a working route either');
+});
+
+test('home includes implicit private-domain exits with compiler ownership precedence', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', global_exit: 'lab', final: 'direct' };
+  initial.values.dns = { magic_domains: ['shared.ts.net'] };
+  initial.values.exits.push({ id: 'lab', name: 'Lab', exit_node: '100.102.0.10', magic_dns_suffix: 'lab.ts.net' },
+    { id: 'shadow', name: 'Shadow', exit_node: '100.103.0.10', magic_dns_suffix: 'office.ts.net' });
+  const app = await page({}, '', { page: 'home' }, initial);
+  const rows = app.$('#home-routes').children.map(item => item.children[0]);
+  assert.deepEqual(rows.map(row => row.dataset.exit), ['direct', 'main', 'office', 'lab']);
+  assert.equal(rows.find(row => row.dataset.exit === 'office').children[1].textContent, '私有域名');
+  initial.values.rules.mode = 'global';
+  const global = await page({}, '', { page: 'home' }, initial);
+  assert.deepEqual(global.$('#home-routes').children.map(item => item.children[0].dataset.exit), ['lab']);
+});
+
+test('guided setup can confirm the same configured node after it recovers without rewriting configuration', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct' };
+  const snapshot = officeSnapshot(); snapshot.exit_nodes[0].online = false;
+  const app = await page(snapshot, '', {}, initial);
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    assert.deepEqual(request.data, { action: 'connect', revision: 'original' });
+    Object.assign(app.snapshot, { active: true, mode: 'proxy', state: 'running', active_revision: 'original' });
+    return response({ ok: true });
+  };
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#exit-picker-dialog').open, true);
+  assert.equal(app.$('#apply-exit-picker').disabled, true);
+  app.snapshot.exit_nodes[0].online = true;
+  await app.poll();
+  await pickerNode(app, '100.64.0.10').choice.emit('click');
+  assert.equal(app.$('#apply-exit-picker').disabled, false);
+  assert.equal(app.$('#apply-exit-picker').textContent, '保存并连接');
+  await app.$('#apply-exit-picker').emit('click');
+  assert.equal(app.$('#exit-picker-dialog').open, false);
+  assert.deepEqual(mutations(app).map(r => r.data.action || 'save'), ['connect']);
+});
+
+test('Windows missing-service setup directs users to Setup without promising an in-app installer', async () => {
+  const app = await page({ desktop: true }, 'mygo-windows', { page: 'home' }, guidedDocument());
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    Object.assign(app.snapshot, { state: 'failed', active: false, error: 'Run TailSplit Setup', error_code: 'service-setup-required' });
+    return response({ error: 'Run TailSplit Setup' }, false);
+  };
+  await app.$('#home-setup').emit('click');
+  assert.match(app.$('#connection-setup-detail').textContent, /TailSplit 安装程序.*Windows/);
+  assert.equal(app.$('#connection-setup-retry').textContent, '重试连接');
 });
 
 test('home retains each missing explicit route when no exits remain', async () => {

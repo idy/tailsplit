@@ -33,7 +33,7 @@ Windows executables are unsigned; verify the release checksums before installati
 2. Choose an exit node and use **Save & connect** to finish the requested connection. You can cancel or retry any incomplete step.
 3. Review routing rules in Settings as needed. New configurations enable automatic connection on later launches once a gateway is configured. Signing in through **Add exit** alone does not connect.
 
-**Home** shows this computer fanning out to Direct and each exit referenced by saved routing policy, following the GizMoth serial-map layout. Global mode shows only its selected exit. Solid paths indicate a confirmed connection; dashed paths are saved routes not currently applied. Each destination shows upload and download speed from successive real router-byte samples. Missing samples display **—**, while a confirmed idle sample displays **0 B/s**. Counters reset on a new engine session. Directional pulses appear only on routes with positive measured byte deltas and stop on idle, missing or stale samples. Upload moves outward from this computer; download moves inward. TCP/UDP streams count payload; native TUN flows count IP packet bytes, excluding Tailscale transport and control overhead. These are routed-byte rates rather than physical-interface usage.
+**Home** shows this computer fanning out to Direct and each exit referenced by saved routing policy, including implicit private-domain routes, following the GizMoth serial-map layout. Global mode shows only its selected exit. Solid paths indicate a confirmed connection; dashed paths are saved routes not currently applied. Each destination shows upload and download speed from successive real router-byte samples. Missing samples display **—**, while a confirmed idle sample displays **0 B/s**. Counters reset on a new engine session. Directional pulses appear only on routes with positive measured byte deltas and stop on idle, missing or stale samples. Upload moves outward from this computer; download moves inward. TCP/UDP streams count payload; native TUN flows count IP packet bytes, excluding Tailscale transport and control overhead. These are routed-byte rates rather than physical-interface usage.
 
 The **Exit Nodes** page lists your saved exits; its top-right switch starts or
 stops the connection. Above the list, **Add exit** sits on the left and the current
@@ -173,7 +173,7 @@ Windows Setup installs it; macOS requests administrator approval when an explici
 Add exit, Sign in or connection needs to install or update the bundled service.
 After installation, the original action continues; signing in still leaves traffic
 disconnected. The app shows the system-installer wait separately from Tailscale
-authorization.
+authorization. Source-built macOS device login can run locally when neither the service nor a bundled installer exists; an existing or mismatched service must still be repaired. On Windows, a missing service directs users to rerun TailSplit Setup instead of promising an in-app installation.
 
 Configuration and device state are retained across normal updates. The network
 service checks import eligibility per device, reads only still-needed CLI or

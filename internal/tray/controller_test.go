@@ -115,6 +115,9 @@ func testController(t *testing.T, mode string) *Controller {
 		t.Fatal(err)
 	}
 	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "config with spaces.yaml"), connectionSnapshotConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	controller, err := New(Options{
 		Helper: executable, ConfigPath: filepath.Join(directory, "config with spaces.yaml"),
 		LogPath:    filepath.Join(directory, "private", "core.log"),

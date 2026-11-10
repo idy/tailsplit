@@ -735,7 +735,10 @@
   const needsApproval = (live) => live?.backend_state === 'NeedsMachineAuth';
   function sessionNeedsApproval(live) {
     if (!live || ['failed', 'stopping'].includes(live.state)) return false;
-    const id = live.focus || connectionExitRecord()?.id || 'main';
+    // Login/discovery without focus belongs to the primary device, even when
+    // another device is the saved gateway. Traffic helpers report their owner.
+    const id = connectionSetup?.stage === 'approval' ? connectionSetup.exit : live.focus ||
+      (['tun', 'proxy'].includes(live.mode) ? live.traffic_exit || connectionExitRecord()?.id : '') || 'main';
     return needsApproval(id === 'main' ? live : live.exits?.[id]);
   }
   const approvalHelp = () => t('请让 Tailnet 管理员在 Tailscale 管理后台批准此设备，再重试登录。');
@@ -835,6 +838,13 @@
     const request = desktopLive?.connect_request;
     if (!request || request === lastNativeConnect) return;
     if (!connectionSetup && !(networkActive() && desktopLive.state === 'running') && (isLocked() || isDesktopBusy() || desktopLive.active)) return;
+    try {
+      const result = await api('connect-request', { request });
+      if (!result.claimed) return;
+    } catch (error) {
+      notice('操作未完成', message(error));
+      return;
+    }
     lastNativeConnect = request;
     try { sessionStorage.setItem('tailsplit-connect-request', request); } catch (_) {}
     if (connectionSetup || networkActive()) return;
@@ -862,6 +872,7 @@
     const live = desktopLive || {};
     const service = live.state === 'authorizing';
     const serviceError = live.error_code === 'service-installation';
+    const manualService = live.error_code === 'service-setup-required';
     const setup = connectionSetup;
     const panel = $('#connection-setup');
     panel.hidden = !setup && !service && !serviceError;
@@ -870,7 +881,7 @@
     const approval = sessionNeedsApproval(live);
     const title = failed ? serviceError ? '后台服务需要安装或更新' : '连接设置未完成' : service ? '需要安装或更新后台服务' :
       approval ? '等待管理员批准设备' : setup?.stage === 'node' ? '选择节点后即可连接' : setup?.stage === 'connecting' ? '正在连接 TailSplit' : '正在设置出口';
-    const detail = failed ? setup?.error || backendError(live) : service ? '请完成已打开的系统安装器，应用会继续这次操作。可以取消，稍后重试。' :
+    const detail = failed ? manualService ? '请重新运行 TailSplit 安装程序修复 Windows 后台服务，完成后再重试连接。' : setup?.error || backendError(live) : service ? '请完成已打开的系统安装器，应用会继续这次操作。可以取消，稍后重试。' :
       approval ? approvalHelp() : setup?.stage === 'node' ? '选择一个在线节点并确认；应用会保存出口并继续这次连接。' :
       setup?.stage === 'connecting' ? '正在使用已确认的出口连接。' : '正在准备设备授权。完成浏览器登录后会自动打开节点选择，再继续连接。';
     setStatusText('#connection-setup-title', t(title));
@@ -927,6 +938,11 @@
         if (desktopLive?.active) return; // A staged Add is intentionally absent until authentication completes.
         setupFailed(backendError(desktopLive) || t('出口尚未添加完成，请重试。')); return;
       }
+      if (needsApproval(exitLive(setup.exit))) {
+        setup.stage = 'approval';
+        return; // Administrator approval must not relaunch browser sign-in.
+      }
+      if (setup.stage === 'approval') setup.stage = 'login';
       if (!exitSignedIn(setup.exit)) {
         if (!setup.loginRequested) {
           setup.stage = 'login'; setup.loginRequested = true;
@@ -1145,7 +1161,7 @@
     $('#desktop-controls').hidden = !live.desktop || state.page === 'home';
     $('#desktop-connect').hidden = Boolean(live.active);
     $('#desktop-disconnect').hidden = !live.active;
-    $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || requiredBlocked || Boolean(connectionSetup && connectionSetup.stage !== 'failed');
+    $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || (!needsDefaultChoice && requiredBlocked) || Boolean(connectionSetup && connectionSetup.stage !== 'failed');
     $('#desktop-disconnect').disabled = !live.desktop || isDesktopBusy() || quickBusy || connectionLost;
     $('#desktop-disconnect').setAttribute('aria-checked', String(connected));
     $('#desktop-disconnect').title = connected ? t('断开') : t('取消');
@@ -1215,13 +1231,13 @@
     const consequence = guidedNode ? t('保存节点和默认出口，然后继续这次连接。') : connected && (live.routing_mode || mode) === 'global' ? t('应用更改需先确认断开全局保护，保存后保持未连接。') :
       connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
     const applyLabel = quickBusy ? t('正在应用…') : guidedNode ? t('保存并连接') : dnsUpdate ? t('保存 DNS 信息') : connected ? t('切换出口') : t('保存选择');
-    const cannotApply = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && (!chosenNode || !chosenNode.online || chosenNode.missing === true);
+    const cannotApply = locked || discovering || state.dirty || state.external || (!changing && !guidedNode) || (guidedNode || selectedExit !== null) && (!chosenNode || !chosenNode.online || chosenNode.missing === true);
     for (const prefix of ['connection', 'exit-dialog']) {
       setStatusText(`#${prefix}-selection`, selection);
       setStatusText(`#${prefix}-consequence`, consequence);
     }
     for (const id of ['apply-connection-change', 'apply-exit-picker']) {
-      $(`#${id}`).textContent = id === 'apply-exit-picker' && !changing && !quickBusy ? t(connected ? '切换出口' : '保存选择') : applyLabel;
+      $(`#${id}`).textContent = id === 'apply-exit-picker' && !guidedNode && !changing && !quickBusy ? t(connected ? '切换出口' : '保存选择') : applyLabel;
       $(`#${id}`).disabled = cannotApply;
     }
     for (const id of ['cancel-connection-change', 'close-exit-picker', 'cancel-exit-picker', 'picker-view-settings', 'picker-go-connection']) $(`#${id}`).disabled = quickBusy;
@@ -1473,13 +1489,15 @@
   async function applyConnectionChanges() {
     if (quickBusy || isDesktopBusy() || isLocked() || state.dirty || state.external || connectionLost || $('#apply-connection-change').disabled) return;
     const changes = connectionChanges();
-    if (!Object.keys(changes).length) return;
     const setup = connectionSetup?.stage === 'node' && connectionSetup.exit === (pickerExit || 'main') ? connectionSetup : null;
-    if (setup) changes[setup.field] = setup.exit;
-    const applied = await saveExitChanges(changes, '连接选项已保存', doc => {
+    if (setup && String(fieldValue(state.savedValues, setup.field)) !== setup.exit) changes[setup.field] = setup.exit;
+    const hasChanges = Object.keys(changes).length > 0;
+    if (!hasChanges && !setup) return;
+    const applied = !hasChanges || await saveExitChanges(changes, '连接选项已保存', doc => {
       selectedExit = null;
       if (setup && connectionSetup === setup) setup.revision = doc.revision;
     });
+    if (applied) selectedExit = null;
     if (applied) {
       if (setup && connectionSetup === setup) setup.stage = 'ready';
       if (exitDialog.open) { pickerCommitted = true; exitDialog.close(); }
@@ -1504,7 +1522,7 @@
     desktopPending = action;
     renderConnectionCenter();
     try {
-      await api('action', { action, ...(exit ? { exit } : {}), ...(action === 'add-exit' ? { revision: state.revision } : {}) });
+      await api('action', { action, ...(exit ? { exit } : {}), ...(['add-exit', 'connect'].includes(action) ? { revision: state.revision } : {}) });
       return true;
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
@@ -2020,9 +2038,10 @@
     const exitRoute = (id, roles) => {
       const record = records.find(exit => exit.id === id);
       const ready = Boolean(record?.exit_node);
-      const tone = blocked || applied && !(ready && exitSignedIn(id)) ? 'warn' : applied ? 'ok' : 'planned';
+      const online = exitNodes(id).some(node => node.configured && node.online);
+      const tone = blocked || applied && !(ready && exitSignedIn(id) && online) ? 'warn' : applied ? 'ok' : 'planned';
       const detail = blocked ? t('出口不可用 · 已阻断') : !record ? t('出口已移除，请更改分流规则') : !ready ? t('尚未选择节点') :
-        applied && tone === 'warn' ? t('需要登录') : roles.join(' · ');
+        applied && !exitSignedIn(id) ? t('需要登录') : applied && !online ? t('出口不可用') : roles.join(' · ');
       return { id, kind: 'exit', name: record ? exitLabel(id) : `${t('缺少出口')} · ${id}`, detail, tone };
     };
     const placeholder = { id: 'unconfigured', kind: 'exit', name: t('Tailscale 出口'), detail: t('尚未配置出口 · 点击开始设置'), tone: 'planned' };
@@ -2035,6 +2054,21 @@
     const roles = new Map();
     const add = (id, role) => (roles.get(id) || roles.set(id, []).get(id)).push(role);
     if (requiresDefaultExit(values)) add(defaultID, t('默认代理出口'));
+    // Match CompileContext's implicit private-domain ownership and ordering.
+    const ownedSuffixes = new Set();
+    if (values.tailscale) {
+      const magicDomains = fieldValue(values, 'dns.magic_domains');
+      const primaryDomains = [...(Array.isArray(magicDomains) ? magicDomains : []), ...(Array.isArray(values.tailscale.domains) ? values.tailscale.domains : [])];
+      if (primaryDomains.length) add('main', t('私有域名'));
+      for (const suffix of primaryDomains) ownedSuffixes.add(String(suffix).toLowerCase());
+    }
+    for (const exit of exitList(values)) {
+      const suffix = String(exit.magic_dns_suffix || (String(exit.tailnet || '').toLowerCase().endsWith('.ts.net') ? exit.tailnet : '')).toLowerCase();
+      if (exit.exit_node && suffix && !ownedSuffixes.has(suffix)) {
+        ownedSuffixes.add(suffix);
+        add(exit.id, t('私有域名'));
+      }
+    }
     const groups = new Map();
     const routes = fieldValue(values, 'rules.routes');
     for (const route of Array.isArray(routes) ? routes : []) {
@@ -2131,6 +2165,7 @@
   function renderHome(live = desktopLive || {}) {
     const global = savedMode() === 'global';
     const connected = !connectionLost && networkActive(live) && live.state === 'running';
+    const matchingState = Boolean(live.active_revision) && live.active_revision === state.revision;
     const blocked = !connectionLost && live.active && global && live.state === 'blocked';
     const setup = connectionSetup;
     const working = Boolean(live.active || setup && setup.stage !== 'failed');
@@ -2151,7 +2186,7 @@
     let description = !state.savedValid ? t('请先修复配置，再开启连接。') : state.dirty ? t('请先保存配置，再连接。') : state.external ? t('配置已更改，请重新读取后再连接。') :
       connectionLost ? t('请确认 TailSplit 仍在运行') : blocked ? t('全局模式正在阻断流量。手动断开会恢复系统网络。') :
       error ? message(setup?.error || operationError?.detail || backendError(live)) || t('当前步骤未完成，请重试。') :
-      connected ? t(global ? '全局流量通过所选出口；出口不可用时阻断。' : '按已保存规则分流；直连与出口各走各的路径。') :
+      connected ? !matchingState ? t('已保存的配置尚未应用；当前连接仍使用之前的配置。') : t(global ? '全局流量通过所选出口；出口不可用时阻断。' : '按已保存规则分流；直连与出口各走各的路径。') :
       working ? message($('#connection-setup-detail').textContent || $('#desktop-hint').textContent) :
       first ? t('点击“开始设置”，按提示完成系统授权、Tailscale 登录和节点选择。') : t('开启即可连接。需要登录或选择节点时，应用会带你完成。');
     if (!live.desktop && !working) description = t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。');
@@ -2187,7 +2222,6 @@
     }
 
     const map = $('#split-map');
-    const matchingState = !live.revision || live.revision === state.revision;
     const applied = connected && state.savedValid && !state.external && matchingState && (!live.routing_mode || live.routing_mode === savedMode());
     map.dataset.connected = String(applied);
     map.dataset.global = String(global);
@@ -2342,6 +2376,7 @@
   }
   window.addEventListener('beforeunload', (event) => { if (state.dirty || Object.keys(connectionChanges()).length) { event.preventDefault(); event.returnValue = ''; } });
   document.addEventListener('visibilitychange', () => { syncRouteMotion(); refreshPage(); });
+  window.addEventListener('tailsplit-window-shown', refreshPage);
   $('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('home'); });
   if (!token) {
     $('#loading').hidden = true;

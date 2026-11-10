@@ -142,7 +142,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return errors.New("--id is supported only by ping")
 	}
 	if command == "discover" {
-		return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: *events})
+		stream := newEventStream(ctx, out, *events)
+		defer stream.close()
+		return runDiscoveryEvents(ctx, config, stream)
 	}
 	if command == "app-login" || command == "app-login-new" || command == "app-discover" {
 		executable, err := os.Executable()
@@ -166,13 +168,15 @@ func execute(args []string, out, diagnostic io.Writer) error {
 			return err
 		}
 		// Device authentication alone never installs or starts the TUN service.
+		stream := newEventStream(ctx, out, true)
+		defer stream.close()
 		if command == "app-discover" {
-			return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
+			return runDiscoveryEvents(ctx, config, stream)
 		}
 		if command == "app-login-new" {
-			return runNewLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
+			return runNewLoginEvents(ctx, config, stream)
 		}
-		return runLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
+		return runLoginEvents(ctx, config, stream)
 	}
 	if command == "app-run" {
 		return runAppCommand(ctx, config, out, appservice.Launch)
@@ -228,7 +232,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return err
 	default:
 		if *events {
-			return runEvents(ctx, config, compiled, &eventStream{encoder: json.NewEncoder(out)})
+			stream := newEventStream(ctx, out, false)
+			defer stream.close()
+			return runEvents(ctx, config, compiled, stream)
 		}
 		return tailsplit.Run(ctx, config, compiled)
 	}
@@ -284,13 +290,19 @@ func installedService(args []string, diagnostic io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return runEvents(ctx, config, compiled, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+		stream := newEventStream(ctx, output, true)
+		defer stream.close()
+		return runEvents(ctx, config, compiled, stream)
 	}, func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-		return runLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+		stream := newEventStream(ctx, output, true)
+		defer stream.close()
+		return runLoginEvents(ctx, config, stream)
 	}, func(ctx context.Context, config tailsplit.Config, _ io.Writer) error {
 		return tailsplit.LogoutSavedTailnet(ctx, config)
 	}, func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-		return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+		stream := newEventStream(ctx, output, true)
+		defer stream.close()
+		return runDiscoveryEvents(ctx, config, stream)
 	})
 }
 

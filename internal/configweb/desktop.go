@@ -11,6 +11,26 @@ import (
 	"github.com/idy/tailsplit/internal/tray"
 )
 
+// Claiming consumes the intent before guided setup begins, even when that flow
+// later cancels. The controller callback compares and clears the ID atomically.
+func (s *Server) claimConnectRequest(w http.ResponseWriter, r *http.Request) {
+	if s.options.ClaimConnectRequest == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var request struct {
+		Request string `json:"request"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	var extra any
+	if decoder.Decode(&request) != nil || decoder.Decode(&extra) != io.EOF {
+		fail(w, http.StatusBadRequest, "request", "无法读取操作请求。")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"claimed": s.options.ClaimConnectRequest(request.Request)})
+}
+
 // Desktop controls use the same capability and origin policy as configuration
 // saves. A fixed action vocabulary cannot become a command/path execution API.
 func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {

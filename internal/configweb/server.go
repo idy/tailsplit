@@ -49,14 +49,17 @@ type Options struct {
 	Action func(context.Context, string) error
 	// Connect rechecks the displayed revision under the desktop operation gate
 	// before starting either authentication or traffic.
-	Connect      func(context.Context, string) error
-	AddExit      func(context.Context, string, string) error
-	RemoveExit   func(context.Context, string, string) error
-	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)
-	Logs         func() (string, error)
-	Startup      func() bool
-	UpdateState  func() appupdate.State
-	UpdateAction func(context.Context, string) error
+	Connect func(context.Context, string) error
+	// ClaimConnectRequest atomically acknowledges a native Connect intent across
+	// all tabs and WebViews. Only one consumer may enter guided setup for an ID.
+	ClaimConnectRequest func(string) bool
+	AddExit             func(context.Context, string, string) error
+	RemoveExit          func(context.Context, string, string) error
+	PingExit            func(context.Context, string) (tailsplit.ExitPingResult, error)
+	Logs                func() (string, error)
+	Startup             func() bool
+	UpdateState         func() appupdate.State
+	UpdateAction        func(context.Context, string) error
 	// Popup actions only reveal the retained window or request normal app cleanup.
 	OpenPanel func()
 	Quit      func()
@@ -146,6 +149,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/config-rebuild", s.rebuildConfig)
 	mux.HandleFunc("POST /api/config-repair", s.repairConfig)
 	mux.HandleFunc("POST /api/action", s.desktopAction)
+	mux.HandleFunc("POST /api/connect-request", s.claimConnectRequest)
 	mux.HandleFunc("POST /api/exit-ping", s.exitPing)
 	mux.HandleFunc("POST /api/exit-remove", s.removeExit)
 	mux.HandleFunc("POST /api/update-action", s.updateAction)
@@ -304,7 +308,7 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		"exit": snapshot.ExitNode, "network": snapshot.NetworkName, "magic_dns_suffix": snapshot.MagicDNSSuffix,
 		"hostname": snapshot.Hostname, "backend_state": snapshot.BackendState, "phase": snapshot.Phase,
 		"routing_mode": snapshot.RoutingMode, "logs_available": s.options.Logs != nil,
-		"error": snapshot.Error, "error_code": snapshot.ErrorCode, "revision": revision, "preview": s.options.Preview,
+		"error": snapshot.Error, "error_code": snapshot.ErrorCode, "revision": revision, "active_revision": snapshot.ActiveRevision, "preview": s.options.Preview,
 		"added_exit": snapshot.AddedExit, "added_revision": snapshot.AddedRevision, "connect_request": snapshot.ConnectRequest,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
 		"ping_available": s.options.PingExit != nil && snapshot.PingAvailable,

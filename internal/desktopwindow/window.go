@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/idy/tailsplit/internal/tray"
@@ -222,6 +223,14 @@ func (w *Window) showWindow() {
 	w.native.Show()
 	w.native.Restore()
 	w.native.Focus()
+	// Show can be requested while already visible, without a visibility/focus
+	// event. Wake the preserved page so native Connect is handled immediately.
+	page := w.native.Page()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = page.EvalContext(ctx, `window.dispatchEvent(new Event('tailsplit-window-shown'))`)
+	}()
 }
 
 func (w *Window) hideWindow() {

@@ -3,8 +3,66 @@ package appservice
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/idy/tailsplit"
 )
+
+func TestServiceInstallPackagePreservesFallbackOnlyWithoutServiceOrInstaller(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		installer, installed bool
+		probeErr             error
+		fallback             bool
+	}{
+		{"unbundled source build", false, false, ErrNotInstalled, true},
+		{"wrapped absent service", false, false, fmt.Errorf("probe: %w", ErrNotInstalled), true},
+		{"installed but unresponsive", false, true, ErrNotInstalled, false},
+		{"protocol mismatch", false, false, errors.New("protocol mismatch"), false},
+		{"build mismatch", false, false, nil, false},
+		{"bundled first installation", true, false, ErrNotInstalled, false},
+		{"bundled repair", true, true, ErrNotInstalled, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			executable, installed := filepath.Join(dir, "MacOS", "tailsplit"), filepath.Join(dir, "installed-service")
+			installer := packagePath(executable, InstallPackage)
+			for path, exists := range map[string]bool{installer: test.installer, installed: test.installed} {
+				if exists {
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for _, operation := range []string{"login", "login-new"} {
+				_, err := resolveSessionService(t.Context(), operation, func(context.Context) (Info, error) {
+					t.Fatal("explicit login skipped service preparation")
+					return Info{}, nil
+				}, func(context.Context) (Info, error) {
+					path, err := serviceInstallPackage(executable, installed, test.probeErr)
+					if test.installer && (err != nil || path != installer) {
+						t.Fatalf("bundled installer was bypassed: %q %v", path, err)
+					}
+					return Info{}, err
+				})
+				err = installationFailure(operation, err)
+				if errors.Is(err, ErrNotInstalled) != test.fallback {
+					t.Fatalf("%s local-auth fallback=%t, want %t: %v", operation, errors.Is(err, ErrNotInstalled), test.fallback, err)
+				}
+				if !test.installer && !test.fallback && err == nil {
+					t.Fatal("service mismatch or installed service was ignored")
+				}
+			}
+		})
+	}
+}
 
 func TestExplicitDeviceLoginPreparesItsServiceBeforeOpeningASession(t *testing.T) {
 	for _, operation := range []string{"start", "login", "login-new"} {
@@ -34,6 +92,20 @@ func TestBackgroundAndMaintenanceOperationsNeverOpenInstaller(t *testing.T) {
 			if prepared || !errors.Is(err, failure) || info.BuildID != "existing" {
 				t.Fatalf("%s triggered installation or hid probe error: %+v %v", operation, info, err)
 			}
+		}
+	}
+}
+
+func TestCanceledOpenSessionCannotFallBackOrRequestSetup(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, operation := range []string{"start", "login", "login-new", "discover", "ping", "logout"} {
+		connection, err := OpenSession(ctx, "unused", operation, tailsplit.Config{}, io.Discard)
+		if connection != nil || err != context.Canceled {
+			t.Fatalf("canceled %s contacted the service: %v", operation, err)
+		}
+		if event := ErrorEvent(err); event["code"] != "" {
+			t.Fatalf("canceled %s offered recovery or fallback: %v", operation, event)
 		}
 	}
 }

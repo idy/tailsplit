@@ -203,7 +203,7 @@ func runWindowsDesktop() (runErr error) {
 	panelReady := make(chan struct{})
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
-		PingExit: controller.PingExitNode,
+		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return app.do(ctx, func() error {
 				app.login.Cancel()

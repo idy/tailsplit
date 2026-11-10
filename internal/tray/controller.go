@@ -48,6 +48,9 @@ type Snapshot struct {
 	AddedExit      string
 	AddedRevision  string
 	ConnectRequest string
+	// ActiveRevision identifies the exact source document passed to the traffic
+	// helper. It is empty while no traffic helper owns a session.
+	ActiveRevision string
 	Hostname       string
 	ExitNodes      []tailsplit.ExitNode
 	Active         bool
@@ -110,7 +113,6 @@ func (s Snapshot) clone() Snapshot {
 // reset replaces the primary state while keeping other devices' last status.
 func (c *Controller) reset(snapshot Snapshot) {
 	snapshot.Exits = c.snapshot.Exits
-	snapshot.ConnectRequest = c.snapshot.ConnectRequest
 	c.snapshot = snapshot
 }
 
@@ -136,6 +138,9 @@ type Controller struct {
 	trafficExit   string // Selected traffic device for this running session.
 	pendingAdd    *pendingExitAddition
 	preparation   *servicePreparation
+
+	activeRevision string // Source document held by the current traffic helper.
+	connectRequest string // Unconsumed native intent, independent of status restores.
 }
 
 func New(options Options) (*Controller, error) {
@@ -159,6 +164,8 @@ func (c *Controller) Snapshot() Snapshot {
 	snapshot := c.snapshot.clone()
 	snapshot.Active = c.command != nil || c.loggingOut || c.preparation != nil
 	snapshot.TrafficExit = c.trafficExit
+	snapshot.ActiveRevision = c.activeRevision
+	snapshot.ConnectRequest = c.connectRequest
 	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
 }
@@ -168,7 +175,21 @@ func (c *Controller) Snapshot() Snapshot {
 func (c *Controller) RequestConnectionSetup() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.snapshot.ConnectRequest = rand.Text()
+	c.connectRequest = rand.Text()
+}
+
+// ClaimConnectRequest acknowledges one native request before a consumer enters
+// guided setup. Clearing it under the controller lock prevents another tab or
+// WebView from replaying the same intent after setup is canceled or disconnected.
+// A stale acknowledgement must never consume a newer native click.
+func (c *Controller) ClaimConnectRequest(request string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if request == "" || request != c.connectRequest {
+		return false
+	}
+	c.connectRequest = ""
+	return true
 }
 
 func (c *Controller) RecordLoginBrowserResult(err error) {
@@ -215,15 +236,24 @@ func (c *Controller) StartRevision(expected string) error {
 	if expected == "" || expected != revision {
 		return ErrConfigChanged
 	}
+	return c.startConnectionLocked("proxy", "", data, expected)
+}
+
+// Every traffic helper receives an immutable source document. The revision is
+// derived from this private path, so a saved-file edit cannot change either the
+// running policy or the revision later exposed as active.
+func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expected string) error {
 	path, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
 	if err != nil {
 		return err
 	}
-	if err := CheckConfigRevision(c.options.ConfigPath, expected); err != nil {
-		cleanup()
-		return err
+	if expected != "" {
+		if err := CheckConfigRevision(c.options.ConfigPath, expected); err != nil {
+			cleanup()
+			return err
+		}
 	}
-	if err := c.startConfigLocked("proxy", "", path); err != nil {
+	if err := c.startConfigLocked(mode, focus, path); err != nil {
 		cleanup()
 		return err
 	}
@@ -342,14 +372,22 @@ func (c *Controller) startReconfigured() error {
 }
 
 func (c *Controller) startLocked(mode, focus string) error {
+	if err := c.checkStartLocked(); err != nil {
+		return err
+	}
+	if mode == "proxy" || mode == "tun" {
+		data, _, err := ReadConfigDocument(c.options.ConfigPath)
+		if err != nil {
+			return err
+		}
+		return c.startConnectionLocked(mode, focus, data, "")
+	}
 	return c.startConfigLocked(mode, focus, c.options.ConfigPath)
 }
 
-func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
-	freshLogin := mode == "login-new"
-	if freshLogin {
-		mode = "login"
-	}
+// Check the operation gates before touching configuration. A busy helper or
+// scoped Ping retains ownership even if its saved document is missing/changed.
+func (c *Controller) checkStartLocked() error {
 	if c.preparation != nil {
 		return tailsplit.ErrPingBusy
 	}
@@ -365,11 +403,31 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	if c.loggingOut {
 		return errors.New("embedded Tailscale logout is in progress")
 	}
+	return nil
+}
+
+func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
+	freshLogin := mode == "login-new"
+	if freshLogin {
+		mode = "login"
+	}
+	if err := c.checkStartLocked(); err != nil {
+		return err
+	}
 	runCommand := "run"
 	routingMode := tailsplit.RoutingSplit
 	trafficExit := tailsplit.MainExit
 	if mode == "discovery" {
 		runCommand = "discover"
+	}
+	var data []byte
+	var revision string
+	if len(c.options.HelperArgs) == 0 || mode == "proxy" || mode == "tun" {
+		var err error
+		data, revision, err = ReadConfigDocument(configPath)
+		if err != nil {
+			return err
+		}
 	}
 	if len(c.options.HelperArgs) == 0 {
 		if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
@@ -379,10 +437,6 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 			} else if mode == "discovery" {
 				runCommand = "app-discover"
 			}
-		}
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return err
 		}
 		var config struct {
 			TUN struct {
@@ -447,6 +501,10 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	c.snapshot.Traffic = nil
 	c.snapshot.RoutingMode = routingMode
 	c.trafficExit = trafficExit
+	c.activeRevision = ""
+	if mode == "proxy" || mode == "tun" {
+		c.activeRevision = revision
+	}
 	c.snapshot.Error, c.snapshot.ErrorCode, c.snapshot.LoginURL = "", "", ""
 	if mode == "proxy" || mode == "tun" || mode == "discovery" {
 		// A new traffic/discovery helper must observe every device afresh. An
@@ -472,6 +530,7 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 		if c.command == command {
 			c.finishPendingAddLocked(err)
 			c.command, c.input = nil, nil
+			c.activeRevision = ""
 			c.snapshot.Traffic = nil
 			if !c.stopping && c.snapshot.State == "failed" {
 				// Preserve an actionable error delivered by the elevated core.

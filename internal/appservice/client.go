@@ -28,7 +28,7 @@ func Launch(ctx context.Context, executable string, config tailsplit.Config, out
 	}
 	connection, err := OpenSession(ctx, executable, "start", config, output)
 	if err != nil {
-		if !errors.Is(err, ErrNotInstalled) && ctx.Err() == nil {
+		if ctx.Err() == nil {
 			_ = json.NewEncoder(output).Encode(ErrorEvent(err))
 		}
 		return err
@@ -64,6 +64,20 @@ func packagePath(executable, name string) string {
 	return filepath.Join(filepath.Dir(executable), "..", "Resources", name)
 }
 
+func serviceInstallPackage(executable, installed string, probeErr error) (string, error) {
+	path := packagePath(executable, InstallPackage)
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) && errors.Is(probeErr, ErrNotInstalled) {
+			if _, err := os.Lstat(installed); errors.Is(err, os.ErrNotExist) {
+				// Source builds can authenticate locally only without an existing service.
+				return "", ErrNotInstalled
+			}
+		}
+		return "", errors.New("open the packaged TailSplit.app to install its network service")
+	}
+	return path, nil
+}
+
 // EnsureInstalled opens the normal macOS Installer when the helper is absent,
 // differs from this app, or is no longer reachable through launchd. A matching
 // file alone does not mean an interrupted installation registered its service.
@@ -77,12 +91,15 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 		return Info{}, err
 	}
 	info, err := probe(ctx, SocketPath, "0")
+	if ctx.Err() != nil {
+		return Info{}, ctx.Err()
+	}
 	if err == nil && info.BuildID == expected {
 		return info, nil
 	}
-	path := packagePath(executable, InstallPackage)
-	if _, err := os.Stat(path); err != nil {
-		return Info{}, errors.New("open the packaged TailSplit.app to install its network service")
+	path, err := serviceInstallPackage(executable, ExecutablePath, err)
+	if err != nil {
+		return Info{}, err
 	}
 	if err := json.NewEncoder(output).Encode(map[string]string{"event": "authorizing"}); err != nil {
 		return Info{}, err
@@ -121,11 +138,15 @@ func OpenSession(ctx context.Context, executable, operation string, config tails
 }
 
 func openSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer, target string) (net.Conn, error) {
-	if runtime.GOOS == "windows" {
-		return openWindowsSession(ctx, executable, operation, config, target)
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if runtime.GOOS == "windows" {
+		connection, err := openWindowsSession(ctx, executable, operation, config, target)
+		if err != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return connection, windowsServiceFailure(operation, err)
 	}
 	info, err := resolveSessionService(ctx, operation, func(ctx context.Context) (Info, error) {
 		info, err := probe(ctx, SocketPath, "0")
@@ -139,14 +160,14 @@ func openSession(ctx context.Context, executable, operation string, config tails
 		return EnsureInstalled(ctx, executable, output)
 	})
 	if err != nil {
-		return nil, installationFailure(err)
+		return nil, installationFailure(operation, err)
 	}
 	expected, err := executableID(executable)
 	if err != nil {
 		return nil, err
 	}
 	if info.BuildID != expected {
-		return nil, installationFailure(errors.New("update the TailSplit network service from this app before continuing"))
+		return nil, installationFailure(operation, errors.New("update the TailSplit network service from this app before continuing"))
 	}
 	if operation == "ping" && !info.PingAvailable {
 		return nil, tailsplit.ErrPingUnavailable
