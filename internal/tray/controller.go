@@ -172,6 +172,39 @@ func (c *Controller) Start() error {
 	return c.start("proxy", "")
 }
 
+// StartRevision binds an explicit UI connection to the displayed document. The
+// child reads a private snapshot beside the original (preserving relative paths),
+// so an external edit after dispatch cannot change its gateway or routing mode.
+func (c *Controller) StartRevision(expected string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reconfiguring {
+		return tailsplit.ErrPingBusy
+	}
+	data, revision, err := ReadConfigDocument(c.options.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if expected == "" || expected != revision {
+		return ErrConfigChanged
+	}
+	path, _, err := configCandidate(c.options.ConfigPath, data)
+	if err != nil {
+		return err
+	}
+	if err := CheckConfigRevision(c.options.ConfigPath, expected); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	if err := c.startConfigLocked("proxy", "", path); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	done := c.done
+	go func() { <-done; _ = os.Remove(path) }()
+	return nil
+}
+
 // beginReconfigure keeps independent starts and Ping requests out of the gap
 // between checking a candidate, stopping a device and starting its replacement.
 func (c *Controller) beginReconfigure() error {

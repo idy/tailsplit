@@ -76,6 +76,14 @@ Escape or clicking the tray icon again dismisses it. Right-click the icon for a
 minimal native menu with Open, connection status, Connect/Disconnect and Quit.
 The popup follows the app's language and system appearance. It shows the actual
 running traffic device, including an additional exit when the primary is signed out.
+Its Connect action checks the displayed configuration revision before starting;
+configuration changes require a refresh. Explicit Connect keeps the same traffic
+helper waiting through any required browser authorization and continues after
+sign-in; automatic startup never opens that browser. Valid direct-only Split
+policies can connect without a default gateway or signing in to optional devices. On macOS, if the local panel cannot start,
+the native menu offers **Edit Configuration**. The full window's **TailSplit**
+application menu retains **Uninstall Network Service**, which finishes connection
+cleanup before opening the bundled removal installer.
 
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks

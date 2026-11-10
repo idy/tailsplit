@@ -225,6 +225,15 @@ func runWindowsDesktop() (runErr error) {
 				return err
 			})
 		},
+		Connect: func(ctx context.Context, revision string) error {
+			return app.do(ctx, func() error {
+				operation, err := checkedDesktopConnectOperation(*config, revision, controller, &app.login)
+				if err != nil || operation == nil {
+					return err
+				}
+				return finishDesktopConnect(&app.login, operation())
+			})
+		},
 		UpdateState: app.updates.snapshot, UpdateAction: app.updates.action,
 		Action: app.action, Logs: func() (string, error) { return desktopLogTail(*logPath) },
 		Startup: func() bool { return tray.LoginItem() == tray.LoginItemEnabled },
@@ -288,7 +297,12 @@ func runWindowsDesktop() (runErr error) {
 		// Load the saved device's login and exits even when startup must stay disconnected.
 		go func() {
 			if action := desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect); action != "" && !desktopProofMode() {
-				_ = app.action(ctx, action)
+				if action == "connect" {
+					// Automatic startup reuses identities but never opens a login browser.
+					_ = app.do(ctx, controller.Start)
+				} else {
+					_ = app.action(ctx, action)
+				}
 			}
 		}()
 		for {
@@ -407,7 +421,7 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			if err != nil || operation == nil {
 				return err
 			}
-			return operation()
+			return finishDesktopConnect(&a.login, operation())
 		case "disconnect":
 			a.login.Cancel()
 			return a.controller.Stop()

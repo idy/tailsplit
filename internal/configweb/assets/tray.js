@@ -7,28 +7,33 @@
     const values = document?.values || {};
     const active = Boolean(live?.active);
     const carrying = active && ['tun', 'proxy'].includes(live.mode);
-    const mode = carrying && live.routing_mode ? live.routing_mode : values.rules?.mode || 'split';
-    const selected = (carrying && live.traffic_exit) || String(values.rules?.[mode === 'global' ? 'global_exit' : 'default_exit'] ?? 'main').trim();
+    const rules = values.rules || {};
+    const mode = carrying && live.routing_mode ? live.routing_mode : rules.mode || 'split';
+    const selected = active ? live.traffic_exit || '' : String(rules[mode === 'global' ? 'global_exit' : 'default_exit'] ?? '').trim() || 'main';
     const profile = selected === 'main' ? values.tailscale : (values.exits || []).find(exit => exit.id === selected);
     const device = selected === 'main' ? live || {} : live?.exits?.[selected] || {};
-    const target = carrying ? device.exit || profile?.exit_node : profile?.exit_node;
-    const node = (device.exit_nodes || []).find(node => node.id === target || node.name === target);
-    const gateway = profile?.name || node?.name || target || '';
-    const setup = !active && (!document?.valid || !profile || !target);
+    const target = String((active ? device.exit : profile?.exit_node) || '').trim();
+    const node = target && (device.exit_nodes || []).find(node => node.id === target || node.name === target);
+    const gateway = (active ? node?.name : profile?.name || node?.name) || target || '';
+    // Match the full panel's requiresDefaultExit policy: valid direct-only Split
+    // configurations (including those without any devices) need no gateway.
+    const needsExit = mode === 'global' || rules.final === 'proxy' || Boolean(rules.source || rules.gfwlist) ||
+      [rules.proxy_domains, rules.proxy_ips].some(items => Array.isArray(items) && items.length > 0) || Boolean(target);
+    const setup = !active && (!document?.valid || needsExit && (!profile || !target));
     let status = '未连接', detail = '按已保存的配置连接', tone = '';
     if (active) {
       tone = 'warn';
       status = '正在连接';
       detail = '可以随时取消';
-      if (carrying && live.state === 'running') {
+      if (live.state === 'stopping') {
+        status = '正在断开'; detail = '正在恢复系统网络';
+      } else if (carrying && live.state === 'running') {
         status = '已连接'; tone = 'good';
         detail = live.mode === 'tun' ? '系统流量已接管' : '应用代理已开启';
-      } else if (live.mode === 'login' || live.state === 'needs_login') {
+      } else if (live.mode === 'login' || ['login', 'needs_login'].includes(live.state)) {
         status = '等待登录'; detail = '请在浏览器中完成授权';
       } else if (live.mode === 'discovery' || live.state === 'discovering') {
         status = '正在读取出口';
-      } else if (live.state === 'stopping') {
-        status = '正在断开'; detail = '正在恢复系统网络';
       }
     } else if (setup) {
       detail = document?.valid ? '选择出口后即可连接' : '请先检查配置';
@@ -99,9 +104,9 @@
     text('#exit-name', view.gateway || t('未设置'));
     $('#exit-name').title = view.gateway || t('未设置');
     $('#preview-note').hidden = !live?.preview;
-    $('#quit').disabled = !live?.quit_available || pending || unavailable;
+    $('#quit').disabled = !(window.mygo || live?.quit_available) || pending;
     $('#quit').title = t('退出后恢复系统网络');
-    const error = loadError || actionError || live?.error || '';
+    const error = actionError || loadError || live?.error || '';
     $('#error').hidden = !error;
     text('#error-message', error);
     $('#retry').disabled = reading || pending;
@@ -112,13 +117,18 @@
     reading = true;
     const requestGeneration = generation;
     try {
-      const [nextSaved, nextLive, language] = await Promise.all([api('config'), api('state'), api('language')]);
+      const results = await Promise.allSettled([api('config'), api('state'), api('language')]);
       if (requestGeneration !== generation) return;
-      // A save racing these reads must not combine a stale gateway with new state.
-      if (nextSaved.revision !== nextLive.revision) throw new Error(t('配置文件已更新，请重新读取后重试。'));
-      saved = nextSaved; live = nextLive; loadError = '';
-      locale.setLanguage(language.language);
-    } catch (error) { loadError = errorText(error); }
+      const [nextSaved, nextLive, language] = results;
+      // Preserve successful reads, especially desktop capabilities when config
+      // cannot be parsed. Failed or mismatched reads still disable connection actions.
+      if (nextSaved.status === 'fulfilled') saved = nextSaved.value;
+      if (nextLive.status === 'fulfilled') live = nextLive.value;
+      if (language.status === 'fulfilled') locale.setLanguage(language.value.language);
+      const failure = results.find(result => result.status === 'rejected');
+      loadError = failure ? errorText(failure.reason) : saved.revision !== live.revision ?
+        t('配置文件已更新，请重新读取后重试。') : '';
+    } catch (error) { if (requestGeneration === generation) loadError = errorText(error); }
     finally {
       reading = false;
       render();
@@ -130,19 +140,19 @@
     if (pending) return false;
     generation++; pending = true; actionError = ''; render();
     try {
-      await api('action', { action: name });
+      await api('action', { action: name, ...(name === 'connect' ? { revision: saved.revision } : {}) });
       return true;
     } catch (error) { actionError = errorText(error); return false; }
     finally { pending = false; render(); }
   }
 
   async function openPanel() {
-    if (live?.open_panel_available) {
-      if (await action('open-panel')) window.mygo?.window.close().catch(() => {});
-    } else {
-      // Standalone previews have no native window to reveal. Keep the same
-      // fragment-only capability when navigating to their full panel.
+    if (pending) return;
+    if (!window.mygo && live?.preview && !live.open_panel_available) {
+      // Only a standalone browser preview may replace the popup with the panel.
       location.assign('/#token=' + encodeURIComponent(token || ''));
+    } else if (await action('open-panel')) {
+      window.mygo?.window?.close().catch(() => {});
     }
   }
   document.querySelectorAll('[data-open-panel]').forEach(button => button.addEventListener('click', openPanel));

@@ -14,7 +14,7 @@ import (
 // Desktop controls use the same capability and origin policy as configuration
 // saves. A fixed action vocabulary cannot become a command/path execution API.
 func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
-	if s.options.Action == nil && s.options.AddExit == nil && s.options.OpenPanel == nil && s.options.Quit == nil {
+	if s.options.Action == nil && s.options.Connect == nil && s.options.AddExit == nil && s.options.OpenPanel == nil && s.options.Quit == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -31,7 +31,7 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := request.Action
-	if request.Action != "add-exit" && request.Revision != "" {
+	if request.Action != "add-exit" && request.Action != "connect" && request.Revision != "" {
 		fail(w, http.StatusBadRequest, "action", "未知操作。")
 		return
 	}
@@ -56,7 +56,23 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		_ = http.NewResponseController(w).Flush()
 		go callback()
 		return
-	case "connect", "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off":
+	case "connect":
+		if request.Exit != "" {
+			fail(w, http.StatusBadRequest, "action", "未知操作。")
+			return
+		}
+		if request.Revision != "" {
+			if s.options.Connect == nil {
+				http.NotFound(w, r)
+				return
+			}
+			if err := tray.CheckConfigRevision(s.options.ConfigPath, request.Revision); err != nil {
+				fail(w, http.StatusConflict, "conflict", "配置文件已更新，请重新读取后重试。")
+				return
+			}
+			operation = func() error { return s.options.Connect(r.Context(), request.Revision) }
+		}
+	case "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off":
 		if request.Exit != "" {
 			fail(w, http.StatusBadRequest, "action", "未知操作。")
 			return

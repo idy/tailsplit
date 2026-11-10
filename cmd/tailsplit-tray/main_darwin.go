@@ -41,6 +41,7 @@ type desktopActionController interface {
 	Snapshot() tray.Snapshot
 	TrafficExitID() (string, error)
 	Start() error
+	StartRevision(string) error
 	StartLogin() error
 	Stop() error
 	Logout() error
@@ -203,6 +204,28 @@ func main() {
 	apply := func(requestCtx context.Context, update func() error, direct bool) error {
 		return submit(configurationApply{ctx: requestCtx, update: update, direct: direct})
 	}
+	uninstallerPath := filepath.Join(directory, "..", "Resources", "Remove TailSplit Network Service.pkg")
+	uninstallService := func() {
+		go func() {
+			err := apply(ctx, func() error {
+				return removeDesktopNetworkService(controller.Stop, func() error {
+					return exec.Command("/usr/bin/open", "-a", "Installer", uninstallerPath).Run()
+				})
+			}, true)
+			if err != nil {
+				controller.RecordDesktopEvent("Could not open network-service removal: " + err.Error())
+				showError(tr("无法卸载后台服务，请查看日志"))
+			}
+		}()
+	}
+	configureApplication := func() {
+		if _, err := os.Stat(uninstallerPath); err == nil {
+			desktopwindow.ConfigureApplication(currentLanguage(), tray.ShowAbout, uninstallService)
+		} else {
+			desktopwindow.ConfigureApplication(currentLanguage(), tray.ShowAbout)
+		}
+	}
+	configureApplication()
 	var startupEnabled atomic.Bool
 	updates := newDesktopUpdates(ctx, tray.AppVersion(), preferences.CheckForUpdates,
 		func(ctx context.Context, enabled bool) error {
@@ -251,6 +274,9 @@ func main() {
 		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
 			return submit(configurationApply{ctx: ctx, check: check, update: update})
 		},
+		Connect: func(ctx context.Context, revision string) error {
+			return submit(configurationApply{ctx: ctx, action: "connect", revision: revision})
+		},
 		UpdateState: updates.snapshot, UpdateAction: updates.action,
 		Action: func(ctx context.Context, action string) error {
 			return submit(configurationApply{ctx: ctx, action: action})
@@ -283,15 +309,17 @@ func main() {
 		}
 	}
 	showConfiguration = func() {
-		if configurationPage != nil {
-			if configurationWindow == nil {
-				openPath(configurationPage.URL())
-				return
-			}
-			if err := configurationWindow.Show(); err != nil {
-				controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-				openPath(configurationPage.URL())
-			}
+		if configurationPage == nil {
+			openPath("-t", *config)
+			return
+		}
+		if configurationWindow == nil {
+			openPath(configurationPage.URL())
+			return
+		}
+		if err := configurationWindow.Show(); err != nil {
+			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
+			openPath(configurationPage.URL())
 		}
 	}
 	close(panelReady)
@@ -301,10 +329,11 @@ func main() {
 	setTrayIcon(false)
 	systray.SetTooltip("TailSplit")
 	runErr := systray.Run(func() {
-		configuration := addMenu("打开 TailSplit", "打开 TailSplit 配置面板")
+		configurationLabel, configurationTip := "打开 TailSplit", "打开 TailSplit 配置面板"
 		if configurationErr != nil {
-			configuration.Disable()
+			configurationLabel, configurationTip = "编辑配置…", "编辑配置…"
 		}
+		configuration := addMenu(configurationLabel, configurationTip)
 		status := addMenu("TailSplit · 未连接", "")
 		status.Disable()
 		connect := addMenu("连接", "连接或断开 TailSplit")
@@ -428,6 +457,7 @@ func main() {
 						}
 						if operation != nil {
 							editing = true
+							pendingAction = "connect"
 							go func() { settingsDone <- operation() }()
 						} else {
 							openReadyLogin(controller.Snapshot())
@@ -468,9 +498,13 @@ func main() {
 					var operation func() error
 					if request.action != "" {
 						var err error
-						operation, err = desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
-							return setDesktopStartup(enabled, tray.SetLoginItem, tray.LoginItem, tray.OpenLoginItemSettings)
-						}, request.revision)
+						if request.action == "connect" && request.revision != "" {
+							operation, err = checkedDesktopConnectOperation(*config, request.revision, controller, &flow)
+						} else {
+							operation, err = desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
+								return setDesktopStartup(enabled, tray.SetLoginItem, tray.LoginItem, tray.OpenLoginItemSettings)
+							}, request.revision)
+						}
 						if err != nil || operation == nil {
 							if err == nil {
 								openReadyLogin(controller.Snapshot())
@@ -495,6 +529,7 @@ func main() {
 						go func() { settingsDone <- operation() }()
 					}
 				case err := <-settingsDone:
+					userConnect := pendingAction == "connect" && !startupPending
 					if startupPending && errors.Is(err, context.Canceled) {
 						flow.Cancel()
 						pendingAction, err = "", nil
@@ -513,6 +548,12 @@ func main() {
 							openReadyLogin(controller.Snapshot())
 						}
 					}
+					if userConnect {
+						err = finishDesktopConnect(&flow, err)
+						if err == nil {
+							openReadyLogin(controller.Snapshot())
+						}
+					}
 					// Return errors to the panel after clearing the busy state.
 					if !completeRequest(err) && err != nil {
 						showError(tr("无法应用设置，请检查配置和后台服务"))
@@ -527,7 +568,7 @@ func main() {
 					languageChanged := language != tray.UILanguage()
 					if languageChanged {
 						tray.SetUILanguage(language)
-						desktopwindow.ConfigureApplication(language, tray.ShowAbout)
+						configureApplication()
 						refreshMenuLanguage()
 					}
 					ticks++

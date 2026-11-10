@@ -2,13 +2,56 @@ package configweb
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/url"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/idy/tailsplit/internal/tray"
 )
+
+func TestPopupConnectRejectsStaleRevisionBeforeDispatch(t *testing.T) {
+	server, path, _ := testServer(t)
+	_, revision, err := tray.ReadConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	server.options.Connect = func(ctx context.Context, expected string) error {
+		calls.Add(1)
+		return tray.CheckConfigRevision(path, expected)
+	}
+	body := map[string]string{"action": "connect", "revision": revision}
+	status, _ := request(t, server, "POST", "/api/action", body, nil)
+	if status != 200 || calls.Load() != 1 {
+		t.Fatal("fresh revision did not reach Connect", status, calls.Load())
+	}
+	if err := os.WriteFile(path, []byte(fixtureConfig+"# external edit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = request(t, server, "POST", "/api/action", body, nil)
+	if status != 409 || calls.Load() != 1 {
+		t.Fatal("stale revision reached Connect", status, calls.Load())
+	}
+	_, revision, err = tray.ReadConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body["revision"] = revision
+	server.options.Connect = func(ctx context.Context, expected string) error {
+		if err := os.WriteFile(path, []byte(fixtureConfig+"# changed in queue\n"), 0o600); err != nil {
+			return err
+		}
+		return tray.CheckConfigRevision(path, expected)
+	}
+	status, _ = request(t, server, "POST", "/api/action", body, nil)
+	if status != 409 {
+		t.Fatal("queued revision conflict not propagated", status)
+	}
+}
 
 func TestPopupAssetsAndCapability(t *testing.T) {
 	server, _, _ := testServer(t)

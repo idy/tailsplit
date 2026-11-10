@@ -58,6 +58,19 @@ func ReadConfigDocument(path string) ([]byte, string, error) {
 	return data, fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
+// CheckConfigRevision rejects stale UI intent before a desktop action. Callers
+// repeat it after entering their operation gate and before deferred work starts.
+func CheckConfigRevision(path, expected string) error {
+	_, current, err := ReadConfigDocument(path)
+	if err != nil {
+		return err
+	}
+	if expected == "" || expected != current {
+		return ErrConfigChanged
+	}
+	return nil
+}
+
 // A patch shares one budget across all alias copies and document traversals.
 // Count aliases as work even though they do not themselves allocate a copy.
 const (

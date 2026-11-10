@@ -45,8 +45,11 @@ type Options struct {
 	Snapshot   func() tray.Snapshot
 	// Apply must run check against its current snapshot under the same operation
 	// gate as update, before stopping a helper or changing the saved document.
-	Apply        func(context.Context, func(tray.Snapshot) error, func() error) error
-	Action       func(context.Context, string) error
+	Apply  func(context.Context, func(tray.Snapshot) error, func() error) error
+	Action func(context.Context, string) error
+	// Connect rechecks the displayed revision under the desktop operation gate
+	// before starting either authentication or traffic.
+	Connect      func(context.Context, string) error
 	AddExit      func(context.Context, string, string) error
 	RemoveExit   func(context.Context, string, string) error
 	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)

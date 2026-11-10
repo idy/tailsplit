@@ -12,6 +12,12 @@
 - Dismiss the popup with another tray click, Escape or an outside click without
   quitting the app. Retain a minimal right-click menu and fall back to it if the
   popup cannot load or become visible.
+- Bind popup connections to the displayed configuration revision and a private
+  session snapshot. Continue explicit Connect through required authorization,
+  allow valid direct-only policies, and keep optional signed-out identities from
+  forcing a separate login. Preserve recovery actions when configuration reads
+  fail, native configuration editing when the panel cannot start, and the macOS
+  network-service uninstaller in the application menu.
 
 ## 0.9.0
 
