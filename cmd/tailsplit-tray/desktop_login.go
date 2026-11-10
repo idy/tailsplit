@@ -49,10 +49,10 @@ type desktopExitLoginController interface {
 	Stop() error
 }
 
-// splitExitAction reads "login-exit:<id>" and "logout-exit:<id>" actions.
+// splitExitAction reads per-device add, login and logout actions.
 func splitExitAction(action string) (string, string) {
 	name, id, ok := strings.Cut(action, ":")
-	if !ok || name != "login-exit" && name != "logout-exit" {
+	if !ok || name != "login-exit" && name != "logout-exit" && name != "add-exit" {
 		return action, ""
 	}
 	return name, id

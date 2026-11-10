@@ -1,41 +1,36 @@
 #!/usr/bin/env python3
 """Build one native Windows desktop EXE; invoke as python -I packaging/windows/build.py.
 
-Requires a matching native Windows runner, Go, Visual Studio's C++ tools, and
-Windows SDK. Downloaded tools stay in a private temporary build directory. Inno
-is bootstrapped in its official /PORTABLE=1 mode, without a host installation.
+Requires a matching native Windows runner and Go. MyGo supplies the native GUI
+without a C++ compiler or WebView2 SDK. Downloaded tools stay in a private
+temporary build directory. Inno is bootstrapped in its official /PORTABLE=1 mode,
+without a host installation.
 The standalone CLI and release inventory are deliberately outside this script.
 """
 import argparse
 import base64
 import ctypes
 from ctypes import wintypes
-import gzip
 import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import shutil
-import stat
 import struct
 import subprocess
 import sys
 import tempfile
 from urllib.parse import urlsplit
 from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener
-import xml.etree.ElementTree as ET
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 MACHINES = {"amd64": 0x8664, "arm64": 0xAA64}
-NATIVE_NAMES = {"amd64": "x64", "arm64": "arm64"}
-PAYLOAD = ("TailSplit.exe", "tailsplit-core.exe", "TailSplit.Window.dll",
-           "config.example.yaml", "LICENSE", "THIRD_PARTY_NOTICES.md", "build.json")
+PAYLOAD = ("TailSplit.exe", "tailsplit-core.exe", "config.example.yaml", "LICENSE",
+           "THIRD_PARTY_NOTICES.md", "build.json")
 MAX_DOWNLOAD = 768 * 1024 * 1024
-MAX_EXTRACT = 2 * 1024 * 1024 * 1024
 
 class BuildError(RuntimeError):
     pass
@@ -118,7 +113,7 @@ def check_url(url):
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower()
     exact = {"api.github.com", "github.com", "objects.githubusercontent.com",
-             "release-assets.githubusercontent.com", "api.nuget.org", "globalcdn.nuget.org"}
+             "release-assets.githubusercontent.com"}
     microsoft = host == "microsoft.com" or host.endswith(".microsoft.com")
     if (parsed.scheme != "https" or parsed.username or parsed.password or
             parsed.port not in (None, 443) or (host not in exact and not microsoft)):
@@ -153,92 +148,10 @@ def fetch_json(url, directory, name):
     path = fetch(url, Path(directory) / name)
     limit = 8 * 1024 * 1024
     with path.open("rb") as source:
-        compressed = source.read(2) == b"\x1f\x8b"
-        source.seek(0)
-        if compressed:
-            # NuGet's registration5-gz-semver2 endpoint can serve gzip even
-            # without an Accept-Encoding request. urllib does not decode it.
-            with gzip.GzipFile(fileobj=source) as decoded:
-                data = decoded.read(limit + 1)
-        else:
-            data = source.read(limit + 1)
+        data = source.read(limit + 1)
     if len(data) > limit:
         raise BuildError("Dependency metadata exceeded its size limit")
     return json.loads(data.decode("utf-8-sig"))
-
-
-def archive_name(name):
-    """Validate ZIP paths using Windows rules even when unit tested on Unix."""
-    if not name or "\\" in name or "\x00" in name:
-        raise BuildError("Unsafe path in SDK archive")
-    path = PurePosixPath(name)
-    parts = name.rstrip("/").split("/")
-    reserved = {"CON", "PRN", "AUX", "NUL"} | {f"{kind}{n}" for kind in ("COM", "LPT") for n in range(1, 10)}
-    if path.is_absolute() or any(part in ("", ".", "..") or any(char in part for char in ':<>"|?*') or
-                                any(ord(char) < 32 for char in part) or part[-1:] in (".", " ") or
-                                part.split(".")[0].upper() in reserved for part in parts):
-        raise BuildError("Unsafe path in SDK archive")
-    return path
-
-
-def extract_sdk(package, destination):
-    destination = Path(destination)
-    destination.mkdir()  # must be a new empty directory
-    seen, total = set(), 0
-    with zipfile.ZipFile(package) as archive:
-        entries = archive.infolist()
-        if len(entries) > 10000:
-            raise BuildError("Too many files in SDK archive")
-        # Validate the entire archive before writing any member.
-        for item in entries:
-            path = archive_name(item.filename)
-            key = str(path).casefold()
-            mode = item.external_attr >> 16
-            if key in seen or stat.S_ISLNK(mode) or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)):
-                raise BuildError("Duplicate or special file in SDK archive")
-            seen.add(key)
-            total += item.file_size
-            if item.flag_bits & 1 or total > MAX_EXTRACT:
-                raise BuildError("Encrypted or oversized SDK archive")
-        for item in entries:
-            target = destination.joinpath(*archive_name(item.filename).parts)
-            if item.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(item) as source, target.open("xb") as output:
-                    shutil.copyfileobj(source, output)
-    return destination
-
-
-def sdk_license(sdk, version):
-    manifests = list(Path(sdk).glob("*.nuspec"))
-    if len(manifests) != 1:
-        raise BuildError("WebView2 SDK must contain exactly one NuGet manifest")
-    tree = ET.parse(manifests[0])
-    values = {node.tag.rsplit("}", 1)[-1]: node for node in tree.iter()}
-    if (values.get("id") is None or values["id"].text != "Microsoft.Web.WebView2" or
-            values.get("version") is None or values["version"].text != version):
-        raise BuildError("WebView2 SDK manifest does not match the pinned package")
-    license_node = values.get("license")
-    if license_node is None or license_node.get("type") != "file" or not license_node.text:
-        raise BuildError("WebView2 SDK is missing its original file license")
-    relative = archive_name(license_node.text)
-    license_path = Path(sdk).joinpath(*relative.parts)
-    if not license_path.is_file() or not license_path.read_bytes().strip():
-        raise BuildError("WebView2 SDK license file is absent or empty")
-    return license_path
-
-
-def append_notices(source, destination, license_path, version):
-    original, license_bytes = Path(source).read_bytes(), Path(license_path).read_bytes()
-    if not original.strip() or not license_bytes.strip():
-        raise BuildError("Both existing third-party notices and the original SDK license are required")
-    # Keep the SDK's original bytes, including its BOM and line endings.
-    heading = (f"\n\n## Microsoft.Web.WebView2 {version}\n\n"
-               "Source: https://www.nuget.org/packages/Microsoft.Web.WebView2/" + version +
-               "\nThe original WebView2 SDK license follows.\n\n").encode("utf-8")
-    Path(destination).write_bytes(original + heading + license_bytes)
 
 
 def powershell():
@@ -269,32 +182,6 @@ def verify_authenticode(path, publisher, version=None):
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     subprocess.run([str(powershell()), "-NoLogo", "-NoProfile", "-NonInteractive",
                     "-EncodedCommand", encoded], cwd=ROOT, env=clean_environment(), check=True, stdout=subprocess.DEVNULL)
-
-
-def prepare_sdk(work, toolchain):
-    config = toolchain["webview2_sdk"]
-    directory = Path(work) / "webview2-sdk"
-    directory.mkdir()
-    registration = fetch_json(config["registration_url"], directory, "registration.json")
-    entry = registration.get("catalogEntry")
-    if isinstance(entry, str):
-        entry = fetch_json(entry, directory, "catalog.json")
-    if not isinstance(entry, dict) or entry.get("id", "").lower() != config["package"].lower() or entry.get("version") != config["version"]:
-        raise BuildError("NuGet catalog does not match the pinned WebView2 SDK")
-    if entry.get("packageHashAlgorithm", "").upper() != "SHA512":
-        raise BuildError("NuGet catalog did not supply a SHA-512 package hash")
-    try:
-        expected = base64.b64decode(entry["packageHash"], validate=True)
-    except (KeyError, ValueError) as error:
-        raise BuildError("NuGet catalog supplied an invalid package hash") from error
-    if len(expected) != 64:
-        raise BuildError("NuGet catalog supplied an invalid SHA-512 digest")
-    package = fetch(config["package_url"], directory / "sdk.nupkg")
-    actual = file_digest(package, "sha512").digest()
-    if actual != expected:
-        raise BuildError("WebView2 SDK package failed the official NuGet SHA-512 check")
-    sdk = extract_sdk(package, directory / "extracted")
-    return sdk, sdk_license(sdk, config["version"])
 
 
 def prepare_inno(work, toolchain):
@@ -349,67 +236,6 @@ def clean_environment():
                    if not key.upper().startswith(("SOPS_AGE_", "AWS_", "AZURE_")) and
                    key.upper() not in {"GH_TOKEN", "GITHUB_TOKEN", "CL", "_CL_", "LINK", "_LINK_", "GOFLAGS", "PSMODULEPATH"}}
     return environment
-
-
-def msvc_toolchain(arch, environment):
-    """Select target libraries explicitly; never trust an inherited x64 dev shell."""
-    import winreg
-    pf86 = os.environ.get("ProgramFiles(x86)", os.environ.get("ProgramFiles", ""))
-    locator = Path(pf86) / "Microsoft Visual Studio/Installer/vswhere.exe"
-    if not locator.is_file():
-        raise BuildError("Visual Studio C++ tools and vswhere are required")
-    output = subprocess.check_output([str(locator), "-latest", "-products", "*", "-requires",
-                                      "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" if arch == "amd64" else
-                                      "Microsoft.VisualStudio.Component.VC.Tools.ARM64", "-property", "installationPath"],
-                                     cwd=ROOT, env=environment, text=True).strip()
-    if not output or "\n" in output:
-        raise BuildError("A matching Visual Studio C++ target toolchain is required")
-    vs = Path(output)
-    version = (vs / "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt").read_text().strip()
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
-        raise BuildError("Invalid Visual Studio tools version")
-    vc = vs / "VC/Tools/MSVC" / version
-    target = NATIVE_NAMES[arch]
-    # ARM64 runners may contain either a native ARM64 compiler or VS's x64 cross compiler.
-    hosts = ("Hostarm64", "Hostx64") if arch == "arm64" else ("Hostx64",)
-    compilers = [vc / "bin" / host / target / "cl.exe" for host in hosts]
-    compiler = next((path for path in compilers if path.is_file()), None)
-    if compiler is None:
-        raise BuildError("MSVC compiler for the selected target was not found")
-    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows Kits\Installed Roots",
-                        0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as key:
-        sdk = Path(winreg.QueryValueEx(key, "KitsRoot10")[0])
-    versions = sorted((path.name for path in (sdk / "Include").iterdir()
-                       if re.fullmatch(r"10\.\d+\.\d+\.\d+", path.name)),
-                      key=lambda value: tuple(map(int, value.split("."))), reverse=True)
-    sdk_version = next((value for value in versions if
-                        (sdk / "Lib" / value / "um" / target / "ole32.lib").is_file() and
-                        (sdk / "Lib" / value / "ucrt" / target / "ucrt.lib").is_file()), None)
-    if sdk_version is None:
-        raise BuildError("Matching Windows SDK target libraries are required")
-    include = [vc / "include"] + [sdk / "Include" / sdk_version / part for part in ("ucrt", "shared", "um", "winrt")]
-    libs = [vc / "lib" / target, sdk / "Lib" / sdk_version / "ucrt" / target,
-            sdk / "Lib" / sdk_version / "um" / target]
-    if any(not path.is_dir() for path in include + libs):
-        raise BuildError("MSVC or Windows SDK headers/libraries are missing")
-    result = dict(environment, INCLUDE=";".join(map(str, include)), LIB=";".join(map(str, libs)))
-    result["PATH"] = str(compiler.parent) + os.pathsep + result.get("PATH", "")
-    return compiler, result
-
-
-def dll_command(compiler, source, sdk, destination, arch):
-    sdk = Path(sdk)
-    library = sdk / "build/native" / NATIVE_NAMES[arch] / "WebView2LoaderStatic.lib"
-    header = sdk / "build/native/include/WebView2.h"
-    if not header.is_file() or not library.is_file():
-        raise BuildError("WebView2 SDK is missing the matching native headers or static loader")
-    return [str(compiler), "/nologo", "/std:c++17", "/MT", "/LD", "/O2", "/EHsc", "/W4",
-            "/DUNICODE", "/D_UNICODE", "/DWIN32_LEAN_AND_MEAN", "/DNOMINMAX",
-            "/I" + str(header.parent), str(source), "/Fo" + str(Path(destination).with_suffix(".obj")),
-            "/link", "/MACHINE:" + NATIVE_NAMES[arch].upper(), "/DYNAMICBASE", "/NXCOMPAT",
-            "/OUT:" + str(destination), "/IMPLIB:" + str(Path(destination).with_suffix(".lib")),
-            str(library), "ole32.lib", "oleaut32.lib", "user32.lib", "shlwapi.lib", "shell32.lib",
-            "advapi32.lib", "gdi32.lib", "version.lib"]
 
 
 def gui_command(go, destination, info):
@@ -607,11 +433,15 @@ def write_resources(executable, icon_path, info, build_number):
         raise BuildError("Cannot commit native Windows GUI resources")
 
 
-def stage_metadata(stage, core, notices, sdk_license_path, info, sdk_version):
+def stage_metadata(stage, core, notices, info):
+    if not Path(notices).read_bytes().strip():
+        raise BuildError("Existing third-party notices are required")
     shutil.copyfile(core, Path(stage) / "tailsplit-core.exe")
     for name in ("config.example.yaml", "LICENSE"):
         shutil.copyfile(ROOT / name, Path(stage) / name)
-    append_notices(notices, Path(stage) / "THIRD_PARTY_NOTICES.md", sdk_license_path, sdk_version)
+    # release.py supplies the compiled Go dependencies' original notices,
+    # including MyGo. No WebView2 SDK code or license is added by this packager.
+    shutil.copyfile(notices, Path(stage) / "THIRD_PARTY_NOTICES.md")
     (Path(stage) / "build.json").write_text(json.dumps(info, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -632,27 +462,20 @@ def build(args):
     environment = clean_environment()
     environment.update(GOWORK="off", GOOS="windows", GOARCH=args.arch, CGO_ENABLED="0")
     environment["GOAMD64" if args.arch == "amd64" else "GOARM64"] = "v1" if args.arch == "amd64" else "v8.0"
-    compiler, compiler_environment = msvc_toolchain(args.arch, environment)
-    # Never use an archive directory as cwd or as Python's import directory.
+    # Never use a downloaded tool's directory as cwd or Python's import directory.
     with tempfile.TemporaryDirectory(prefix="tailsplit-windows-", ignore_cleanup_errors=True) as temporary:
         work = Path(temporary)
-        sdk, license_path = prepare_sdk(work, toolchain)
         inno = prepare_inno(work, toolchain)
         runtime, runtime_minimum = prepare_runtime(work, args.arch, toolchain)
         stage = work / "payload"
         stage.mkdir()
-        stage_metadata(stage, core, notices, license_path, info, toolchain["webview2_sdk"]["version"])
+        stage_metadata(stage, core, notices, info)
         gui = stage / "TailSplit.exe"
         subprocess.run(gui_command(environment.get("GO", "go"), gui, info), cwd=ROOT, env=environment, check=True)
         require_machine(gui, args.arch)
         icon = work / "TailSplit.ico"
         write_resources(gui, icon, info, args.build_number)
         require_machine(gui, args.arch)
-        native_dll = stage / "TailSplit.Window.dll"
-        subprocess.run(dll_command(compiler, HERE / "window.cpp", sdk, native_dll, args.arch),
-                       cwd=ROOT, env=compiler_environment, check=True)
-        require_machine(native_dll, args.arch)
-        # Compiler intermediates never enter [Files].
         for name in PAYLOAD:
             if not (stage / name).is_file():
                 raise BuildError("Desktop payload is incomplete: " + name)

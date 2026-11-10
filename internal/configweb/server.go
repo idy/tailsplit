@@ -45,6 +45,7 @@ type Options struct {
 	// gate as update, before stopping a helper or changing the saved document.
 	Apply        func(context.Context, func(tray.Snapshot) error, func() error) error
 	Action       func(context.Context, string) error
+	AddExit      func(context.Context, string, string) error
 	RemoveExit   func(context.Context, string, string) error
 	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)
 	Logs         func() (string, error)

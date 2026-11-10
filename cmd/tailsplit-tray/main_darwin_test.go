@@ -167,9 +167,12 @@ func (c *desktopActionFixture) TrafficExitID() (string, error) {
 	return c.trafficExit, c.trafficErr
 }
 
-func (c *desktopActionFixture) Snapshot() tray.Snapshot        { return c.snapshot }
-func (c *desktopActionFixture) Start() error                   { return c.record("connect") }
-func (c *desktopActionFixture) StartLogin() error              { return c.record("start-login") }
+func (c *desktopActionFixture) Snapshot() tray.Snapshot { return c.snapshot }
+func (c *desktopActionFixture) Start() error            { return c.record("connect") }
+func (c *desktopActionFixture) StartLogin() error       { return c.record("start-login") }
+func (c *desktopActionFixture) AddExit(id string, revision ...string) error {
+	return c.record("add-exit:" + id)
+}
 func (c *desktopActionFixture) Stop() error                    { return c.record("disconnect") }
 func (c *desktopActionFixture) Logout() error                  { return c.record("logout") }
 func (c *desktopActionFixture) SwitchNetwork() error           { return c.record("switch-network") }

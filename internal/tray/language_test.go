@@ -27,6 +27,37 @@ func TestNativeTranslationCatalog(t *testing.T) {
 	}
 }
 
+func TestApplicationMenuAndStartupTranslations(t *testing.T) {
+	for source, want := range map[string]string{
+		"隐藏 TailSplit": "Hide TailSplit",
+		"隐藏其他":         "Hide Others",
+		"全部显示":         "Show All",
+		"编辑":           "Edit",
+		"撤销":           "Undo",
+		"重做":           "Redo",
+		"剪切":           "Cut",
+		"拷贝":           "Copy",
+		"粘贴":           "Paste",
+		"粘贴并匹配样式":      "Paste and Match Style",
+		"删除":           "Delete",
+		"全选":           "Select All",
+		"窗口":           "Window",
+		"最小化":          "Minimize",
+		"缩放":           "Zoom",
+		"关闭":           "Close",
+		"等待确认更新…":      "Waiting for update confirmation…",
+		"等待确认升级…":      "Waiting for update confirmation…",
+		"后台网络服务准备失败，请重试": "Could not prepare the network service; try again",
+	} {
+		if got := Translate("en", source); got != want {
+			t.Errorf("English translation of %q = %q; want %q", source, got, want)
+		}
+		if got := Translate("zh", source); got != source {
+			t.Errorf("Chinese translation of %q = %q", source, got)
+		}
+	}
+}
+
 func TestLoginVisibilityIndependentOfLanguage(t *testing.T) {
 	var flow LoginFlow
 	if flow.ShowMessage() {

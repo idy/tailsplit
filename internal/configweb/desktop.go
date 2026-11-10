@@ -14,13 +14,14 @@ import (
 // Desktop controls use the same capability and origin policy as configuration
 // saves. A fixed action vocabulary cannot become a command/path execution API.
 func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
-	if s.options.Action == nil {
+	if s.options.Action == nil && s.options.AddExit == nil {
 		http.NotFound(w, r)
 		return
 	}
 	var request struct {
-		Action string `json:"action"`
-		Exit   string `json:"exit,omitempty"`
+		Action   string `json:"action"`
+		Exit     string `json:"exit,omitempty"`
+		Revision string `json:"revision,omitempty"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 	decoder.DisallowUnknownFields()
@@ -30,12 +31,43 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := request.Action
+	if request.Action != "add-exit" && request.Revision != "" {
+		fail(w, http.StatusBadRequest, "action", "未知操作。")
+		return
+	}
+	var operation func() error
 	switch request.Action {
 	case "connect", "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off":
 		if request.Exit != "" {
 			fail(w, http.StatusBadRequest, "action", "未知操作。")
 			return
 		}
+	case "add-exit":
+		config, err := tailsplit.Load(s.options.ConfigPath)
+		if err != nil || !tailsplit.ValidExitID(request.Exit) || len(config.Exits) >= 8 {
+			fail(w, http.StatusBadRequest, "action", "无法添加出口，请先检查配置。")
+			return
+		}
+		for _, exit := range config.Exits {
+			if exit.ID == request.Exit {
+				fail(w, http.StatusBadRequest, "action", "这个出口已存在。")
+				return
+			}
+		}
+		if s.options.AddExit == nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "config", err.Error())
+			return
+		}
+		if request.Revision == "" || request.Revision != revision {
+			fail(w, http.StatusConflict, "conflict", "配置文件已更新，请重新读取后重试。")
+			return
+		}
+		operation = func() error { return s.options.AddExit(r.Context(), request.Exit, request.Revision) }
 	case "login-exit", "logout-exit":
 		// Only configured additional exits are accepted; the helper rechecks.
 		config, err := tailsplit.Load(s.options.ConfigPath)
@@ -52,9 +84,20 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "action", "未知操作。")
 		return
 	}
-	if err := s.options.Action(r.Context(), action); err != nil {
+	if operation == nil {
+		if s.options.Action == nil {
+			http.NotFound(w, r)
+			return
+		}
+		operation = func() error { return s.options.Action(r.Context(), action) }
+	}
+	if err := operation(); err != nil {
+		if errors.Is(err, tray.ErrConfigChanged) {
+			fail(w, http.StatusConflict, "conflict", "配置文件已更新，请重新读取后重试。")
+			return
+		}
 		status := http.StatusBadRequest
-		if errors.Is(err, ErrBusy) {
+		if errors.Is(err, ErrBusy) || errors.Is(err, tailsplit.ErrPingBusy) {
 			status = http.StatusConflict
 		}
 		fail(w, status, "action", err.Error())

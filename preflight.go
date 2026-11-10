@@ -22,7 +22,7 @@ func PrepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	if err := ValidateTrafficExit(config); err != nil {
 		return err
 	}
-	return prepareTailnet(ctx, config, callback, writer, true, false, nil)
+	return prepareTailnet(ctx, config, callback, writer, true, false, nil, false)
 }
 
 // PrepareConnection checks traffic readiness and returns a safe runtime plan.
@@ -32,7 +32,7 @@ func PrepareConnection(ctx context.Context, config Config, compiled Compiled, ca
 	if err := ValidateTrafficExit(config); err != nil {
 		return Compiled{}, err
 	}
-	if err := prepareTailnet(ctx, config, callback, writer, true, false, &compiled); err != nil {
+	if err := prepareTailnet(ctx, config, callback, writer, true, false, &compiled, false); err != nil {
 		return Compiled{}, err
 	}
 	return compiled, nil
@@ -41,7 +41,21 @@ func PrepareConnection(ctx context.Context, config Config, compiled Compiled, ca
 // AuthenticateTailnet completes once this device is logged into the expected
 // Tailnet. Login does not depend on exit visibility, availability or approval.
 func AuthenticateTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) error {
-	return prepareTailnet(ctx, config, callback, writer, false, false, nil)
+	return prepareTailnet(ctx, config, callback, writer, false, false, nil, false)
+}
+
+// AuthenticateNewTailnet authenticates only a new additional device. Its state
+// namespace is exclusively reserved under the engine lease before any endpoint
+// opens; a failed or canceled attempt keeps that namespace permanently claimed.
+func AuthenticateNewTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) error {
+	if err := validateNewExitFocus(config); err != nil {
+		return err
+	}
+	config, err := config.FocusExit(config.Focus)
+	if err != nil {
+		return err
+	}
+	return prepareTailnet(ctx, config, callback, writer, false, false, nil, true)
 }
 
 // DiscoverTailnet refreshes the picker without requiring an exit, opening an
@@ -50,10 +64,10 @@ func AuthenticateTailnet(ctx context.Context, config Config, callback func(Statu
 func DiscoverTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	return prepareTailnet(ctx, config, callback, writer, false, true, nil)
+	return prepareTailnet(ctx, config, callback, writer, false, true, nil, false)
 }
 
-func prepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter, requireExit, discover bool, runtime *Compiled) (err error) {
+func prepareTailnet(ctx context.Context, config Config, callback func(Status), writer singlog.PlatformWriter, requireExit, discover bool, runtime *Compiled, fresh bool) (err error) {
 	if len(config.ExitIDs()) == 0 {
 		return nil
 	}
@@ -65,7 +79,7 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	engine, err := OpenWithLogWriter(ctx, config, compiled, writer)
+	engine, err := openWithLogWriter(ctx, config, compiled, writer, fresh)
 	if err != nil {
 		return err
 	}

@@ -19,6 +19,17 @@ type desktopUpdateSource interface {
 	Download(context.Context) (appupdate.Package, error)
 }
 
+type desktopUpdatePhase uint8
+
+const (
+	desktopUpdateIdle desktopUpdatePhase = iota
+	desktopUpdateSaving
+	desktopUpdateChecking
+	desktopUpdateConfirming
+	desktopUpdateDownloading
+	desktopUpdateInstalling
+)
+
 type desktopUpdates struct {
 	updater desktopUpdateSource
 	ctx     context.Context
@@ -26,10 +37,9 @@ type desktopUpdates struct {
 	install func(appupdate.Package) error
 	confirm func(string) bool
 
-	mu         sync.Mutex
-	busy       bool
-	installing bool
-	err        string
+	mu    sync.Mutex
+	phase desktopUpdatePhase
+	err   string
 }
 
 func newDesktopUpdates(ctx context.Context, version string, automatic bool, save func(context.Context, bool) error, install func(appupdate.Package) error) *desktopUpdates {
@@ -43,7 +53,13 @@ func (d *desktopUpdates) snapshot() appupdate.State {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	state := d.updater.Snapshot()
-	state.Installing = d.installing
+	// Publish queued work before its goroutine reaches the updater, without
+	// hiding checks or downloads started by the updater's automatic schedule.
+	state.Checking = state.Checking || d.phase == desktopUpdateChecking
+	state.Downloading = state.Downloading || d.phase == desktopUpdateDownloading
+	state.Busy = d.phase != desktopUpdateIdle || state.Checking || state.Downloading
+	state.Confirming = d.phase == desktopUpdateConfirming
+	state.Installing = d.phase == desktopUpdateInstalling
 	if d.err != "" {
 		state.Error = d.err
 	}
@@ -55,58 +71,36 @@ func (d *desktopUpdates) action(ctx context.Context, action string) error {
 		return err
 	}
 	d.mu.Lock()
-	if d.busy {
+	if d.phase != desktopUpdateIdle {
 		d.mu.Unlock()
 		return configweb.ErrBusy
 	}
 	switch action {
 	case "automatic-on", "automatic-off":
-		d.busy = true
+		d.phase = desktopUpdateSaving
 		d.mu.Unlock()
 		enabled := action == "automatic-on"
 		err := d.save(ctx, enabled)
 		if err == nil {
 			d.updater.SetAutomatic(enabled)
 		}
-		d.mu.Lock()
-		d.busy = false
-		d.mu.Unlock()
+		d.setPhase(desktopUpdateIdle)
 		return err
 	case "check", "install":
 		if action == "install" && !d.updater.Snapshot().Available {
 			d.mu.Unlock()
 			return errors.New("请先检查并选择可用的新版本")
 		}
-		d.busy = true
-		d.installing = action == "install"
+		d.phase = desktopUpdateChecking
 		d.err = ""
 		d.mu.Unlock()
 		go func() {
-			var err error
-			if action == "check" {
-				err = d.updater.Check(d.ctx)
-			} else {
-				confirmedVersion := d.updater.Snapshot().LatestVersion
-				if d.confirm(confirmedVersion) {
-					var update appupdate.Package
-					update, err = d.updater.Download(d.ctx)
-					if err == nil && update.Version != confirmedVersion {
-						_ = update.Cleanup()
-						err = errors.New("可用版本已变化，请重新确认升级")
-					}
-					if err == nil {
-						err = d.install(update)
-						if err != nil {
-							_ = update.Cleanup()
-						}
-					}
-				}
-			}
+			err := d.run(action)
 			d.mu.Lock()
 			if err != nil && d.ctx.Err() == nil {
 				d.err = err.Error()
 			}
-			d.busy, d.installing = false, false
+			d.phase = desktopUpdateIdle
 			d.mu.Unlock()
 		}()
 		return nil
@@ -116,8 +110,58 @@ func (d *desktopUpdates) action(ctx context.Context, action string) error {
 	}
 }
 
+func (d *desktopUpdates) setPhase(phase desktopUpdatePhase) {
+	d.mu.Lock()
+	d.phase = phase
+	d.mu.Unlock()
+}
+
+func (d *desktopUpdates) run(action string) error {
+	// An offer can be hours old. Refresh before confirmation so one
+	// installation jumps straight to the current stable release, while
+	// Download still pins the exact version the user confirmed.
+	if err := d.updater.Check(d.ctx); err != nil {
+		return err
+	}
+	if action != "install" {
+		return nil
+	}
+	latest := d.updater.Snapshot()
+	if !latest.Available {
+		return nil
+	}
+	if err := d.ctx.Err(); err != nil {
+		return err
+	}
+	confirmedVersion := latest.LatestVersion
+	d.setPhase(desktopUpdateConfirming)
+	if !d.confirm(confirmedVersion) {
+		return nil
+	}
+	if err := d.ctx.Err(); err != nil {
+		return err
+	}
+	d.setPhase(desktopUpdateDownloading)
+	update, err := d.updater.Download(d.ctx)
+	if err != nil {
+		return err
+	}
+	if update.Version != confirmedVersion {
+		_ = update.Cleanup()
+		return errors.New("可用版本已变化，请重新确认升级")
+	}
+	if err = d.ctx.Err(); err == nil {
+		d.setPhase(desktopUpdateInstalling)
+		err = d.install(update)
+	}
+	if err != nil {
+		_ = update.Cleanup()
+	}
+	return err
+}
+
 func updateMenuTitleForLanguage(state appupdate.State, language string) string {
-	if state.Available && !state.Downloading && !state.Installing && !state.Checking {
+	if state.Available && !state.Downloading && !state.Installing && !state.Checking && !state.Confirming {
 		return tray.Translate(language, "升级到 ") + state.LatestVersion + "…"
 	}
 	return tray.Translate(language, updateMenuTitle(state))
@@ -125,6 +169,8 @@ func updateMenuTitleForLanguage(state appupdate.State, language string) string {
 
 func updateMenuTitle(state appupdate.State) string {
 	switch {
+	case state.Confirming:
+		return "等待确认升级…"
 	case state.Downloading:
 		return "正在下载更新…"
 	case state.Installing:

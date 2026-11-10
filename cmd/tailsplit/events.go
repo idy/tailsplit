@@ -29,11 +29,20 @@ func (s *eventStream) WriteMessage(_ singlog.Level, message string) {
 }
 
 func runLoginEvents(ctx context.Context, config tailsplit.Config, stream *eventStream) error {
+	return runLoginEventsWith(ctx, config, stream, tailsplit.AuthenticateTailnet)
+}
+
+func runNewLoginEvents(ctx context.Context, config tailsplit.Config, stream *eventStream) error {
+	return runLoginEventsWith(ctx, config, stream, tailsplit.AuthenticateNewTailnet)
+}
+
+func runLoginEventsWith(ctx context.Context, config tailsplit.Config, stream *eventStream,
+	authenticate func(context.Context, tailsplit.Config, func(tailsplit.Status), singlog.PlatformWriter) error) error {
 	config.TUN.Enabled = false
 	if err := stream.send(map[string]string{"event": "preflight", "mode": "login"}); err != nil {
 		return err
 	}
-	if err := tailsplit.AuthenticateTailnet(ctx, config, func(status tailsplit.Status) {
+	if err := authenticate(ctx, config, func(status tailsplit.Status) {
 		_ = stream.send(status)
 	}, stream); err != nil {
 		if ctx.Err() == nil {

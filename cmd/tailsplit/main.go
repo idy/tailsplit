@@ -59,7 +59,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		args = args[1:]
 	}
 	switch command {
-	case "init", "check", "render", "run", "app-run", "app-login", "discover", "app-discover", "logout", "app-logout", "refresh", "ping", "app-ping":
+	case "init", "check", "render", "run", "app-run", "app-login", "app-login-new", "discover", "app-discover", "logout", "app-logout", "refresh", "ping", "app-ping":
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -76,7 +76,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional argument")
 	}
-	isRun := command == "run" || command == "app-run" || command == "app-login" ||
+	isRun := command == "run" || command == "app-run" || command == "app-login" || command == "app-login-new" ||
 		command == "discover" || command == "app-discover"
 	if *events && !isRun {
 		return errors.New("--events is supported only by run")
@@ -96,16 +96,24 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		fmt.Fprintln(out, "Created", *path)
 		return nil
 	}
-	config, err := tailsplit.Load(*path)
+	load := tailsplit.Load
+	if command == "app-login-new" {
+		// This is a staged device-only draft, not an owner of saved rule caches.
+		load = tailsplit.LoadDraft
+	}
+	config, err := load(*path)
 	if err != nil {
 		return err
 	}
 	if command == "app-login" && *exit == "" {
 		*exit = tailsplit.MainExit
 	}
+	if command == "app-login-new" && !tailsplit.ValidExitID(*exit) {
+		return errors.New("new device authentication requires an explicit additional --exit")
+	}
 	if *exit != "" {
 		switch command {
-		case "app-login", "discover", "app-discover", "logout", "app-logout", "ping", "app-ping":
+		case "app-login", "app-login-new", "discover", "app-discover", "logout", "app-logout", "ping", "app-ping":
 		default:
 			return errors.New("--exit is supported only by login, discovery, logout and ping")
 		}
@@ -136,7 +144,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	if command == "discover" {
 		return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: *events})
 	}
-	if command == "app-login" || command == "app-discover" {
+	if command == "app-login" || command == "app-login-new" || command == "app-discover" {
 		executable, err := os.Executable()
 		if err != nil {
 			return err
@@ -145,6 +153,8 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		operation := "login"
 		if command == "app-discover" {
 			operation = "discover"
+		} else if command == "app-login-new" {
+			operation = "login-new"
 		}
 		connection, err := appservice.OpenSession(ctx, executable, operation, config, out)
 		if err == nil {
@@ -158,6 +168,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		// Device authentication alone never installs or starts the TUN service.
 		if command == "app-discover" {
 			return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
+		}
+		if command == "app-login-new" {
+			return runNewLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
 		}
 		return runLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
 	}

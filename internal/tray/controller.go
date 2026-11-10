@@ -119,6 +119,8 @@ type Controller struct {
 	pingCancel    context.CancelFunc
 	pingDone      chan struct{}
 	trafficExit   string // Selected traffic device for this running session.
+	pendingAdd    *pendingExitAddition
+	preparation   *servicePreparation
 }
 
 func New(options Options) (*Controller, error) {
@@ -136,7 +138,7 @@ func (c *Controller) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	snapshot := c.snapshot.clone()
-	snapshot.Active = c.command != nil || c.loggingOut
+	snapshot.Active = c.command != nil || c.loggingOut || c.preparation != nil
 	snapshot.TrafficExit = c.trafficExit
 	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
@@ -175,7 +177,7 @@ func (c *Controller) Start() error {
 func (c *Controller) beginReconfigure() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.loggingOut || c.reconfiguring {
+	if c.closed || c.loggingOut || c.reconfiguring || c.preparation != nil {
 		return tailsplit.ErrPingBusy
 	}
 	c.reconfiguring = true
@@ -273,6 +275,17 @@ func (c *Controller) startReconfigured() error {
 }
 
 func (c *Controller) startLocked(mode, focus string) error {
+	return c.startConfigLocked(mode, focus, c.options.ConfigPath)
+}
+
+func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
+	freshLogin := mode == "login-new"
+	if freshLogin {
+		mode = "login"
+	}
+	if c.preparation != nil {
+		return tailsplit.ErrPingBusy
+	}
 	if c.closed {
 		return errors.New("controller is closed")
 	}
@@ -300,7 +313,7 @@ func (c *Controller) startLocked(mode, focus string) error {
 				runCommand = "app-discover"
 			}
 		}
-		data, err := os.ReadFile(c.options.ConfigPath)
+		data, err := os.ReadFile(configPath)
 		if err != nil {
 			return err
 		}
@@ -337,13 +350,16 @@ func (c *Controller) startLocked(mode, focus string) error {
 			}
 		}
 	}
+	if freshLogin {
+		runCommand = "app-login-new"
+	}
 	args := append(append([]string{}, c.options.HelperArgs...), runCommand, "--events",
-		"--parent-pid", fmt.Sprint(os.Getpid()), "-c", c.options.ConfigPath)
+		"--parent-pid", fmt.Sprint(os.Getpid()), "-c", configPath)
 	if focus != "" {
 		args = append(args, "--exit", focus)
 	}
 	command := exec.Command(c.options.Helper, args...)
-	command.Dir = filepath.Dir(c.options.ConfigPath)
+	command.Dir = filepath.Dir(configPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
 	command.Stderr = c.log
 	command.Stdout = &eventWriter{callback: c.onEvent}
@@ -386,6 +402,7 @@ func (c *Controller) startLocked(mode, focus string) error {
 		}
 		c.mu.Lock()
 		if c.command == command {
+			c.finishPendingAddLocked(err)
 			c.command, c.input = nil, nil
 			if !c.stopping && c.snapshot.State == "failed" {
 				// Preserve an actionable error delivered by the elevated core.
@@ -436,6 +453,12 @@ func (c *Controller) Stop() error {
 		c.pingCancel()
 	}
 	pingDone := c.pingDone
+	var preparationDone <-chan struct{}
+	if c.preparation != nil {
+		c.preparation.cancel()
+		preparationDone = c.preparation.done
+		c.snapshot.State = "stopping"
+	}
 	command, done, input := c.command, c.done, c.input
 	if command != nil {
 		c.snapshot.State = "stopping"
@@ -450,12 +473,14 @@ func (c *Controller) Stop() error {
 	}
 	timer := time.NewTimer(c.stopWait)
 	defer timer.Stop()
-	for done != nil || pingDone != nil {
+	for done != nil || pingDone != nil || preparationDone != nil {
 		select {
 		case <-done:
 			done = nil
 		case <-pingDone:
 			pingDone = nil
+		case <-preparationDone:
+			preparationDone = nil
 		case <-timer.C:
 			// The helper owns the saved-state lease until service cleanup is
 			// confirmed. Killing it here would release that lease too early.
@@ -650,6 +675,9 @@ func (c *Controller) onEvent(data []byte) {
 		return
 	}
 	if event.Event == "authenticated" {
+		if c.pendingAdd != nil && c.snapshot.Mode == "login" && c.snapshot.Focus == c.pendingAdd.id {
+			c.pendingAdd.authenticated = true
+		}
 		c.snapshot.State = "authenticated"
 		c.snapshot.LoginURL = ""
 		if c.snapshot.Focus != "" && c.snapshot.Focus != tailsplit.MainExit {

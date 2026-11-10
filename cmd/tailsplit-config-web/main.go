@@ -203,7 +203,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				"\x1b[33mWARN\x1b[0m[0004] preview simulation: selected exit is unavailable\n" +
 				"\x1b[31mERROR\x1b[0m[0005] preview simulation: DNS lookup timed out\n", nil
 		}
-		options.Action = func(ctx context.Context, action string) error {
+		actionWithRevision := func(ctx context.Context, action, expectedRevision string) error {
 			mutex.Lock()
 			defer mutex.Unlock()
 			if err := ctx.Err(); err != nil {
@@ -213,6 +213,23 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				config, err := tailsplit.Load(configPath)
 				if err != nil {
 					return err
+				}
+				adding := name == "add-exit"
+				if adding {
+					candidate, revision, err := tray.PrepareExitAddition(configPath, exit, expectedRevision)
+					if err != nil {
+						return err
+					}
+					// Preview authorization is explicitly simulated and immediate;
+					// the production controller commits only after real authentication.
+					if err := tray.SaveConfigDocument(configPath, revision, candidate); err != nil {
+						return err
+					}
+					config, err = tailsplit.Load(configPath)
+					if err != nil {
+						return err
+					}
+					name = "login-exit"
 				}
 				if snapshot.Exits == nil {
 					snapshot.Exits = map[string]tray.ExitSnapshot{}
@@ -230,6 +247,9 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 					snapshot.Exits[exit] = tray.ExitSnapshot{BackendState: "NeedsLogin"}
 				}
 				updatePreviewSnapshot(&snapshot, config)
+				if adding {
+					snapshot.State, snapshot.Mode = "authenticated", "login"
+				}
 				return nil
 			}
 			switch action {
@@ -301,6 +321,12 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				startup = false
 			}
 			return nil
+		}
+		options.Action = func(ctx context.Context, action string) error {
+			return actionWithRevision(ctx, action, "")
+		}
+		options.AddExit = func(ctx context.Context, id, revision string) error {
+			return actionWithRevision(ctx, "add-exit:"+id, revision)
 		}
 	}
 	return options

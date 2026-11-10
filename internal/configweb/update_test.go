@@ -122,7 +122,7 @@ func TestUpdateStateIsOptionalAndContainsOnlyPublicUpdateFields(t *testing.T) {
 	server.options.UpdateState = func() appupdate.State {
 		return appupdate.State{
 			CurrentVersion: "0.6.1", LatestVersion: "0.6.2", Automatic: true,
-			Checking: true, Downloading: true, Installing: true, Available: true,
+			Busy: true, Confirming: true, Checking: true, Downloading: true, Installing: true, Available: true,
 			DownloadedBytes: 64, TotalBytes: 128, LastChecked: checked,
 			Error: "update unavailable", ReleaseURL: "https://github.com/idy/tailsplit/releases/tag/v0.6.2",
 			ReleaseNotes: "Release notes for 0.6.2",
@@ -134,7 +134,7 @@ func TestUpdateStateIsOptionalAndContainsOnlyPublicUpdateFields(t *testing.T) {
 	}
 	want := map[string]any{
 		"current_version": "0.6.1", "latest_version": "0.6.2", "automatic": true,
-		"checking": true, "downloading": true, "installing": true, "available": true,
+		"busy": true, "confirming": true, "checking": true, "downloading": true, "installing": true, "available": true,
 		"downloaded_bytes": float64(64), "total_bytes": float64(128), "last_checked": checked.Format(time.RFC3339),
 		"error": "update unavailable", "release_url": "https://github.com/idy/tailsplit/releases/tag/v0.6.2",
 		"release_notes": "Release notes for 0.6.2",

@@ -59,7 +59,6 @@ Name: "{app}"
 [Files]
 Source: "{#StageDir}\TailSplit.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\tailsplit-core.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StageDir}\TailSplit.Window.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\config.example.yaml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -150,6 +149,8 @@ procedure InitPayloadNames;
 begin
   PayloadNames[0] := 'TailSplit.exe';
   PayloadNames[1] := 'tailsplit-core.exe';
+  { Recovery journal indices must stay compatible with pre-MyGo installers.
+    The retired DLL is backed up/restored, but is no longer a shipped file. }
   PayloadNames[2] := 'TailSplit.Window.dll';
   PayloadNames[3] := 'config.example.yaml';
   PayloadNames[4] := 'LICENSE';
@@ -424,6 +425,18 @@ begin
     RaiseException('TailSplit could not disconnect and quit the registered desktop GUI (exit ' + IntToStr(ExitCode) + ').');
 end;
 
+procedure RemoveObsoleteWindowDLL;
+var
+  LegacyDLL: String;
+begin
+  { Called only after the GUI and service stop and a protected snapshot exists.
+    A failed install restores this file together with the previous desktop. }
+  LegacyDLL := FixedAppDir + '\TailSplit.Window.dll';
+  if FileExists(LegacyDLL) then
+    if not DeleteFile(LegacyDLL) then
+      RaiseException('Could not remove the obsolete TailSplit.Window.dll.');
+end;
+
 function ServiceHandle(Access: LongWord): THandle;
 var
   Manager: THandle;
@@ -662,6 +675,7 @@ begin
     CreateSnapshot;
     if PreviousService then RunCore('windows-stop-service');
     StopFixedService;
+    RemoveObsoleteWindowDLL;
   except
     OriginalFailure := GetExceptionMessage;
     if FailureExitCode = 0 then FailureExitCode := 1;

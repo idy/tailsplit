@@ -27,6 +27,12 @@ func EnsureDir(path string, foreign ...string) error {
 	return nil
 }
 
+// CreateDir exclusively creates a private directory. The parent must exist.
+// An existing entry is never adopted or changed, even when it is empty.
+func CreateDir(path string) error {
+	return os.Mkdir(path, 0o700)
+}
+
 func CreateFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 }

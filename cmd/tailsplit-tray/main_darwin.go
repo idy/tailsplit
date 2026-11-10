@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"image/png"
+	"io"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -17,23 +18,27 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/appservice"
 	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
+	"github.com/idy/tailsplit/internal/desktopwindow"
 	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/tray"
 
-	"github.com/getlantern/systray"
+	systray "github.com/idy/tailsplit/internal/desktoptray"
 	"gopkg.in/yaml.v3"
 )
 
 type configurationApply struct {
-	ctx    context.Context
-	check  func(tray.Snapshot) error
-	update func() error
-	direct bool
-	action string
-	done   chan error
+	ctx      context.Context
+	check    func(tray.Snapshot) error
+	update   func() error
+	direct   bool
+	action   string
+	revision string
+	done     chan error
 }
 
 type desktopActionController interface {
@@ -47,6 +52,7 @@ type desktopActionController interface {
 	RefreshExitNodes() error
 	StartExitLogin(string) error
 	LogoutExit(string) error
+	AddExit(string, ...string) error
 }
 
 func desktopConfigurationBusy(action string, snapshot tray.Snapshot, editing, loggingOut, opening bool) bool {
@@ -59,9 +65,12 @@ func (request configurationApply) blocked(editing, loggingOut, browserOpening bo
 
 // LoginFlow and action preparation belong to the menu's event loop. Only the
 // returned controller or login-item operation may run on the settings worker.
-func desktopActionOperation(action string, controller desktopActionController, flow *tray.LoginFlow, startup func(bool) error) (func() error, error) {
+func desktopActionOperation(action string, controller desktopActionController, flow *tray.LoginFlow, startup func(bool) error, revision ...string) (func() error, error) {
 	action, exit := splitExitAction(action)
 	switch action {
+	case "add-exit":
+		flow.Cancel()
+		return func() error { return controller.AddExit(exit, revision...) }, nil
 	case "login-exit":
 		flow.Cancel()
 		return func() error { return prepareDesktopExitLogin(controller, exit) }, nil
@@ -152,9 +161,27 @@ func main() {
 	loginImmediately := flag.Bool("login", false, "start and open the current device login page when ready")
 	noConnect := flag.Bool("no-connect", false, "start disconnected after an update")
 	updateFailed := flag.Bool("update-failed", false, "report a failed update and retained app")
+	openImmediately := flag.Bool("open", false, "show the configuration window at launch")
+	uiListen := flag.String("ui-listen", "", "optional local panel address")
+	proofDirectory := flag.String("proof-dir", "", "isolated native UI verification output")
 	flag.Parse()
+	if err := configureDesktopProof(*proofDirectory); err != nil {
+		return
+	}
+	mygo.App.SetName("TailSplit")
+	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
+	// Isolated fixture runs must not activate or close the installed desktop.
+	if desktopProofMode() {
+		mygo.App.SetName("TailSplit UI verification")
+	}
+	locked := mygo.App.RequestSingleInstanceLock()
+	mygo.App.SetName("TailSplit")
+	if !locked {
+		return
+	}
 	uiLanguage = locale.NewStore(*config)
 	tray.SetUILanguage(currentLanguage())
+	desktopwindow.ConfigureApplication(currentLanguage(), tray.ShowAbout)
 	if *updateFailed {
 		showError(tr("App 更新失败，已保留原版本。请重新检查更新，或从 GitHub Release 安装。"))
 	}
@@ -231,8 +258,11 @@ func main() {
 			})
 		})
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
-		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
+		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode,
+		AddExit: func(ctx context.Context, id, revision string) error {
+			return submit(configurationApply{ctx: ctx, action: "add-exit:" + id, revision: revision})
+		},
 		RemoveExit: func(ctx context.Context, id, revision string) error {
 			return apply(ctx, func() error { return controller.RemoveExit(id, revision) }, true)
 		},
@@ -248,17 +278,35 @@ func main() {
 		// item awaiting system approval must not be reported as enabled.
 		Startup: startupEnabled.Load,
 	})
+	var configurationWindow *desktopwindow.Window
+	if configurationPage != nil {
+		configurationWindow, err = desktopwindow.New(configurationPage.URL(), true)
+		if err != nil {
+			controller.RecordDesktopEvent("Could not prepare MyGo window: " + err.Error())
+		}
+		if configurationWindow != nil {
+			go func() {
+				if err := configurationWindow.Run(); err != nil {
+					controller.RecordDesktopEvent("MyGo window stopped: " + err.Error())
+				}
+			}()
+		}
+	}
 	showConfiguration := func() {
 		if configurationPage != nil {
-			if err := tray.ShowConfigurationWindow(configurationPage.URL()); err != nil {
+			if configurationWindow == nil {
+				openPath(configurationPage.URL())
+				return
+			}
+			if err := configurationWindow.Show(); err != nil {
 				controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
 				openPath(configurationPage.URL())
 			}
 		}
 	}
-	systray.Run(func() {
-		setTrayIcon(false)
-		systray.SetTooltip("TailSplit")
+	setTrayIcon(false)
+	systray.SetTooltip("TailSplit")
+	runErr := systray.Run(func() {
 		configuration := addMenu(nil, "打开", "打开 TailSplit 配置面板")
 		if configurationErr != nil {
 			configuration.Disable()
@@ -312,17 +360,17 @@ func main() {
 		restart.Disable()
 		systray.AddSeparator()
 		quit := addMenu(nil, "退出 TailSplit", "同时停止此 App 启动的代理")
+		if *openImmediately || desktopProofMode() {
+			showConfiguration()
+		}
+		startupAction := desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect)
 		if *loginImmediately {
-			_ = controller.StartLogin()
+			startupAction = "login"
 		} else if !*noConnect && *startImmediately {
-			_ = controller.Start()
-		} else {
-			switch desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect) {
-			case "connect":
-				_ = controller.Start()
-			case "refresh-exits":
-				_ = controller.RefreshExitNodes()
-			}
+			startupAction = "connect"
+		}
+		if desktopProofMode() {
+			startupAction = ""
 		}
 		go func() {
 			defer close(picker.done)
@@ -339,10 +387,43 @@ func main() {
 			logoutDone := make(chan error, 1)
 			loggingOut := false
 			switchingNetwork := false
-			editing := false
+			// Prepare an existing privileged service before any device startup.
+			// This also runs after an update's --no-connect relaunch.
+			editing := true
+			startupPending := true
 			settingsDone := make(chan error, 1)
 			var pendingRequest chan error
-			var pendingAction string
+			pendingAction := startupAction
+			if pendingAction == "" {
+				pendingAction = "startup-service"
+			}
+			go func() {
+				err := prepareDesktopStartup(ctx, func(ctx context.Context) error {
+					// app-run performs its own exact-build readiness check before
+					// traffic; only other startup paths need a parent preparation.
+					if desktopProofMode() || startupAction == "connect" {
+						return nil
+					}
+					return controller.PrepareService(ctx, func(ctx context.Context) error {
+						return appservice.UpgradeExisting(ctx, *helper, io.Discard)
+					})
+				}, func() error {
+					switch startupAction {
+					case "login":
+						return controller.StartLogin()
+					case "connect":
+						return controller.Start()
+					case "refresh-exits":
+						return controller.RefreshExitNodes()
+					default:
+						return nil
+					}
+				})
+				if err != nil && !errors.Is(err, context.Canceled) {
+					controller.RecordDesktopEvent("Desktop startup preparation failed: " + err.Error())
+				}
+				settingsDone <- err
+			}()
 			completeRequest := func(err error) bool {
 				reply := pendingRequest
 				pendingRequest, pendingAction = nil, ""
@@ -407,6 +488,10 @@ func main() {
 			for {
 				select {
 				case <-connect.ClickedCh:
+					if controller.CancelServicePreparation() {
+						flow.Cancel()
+						continue
+					}
 					if editing || loggingOut || flow.Opening() {
 						continue
 					}
@@ -514,12 +599,19 @@ func main() {
 						}
 					}
 				case request := <-configurationRequests:
-					if request.blocked(editing, loggingOut, flow.Opening(), controller.Snapshot()) {
-						request.done <- configweb.ErrBusy
-						continue
-					}
 					if err := request.ctx.Err(); err != nil {
 						request.done <- err
+						continue
+					}
+					// Cancellation belongs to the existing startup worker; do not
+					// overwrite its pending reply or settingsDone ownership.
+					if request.action == "disconnect" && controller.CancelServicePreparation() {
+						flow.Cancel()
+						request.done <- nil
+						continue
+					}
+					if request.blocked(editing, loggingOut, flow.Opening(), controller.Snapshot()) {
+						request.done <- configweb.ErrBusy
 						continue
 					}
 					var operation func() error
@@ -527,7 +619,7 @@ func main() {
 						var err error
 						operation, err = desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
 							return setDesktopStartup(enabled, tray.SetLoginItem, tray.LoginItem, tray.OpenLoginItemSettings)
-						})
+						}, request.revision)
 						if err != nil || operation == nil {
 							if err == nil {
 								openReadyLogin(controller.Snapshot())
@@ -552,6 +644,11 @@ func main() {
 						go func() { settingsDone <- operation() }()
 					}
 				case err := <-settingsDone:
+					if startupPending && errors.Is(err, context.Canceled) {
+						flow.Cancel()
+						pendingAction, err = "", nil
+					}
+					startupPending = false
 					editing = false
 					reloadPreferences()
 					if pendingAction == "startup-on" || pendingAction == "startup-off" {
@@ -559,7 +656,7 @@ func main() {
 						// panel sees the actual status before its request completes.
 						refreshLoginItem()
 					}
-					if action, _ := splitExitAction(pendingAction); action == "login-exit" || action == "login" {
+					if action, _ := splitExitAction(pendingAction); action == "login-exit" || action == "login" || action == "add-exit" {
 						err = finishDesktopExitLogin(&flow, err)
 						if err == nil {
 							openReadyLogin(controller.Snapshot())
@@ -664,6 +761,7 @@ func main() {
 					languageChanged := language != tray.UILanguage()
 					if languageChanged {
 						tray.SetUILanguage(language)
+						desktopwindow.ConfigureApplication(language, tray.ShowAbout)
 						refreshMenuLanguage()
 						if configurationErr != nil {
 							configuration.SetTooltip(tr("无法启动本地配置页面，请使用“设置与工具 → 编辑配置…”"))
@@ -672,8 +770,9 @@ func main() {
 					updateState := updates.snapshot()
 					checkUpdate.SetTitle(updateMenuTitleForLanguage(updateState, currentLanguage()))
 					checkUpdate.SetTooltip(tr(updateState.Error))
-					setEnabled(checkUpdate, !updateState.Checking && !updateState.Downloading && !updateState.Installing && !editing && !loggingOut)
+					setEnabled(checkUpdate, !updateState.Busy && !updateState.Confirming && !updateState.Checking && !updateState.Downloading && !updateState.Installing && !editing && !loggingOut)
 					setChecked(autoUpdates, updateState.Automatic)
+					setEnabled(autoUpdates, !updateState.Busy && !updateState.Confirming && !updateState.Checking && !updateState.Downloading && !updateState.Installing && !editing && !loggingOut)
 					if updateState.Available {
 						tools.SetTitle(tr("设置与工具 · 有更新"))
 					} else {
@@ -742,7 +841,7 @@ func main() {
 						exitMenu.SetTitle(tr("选择出口节点"))
 					}
 					busy := editing || loggingOut || snapshot.State == "stopping" || snapshot.State == "logging-out"
-					setEnabled(connect, !busy && !flow.Opening())
+					setEnabled(connect, (!busy || snapshot.PreparingService()) && !flow.Opening())
 					setEnabled(restart, canReconnect(snapshot) && !busy && !flow.Opening())
 					setEnabled(login, !busy && !flow.Opening() &&
 						snapshot.Mode != "discovery" &&
@@ -773,6 +872,9 @@ func main() {
 		}
 		_ = controller.Close()
 	})
+	if runErr != nil {
+		controller.RecordDesktopEvent("MyGo desktop stopped: " + runErr.Error())
+	}
 }
 
 func openPath(arguments ...string) {

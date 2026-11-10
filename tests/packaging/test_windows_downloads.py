@@ -67,12 +67,16 @@ class DownloadAuthenticationTests(unittest.TestCase):
         urls = ["https://github.com/jrsoftware/issrc/releases/download/tag/setup.exe",
                 "https://release-assets.githubusercontent.com/setup.exe",
                 "https://objects.githubusercontent.com/setup.exe",
-                "https://api.nuget.org/v3-flatcontainer/package.nupkg",
-                "https://globalcdn.nuget.org/package.nupkg",
                 "https://go.microsoft.com/fwlink/?linkid=2099616"]
         for url in urls:
             with self.subTest(url=url):
                 self.assertIsNone(self.request(url, {"GH_TOKEN": "ci-token"}).get_header("Authorization"))
+
+    def test_unused_webview_sdk_hosts_are_rejected(self):
+        for url in ["https://api.nuget.org/v3-flatcontainer/package.nupkg",
+                    "https://globalcdn.nuget.org/package.nupkg"]:
+            with self.subTest(url=url), self.assertRaises(packager.BuildError):
+                self.request(url, {"GH_TOKEN": "ci-token"})
 
     def test_redirects_drop_authorization_including_same_host_redirects(self):
         request = self.request(API, {"GH_TOKEN": "ci-token"})

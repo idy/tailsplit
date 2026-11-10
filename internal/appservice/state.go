@@ -147,6 +147,27 @@ func prepareRuntimeUserWithRules(base, user string, files Files, updateRules boo
 	return directory, nil
 }
 
+// prepareNewExitRuntime runs under the service's active/lifetime leases. Fresh
+// authentication never imports user files or changes the saved rules/cache. Its
+// namespace claim remains authoritative even if the runner or publication fails.
+func prepareNewExitRuntime(base, user string, config tailsplit.Config, files Files) error {
+	if !validExitID(config.Focus) {
+		return errors.New("new device authentication requires a configured additional exit")
+	}
+	if _, err := config.FocusExit(config.Focus); err != nil {
+		return err
+	}
+	if len(files.TailscaleState) != 0 || len(files.ExitStates) != 0 || len(files.Cache) != 0 || len(files.Rules) != 0 {
+		return errors.New("new device authentication cannot import saved files")
+	}
+	directory, err := prepareRuntimeUserWithRules(base, user, Files{}, false)
+	if err != nil {
+		return err
+	}
+	config.StateDir = directory
+	return tailsplit.ReserveNewExitState(config)
+}
+
 // importExitState publishes an identity and its authority together. An existing
 // exit directory belongs to the service, including directories made by older
 // helpers that have no marker or whose logout removed the state file. Never

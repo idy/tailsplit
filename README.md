@@ -198,7 +198,7 @@ with your version, platform, and reproduction steps.
 
 ## Development
 
-Requires Go 1.26.2+ and Python 3.11+. From the repository root:
+Requires Go 1.27.3+ and Python 3.11+. From the repository root:
 
 ```sh
 make test check
@@ -208,6 +208,14 @@ python3 -B -m unittest discover -s tests/packaging
 
 macOS app builds also need Xcode Command Line Tools and Swift.
 See the [build guide](docs/guide.md#build-and-test) for platform-specific commands.
+
+The production macOS and Windows desktop uses MyGo v0.8.3 for its window and
+tray. Its entry point is `cmd/tailsplit-tray`, with `internal/desktopwindow` and
+`internal/desktoptray` hosting the existing configuration UI and controls.
+On macOS, `make run-tray` builds the CLI helper and `bin/tailsplit-tray`, then
+opens the configuration window with automatic connection disabled for that launch.
+`make test` checks the desktop packages in the root module. See the
+[build guide](docs/guide.md#build-and-test) for launch options and Windows packaging.
 
 | Path | Contents |
 | --- | --- |

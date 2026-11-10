@@ -126,6 +126,7 @@ func TestSemverOrdering(t *testing.T) {
 		available       bool
 	}{
 		{"0.6.1", "v0.6.2", true},
+		{"0.6.1", "v0.8.0", true},
 		{"v0.6.9", "v0.6.10", true},
 		{"0.9.0", "v0.10.0", true},
 		{"1.9.0", "v1.10.0", true},

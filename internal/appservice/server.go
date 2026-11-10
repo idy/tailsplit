@@ -189,7 +189,7 @@ func (s *Server) handleAuthenticated(ctx context.Context, connection net.Conn) {
 		s.handlePing(ctx, connection, reader, request, stream)
 		return
 	}
-	if request.Op != "start" && request.Op != "login" && request.Op != "logout" && request.Op != "discover" || request.Config == nil {
+	if request.Op != "start" && request.Op != "login" && request.Op != "login-new" && request.Op != "logout" && request.Op != "discover" || request.Config == nil {
 		fail("the network service supports only status, start, discovery and device login/logout")
 		return
 	}
@@ -203,10 +203,15 @@ func (s *Server) handleAuthenticated(ctx context.Context, connection net.Conn) {
 		fail(err.Error())
 		return
 	}
-	if request.Op == "login" || request.Op == "discover" {
+	if request.Op == "login" || request.Op == "login-new" || request.Op == "discover" {
 		config.TUN.Enabled = false
 	}
-	if _, err = prepareRuntimeUser(s.Base, s.userKey(), request.Files); err != nil {
+	if request.Op == "login-new" {
+		if err := prepareNewExitRuntime(s.Base, s.userKey(), config, request.Files); err != nil {
+			fail("could not reserve a fresh private device; choose a new exit ID")
+			return
+		}
+	} else if _, err = prepareRuntimeUser(s.Base, s.userKey(), request.Files); err != nil {
 		fail("could not prepare private network service state")
 		return
 	}
@@ -230,7 +235,7 @@ func (s *Server) handleAuthenticated(ctx context.Context, connection net.Conn) {
 		<-watched
 	}()
 	run := s.Run
-	if request.Op == "login" {
+	if request.Op == "login" || request.Op == "login-new" {
 		run = s.Login
 		if run == nil {
 			fail("this network service does not support separate device login; update it from the app")

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
@@ -100,6 +101,10 @@ func Open(ctx context.Context, config Config, compiled Compiled) (*Engine, error
 
 // OpenWithLogWriter also delivers logs to a private local UI channel.
 func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, writer singlog.PlatformWriter) (*Engine, error) {
+	return openWithLogWriter(ctx, config, compiled, writer, false)
+}
+
+func openWithLogWriter(ctx context.Context, config Config, compiled Compiled, writer singlog.PlatformWriter, fresh bool) (*Engine, error) {
 	if compiled.runtimeExit != "" {
 		// Watch, authenticate and ping exactly the device Global compiled.
 		var err error
@@ -120,6 +125,13 @@ func OpenWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 			_ = unlock()
 		}
 	}()
+	if fresh {
+		// Reserve under the same state lease as every saved-device operation,
+		// before parsing or constructing any endpoint that could reuse state.
+		if err := ReserveNewExitState(config); err != nil {
+			return nil, err
+		}
+	}
 	data := compiled.JSON
 	if config.Tailscale != nil && config.Tailscale.AuthKeyEnv != "" {
 		var native object
@@ -424,6 +436,43 @@ func Run(ctx context.Context, config Config, compiled Compiled) error {
 	}
 	<-ctx.Done()
 	return engine.Close()
+}
+
+func validateNewExitFocus(config Config) error {
+	if !ValidExitID(config.Focus) || !config.hasExit(config.Focus) {
+		return errors.New("new device authentication requires a configured additional exit")
+	}
+	return nil
+}
+
+// ReserveNewExitState exclusively claims a new additional device's namespace.
+// The caller must hold this storage owner's saved-state lease. Every existing
+// entry, including an empty directory, logout marker or symlink, rejects Add.
+// Never remove this claim on failure: it prevents an unpublished identity from
+// being reused by a retry or resurrected by ordinary saved-state migration.
+func ReserveNewExitState(config Config) error {
+	if err := validateNewExitFocus(config); err != nil {
+		return err
+	}
+	exits := filepath.Join(config.StateDir, "exits")
+	if err := privateState(exits); err != nil {
+		return err
+	}
+	directory := filepath.Join(exits, config.Focus)
+	if err := privatefs.CreateDir(directory); err != nil {
+		if os.IsExist(err) {
+			return errors.New("the new exit state namespace already exists; choose a new exit ID")
+		}
+		return err
+	}
+	// CreateDir is exclusive and establishes a protected Windows root ACL.
+	// Keep the claim outside tailscale/, whose files the endpoint may remove.
+	marker, err := privatefs.CreateFile(filepath.Join(directory, ".initialized"))
+	if err != nil {
+		return err
+	}
+	_, writeErr := marker.Write([]byte("1\n"))
+	return errors.Join(writeErr, marker.Sync(), marker.Close())
 }
 
 func privateState(path string) error {

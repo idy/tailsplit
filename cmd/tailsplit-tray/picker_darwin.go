@@ -5,7 +5,7 @@ package main
 import (
 	"github.com/idy/tailsplit/internal/tray"
 
-	"github.com/getlantern/systray"
+	systray "github.com/idy/tailsplit/internal/desktoptray"
 )
 
 // Keep one menu item per address so a status refresh cannot accumulate hidden

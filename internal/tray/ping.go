@@ -25,7 +25,7 @@ func (c *Controller) exitPingAvailableLocked(exit string) bool {
 		state := c.snapshot.Exits[exit]
 		available, backend = state.PingAvailable, state.BackendState
 	}
-	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || !available || backend != "Running" {
+	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || c.preparation != nil || !available || backend != "Running" {
 		return false
 	}
 	if c.command == nil {

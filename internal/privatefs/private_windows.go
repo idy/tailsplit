@@ -87,6 +87,30 @@ func EnsureDir(path string, foreign ...string) error {
 	})
 }
 
+// CreateDir exclusively creates a private directory with a protected root ACL.
+// The parent must exist. Never adopt or change an existing entry, even if empty.
+func CreateDir(path string) error {
+	user, err := currentUserSID()
+	if err != nil {
+		return err
+	}
+	descriptor, err := privateDescriptor(user, true)
+	if err != nil {
+		return err
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	attributes := windows.SecurityAttributes{
+		Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor,
+	}
+	if err := windows.CreateDirectory(name, &attributes); err != nil {
+		return &os.PathError{Op: "mkdir", Path: path, Err: err}
+	}
+	return checkPath(path, user, true, true)
+}
+
 func CreateFile(path string) (*os.File, error) {
 	user, err := currentUserSID()
 	if err != nil {
