@@ -354,6 +354,22 @@ The build extracts the upstream shadow-root CSS into a same-origin stylesheet;
 the panel keeps its existing restrictive Content Security Policy. Provenance and
 regeneration instructions are in the vendored README and third-party notices.
 
+### Configuration Recovery
+
+An invalid saved configuration keeps its original diagnostic visible and offers
+Edit YAML and Back up & rebuild in the same banner. The recovery dialog explains
+that it backs up the original file in the same folder, restores desktop defaults,
+discards drafts and resets saved exits and routing rules while retaining device
+login data. Cancel or Escape leaves the file and connection untouched. Confirmed
+recovery disconnects first, including Global protection, then uses the shared
+operation gate and a configuration revision check. It stays disconnected and
+returns to the empty Exit Nodes page with the backup path in a persistent success
+notice. Failed operations retain the original source and a retryable error;
+external revision conflicts offer Reload. The action is absent for valid saved
+configuration, including invalid unsaved drafts of an otherwise valid file.
+Banner actions wrap at compact widths and use existing button, dialog and
+semantic color treatments in English/Chinese and both appearances.
+
 ### Diagnostic Terminal
 
 The log viewport uses the user-selected terminal reference: a fixed deep gray

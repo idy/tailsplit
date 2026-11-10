@@ -8,6 +8,7 @@
     return value?.error_i18n ? { messages: value.error_i18n, message: value.error || '' } : value?.error || '';
   }
   function message(value) {
+    if (value?.key) return t(value.key, value.values);
     const text = value && typeof value === 'object' ? value.messages?.[locale.language] ?? value.message ?? '' : value || '';
     return t(text);
   }
@@ -57,7 +58,7 @@
     saved: '', base: '', draft: '', revision: '', changes: Object.create(null),
     mode: 'form', page: 'connection', section: 'general', valid: false, parsed: false, values: {}, savedValues: {}, savedValid: false, loaded: false,
     dirty: false, busy: false, loading: false, switching: false, validating: false,
-    previewing: false, external: false,
+    previewing: false, external: false, savedError: '',
     generation: 0, previewed: 0, pending: null, timer: null, toastTimer: null,
     customRuleSource: '',
   };
@@ -102,6 +103,7 @@
     $('#notice-title').textContent = t(title);
     $('#notice-detail').textContent = message(detail);
     $('#notice').classList.toggle('error', kind === 'error');
+    $('#notice').classList.toggle('success', kind === 'success');
     $('#notice-reload').hidden = !canReload;
     $('#notice').hidden = false;
   }
@@ -111,6 +113,8 @@
       notice(operationError.title, operationError.detail, 'error', operationError.canReload || state.external);
     } else if (state.external) {
       notice(t('磁盘中的配置已更新'), t('当前草稿仍保留。重新读取最新配置后再保存，避免覆盖其他更改。'), 'warning', true);
+    } else if (state.loaded && !state.savedValid) {
+      notice('配置需要修正', state.savedError || t('请检查 YAML 内容。'));
     } else {
       activeNotice = null;
       $('#notice').hidden = true;
@@ -285,6 +289,10 @@
     $('#discard').disabled = !state.dirty || locked;
     $('#validate').disabled = !state.loaded || sourceMissing || locked || state.validating || state.previewing;
     $('#reload').disabled = locked;
+    $('#notice-edit').hidden = $('#notice-rebuild').hidden = !state.loaded || state.savedValid;
+    $('#notice-edit').disabled = locked || rebuildPending;
+    $('#notice-rebuild').disabled = !canRebuildConfig();
+    $('#notice-rebuild').textContent = t(rebuildPending ? '正在重建…' : '备份并重建配置…');
     $('#save').textContent = state.busy ? t('正在应用…') : t('保存并应用');
     $('#save-state').classList.toggle('dirty', state.dirty);
     $('#save-state').classList.toggle('invalid', (!state.valid || sourceMissing) && state.loaded && !state.previewing);
@@ -344,6 +352,7 @@
     state.revision = doc.revision;
     state.values = state.savedValues = doc.values || {};
     state.savedValid = doc.valid;
+    state.savedError = backendError(doc);
     state.changes = Object.create(null);
     state.valid = doc.valid; state.parsed = doc.parsed;
     state.dirty = false; state.previewing = false; state.external = false; state.loaded = true;
@@ -596,6 +605,47 @@
   $('#reload').addEventListener('click', reload);
   $('#discard').addEventListener('click', reload);
   $('#notice-reload').addEventListener('click', reload);
+  $('#notice-edit').addEventListener('click', () => { showMode('yaml'); showPage('settings'); $('#raw-yaml').focus(); });
+
+  let rebuildPending = false;
+  function canRebuildConfig() {
+    return state.loaded && !state.savedValid && state.revision && !state.external && !isLocked() &&
+      !rebuildPending && !isDesktopBusy() && !quickBusy && !connectionLost;
+  }
+  $('#notice-rebuild').addEventListener('click', async () => {
+    if (!canRebuildConfig()) return;
+    const revision = state.revision, generation = state.generation;
+    let rebuilt = false;
+    const dialog = $('#rebuild-config-dialog');
+    rebuildPending = true; updateActions();
+    try {
+      dialog.returnValue = 'cancel'; dialog.showModal();
+      const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
+      if (answer !== 'rebuild') return;
+      if (state.revision !== revision || state.generation !== generation || state.external || isLocked() || connectionLost || isDesktopBusy()) return;
+      // Confirmation explicitly covers disconnecting and losing Global protection.
+      // The server rechecks inactivity under the app's operation gate.
+      if (desktopLive?.active && !(await desktopAction('disconnect'))) return;
+      if (state.revision !== revision || state.external || connectionLost || desktopLive?.active) return;
+      operationError = null; stateRequest++;
+      state.busy = true; updateActions();
+      try {
+        const doc = await api('config-rebuild', { revision });
+        useDocument(doc);
+        pendingExitPicker = ''; pendingAddedExits.clear();
+        showMode('form'); showPage('connection');
+        notice('配置已重建', { key: '原配置已备份至：{path}。请添加出口并重新配置分流规则。', values: { path: doc.backup_path } }, 'success');
+        rebuilt = true;
+      } catch (error) {
+        if (error.code === 'conflict') state.external = true;
+        operationError = { title: error.code === 'conflict' ? '配置文件已更新' : '无法重建配置', detail: error, canReload: error.code === 'conflict' };
+        clearNotice();
+      } finally { state.busy = false; await refreshState(); }
+    } finally {
+      rebuildPending = false; updateActions();
+      if (rebuilt) $('#add-exit').focus({ preventScroll: true });
+    }
+  });
 
   $('#validate').addEventListener('click', async () => {
     if (isLocked() || state.validating || !(await flushPreview())) return;

@@ -254,6 +254,13 @@ func (c *Controller) ReconfigureChecked(check func(Snapshot) error, update func(
 	err := update()
 	if reconnect {
 		err = errors.Join(err, c.startReconfigured())
+	} else if err == nil {
+		// A repaired configuration is idle; discard an earlier helper failure.
+		c.mu.Lock()
+		if c.command == nil && (c.snapshot.State == "failed" || c.snapshot.State == "stopped" && c.snapshot.Error != "") {
+			c.reset(Snapshot{State: "stopped"})
+		}
+		c.mu.Unlock()
 	}
 	return err
 }

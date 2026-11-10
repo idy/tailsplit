@@ -104,6 +104,9 @@ func requestsEnglish(r *http.Request) bool {
 }
 
 var errorTranslations = map[string]string{
+	"重建配置需要当前文件版本。":                        "Rebuilding requires the current configuration revision.",
+	"请先断开连接，再重建配置。":                        "Disconnect before rebuilding the configuration.",
+	"当前配置有效，无需重建。":                         "The current configuration is valid and does not need rebuilding.",
 	"请选择已发现且已授权的出口节点进行 Ping。":              "Select a discovered, authorized exit node to ping.",
 	"当前无法使用 Tailscale Ping；请先登录并等待设备连接完成。": "Tailscale ping is unavailable; sign in and wait for the device to finish connecting.",
 	"另一项设备操作正在进行，请稍后重试 Ping。":              "Another device operation is in progress; retry the ping when it finishes.",
@@ -136,6 +139,7 @@ var errorPrefixes = []struct{ chinese, english string }{
 	{"无法读取配置文件：", "Could not read the configuration file: "},
 	{"无法读取编辑内容：", "Could not read the edits: "},
 	{"无法应用配置：", "Could not apply the configuration: "},
+	{"无法重建配置：", "Could not rebuild the configuration: "},
 	{"无法保存语言设置：", "Could not save language preferences: "},
 	{"无法保存页面伙伴设置：", "Could not save companion preferences: "},
 }

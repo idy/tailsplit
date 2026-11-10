@@ -76,7 +76,7 @@
   </aside>
   <main class="workspace">
     <div class="workspace-body" id="workspace-body">
-    <div class="notice" id="notice" role="alert" hidden><div><strong id="notice-title"></strong><p id="notice-detail"></p></div><button class="button small" id="notice-reload" hidden>重新读取</button></div>
+    <div class="notice" id="notice" role="alert" hidden><div><strong id="notice-title"></strong><p id="notice-detail"></p></div><div class="notice-actions"><button class="button small" id="notice-edit" hidden>编辑 YAML</button><button class="button small" id="notice-rebuild" hidden>备份并重建配置…</button><button class="button small" id="notice-reload" hidden>重新读取</button></div></div>
     <div class="loading" id="loading"><svg class="icon spinner" aria-hidden="true"><use href="#i-spinner"/></svg>正在读取本机配置…</div>
 
     <section class="app-page connection-page" id="page-connection" aria-label="出口节点列表" hidden>
@@ -210,6 +210,7 @@
 </dialog>
 <dialog id="add-exit-consent-dialog" aria-labelledby="add-exit-consent-title" aria-describedby="add-exit-consent-description"><form method="dialog"><h2 id="add-exit-consent-title">断开全局保护并添加出口？</h2><p id="add-exit-consent-description">添加出口会断开 TailSplit 并关闭全局（Kill-Switch）保护，恢复系统网络，流量可能直连。即使保存或登录失败，也会保持未连接；准备好后请手动重新连接。</p><div class="dialog-actions"><button class="button" value="cancel" autofocus>取消</button><button class="button primary" id="global-loss-confirm" value="add">断开并添加出口</button></div></form></dialog>
 <dialog id="remove-exit-dialog" aria-labelledby="remove-exit-title"><form method="dialog"><h2 id="remove-exit-title">删除这个出口？</h2><p>仅注销该设备并移除其本地出口配置。当前连接将断开并恢复系统网络。原有规则会保留；引用此出口的规则须选择替代出口后才能重新连接。Tailscale 管理后台的设备记录会保留。</p><div class="dialog-actions"><button class="button" value="cancel">取消</button><button class="button primary" value="remove">删除出口</button></div></form></dialog>
+<dialog id="rebuild-config-dialog" aria-labelledby="rebuild-config-title" aria-describedby="rebuild-config-description"><form method="dialog"><h2 id="rebuild-config-title">备份并重建配置？</h2><p id="rebuild-config-description">原配置会备份到同一目录，再恢复默认设置。出口和分流规则需要重新配置，未保存的更改会被放弃。现有设备登录数据不会删除。当前连接会断开，全局（Kill-Switch）保护会关闭并恢复系统网络；完成后保持未连接。</p><div class="dialog-actions"><button class="button" value="cancel" autofocus>取消</button><button class="button primary" value="rebuild">备份并重建</button></div></form></dialog>
 <dialog id="discard-dialog"><form method="dialog"><h2>放弃未保存的更改？</h2><p>重新读取磁盘中的配置，当前草稿将被替换。</p><div class="dialog-actions"><button class="button" value="cancel">继续编辑</button><button class="button primary" value="discard">放弃并重新读取</button></div></form></dialog>
 </body>
 </html>

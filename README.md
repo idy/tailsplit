@@ -158,6 +158,14 @@ on once a gateway is configured. The template has no saved devices or account
 identity. Existing files, including their omitted-field behavior, are preserved.
 The CLI example uses the same portable preferences with an illustrative exit.
 
+If a saved configuration is invalid, its error banner offers **Edit YAML** or
+**Back up & rebuild**. Rebuilding asks for confirmation, backs up the original
+file in the same folder, and restores the new-desktop defaults. It discards
+unsaved edits and resets saved exits and routing rules; device login data is
+retained. An active connection is disconnected first, including Global protection,
+and the app stays disconnected. External file changes block rebuilding until
+reloaded; backup or write failures leave the original configuration intact.
+
 The local configuration page includes a [Peetty](https://github.com/idy/peetty)
 Miru companion that walks and jumps between safe page edges. Drag it to move it,
 or hover for actions. **Settings › General › Page companion** hides or restores

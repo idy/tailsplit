@@ -1587,7 +1587,7 @@ const activeGlobalDocument = () => {
   return initial;
 };
 const activeGlobalSnapshot = () => exitsSnapshot({ active: true, mode: 'tun', state: 'running' });
-const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/action'].includes(request.path));
+const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/config-rebuild', '/api/action'].includes(request.path));
 // Call the listener directly to verify its guards independently of disabled UI.
 const invokeAdd = (app) => app.$('#add-exit').listeners.click[0]();
 const answerAddConsent = (app, answer) => {
@@ -2900,6 +2900,91 @@ test('a configured default with a node retains its bare-Tailnet readiness requir
   assert.equal(app.$('#desktop-connect').disabled, true);
   assert.match(app.$('#desktop-hint').textContent, /登录 Tailscale/);
   assert.ok(!app.$('#default-exit-dialog').open);
+});
+
+test('configuration recovery only appears for invalid saved files and cancel or Escape changes nothing', async () => {
+  const healthy = await page({ desktop: true });
+  assert.ok(healthy.$('#notice-rebuild').hidden);
+  const invalid = { ...doc(), valid: false, error: 'unknown field listen' };
+  for (const answer of ['cancel', '']) {
+    const app = await page({ desktop: true }, '', {}, invalid);
+    assert.ok(!app.$('#notice-rebuild').hidden);
+    assert.equal(app.$('#notice-rebuild').disabled, false);
+    const pending = app.$('#notice-rebuild').emit('click');
+    assert.ok(app.$('#rebuild-config-dialog').open);
+    app.$('#rebuild-config-dialog').returnValue = answer;
+    app.$('#rebuild-config-dialog').close();
+    await pending;
+    assert.equal(mutations(app).length, 0);
+    assert.equal(app.$('#notice-rebuild').disabled, false);
+  }
+});
+
+test('rebuilding invalid configuration backs up through the API and returns to empty exits', async () => {
+  const invalid = { ...doc(), valid: false, parsed: false, error: 'broken YAML' };
+  const app = await page({ desktop: true }, '', {}, invalid);
+  const rebuilt = { ...doc('tailscale: null\n', 'rebuilt'), values: { tailscale: null, exits: [] }, backup_path: '/config/config.yaml.backup-1' };
+  app.override = request => {
+    if (request.path === '/api/config-rebuild') {
+      assert.equal(request.data.revision, 'original');
+      app.config = rebuilt; app.snapshot.revision = 'rebuilt';
+      return response(rebuilt);
+    }
+  };
+  const pending = app.$('#notice-rebuild').emit('click');
+  app.$('#rebuild-config-dialog').returnValue = 'rebuild';
+  app.$('#rebuild-config-dialog').close();
+  await pending;
+  assert.deepEqual(mutations(app).map(request => request.path), ['/api/config-rebuild']);
+  assert.ok(app.$('#notice-rebuild').hidden);
+  assert.ok(!app.$('#page-connection').hidden);
+  assert.equal(app.$('#notice-title').textContent, '配置已重建');
+  assert.match(app.$('#notice-detail').textContent, /config.yaml.backup-1/);
+  app.$('#ui-language').value = 'en';
+  await app.$('#ui-language').emit('change');
+  assert.equal(app.$('#notice-title').textContent, 'Configuration rebuilt');
+  assert.match(app.$('#notice-detail').textContent, /Original configuration backed up to/);
+});
+
+test('rebuild failures retain source and retry while conflicts require reloading', async () => {
+  for (const code of ['rebuild', 'conflict']) {
+    const invalid = { ...doc(), valid: false, error: 'unknown field' };
+    const app = await page({ desktop: true }, '', {}, invalid);
+    app.override = request => request.path === '/api/config-rebuild' ? response({ code, error: 'backup failed' }, false) : undefined;
+    const pending = app.$('#notice-rebuild').emit('click');
+    app.$('#rebuild-config-dialog').returnValue = 'rebuild'; app.$('#rebuild-config-dialog').close();
+    await pending;
+    assert.equal(app.$('#raw-yaml').value, invalid.yaml);
+    assert.match(app.$('#notice-detail').textContent, /backup failed/);
+    assert.equal(app.$('#notice-rebuild').disabled, code === 'conflict');
+    assert.equal(app.$('#notice-reload').hidden, code !== 'conflict');
+  }
+});
+
+test('rebuild explicitly disconnects active Global and never reconnects', async () => {
+  const invalid = { ...doc(), valid: false, error: 'unknown field' };
+  const app = await page({ desktop: true, state: 'running', active: true, mode: 'tun', routing_mode: 'global' }, '', {}, invalid);
+  app.override = request => {
+    if (request.path === '/api/action') { app.snapshot = { ...app.snapshot, active: false, state: 'stopped', mode: '' }; return response({ ok: true }); }
+    if (request.path === '/api/config-rebuild') return response({ code: 'rebuild', error: 'disk full' }, false);
+  };
+  const pending = app.$('#notice-rebuild').emit('click');
+  app.$('#rebuild-config-dialog').returnValue = 'rebuild'; app.$('#rebuild-config-dialog').close();
+  await pending;
+  assert.deepEqual(mutations(app).map(request => request.data.action || request.path), ['disconnect', '/api/config-rebuild']);
+  assert.equal(app.snapshot.active, false);
+  assert.match(app.$('#notice-detail').textContent, /disk full/);
+});
+
+test('a changed file during rebuild confirmation is never overwritten', async () => {
+  const invalid = { ...doc(), valid: false, error: 'unknown field' };
+  const app = await page({ desktop: true }, '', {}, invalid);
+  const pending = app.$('#notice-rebuild').emit('click');
+  app.config = doc('# external fix\n', 'updated'); app.snapshot.revision = 'updated';
+  await app.poll();
+  app.$('#rebuild-config-dialog').returnValue = 'rebuild'; app.$('#rebuild-config-dialog').close();
+  await pending;
+  assert.equal(mutations(app).length, 0);
 });
 
 function pickerNode(app, id) {

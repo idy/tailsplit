@@ -133,6 +133,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/preview", s.preview)
 	mux.HandleFunc("POST /api/validate", s.validate)
 	mux.HandleFunc("POST /api/config", s.save)
+	mux.HandleFunc("POST /api/config-rebuild", s.rebuildConfig)
 	mux.HandleFunc("POST /api/action", s.desktopAction)
 	mux.HandleFunc("POST /api/exit-ping", s.exitPing)
 	mux.HandleFunc("POST /api/exit-remove", s.removeExit)
