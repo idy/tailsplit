@@ -55,7 +55,7 @@ func New(rawURL string, background bool) (*Window, error) {
 	})
 	mygo.App.OnSecondInstance(func([]string, string) { mygo.App.WhenReady(func() { _ = w.Show() }) })
 	mygo.App.OnActivate(func(hasVisible bool) {
-		if !hasVisible && w.everShown.Load() && !w.quitting.Load() {
+		if !hasVisible && w.everShown.Load() && !w.quitting.Load() && !trayPopupOpen() {
 			_ = w.Show()
 		}
 	})
@@ -160,7 +160,9 @@ func (w *Window) createWindow() {
 			w.complete(nil)
 		})
 		w.loadPage(frame, origin)
-		if directory := os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR"); directory != "" {
+		// The tray proof owns focus while exercising transient dismissal. Keep
+		// the full-window proof from racing its open/Escape/outside-click steps.
+		if directory := os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR"); directory != "" && os.Getenv("TAILSPLIT_TRAY_PROOF_DIR") == "" {
 			go func() {
 				if err := verifyWindow(frame, true, directory); err != nil {
 					fmt.Fprintln(os.Stderr, "TailSplit MyGo verification FAILED:", err)

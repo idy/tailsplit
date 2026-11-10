@@ -209,6 +209,11 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if action == "connect" && expectedRevision != "" {
+				if err := tray.CheckConfigRevision(configPath, expectedRevision); err != nil {
+					return err
+				}
+			}
 			if name, exit, ok := strings.Cut(action, ":"); ok {
 				config, err := tailsplit.Load(configPath)
 				if err != nil {
@@ -324,6 +329,9 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		}
 		options.Action = func(ctx context.Context, action string) error {
 			return actionWithRevision(ctx, action, "")
+		}
+		options.Connect = func(ctx context.Context, revision string) error {
+			return actionWithRevision(ctx, "connect", revision)
 		}
 		options.AddExit = func(ctx context.Context, id, revision string) error {
 			return actionWithRevision(ctx, "add-exit:"+id, revision)

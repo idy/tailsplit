@@ -76,6 +76,8 @@ type languageResponseWriter struct {
 	english bool
 }
 
+func (w languageResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // Missing or unsupported headers preserve the original Chinese responses.
 func requestsEnglish(r *http.Request) bool {
 	best, english := -1.0, false

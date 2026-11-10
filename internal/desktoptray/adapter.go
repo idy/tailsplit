@@ -4,16 +4,42 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 
 	"github.com/egoist/mygo"
+	"github.com/idy/tailsplit/internal/desktopwindow"
 )
 
 var runState struct {
 	sync.Mutex
 	started bool
+	popup   *desktopwindow.TrayPopup
+}
+
+// SetPopupURL configures the left-click web popup before Run. The complete URL
+// must target /tray.html on the local panel origin and carry its capability in
+// the fragment. Empty/invalid URLs retain the regular native-menu behavior.
+// Calls after Run starts are ignored.
+func SetPopupURL(rawURL string) {
+	runState.Lock()
+	defer runState.Unlock()
+	if runState.started {
+		return
+	}
+	runState.popup = nil
+	if rawURL == "" {
+		return
+	}
+	popup, err := desktopwindow.NewTrayPopup(rawURL)
+	if err != nil {
+		// Validation errors are secret-free; never log the capability URL.
+		log.Printf("desktoptray: invalid popup URL: %v", err)
+		return
+	}
+	runState.popup = popup
 }
 
 // Run must be called on the main goroutine. The native tray is created in
@@ -27,7 +53,12 @@ func Run(onReady, onExit func()) error {
 		return errors.New("desktoptray: Run called twice")
 	}
 	runState.started = true
+	popup := runState.popup
 	runState.Unlock()
+	// Linux AppIndicator does not expose left/right clicks to applications.
+	if runtime.GOOS == "linux" {
+		popup = nil
+	}
 
 	stop := make(chan struct{})
 	var workerDone chan struct{}
@@ -51,6 +82,12 @@ func Run(onReady, onExit func()) error {
 	}()
 
 	mygo.App.SetName("TailSplit")
+	if popup != nil {
+		// A background launch may have no settings window. Dismissing its only
+		// flyout must not trigger MyGo's default last-window application quit.
+		offAllClosed := mygo.App.OnWindowAllClosed(func() {})
+		defer offAllClosed()
+	}
 	off := mygo.App.OnQuit(finish)
 	defer off()
 	// Finish network teardown while the native loop is still alive. MyGo's
@@ -59,6 +96,9 @@ func Run(onReady, onExit func()) error {
 	var exitReady atomic.Bool
 	var exitStarted sync.Once
 	offBefore := mygo.App.OnBeforeQuit(func(event *mygo.QuitEvent) {
+		if popup != nil {
+			popup.Close()
+		}
 		if exitReady.Load() {
 			return
 		}
@@ -78,17 +118,27 @@ func Run(onReady, onExit func()) error {
 		snap := defaultState.takeSnapshot(allChanged)
 		menu := newMenuRenderer(nil)
 		menu.apply(snap.items)
+		initialMenu := menu.menu
+		if popup != nil {
+			initialMenu = nil
+		}
 		tray, err := mygo.NewTray(mygo.TrayOptions{
 			ID: "TailSplit", Icon: snap.icon, IconIsTemplate: snap.template,
-			ToolTip: snap.tooltip, Menu: menu.menu,
+			ToolTip: snap.tooltip, Menu: initialMenu,
 		})
 		if err != nil {
 			trayErr = fmt.Errorf("desktoptray: create tray: %w", err)
 			mygo.App.Quit()
 			return
 		}
-		menu.setMenu = tray.SetMenu
-		configurePrimaryClick(runtime.GOOS, tray)
+		if popup != nil {
+			// Keep renderer updates detached: a permanent NSStatusItem menu
+			// intercepts left clicks before our popup callback can receive them.
+			configurePopupClicks(tray, menu, func(fallback func()) { popup.Toggle(tray, fallback) }, popup.Close)
+		} else {
+			menu.setMenu = tray.SetMenu
+			configurePrimaryClick(runtime.GOOS, tray)
+		}
 		workerDone = make(chan struct{})
 		go func() {
 			defer close(workerDone)
@@ -113,6 +163,15 @@ func Run(onReady, onExit func()) error {
 		}()
 		if onReady != nil {
 			go onReady()
+		}
+		if directory := os.Getenv("TAILSPLIT_TRAY_PROOF_DIR"); popup != nil && directory != "" {
+			go func() {
+				if err := popup.Verify(tray, directory); err != nil {
+					fmt.Fprintln(os.Stderr, "TailSplit tray verification FAILED:", err)
+				} else {
+					fmt.Fprintln(os.Stderr, "TailSplit tray verification PASSED: capture, reopen and dismissal")
+				}
+			}()
 		}
 	})
 	return errors.Join(mygo.App.Run(), trayErr)
@@ -174,6 +233,25 @@ func configurePrimaryClick(goos string, tray primaryClickTray) {
 	if goos == "windows" {
 		tray.OnClick(tray.PopUpMenu)
 	}
+}
+
+type popupClickTray interface {
+	primaryClickTray
+	OnRightClick(func()) func()
+	SetMenu(*mygo.Menu)
+}
+
+func configurePopupClicks(tray popupClickTray, menu *menuRenderer, toggle func(func()), closePopup func()) {
+	showMenu := func() {
+		closePopup()
+		// Attach only while tracking the native menu. Read the latest renderer
+		// tree each time, including structural/localization changes.
+		tray.SetMenu(menu.menu)
+		defer tray.SetMenu(nil)
+		tray.PopUpMenu()
+	}
+	tray.OnClick(func() { toggle(showMenu) })
+	tray.OnRightClick(showMenu)
 }
 
 // menuRenderer and its MyGo objects are confined to the UI thread. Immutable

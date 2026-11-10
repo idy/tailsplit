@@ -159,31 +159,3 @@ func (d *desktopUpdates) run(action string) error {
 	}
 	return err
 }
-
-func updateMenuTitleForLanguage(state appupdate.State, language string) string {
-	if state.Available && !state.Downloading && !state.Installing && !state.Checking && !state.Confirming {
-		return tray.Translate(language, "升级到 ") + state.LatestVersion + "…"
-	}
-	return tray.Translate(language, updateMenuTitle(state))
-}
-
-func updateMenuTitle(state appupdate.State) string {
-	switch {
-	case state.Confirming:
-		return "等待确认升级…"
-	case state.Downloading:
-		return "正在下载更新…"
-	case state.Installing:
-		return "正在准备升级…"
-	case state.Checking:
-		return "正在检查更新…"
-	case state.Available:
-		return "升级到 " + state.LatestVersion + "…"
-	case state.Error != "":
-		return "检查更新失败，重试…"
-	case !state.LastChecked.IsZero():
-		return "已是最新版本 · 检查更新…"
-	default:
-		return "检查更新…"
-	}
-}
