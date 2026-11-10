@@ -721,7 +721,7 @@
 
   let desktopPending = '';
   let globalConsentPending = false;
-  const isDesktopBusy = () => desktopPending !== '' || globalConsentPending;
+  const isDesktopBusy = () => desktopPending !== '' || globalConsentPending || Boolean(pendingSetupCancel);
   let desktopLive = null;
   let connectionLost = false;
   let quickBusy = false;
@@ -731,6 +731,23 @@
   // Ordinary Add/Sign in never creates this intent and therefore never connects.
   let connectionSetup = null;
   let setupAdvancing = false;
+  let pendingSetupCancel = null;
+  let setupCancelSending = false;
+  let setupCancelError = null;
+  let setupCancelGeneration = 0;
+  const setupCancelKey = 'tailsplit-setup-cancel';
+  function rememberSetupCancel(cancel) {
+    pendingSetupCancel = cancel;
+    try {
+      if (cancel) sessionStorage.setItem(setupCancelKey, JSON.stringify({ token, request: cancel.request }));
+      else sessionStorage.removeItem(setupCancelKey);
+    } catch (_) { /* Cancellation remains pending in this page without storage. */ }
+  }
+  try {
+    const remembered = JSON.parse(sessionStorage.getItem(setupCancelKey) || 'null');
+    if (remembered?.token === token && typeof remembered.request === 'string') pendingSetupCancel = { request: remembered.request };
+    else sessionStorage.removeItem(setupCancelKey);
+  } catch (_) { /* Unavailable or malformed storage cannot restore a cancellation. */ }
   let lastNativeConnect = '';
   try { lastNativeConnect = sessionStorage.getItem('tailsplit-connect-request') || ''; } catch (_) {}
   let stateRequest = 0;
@@ -859,6 +876,8 @@
     forgetBrowserConnect(request);
   }
   async function consumeNativeConnect() {
+    if (pendingSetupCancel) return;
+    const generation = setupCancelGeneration;
     const request = desktopLive?.connect_request;
     // MyGo owns ordinary native requests. A browser may handle only the exact
     // intent placed in the URL when the host explicitly opened its fallback.
@@ -867,12 +886,13 @@
     if (!connectionSetup && !(networkActive() && desktopLive.state === 'running') && (isLocked() || isDesktopBusy() || desktopLive.active)) return;
     try {
       const result = await api('connect-request', { request });
+      if (generation !== setupCancelGeneration || pendingSetupCancel) return;
       if (!result.claimed) { forgetBrowserConnect(request); return; }
     } catch (error) {
-      if (request !== lastNativeConnect) notice('操作未完成', message(error));
+      if (generation === setupCancelGeneration && !pendingSetupCancel && request !== lastNativeConnect) notice('操作未完成', message(error));
       return;
     }
-    if (request === lastNativeConnect) return; // Cancellation may finish while the claim is in flight.
+    if (request === lastNativeConnect) return; // Another consumer in this page may already have handled it.
     markNativeConnectHandled(request);
     if (connectionSetup || networkActive()) return;
     showPage('connection');
@@ -902,38 +922,57 @@
     const manualService = live.error_code === 'service-setup-required';
     const setup = connectionSetup;
     const panel = $('#connection-setup');
-    panel.hidden = !setup && !service && !serviceError;
+    panel.hidden = !setup && !service && !serviceError && !pendingSetupCancel;
     if (panel.hidden) return;
-    const failed = setup?.stage === 'failed' || serviceError;
+    const failed = pendingSetupCancel ? Boolean(setupCancelError) : setup?.stage === 'failed' || serviceError;
     const checkingApproval = setup?.stage === 'approval' && live.active;
     const approvalRetry = setup?.stage === 'approval' && !live.active;
     const approval = setup?.stage === 'approval' || sessionNeedsApproval(live);
     const approvalError = setup?.approvalError || (live.state === 'failed' ? backendError(live) : '');
-    const title = failed ? serviceError ? '后台服务需要安装或更新' : '连接设置未完成' : service ? '需要安装或更新后台服务' :
+    const title = pendingSetupCancel ? '正在取消连接' : failed ? serviceError ? '后台服务需要安装或更新' : '连接设置未完成' : service ? '需要安装或更新后台服务' :
       checkingApproval ? '正在检查设备批准状态' : approval ? '等待管理员批准设备' : setup?.stage === 'node' ? '选择节点后即可连接' : setup?.stage === 'connecting' ? '正在连接 TailSplit' : '正在设置出口';
-    const detail = failed ? manualService ? '请重新运行 TailSplit 安装程序修复 Windows 后台服务，完成后再重试连接。' : setup?.error || backendError(live) : service ? '请完成已打开的系统安装器，应用会继续这次操作。可以取消，稍后重试。' :
+    const detail = pendingSetupCancel ? [message(setupCancelError), t('取消尚未确认；恢复连接后会自动重试，也可以再次取消。')].filter(Boolean).join(' ') : failed ? manualService ? '请重新运行 TailSplit 安装程序修复 Windows 后台服务，完成后再重试连接。' : setup?.error || backendError(live) : service ? '请完成已打开的系统安装器，应用会继续这次操作。可以取消，稍后重试。' :
       checkingApproval ? '正在刷新设备状态，不会重新发起登录。' : approval ? approvalError || (approvalRetry ? t('设备获批后，点击“检查批准状态”以继续连接。') : approvalHelp()) : setup?.stage === 'node' ? '选择一个在线节点并确认；应用会保存出口并继续这次连接。' :
       setup?.stage === 'connecting' ? '正在使用已确认的出口连接。' : '正在准备设备授权。完成浏览器登录后会自动打开节点选择，再继续连接。';
     setStatusText('#connection-setup-title', t(title));
     setStatusText('#connection-setup-detail', message(detail));
     panel.classList.toggle('error', failed);
-    $('#connection-setup-retry').hidden = !failed && !approvalRetry;
+    $('#connection-setup-retry').hidden = Boolean(pendingSetupCancel) || !failed && !approvalRetry;
     setStatusText('#connection-setup-retry', t(approvalRetry ? '检查批准状态' : serviceError ? '安装服务并继续连接' : '重试连接'));
     $('#connection-setup-retry').disabled = isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || !state.savedValid || networkActive();
-    $('#connection-setup-cancel').hidden = !setup && !live.active;
-    $('#connection-setup-cancel').disabled = isDesktopBusy() || quickBusy || connectionLost;
-    setStatusText('#connection-setup-cancel', t(failed && !live.active ? '关闭' : '取消连接'));
+    $('#connection-setup-cancel').hidden = !setup && !live.active && !pendingSetupCancel;
+    $('#connection-setup-cancel').disabled = !live.desktop || setupCancelSending;
+    setStatusText('#connection-setup-cancel', t(pendingSetupCancel && !setupCancelSending ? '重试取消' : failed && !live.active ? '关闭' : '取消连接'));
+  }
+  async function dispatchSetupCancel() {
+    if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
+    const cancel = pendingSetupCancel;
+    setupCancelSending = true; setupCancelError = null;
+    operationError = null; clearNotice(); stateRequest++;
+    renderConnectionCenter();
+    try {
+      // Stop is independent of ordinary action locks and the last state-poll
+      // result. Only the server's acknowledgment makes this intent handled.
+      await api('action', { action: 'disconnect', ...(cancel.request ? { connect_request: cancel.request } : {}) });
+      if (cancel.request) markNativeConnectHandled(cancel.request);
+      // An earlier action/save can still finish after Stop. Keep the cancel
+      // recoverable until it settles, then stop once more before accepting work.
+      if (!desktopPending && !quickBusy) rememberSetupCancel(null);
+      return !pendingSetupCancel;
+    } catch (error) {
+      setupCancelError = error;
+      return false;
+    } finally { setupCancelSending = false; renderConnectionCenter(); }
   }
   async function cancelConnectionSetup() {
     const request = desktopLive?.connect_request;
     const canceledRequest = request && (mygoWindow || browserConnectRequest === request) ? request : '';
-    // Suppress this page's intent immediately. Disconnect also acknowledges the
-    // exact ID on the server, without depending on a separate claim HTTP call.
-    if (canceledRequest) markNativeConnectHandled(canceledRequest);
+    setupCancelGeneration++;
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
     if (exitDialog.open) exitDialog.close();
-    if (desktopLive?.active || canceledRequest) await desktopAction('disconnect', '', canceledRequest);
+    if (!pendingSetupCancel && (desktopLive?.active || canceledRequest || desktopPending || quickBusy)) rememberSetupCancel({ request: canceledRequest });
+    if (await dispatchSetupCancel()) await refreshState();
     renderConnectionCenter();
   }
   async function beginConnectionSetup(exit = '') {
@@ -1209,10 +1248,10 @@
     ]);
     const requiredBlocked = mode === 'split' && records.some(exit => exit.id !== connectionExitRecord()?.id && referencedExits.has(exit.id) && exit.exit_node && exitLive(exit.id).backend_state === 'NeedsLogin');
     $('#desktop-controls').hidden = !live.desktop || state.page === 'home';
-    $('#desktop-connect').hidden = Boolean(live.active);
-    $('#desktop-disconnect').hidden = !live.active;
+    $('#desktop-connect').hidden = Boolean(live.active || pendingSetupCancel);
+    $('#desktop-disconnect').hidden = !live.active && !pendingSetupCancel;
     $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || (!needsDefaultChoice && requiredBlocked) || Boolean(connectionSetup && connectionSetup.stage !== 'failed');
-    $('#desktop-disconnect').disabled = !live.desktop || isDesktopBusy() || quickBusy || connectionLost;
+    $('#desktop-disconnect').disabled = !live.desktop || setupCancelSending;
     $('#desktop-disconnect').setAttribute('aria-checked', String(connected));
     $('#desktop-disconnect').title = connected ? t('断开') : t('取消');
     $('#desktop-disconnect').setAttribute('aria-label', $('#desktop-disconnect').title);
@@ -1556,7 +1595,7 @@
   }
   $('#apply-connection-change').addEventListener('click', applyConnectionChanges);
   $('#apply-exit-picker').addEventListener('click', applyConnectionChanges);
-  async function desktopAction(action, exit = '', connectRequest = '') {
+  async function desktopAction(action, exit = '') {
     if (isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop) return false;
     const login = action === 'login' || action === 'login-exit';
     const owner = desktopLive.focus || (networkActive() ? connectionExitRecord()?.id : '') || 'main';
@@ -1572,7 +1611,7 @@
     desktopPending = action;
     renderConnectionCenter();
     try {
-      await api('action', { action, ...(exit ? { exit } : {}), ...(connectRequest ? { connect_request: connectRequest } : {}), ...(['add-exit', 'connect'].includes(action) ? { revision: state.revision } : {}) });
+      await api('action', { action, ...(exit ? { exit } : {}), ...(['add-exit', 'connect'].includes(action) ? { revision: state.revision } : {}) });
       return true;
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
@@ -1818,7 +1857,7 @@
     }
   });
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () =>
-    button.dataset.desktopAction === 'connect' ? connectWithExit() : button.dataset.desktopAction === 'disconnect' && connectionSetup ? cancelConnectionSetup() : desktopAction(button.dataset.desktopAction)));
+    button.dataset.desktopAction === 'connect' ? connectWithExit() : button.dataset.desktopAction === 'disconnect' ? cancelConnectionSetup() : desktopAction(button.dataset.desktopAction)));
   $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
   const logColors = ['muted', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'default'];
   function logRGBColor(red, green, blue) {
@@ -2235,7 +2274,7 @@
     const matchingState = Boolean(live.active_revision) && live.active_revision === state.revision;
     const blocked = !connectionLost && live.active && global && live.state === 'blocked';
     const setup = connectionSetup;
-    const working = Boolean(live.active || setup && setup.stage !== 'failed');
+    const working = Boolean(live.active || pendingSetupCancel || setup && setup.stage !== 'failed');
     const error = connectionLost || live.state === 'failed' || setup?.stage === 'failed';
     const records = configuredExits();
     const first = records.length === 0 && requiresDefaultExit(state.savedValues);
@@ -2245,12 +2284,12 @@
       discovering: '正在读取出口', stopping: '正在断开', 'logging-out': '正在退出登录',
       'waiting-exit': '等待出口上线', 'missing-exit': '正在确认出口',
     };
-    const title = connectionLost ? '页面连接中断' : !state.savedValid ? '配置需要修正' : blocked ? '出口不可用 · 已阻断' :
+    const title = pendingSetupCancel ? '正在取消连接' : connectionLost ? '页面连接中断' : !state.savedValid ? '配置需要修正' : blocked ? '出口不可用 · 已阻断' :
       error ? '连接尚未完成' : connected ? '已连接' : sessionNeedsApproval(live) ? '等待管理员批准设备' :
       setup?.stage === 'node' ? '选择节点后即可连接' : working ? labels[live.state] || '正在设置出口' :
       first ? '准备好第一次连接' : '尚未连接';
     setStatusText('#home-status', t(title));
-    let description = !state.savedValid ? t('请先修复配置，再开启连接。') : state.dirty ? t('请先保存配置，再连接。') : state.external ? t('配置已更改，请重新读取后再连接。') :
+    let description = pendingSetupCancel ? $('#connection-setup-detail').textContent : !state.savedValid ? t('请先修复配置，再开启连接。') : state.dirty ? t('请先保存配置，再连接。') : state.external ? t('配置已更改，请重新读取后再连接。') :
       connectionLost ? t('请确认 TailSplit 仍在运行') : blocked ? t('全局模式正在阻断流量。手动断开会恢复系统网络。') :
       error ? message(setup?.error || operationError?.detail || backendError(live)) || t('当前步骤未完成，请重试。') :
       connected ? !matchingState ? t('已保存的配置尚未应用；当前连接仍使用之前的配置。') : t(global ? '全局流量通过所选出口；出口不可用时阻断。' : '按已保存规则分流；直连与出口各走各的路径。') :
@@ -2302,8 +2341,8 @@
   }
   async function homeConnectionAction() {
     if ($('#home-connect').disabled) return;
-    if (desktopLive?.active || connectionSetup && connectionSetup.stage !== 'failed') {
-      if (connectionSetup) await cancelConnectionSetup(); else await desktopAction('disconnect');
+    if (desktopLive?.active || pendingSetupCancel || connectionSetup && connectionSetup.stage !== 'failed') {
+      await cancelConnectionSetup();
     } else if (connectionSetup?.stage === 'failed') {
       const id = configuredExits().some(exit => exit.id === connectionSetup.exit) ? connectionSetup.exit : connectionExitRecord()?.id || '';
       await beginConnectionSetup(id);
@@ -2380,7 +2419,11 @@
       if (request !== stateRequest) return;
       connectionLost = true;
       renderConnectionCenter();
-    } finally { await consumeNativeConnect(); await advanceConnectionSetup(); }
+    } finally {
+      if (pendingSetupCancel) {
+        if (!connectionLost && await dispatchSetupCancel()) await refreshState();
+      } else { await consumeNativeConnect(); await advanceConnectionSetup(); }
+    }
   }
 
   let languagePreference = 'auto';

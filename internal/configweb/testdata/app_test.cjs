@@ -121,7 +121,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   });
   $('#window-controls').hidden = true;
   const app = { $, requests, messages, windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
-    language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: () => undefined };
+    language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: localeOptions.override || (() => undefined) };
   const document = {
     documentElement: new Element(), hidden: false, querySelector: $, createElement: (tag) => { const element = new Element(); element.tagName = tag; return element; },
     createElementNS: (_namespace, tag) => { const element = new Element(); element.tagName = tag; return element; },
@@ -3420,6 +3420,184 @@ test('an in-flight native claim cannot resume setup after cancellation', async (
     assert.equal(app.$('#connection-setup').hidden, true);
     assert.equal(app.$('#notice').hidden, true, 'a late canceled claim failure cannot replace the cancellation result');
   }
+});
+
+test('cancellation dispatches during an in-flight setup action and stops a late helper again', async () => {
+  const app = await page({ desktop: true }, 'mygo-windows', { page: 'home' }, guidedDocument());
+  guidedBackend(app, { deferAdd: true });
+  const backend = app.override;
+  const add = deferred();
+  app.override = request => {
+    if (request.path === '/api/action' && request.data.action === 'add-exit') {
+      const result = backend(request);
+      return add.promise.then(() => {
+        Object.assign(app.snapshot, { active: true, state: 'authorizing', mode: 'login' });
+        return result;
+      });
+    }
+    if (request.path === '/api/action' && request.data.action === 'disconnect' && request.data.connect_request === app.snapshot.connect_request) app.snapshot.connect_request = '';
+    return backend(request);
+  };
+  const start = app.$('#home-setup').emit('click');
+  await settle();
+  app.snapshot.connect_request = 'cancel-busy-action';
+  assert.equal(app.$('#connection-setup-cancel').disabled, false);
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1, 'Stop must dispatch before Add returns');
+  assert.equal(JSON.parse(app.storage.get('tailsplit-setup-cancel')).request, 'cancel-busy-action', 'retain cancellation while earlier work can still start');
+  add.resolve();
+  await start;
+  assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect', 'disconnect']);
+  assert.equal(app.snapshot.active, false);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+  assert.equal(app.$('#connection-setup').hidden, true);
+});
+
+test('cancellation dispatches during a node save and prevents its late result from connecting', async () => {
+  const app = await page({ desktop: true }, 'mygo-windows', {}, guidedDocument());
+  guidedBackend(app);
+  await app.$('#desktop-connect').emit('click');
+  await pickerNode(app, '100.101.0.11').choice.emit('click');
+  const backend = app.override;
+  const save = deferred();
+  app.override = request => {
+    if (request.path === '/api/config' && request.method === 'POST') return save.promise.then(() => backend(request));
+    if (request.path === '/api/action' && request.data.action === 'disconnect' && request.data.connect_request === app.snapshot.connect_request) app.snapshot.connect_request = '';
+    return backend(request);
+  };
+  const apply = app.$('#apply-exit-picker').emit('click');
+  await settle();
+  app.snapshot.connect_request = 'cancel-busy-save';
+  assert.equal(app.$('#connection-setup-cancel').disabled, false);
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+  save.resolve();
+  await apply;
+  assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 2);
+  assert.equal(mutations(app).some(r => r.data.action === 'connect'), false);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('cancellation sends despite lost state polling and retries after reconnection', async () => {
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', connect_request: 'cancel-offline' }, '',
+    { page: 'home', hash: '#token=fixture&connect=cancel-offline' }, guidedDocument());
+  let offline = true;
+  app.override = request => {
+    if (offline && request.path === '/api/state') return response({ error: 'state unavailable' }, false);
+    if (request.path !== '/api/action') return undefined;
+    assert.deepEqual(request.data, { action: 'disconnect', connect_request: 'cancel-offline' });
+    if (offline) return response({ error: 'disconnect unavailable' }, false);
+    Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '', connect_request: '' });
+    return response({ ok: true });
+  };
+  await app.poll();
+  assert.equal(app.$('#home-status').textContent, '页面连接中断');
+  assert.equal(app.$('#home-connect').disabled, false, 'Cancel remains usable after a state failure');
+  await app.$('#home-connect').emit('click');
+  assert.equal(mutations(app).length, 1, 'a lost poll cannot suppress the disconnect request');
+  assert.equal(JSON.parse(app.storage.get('tailsplit-browser-connect')).request, 'cancel-offline');
+  assert.equal(JSON.parse(app.storage.get('tailsplit-setup-cancel')).request, 'cancel-offline');
+  assert.equal(app.storage.has('tailsplit-connect-request'), false, 'failed cancellation has not been acknowledged');
+  assert.equal(app.$('#connection-setup-cancel').textContent, '重试取消');
+  offline = false;
+  await app.poll();
+  assert.equal(mutations(app).length, 2);
+  assert.equal(app.snapshot.active, false);
+  assert.equal(app.snapshot.connect_request, '');
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+  assert.equal(app.storage.has('tailsplit-browser-connect'), false);
+  assert.equal(app.requests.some(r => r.path === '/api/connect-request'), false);
+});
+
+test('failed cancellation survives a reload and retries Stop before considering Connect', async () => {
+  for (const id of ['', 'cancel-reload']) {
+    const storage = new Map([
+      ['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: id })],
+      ...(id ? [['tailsplit-browser-connect', JSON.stringify({ token: 'fixture', request: id })]] : []),
+    ]);
+    const snapshot = { desktop: true, active: false, state: 'stopped', connect_request: id };
+    const failed = await page(snapshot, '', { page: 'home', storage, override: request => request.path === '/api/action' ? response({ error: 'still offline' }, false) : undefined }, guidedDocument());
+    assert.ok(mutations(failed).length > 0);
+    assert.ok(mutations(failed).every(r => r.data.action === 'disconnect'), 'each retry must stop rather than restart setup');
+    assert.equal(failed.requests.some(r => r.path === '/api/connect-request'), false);
+    assert.equal(storage.has('tailsplit-setup-cancel'), true);
+    const reloaded = await page(snapshot, '', { page: 'home', storage, override: request => {
+      if (request.path === '/api/state') return response(snapshot);
+      if (request.path === '/api/action') {
+        assert.deepEqual(request.data, { action: 'disconnect', ...(id ? { connect_request: id } : {}) });
+        snapshot.connect_request = '';
+        return response({ ok: true });
+      }
+    } }, guidedDocument());
+    assert.deepEqual(mutations(reloaded).map(r => r.data.action), ['disconnect']);
+    assert.equal(reloaded.requests.some(r => r.path === '/api/connect-request'), false);
+    assert.equal(storage.has('tailsplit-setup-cancel'), false);
+    assert.equal(storage.has('tailsplit-browser-connect'), false);
+    assert.equal(reloaded.$('#connection-setup').hidden, true);
+    const other = await page(snapshot, 'mygo-windows', { storage: new Map() }, reloaded.config);
+    assert.equal(mutations(other).length, 0, 'a fresh panel cannot replay the canceled intent');
+  }
+});
+
+test('late claim results cannot clear cancellation markers before Stop acknowledges', async () => {
+  for (const claimed of [false, true]) {
+    const app = await page({ desktop: true }, 'mygo-windows', { page: 'home' }, guidedDocument());
+    guidedBackend(app, { deferAdd: true });
+    await app.$('#home-setup').emit('click');
+    const backend = app.override;
+    const claim = deferred(), stop = deferred();
+    app.snapshot.connect_request = 'cancel-before-ack';
+    app.override = request => {
+      if (request.path === '/api/connect-request') return claim.promise;
+      if (request.path === '/api/action' && request.data.action === 'disconnect') return stop.promise.then(() => {
+        app.snapshot.connect_request = '';
+        return backend(request);
+      });
+      return backend(request);
+    };
+    const poll = app.poll();
+    await settle();
+    const cancel = app.$('#connection-setup-cancel').emit('click');
+    await settle();
+    claim.resolve(response({ claimed }));
+    await poll;
+    assert.equal(JSON.parse(app.storage.get('tailsplit-setup-cancel')).request, 'cancel-before-ack');
+    assert.equal(app.storage.has('tailsplit-connect-request'), false, 'a late claim cannot acknowledge an unfinished cancellation');
+    await app.$('#connection-setup-cancel').emit('click');
+    assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1, 'only one Stop may be in flight');
+    stop.resolve();
+    await cancel;
+    assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+    assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect']);
+  }
+});
+
+test('restored cancellations are capability-scoped and preserve a newer explicit Connect request', async () => {
+  const foreignStorage = new Map([['tailsplit-setup-cancel', JSON.stringify({ token: 'other-panel', request: 'old' })]]);
+  const ordinary = await page({ desktop: true, connect_request: 'old' }, '', { page: 'home', storage: foreignStorage }, guidedDocument());
+  assert.equal(mutations(ordinary).length, 0);
+  assert.equal(foreignStorage.has('tailsplit-setup-cancel'), false);
+  const storage = new Map([
+    ['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: 'old-canceled-click' })],
+    ['tailsplit-browser-connect', JSON.stringify({ token: 'fixture', request: 'new-click' })],
+  ]);
+  const snapshot = { desktop: true, active: false, state: 'stopped', connect_request: 'new-click' };
+  const app = await page(snapshot, '', { page: 'home', storage, override: request => {
+    if (request.path === '/api/state') return response(snapshot);
+    if (request.path === '/api/action' && request.data.action === 'disconnect') {
+      assert.equal(request.data.connect_request, 'old-canceled-click');
+      assert.equal(snapshot.connect_request, 'new-click');
+      return response({ ok: true });
+    }
+    if (request.path === '/api/connect-request') {
+      assert.equal(request.data.request, 'new-click');
+      snapshot.connect_request = '';
+      return response({ claimed: true });
+    }
+  } }, guidedDocument());
+  assert.deepEqual(mutations(app).map(r => r.data.action), ['disconnect', 'add-exit']);
+  assert.equal(storage.has('tailsplit-setup-cancel'), false);
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {
