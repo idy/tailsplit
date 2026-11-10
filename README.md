@@ -79,6 +79,27 @@ Retry actions. Cancel or Escape drops the pending connection; failed saves and
 unrelated configuration revisions never start traffic. Settings drafts must be
 resolved first.
 
+Click the menu-bar or tray icon for a compact popup with connection status,
+a connect/disconnect switch, and read-only routing mode and traffic exit details. Open
+TailSplit from the popup to manage exits and settings; clicking outside, pressing
+Escape or clicking the tray icon again dismisses it. Right-click the icon for a
+minimal native menu with Open, connection status, Connect/Disconnect and Quit.
+The popup follows the app's language and system appearance. It shows the actual
+running traffic device, including an additional exit when the primary is signed out.
+Its Connect action checks the displayed configuration revision before starting;
+configuration changes require a refresh. Explicit Connect keeps the same traffic
+helper waiting through any required browser authorization and continues after
+sign-in; automatic startup never opens that browser. Valid direct-only Split
+policies can connect without a default gateway or signing in to optional devices. On macOS, if the local panel cannot start,
+the native menu offers **Edit Configuration**. The full window's **TailSplit**
+application menu and native fallback menu retain **Uninstall Network Service**,
+which finishes connection cleanup before opening the bundled removal installer,
+even when the panel cannot open. Each connection snapshot holds an OS file lock
+for its lifetime. On the next launch, snapshots with released locks are reclaimed
+even if an old PID has been reused; locked snapshots, unrecognized files and links
+are preserved. Snapshot creation and cleanup share a short directory lock so an
+in-progress write cannot be mistaken for an orphan.
+
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
 traffic if its exit goes offline; Rule-based restores Split without deleting

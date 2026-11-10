@@ -9,7 +9,7 @@ import (
 
 // ConfigureApplication retains the installed macOS app's application/edit/window
 // menu structure and shortcuts. Business tray menus are owned by desktoptray.
-func ConfigureApplication(language string, about func()) {
+func ConfigureApplication(language string, about func(), uninstallService ...func()) {
 	mygo.App.SetLocale(language)
 	if runtime.GOOS != "darwin" {
 		return
@@ -23,12 +23,18 @@ func ConfigureApplication(language string, about func()) {
 			about()
 		}
 	}}
+	applicationItems := []*mygo.MenuItem{aboutItem}
+	if len(uninstallService) > 0 && uninstallService[0] != nil {
+		applicationItems = append(applicationItems, &mygo.MenuItem{
+			Label: text("卸载后台服务…"),
+			Click: func(*mygo.MenuItem, *mygo.Window) { uninstallService[0]() },
+		})
+	}
+	applicationItems = append(applicationItems, mygo.Separator(), item("隐藏 TailSplit", mygo.RoleHide),
+		item("隐藏其他", mygo.RoleHideOthers), item("全部显示", mygo.RoleUnhide),
+		mygo.Separator(), item("退出 TailSplit", mygo.RoleQuit))
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-		{Label: "TailSplit", Submenu: []*mygo.MenuItem{
-			aboutItem, mygo.Separator(), item("隐藏 TailSplit", mygo.RoleHide),
-			item("隐藏其他", mygo.RoleHideOthers), item("全部显示", mygo.RoleUnhide),
-			mygo.Separator(), item("退出 TailSplit", mygo.RoleQuit),
-		}},
+		{Label: "TailSplit", Submenu: applicationItems},
 		{Label: text("编辑"), Submenu: []*mygo.MenuItem{
 			item("撤销", mygo.RoleUndo), item("重做", mygo.RoleRedo), mygo.Separator(),
 			item("剪切", mygo.RoleCut), item("拷贝", mygo.RoleCopy), item("粘贴", mygo.RolePaste),

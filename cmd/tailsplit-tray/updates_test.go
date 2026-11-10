@@ -299,9 +299,6 @@ func TestDesktopUpdatePublishesConfirmationDownloadAndInstallPhases(t *testing.T
 	if confirmedVersion != "0.8.0" || state.LatestVersion != confirmedVersion {
 		t.Fatalf("confirmation did not use the refreshed version: confirmed=%s state=%+v", confirmedVersion, state)
 	}
-	if title := updateMenuTitle(state); title != "等待确认升级…" {
-		t.Fatal("confirmation presented as another update phase:", title)
-	}
 	for _, action := range []string{"check", "install", "automatic-on", "automatic-off"} {
 		if err := d.action(context.Background(), action); !errors.Is(err, configweb.ErrBusy) {
 			t.Fatalf("%s accepted while confirmation was blocked: %v", action, err)

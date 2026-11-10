@@ -45,8 +45,11 @@ type Options struct {
 	Snapshot   func() tray.Snapshot
 	// Apply must run check against its current snapshot under the same operation
 	// gate as update, before stopping a helper or changing the saved document.
-	Apply        func(context.Context, func(tray.Snapshot) error, func() error) error
-	Action       func(context.Context, string) error
+	Apply  func(context.Context, func(tray.Snapshot) error, func() error) error
+	Action func(context.Context, string) error
+	// Connect rechecks the displayed revision under the desktop operation gate
+	// before starting either authentication or traffic.
+	Connect      func(context.Context, string) error
 	AddExit      func(context.Context, string, string) error
 	RemoveExit   func(context.Context, string, string) error
 	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)
@@ -54,6 +57,9 @@ type Options struct {
 	Startup      func() bool
 	UpdateState  func() appupdate.State
 	UpdateAction func(context.Context, string) error
+	// Popup actions only reveal the retained window or request normal app cleanup.
+	OpenPanel func()
+	Quit      func()
 }
 
 type Server struct {
@@ -119,6 +125,9 @@ func Start(options Options) (*Server, error) {
 // The capability stays in the fragment, so it is not sent in HTTP request URLs.
 func (s *Server) URL() string { return "http://" + s.address + "/#token=" + s.token }
 
+// PopupURL shares the panel's capability without putting it in request URLs.
+func (s *Server) PopupURL() string { return "http://" + s.address + "/tray.html#token=" + s.token }
+
 func (s *Server) Close() error { return s.server.Close() }
 
 func (s *Server) handler() http.Handler {
@@ -172,6 +181,7 @@ func (s *Server) handler() http.Handler {
 		}
 		switch r.URL.Path {
 		case "/", "/app.js", "/i18n.js", "/select.js", "/style.css", "/companion.js",
+			"/tray.html", "/tray.js", "/tray.css",
 			"/vendor/peetty/peetty.global.js", "/vendor/peetty/peetty.css", "/vendor/peetty/LICENSE.txt",
 			"/fonts/montserrat-latin.woff2", "/fonts/monda-latin.woff2",
 			"/fonts/lato-regular-latin.woff2", "/fonts/lato-bold-latin.woff2",
@@ -300,7 +310,10 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		"ping_available": s.options.PingExit != nil && snapshot.PingAvailable,
 		"startup":        s.options.Startup != nil && s.options.Startup(),
 		"exits":          exitStates(snapshot), "focus": snapshot.Focus,
-		"traffic": activeTraffic(snapshot),
+		"traffic":              activeTraffic(snapshot),
+		"traffic_exit":         snapshot.TrafficExit,
+		"open_panel_available": s.options.OpenPanel != nil,
+		"quit_available":       s.options.Quit != nil,
 	}
 	if s.options.UpdateState != nil {
 		state["updates"] = s.options.UpdateState()

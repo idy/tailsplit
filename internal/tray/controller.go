@@ -146,7 +146,11 @@ func New(options Options) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}, nil
+	controller := &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}
+	if err := cleanupConnectionSnapshots(options.ConfigPath); err != nil {
+		controller.RecordDesktopEvent("Could not clean orphaned connection snapshots: " + err.Error())
+	}
+	return controller, nil
 }
 
 func (c *Controller) Snapshot() Snapshot {
@@ -193,6 +197,39 @@ func (c *Controller) TrafficExitID() (string, error) {
 
 func (c *Controller) Start() error {
 	return c.start("proxy", "")
+}
+
+// StartRevision binds an explicit UI connection to the displayed document. The
+// child reads a private snapshot beside the original (preserving relative paths),
+// so an external edit after dispatch cannot change its gateway or routing mode.
+func (c *Controller) StartRevision(expected string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reconfiguring {
+		return tailsplit.ErrPingBusy
+	}
+	data, revision, err := ReadConfigDocument(c.options.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if expected == "" || expected != revision {
+		return ErrConfigChanged
+	}
+	path, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
+	if err != nil {
+		return err
+	}
+	if err := CheckConfigRevision(c.options.ConfigPath, expected); err != nil {
+		cleanup()
+		return err
+	}
+	if err := c.startConfigLocked("proxy", "", path); err != nil {
+		cleanup()
+		return err
+	}
+	done := c.done
+	go func() { <-done; cleanup() }()
+	return nil
 }
 
 // beginReconfigure keeps independent starts and Ping requests out of the gap

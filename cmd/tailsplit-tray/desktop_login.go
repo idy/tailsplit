@@ -49,6 +49,57 @@ type desktopExitLoginController interface {
 	Stop() error
 }
 
+type desktopConnectController interface {
+	Snapshot() tray.Snapshot
+	TrafficExitID() (string, error)
+	Start() error
+	StartRevision(string) error
+}
+
+// The traffic helper owns policy preflight and keeps its connection intent while
+// the selected device authenticates. Cached NeedsLogin on an optional identity
+// must not divert Connect into a separate login-only helper.
+func desktopConnectOperation(controller desktopConnectController, flow *tray.LoginFlow) (func() error, error) {
+	snapshot := controller.Snapshot()
+	if snapshot.Active {
+		return nil, nil
+	}
+	if _, err := controller.TrafficExitID(); err != nil {
+		return nil, err
+	}
+	flow.Cancel()
+	return controller.Start, nil
+}
+
+// Complete on the event loop after Start has cleared stale identity metadata.
+// Only explicit Connect requests use this; automatic startup never opens login.
+func finishDesktopConnect(flow *tray.LoginFlow, err error) error {
+	if err != nil {
+		flow.Cancel()
+		return err
+	}
+	flow.Request()
+	return nil
+}
+
+// checkedDesktopConnectOperation runs on the operation gate and checks again on
+// the worker before starting the traffic helper and its authentication preflight.
+func checkedDesktopConnectOperation(path, revision string, controller desktopConnectController, flow *tray.LoginFlow) (func() error, error) {
+	if err := tray.CheckConfigRevision(path, revision); err != nil {
+		return nil, err
+	}
+	operation, err := desktopConnectOperation(controller, flow)
+	if err != nil || operation == nil {
+		return operation, err
+	}
+	return func() error {
+		if err := tray.CheckConfigRevision(path, revision); err != nil {
+			return err
+		}
+		return controller.StartRevision(revision)
+	}, nil
+}
+
 // splitExitAction reads per-device add, login and logout actions.
 func splitExitAction(action string) (string, string) {
 	name, id, ok := strings.Cut(action, ":")

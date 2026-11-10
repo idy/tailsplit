@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.1
+
+- Replace the nested desktop tray menu with a compact popup showing connection
+  status, a connect/disconnect switch, and read-only routing mode and traffic
+  exit details. Keep Open TailSplit and Quit readily available, with shared
+  English/Chinese language and system appearance.
+- Show the actual traffic device when an additional exit carries the connection;
+  a signed-out primary device no longer produces misleading login or empty-node
+  menu states. Manage exits and detailed settings in the full configuration panel.
+- Dismiss the popup with another tray click, Escape or an outside click without
+  quitting the app. Retain a minimal right-click menu and fall back to it if the
+  popup cannot load or become visible.
+- Bind popup connections to the displayed configuration revision and a private
+  session snapshot. Continue explicit Connect through required authorization,
+  allow valid direct-only policies, and keep optional signed-out identities from
+  forcing a separate login. Preserve recovery actions when configuration reads
+  fail, native configuration editing when the panel cannot start, and the macOS
+  network-service uninstaller in both the application and native fallback menus.
+  Reclaim orphaned private connection snapshots on the next launch after an
+  abrupt exit using lifetime-bound file locks, including after PID reuse, while
+  preserving snapshots that are still in use.
+
 ## 0.9.0
 
 - Replace the macOS and Windows desktop window and tray hosts with MyGo. Preserve

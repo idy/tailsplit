@@ -58,6 +58,19 @@ func ReadConfigDocument(path string) ([]byte, string, error) {
 	return data, fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
+// CheckConfigRevision rejects stale UI intent before a desktop action. Callers
+// repeat it after entering their operation gate and before deferred work starts.
+func CheckConfigRevision(path, expected string) error {
+	_, current, err := ReadConfigDocument(path)
+	if err != nil {
+		return err
+	}
+	if expected == "" || expected != current {
+		return ErrConfigChanged
+	}
+	return nil
+}
+
 // A patch shares one budget across all alias copies and document traversals.
 // Count aliases as work even though they do not themselves allocate a copy.
 const (
@@ -762,12 +775,16 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 // The temporary file remains beside the real config so relative paths retain
 // their meaning. Load applies the same schema checks as the native menu.
 func configCandidate(path string, data []byte) (string, tailsplit.Config, error) {
+	return configCandidatePrefix(path, data, ".tailsplit-config-")
+}
+
+func configCandidatePrefix(path string, data []byte, prefix string) (string, tailsplit.Config, error) {
 	if len(data) > MaxConfigBytes {
 		return "", tailsplit.Config{}, errors.New("configuration exceeds 1 MiB")
 	}
 	// os.CreateTemp's mode does not establish a private Windows ACL. Create
 	// an exclusive random name with the same private-file helper as CLI init.
-	tmp, err := privatefs.CreateFile(filepath.Join(filepath.Dir(path), ".tailsplit-config-"+rand.Text()))
+	tmp, err := privatefs.CreateFile(filepath.Join(filepath.Dir(path), prefix+rand.Text()))
 	if err != nil {
 		return "", tailsplit.Config{}, err
 	}
