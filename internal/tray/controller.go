@@ -49,6 +49,8 @@ type Snapshot struct {
 	AddedExit      string
 	AddedRevision  string
 	ConnectRequest string
+	// OperationID is the immutable identity of the logical setup/connection owner.
+	OperationID string
 	// ActiveRevision identifies the exact source document passed to the traffic
 	// helper. It is empty while no traffic helper owns a session.
 	ActiveRevision string
@@ -141,8 +143,15 @@ type Controller struct {
 	pendingAdd    *pendingExitAddition
 	preparation   *servicePreparation
 
-	activeRevision string // Source document held by the current traffic helper.
-	connectRequest string // Unconsumed native intent, independent of status restores.
+	activeRevision     string            // Source document held by the current traffic helper.
+	connectRequest     string            // Unconsumed native intent, independent of status restores.
+	operationID        string            // Logical owner survives helper exit and internal restarts.
+	canceledOperations map[string]bool   // Lifetime tombstones also cover pre-admission cancellation.
+	requestOperations  map[string]string // Retained native request -> operation binding.
+	revokedRequests    map[string]bool
+	revokedOperations  map[string]bool // Revoked native bindings reject future admission only.
+	stopGeneration     uint64
+	stopCompletion     *stopCompletion
 }
 
 func New(options Options) (*Controller, error) {
@@ -168,6 +177,7 @@ func (c *Controller) Snapshot() Snapshot {
 	snapshot.TrafficExit = c.trafficExit
 	snapshot.ActiveRevision = c.activeRevision
 	snapshot.ConnectRequest = c.connectRequest
+	snapshot.OperationID = c.operationID
 	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
 }
@@ -178,6 +188,10 @@ func (c *Controller) RequestConnectionSetup() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.connectRequest = rand.Text()
+	if c.requestOperations == nil {
+		c.requestOperations = make(map[string]string)
+	}
+	c.requestOperations[c.connectRequest] = c.connectRequest
 }
 
 // ClaimConnectRequest acknowledges one native request before a consumer enters
@@ -185,11 +199,24 @@ func (c *Controller) RequestConnectionSetup() {
 // WebView from replaying the same intent after setup is canceled or disconnected.
 // A stale acknowledgement must never consume a newer native click.
 func (c *Controller) ClaimConnectRequest(request string) bool {
+	return c.ClaimConnectOperation(request, request)
+}
+
+// Preserve the binding after consumption so a delayed claim cannot rebind a
+// revoked native request to a fresh operation and revive canceled setup.
+func (c *Controller) ClaimConnectOperation(request, operation string) bool {
+	if operation == "" {
+		operation = request
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if request == "" || request != c.connectRequest {
+	if request == "" || operation == "" || request != c.connectRequest || c.revokedRequests[request] || c.canceledOperations[request] || c.operationAllowedLocked(operation) != nil {
 		return false
 	}
+	if c.requestOperations == nil {
+		c.requestOperations = make(map[string]string)
+	}
+	c.requestOperations[request] = operation
 	c.connectRequest = ""
 	return true
 }
@@ -226,10 +253,20 @@ func (c *Controller) Start() error {
 // child reads a private snapshot beside the original (preserving relative paths),
 // so an external edit after dispatch cannot change its gateway or routing mode.
 func (c *Controller) StartRevision(expected string) error {
+	return c.startRevision(expected, "")
+}
+
+func (c *Controller) startRevision(expected, operation string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.operationAllowedLocked(operation); err != nil {
+		return err
+	}
 	if c.reconfiguring {
 		return tailsplit.ErrPingBusy
+	}
+	if err := c.checkStartLocked(); err != nil {
+		return err
 	}
 	data, revision, err := ReadConfigDocument(c.options.ConfigPath)
 	if err != nil {
@@ -238,7 +275,11 @@ func (c *Controller) StartRevision(expected string) error {
 	if expected == "" || expected != revision {
 		return ErrConfigChanged
 	}
-	return c.startConnectionLocked("proxy", "", data, expected)
+	if err := c.startConnectionLocked("proxy", "", data, expected); err != nil {
+		return err
+	}
+	c.ownOperationLocked(operation)
+	return nil
 }
 
 // Every traffic helper receives an immutable source document. The revision is
@@ -269,7 +310,7 @@ func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expe
 func (c *Controller) beginReconfigure() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.loggingOut || c.reconfiguring || c.preparation != nil {
+	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || c.preparation != nil {
 		return tailsplit.ErrPingBusy
 	}
 	c.reconfiguring = true
@@ -285,14 +326,19 @@ func (c *Controller) endReconfigure() {
 // Restart is also available after a failed or stopped session. Reconfigure
 // intentionally preserves a disconnected state and cannot implement Retry.
 func (c *Controller) Restart() error {
+	return c.ForOperation("").Restart()
+}
+
+func (o *Operation) Restart() error {
+	c := o.Controller
 	if err := c.beginReconfigure(); err != nil {
 		return err
 	}
 	defer c.endReconfigure()
-	if err := c.Stop(); err != nil {
+	if err := o.Stop(); err != nil {
 		return err
 	}
-	return c.startReconfigured()
+	return c.startReconfigured(o.ID)
 }
 
 // StartLogin authenticates the embedded device, preparing its service if needed, without
@@ -329,27 +375,60 @@ func (c *Controller) Reconfigure(update func() error) error {
 // stopping it. Independent starts cannot change that decision until the update
 // and any internal restart finish. A rejected check leaves the helper untouched.
 func (c *Controller) ReconfigureChecked(check func(Snapshot) error, update func() error) error {
-	if err := c.beginReconfigure(); err != nil {
+	return c.ReconfigureOperation("", check, update)
+}
+
+// A guarded save may inherit an idle setup owner, but cannot take an active
+// connection from another operation. Internal stop/update/restart retains owner.
+func (c *Controller) ReconfigureOperation(operation string, check func(Snapshot) error, update func() error) error {
+	guarded := operation != ""
+	c.mu.Lock()
+	if err := c.operationAllowedLocked(operation); err != nil {
+		c.mu.Unlock()
 		return err
 	}
+	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || c.preparation != nil {
+		c.mu.Unlock()
+		return tailsplit.ErrPingBusy
+	}
+	if operation != "" && operation != c.operationID {
+		if c.command != nil {
+			c.mu.Unlock()
+			return ErrOperationCanceled
+		}
+		c.ownOperationLocked(operation)
+	}
+	operation = c.operationID
+	c.reconfiguring = true
+	before := c.snapshot.clone()
+	before.Active = c.command != nil || c.loggingOut || c.preparation != nil
+	before.OperationID, before.ActiveRevision = c.operationID, c.activeRevision
+	before.TrafficExit, before.ConnectRequest = c.trafficExit, c.connectRequest
+	before.PingAvailable = c.pingAvailableLocked()
+	c.mu.Unlock()
 	defer c.endReconfigure()
-	before := c.Snapshot()
 	if check != nil {
 		if err := check(before); err != nil {
 			return err
 		}
 	}
 	reconnect := before.Active && (before.Mode == "tun" || before.Mode == "proxy")
-	if err := c.Stop(); err != nil {
+	c.mu.Lock()
+	if operation != c.operationID || guarded && c.operationAllowedLocked(operation) != nil {
+		c.mu.Unlock()
+		return ErrOperationCanceled
+	}
+	stop := c.captureStopLocked()
+	c.mu.Unlock()
+	if err := c.waitStopped(stop); err != nil {
 		return err
 	}
 	err := update()
 	if reconnect {
-		err = errors.Join(err, c.startReconfigured())
+		err = errors.Join(err, c.startReconfigured(operation))
 	} else if err == nil {
-		// A repaired configuration is idle; discard an earlier helper failure.
 		c.mu.Lock()
-		if c.command == nil && (c.snapshot.State == "failed" || c.snapshot.State == "stopped" && c.snapshot.Error != "") {
+		if c.operationID == operation && c.command == nil && (c.snapshot.State == "failed" || c.snapshot.State == "stopped" && c.snapshot.Error != "") {
 			c.reset(Snapshot{State: "stopped"})
 		}
 		c.mu.Unlock()
@@ -367,30 +446,49 @@ func (c *Controller) start(mode, focus string) error {
 }
 
 // Only the owner of the reconfiguration gate may bypass the public-start guard.
-func (c *Controller) startReconfigured() error {
+func (c *Controller) startReconfigured(operation string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.startLocked("proxy", "")
+	if c.operationID != operation {
+		return ErrOperationCanceled
+	}
+	if err := c.operationAllowedLocked(operation); err != nil {
+		return err
+	}
+	return c.startOperationLocked("proxy", "", operation)
 }
 
 func (c *Controller) startLocked(mode, focus string) error {
+	return c.startOperationLocked(mode, focus, "")
+}
+
+func (c *Controller) startOperationLocked(mode, focus, operation string) error {
+	if err := c.operationAllowedLocked(operation); err != nil {
+		return err
+	}
 	if err := c.checkStartLocked(); err != nil {
 		return err
 	}
+	var err error
 	if mode == "proxy" || mode == "tun" {
-		data, _, err := ReadConfigDocument(c.options.ConfigPath)
-		if err != nil {
-			return err
+		var data []byte
+		data, _, err = ReadConfigDocument(c.options.ConfigPath)
+		if err == nil {
+			err = c.startConnectionLocked(mode, focus, data, "")
 		}
-		return c.startConnectionLocked(mode, focus, data, "")
+	} else {
+		err = c.startConfigLocked(mode, focus, c.options.ConfigPath)
 	}
-	return c.startConfigLocked(mode, focus, c.options.ConfigPath)
+	if err == nil {
+		c.ownOperationLocked(operation)
+	}
+	return err
 }
 
 // Check the operation gates before touching configuration. A busy helper or
 // scoped Ping retains ownership even if its saved document is missing/changed.
 func (c *Controller) checkStartLocked() error {
-	if c.preparation != nil {
+	if c.preparation != nil || c.stopping {
 		return tailsplit.ErrPingBusy
 	}
 	if c.closed {
@@ -548,7 +646,6 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 				c.snapshot.State, c.snapshot.Mode, c.snapshot.LoginURL = "stopped", "", ""
 			}
 			c.snapshot.Focus = ""
-			c.stopping = false
 		}
 		close(done)
 		c.mu.Unlock()
@@ -578,57 +675,10 @@ func (c *Controller) invalidateDeviceStatuses(routingMode, trafficExit string, t
 
 func (c *Controller) Stop() error {
 	c.mu.Lock()
-	c.stopping = true
-	if c.pingCancel != nil {
-		c.pingCancel()
-	}
-	pingDone := c.pingDone
-	var preparationDone <-chan struct{}
-	if c.preparation != nil {
-		c.preparation.cancel()
-		preparationDone = c.preparation.done
-		c.snapshot.State = "stopping"
-	}
-	command, done, input := c.command, c.done, c.input
-	if command != nil {
-		c.snapshot.State = "stopping"
-	}
+	c.markCanceledLocked(c.operationID)
+	stop := c.captureStopLocked()
 	c.mu.Unlock()
-	// Stop the network session even when a failed Ping is still recovering its
-	// channel. Waiting for Ping first can prevent the active engine from closing.
-	if command != nil {
-		if err := requestProcessStop(command, input); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return err
-		}
-	}
-	timer := time.NewTimer(c.stopWait)
-	defer timer.Stop()
-	for done != nil || pingDone != nil || preparationDone != nil {
-		select {
-		case <-done:
-			done = nil
-		case <-pingDone:
-			pingDone = nil
-		case <-preparationDone:
-			preparationDone = nil
-		case <-timer.C:
-			// The helper owns the saved-state lease until service cleanup is
-			// confirmed. Killing it here would release that lease too early.
-			c.mu.Lock()
-			if c.command == nil {
-				c.stopping = false
-			}
-			c.mu.Unlock()
-			if pingDone != nil {
-				return tailsplit.ErrPingBusy
-			}
-			return errors.New("network service cleanup is still in progress")
-		}
-	}
-	c.mu.Lock()
-	c.stopping = false
-	c.mu.Unlock()
-	return nil
+	return c.waitStopped(stop)
 }
 
 func (c *Controller) Logout() error {
@@ -637,6 +687,10 @@ func (c *Controller) Logout() error {
 
 // LogoutExit signs out one device. Other devices keep their logins.
 func (c *Controller) LogoutExit(id string) error {
+	return c.logoutExit(id, c.Stop)
+}
+
+func (c *Controller) logoutExit(id string, stop func() error) error {
 	focus := id
 	if focus == "" {
 		focus = tailsplit.MainExit
@@ -656,7 +710,7 @@ func (c *Controller) LogoutExit(id string) error {
 		c.loggingOut = false
 		c.mu.Unlock()
 	}()
-	if err := c.Stop(); err != nil {
+	if err := stop(); err != nil {
 		return err
 	}
 	c.mu.Lock()

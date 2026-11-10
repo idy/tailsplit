@@ -304,6 +304,7 @@
     '正在准备设备授权。完成浏览器登录后会自动打开节点选择，再继续连接。': 'Preparing device authorization. After browser sign-in, TailSplit will open the node picker and continue connecting.',
     '安装服务并继续连接': 'Install service & continue connecting',
     '重试连接': 'Retry connection',
+    '操作已取消或被新的操作替代': 'The operation was canceled or replaced.',
     '取消连接': 'Cancel connection',
     '正在取消连接': 'Canceling connection',
     '重试取消': 'Retry cancellation',

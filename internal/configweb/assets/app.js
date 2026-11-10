@@ -720,6 +720,9 @@
   $('#copy-raw').addEventListener('click', copy);
 
   let desktopPending = '';
+  let desktopOperation = '';
+  let quickOperation = '';
+  const newOperationID = () => window.crypto.randomUUID();
   let globalConsentPending = false;
   const isDesktopBusy = () => desktopPending !== '' || globalConsentPending || Boolean(pendingSetupCancel);
   let desktopLive = null;
@@ -736,16 +739,71 @@
   let setupCancelError = null;
   let setupCancelGeneration = 0;
   const setupCancelKey = 'tailsplit-setup-cancel';
+  const sharedCancelPrefix = 'tailsplit-setup-cancel:';
+  let sharedCancelReadable = true;
+  const sharedCancelKeys = cancel => [
+    ...(cancel.request ? [`${sharedCancelPrefix}request:${cancel.request}`] : []),
+    ...(cancel.operation_id ? [`${sharedCancelPrefix}operation:${cancel.operation_id}`] : []),
+  ];
+  function sharedSetupCancel(request, operationID) {
+    sharedCancelReadable = true;
+    for (const key of sharedCancelKeys({ request, operation_id: operationID })) {
+      try {
+        const cancel = JSON.parse(localStorage.getItem(key) || 'null');
+        if (cancel?.token === token && typeof cancel.request === 'string' && typeof cancel.operation_id === 'string' && sharedCancelKeys(cancel).includes(key)) return cancel;
+      } catch (_) { sharedCancelReadable = false; }
+    }
+    return null;
+  }
   function rememberSetupCancel(cancel) {
+    const previous = pendingSetupCancel;
     pendingSetupCancel = cancel;
+    const serialized = cancel ? JSON.stringify({ token, request: cancel.request, operation_id: cancel.operation_id || '' }) : '';
     try {
-      if (cancel) sessionStorage.setItem(setupCancelKey, JSON.stringify({ token, request: cancel.request }));
+      if (cancel) sessionStorage.setItem(setupCancelKey, serialized);
       else sessionStorage.removeItem(setupCancelKey);
     } catch (_) { /* Cancellation remains pending in this page without storage. */ }
+    // Separate keys prevent concurrent tabs from overwriting each other's
+    // cancellations. They survive the originating tab closing before delivery.
+    for (const key of sharedCancelKeys(cancel || previous || {})) {
+      try {
+        if (cancel) localStorage.setItem(key, serialized);
+        else {
+          const stored = JSON.parse(localStorage.getItem(key) || 'null');
+          if (stored?.token === token && stored.request === previous?.request && stored.operation_id === previous?.operation_id) {
+            // Keep the request tombstone: a claim may already have succeeded in
+            // another tab but its response can arrive after cancellation's ack.
+            if (key === `${sharedCancelPrefix}request:${stored.request}`) localStorage.setItem(key, JSON.stringify({ ...stored, acknowledged: true }));
+            else localStorage.removeItem(key);
+          }
+        }
+      } catch (_) { /* Keep retrying from this tab if shared storage is unavailable. */ }
+    }
+  }
+  function adoptSharedSetupCancel() {
+    if (pendingSetupCancel) return true;
+    const cancel = sharedSetupCancel(desktopLive?.connect_request, desktopLive?.operation_id);
+    if (!cancel) return false;
+    if (cancel.operation_id && connectionSetup?.operation_id === cancel.operation_id) {
+      setupCancelGeneration++;
+      connectionSetup = null;
+      pendingExitPicker = ''; pendingAddedExits.clear();
+      if (exitDialog.open) exitDialog.close();
+    }
+    if (cancel.operation_id && defaultExitContext?.operation_id === cancel.operation_id) {
+      setupCancelGeneration++;
+      defaultExitDialog.close();
+    }
+    if (cancel.acknowledged === true) {
+      if (cancel.request === desktopLive?.connect_request) markNativeConnectHandled(cancel.request);
+      return true;
+    }
+    rememberSetupCancel({ request: cancel.request, operation_id: cancel.operation_id });
+    return true;
   }
   try {
     const remembered = JSON.parse(sessionStorage.getItem(setupCancelKey) || 'null');
-    if (remembered?.token === token && typeof remembered.request === 'string') pendingSetupCancel = { request: remembered.request };
+    if (remembered?.token === token && typeof remembered.request === 'string') rememberSetupCancel({ request: remembered.request, operation_id: remembered.operation_id || '' });
     else sessionStorage.removeItem(setupCancelKey);
   } catch (_) { /* Unavailable or malformed storage cannot restore a cancellation. */ }
   let lastNativeConnect = '';
@@ -876,7 +934,8 @@
     forgetBrowserConnect(request);
   }
   async function consumeNativeConnect() {
-    if (pendingSetupCancel) return;
+    if (adoptSharedSetupCancel()) return;
+    if (!sharedCancelReadable) { notice('操作未完成', t('当前步骤未完成，请重试。')); return; }
     const generation = setupCancelGeneration;
     const request = desktopLive?.connect_request;
     // MyGo owns ordinary native requests. A browser may handle only the exact
@@ -885,11 +944,11 @@
     if (!request || request === lastNativeConnect) return;
     if (!connectionSetup && !(networkActive() && desktopLive.state === 'running') && (isLocked() || isDesktopBusy() || desktopLive.active)) return;
     try {
-      const result = await api('connect-request', { request });
-      if (generation !== setupCancelGeneration || pendingSetupCancel) return;
+      const result = await api('connect-request', { request, operation_id: request });
+      if (generation !== setupCancelGeneration || adoptSharedSetupCancel() || !sharedCancelReadable) return;
       if (!result.claimed) { forgetBrowserConnect(request); return; }
     } catch (error) {
-      if (generation === setupCancelGeneration && !pendingSetupCancel && request !== lastNativeConnect) notice('操作未完成', message(error));
+      if (generation === setupCancelGeneration && !adoptSharedSetupCancel() && request !== lastNativeConnect) notice('操作未完成', message(error));
       return;
     }
     if (request === lastNativeConnect) return; // Another consumer in this page may already have handled it.
@@ -898,7 +957,7 @@
     showPage('connection');
     if (state.dirty) { notice('操作未完成', t('请先保存配置，再连接。')); return; }
     if (!state.savedValid || state.external) { clearNotice(); showPage('settings'); return; }
-    await connectWithExit();
+    await connectWithExit(request);
   }
   function setupFailed(detail) {
     if (!connectionSetup) return;
@@ -947,17 +1006,16 @@
   async function dispatchSetupCancel() {
     if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
     const cancel = pendingSetupCancel;
+    if (!cancel.request && !cancel.operation_id) { rememberSetupCancel(null); return true; }
     setupCancelSending = true; setupCancelError = null;
     operationError = null; clearNotice(); stateRequest++;
     renderConnectionCenter();
     try {
-      // Stop is independent of ordinary action locks and the last state-poll
-      // result. Only the server's acknowledgment makes this intent handled.
-      await api('action', { action: 'disconnect', ...(cancel.request ? { connect_request: cancel.request } : {}) });
+      // The controller revokes this exact operation, including commands still
+      // awaiting admission. A retry must never stop a different, newer session.
+      await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
       if (cancel.request) markNativeConnectHandled(cancel.request);
-      // An earlier action/save can still finish after Stop. Keep the cancel
-      // recoverable until it settles, then stop once more before accepting work.
-      if (!desktopPending && !quickBusy) rememberSetupCancel(null);
+      rememberSetupCancel(null);
       return !pendingSetupCancel;
     } catch (error) {
       setupCancelError = error;
@@ -967,19 +1025,20 @@
   async function cancelConnectionSetup() {
     const request = desktopLive?.connect_request;
     const canceledRequest = request && (mygoWindow || browserConnectRequest === request) ? request : '';
+    const operationID = desktopOperation || quickOperation || connectionSetup?.operation_id || desktopLive?.operation_id || canceledRequest;
     setupCancelGeneration++;
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
     if (exitDialog.open) exitDialog.close();
-    if (!pendingSetupCancel && (desktopLive?.active || canceledRequest || desktopPending || quickBusy)) rememberSetupCancel({ request: canceledRequest });
+    if (!pendingSetupCancel && (operationID || canceledRequest)) rememberSetupCancel({ request: canceledRequest, operation_id: operationID || '' });
     if (await dispatchSetupCancel()) await refreshState();
     renderConnectionCenter();
   }
-  async function beginConnectionSetup(exit = '') {
+  async function beginConnectionSetup(exit = '', operationID = '') {
     if (isLocked() || isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop || !state.loaded || !state.savedValid || state.dirty || state.external || networkActive()) return;
     // Retry may be requested after a local conflict while authorization is alive.
     if (desktopLive.active && !(await desktopAction('disconnect'))) return;
-    connectionSetup = { exit, revision: state.revision, field: connectionExitField(), stage: 'prepare', added: false, loginRequested: false };
+    connectionSetup = { exit, operation_id: operationID || newOperationID(), revision: state.revision, field: connectionExitField(), stage: 'prepare', added: false, loginRequested: false };
     operationError = null; clearNotice(); showPage('connection'); renderConnectionSetup();
     await advanceConnectionSetup();
   }
@@ -1003,7 +1062,7 @@
     setupAdvancing = true;
     try {
       if (!setup.exit) {
-        if (configuredExits().length) { connectionSetup = null; await openDefaultExitDialog(); return; }
+        if (configuredExits().length) { connectionSetup = null; await openDefaultExitDialog(setup.operation_id); return; }
         if (!(await addExit(true))) { if (connectionSetup === setup) setupFailed(operationError?.detail); return; }
       }
       if (connectionSetup !== setup) return;
@@ -1595,7 +1654,7 @@
   }
   $('#apply-connection-change').addEventListener('click', applyConnectionChanges);
   $('#apply-exit-picker').addEventListener('click', applyConnectionChanges);
-  async function desktopAction(action, exit = '') {
+  async function desktopAction(action, exit = '', operationID = '') {
     if (isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop) return false;
     const login = action === 'login' || action === 'login-exit';
     const owner = desktopLive.focus || (networkActive() ? connectionExitRecord()?.id : '') || 'main';
@@ -1609,16 +1668,17 @@
     operationError = null; clearNotice();
     stateRequest++;
     desktopPending = action;
+    desktopOperation = ['connect', 'add-exit', 'login', 'login-exit', 'refresh-exits'].includes(action) ? operationID || connectionSetup?.operation_id || newOperationID() : '';
     renderConnectionCenter();
     try {
-      await api('action', { action, ...(exit ? { exit } : {}), ...(['add-exit', 'connect'].includes(action) ? { revision: state.revision } : {}) });
+      await api('action', { action, ...(exit ? { exit } : {}), ...(desktopOperation ? { operation_id: desktopOperation } : {}), ...(['add-exit', 'connect'].includes(action) ? { revision: state.revision } : {}) });
       return true;
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
       operationError = { title: error.code === 'conflict' ? '配置文件已更新' : '操作未完成', detail: error, canReload: error.code === 'conflict' };
       clearNotice(); return false;
     }
-    finally { desktopPending = ''; await refreshState(); renderConnectionCenter(); }
+    finally { desktopPending = ''; desktopOperation = ''; await refreshState(); renderConnectionCenter(); }
   }
   // Additional exits require a concrete device ID before sharing the action flow.
   async function exitAction(action, exit) {
@@ -1638,9 +1698,10 @@
         (!desktopLive?.revision || desktopLive.revision === revision)))) return false;
     operationError = null; clearNotice();
     stateRequest++;
+    quickOperation = connectionSetup?.operation_id || desktopLive?.operation_id || '';
     quickBusy = true; state.busy = true; updateActions();
     try {
-      const doc = await api('config', { yaml: state.saved, changes, revision: state.revision });
+      const doc = await api('config', { yaml: state.saved, changes, revision: state.revision, ...(quickOperation ? { operation_id: quickOperation } : {}) });
       onSaved?.(doc);
       useDocument(doc);
       if (success) toast(t(success));
@@ -1650,7 +1711,7 @@
       operationError = { title: error.code === 'conflict' ? '配置文件已更新' : '无法应用连接更改', detail: error, canReload: error.code === 'conflict' };
       clearNotice();
       return false;
-    } finally { quickBusy = false; state.busy = false; await refreshState(); updateActions(); }
+    } finally { quickBusy = false; quickOperation = ''; state.busy = false; await refreshState(); updateActions(); }
   }
   function newExitID() {
     const routes = fieldValue(state.savedValues, 'rules.routes');
@@ -1791,9 +1852,9 @@
     }
     await saveExitChanges({ [field]: id }, '连接选项已保存');
   });
-  async function openDefaultExitDialog() {
+  async function openDefaultExitDialog(operationID = '') {
     if (defaultExitDialog.open || isLocked() || state.dirty || state.external || connectionLost) return;
-    defaultExitContext = { revision: state.revision, field: connectionExitField() };
+    defaultExitContext = { revision: state.revision, field: connectionExitField(), operation_id: operationID || newOperationID() };
     defaultExitSignature = '';
     defaultExitError('');
     defaultExitDialog.showModal();
@@ -1804,19 +1865,19 @@
       await desktopAction('refresh-exits');
     }
   }
-  async function connectWithExit() {
+  async function connectWithExit(operationID = '') {
     if ($('#desktop-connect').disabled || state.external || defaultExitDialog.open) return;
     if (requiresDefaultExit(state.savedValues)) {
       const records = configuredExits();
-      if (!records.length) return beginConnectionSetup();
+      if (!records.length) return beginConnectionSetup('', operationID);
       const selected = records.find(exit => exit.id === String(fieldValue(state.savedValues, connectionExitField())));
-      if (selected && !exitCanConnect(selected)) return beginConnectionSetup(selected.id);
+      if (selected && !exitCanConnect(selected)) return beginConnectionSetup(selected.id, operationID);
       if (!connectionExitRecord()) {
-        if (records.length === 1 && !exitCanConnect(records[0])) return beginConnectionSetup(records[0].id);
-        return openDefaultExitDialog();
+        if (records.length === 1 && !exitCanConnect(records[0])) return beginConnectionSetup(records[0].id, operationID);
+        return openDefaultExitDialog(operationID);
       }
     }
-    return desktopAction('connect');
+    return desktopAction('connect', '', operationID);
   }
   $('#default-exit-choice').addEventListener('change', () => { defaultExitError(''); renderDefaultExitDialog(); });
   $('#cancel-default-exit').addEventListener('click', () => { if (!defaultExitBusy) defaultExitDialog.close(); });
@@ -1827,8 +1888,9 @@
   });
   $('#default-exit-manage').addEventListener('click', () => {
     if (defaultExitBusy) return;
+    const operationID = defaultExitContext?.operation_id;
     defaultExitDialog.close();
-    return beginConnectionSetup();
+    return beginConnectionSetup('', operationID);
   });
   $('#confirm-default-exit').addEventListener('click', async () => {
     if (!defaultExitDialog.open || !defaultExitContext || defaultExitBusy || isLocked() || isDesktopBusy() || state.dirty || connectionLost) return;
@@ -1838,20 +1900,22 @@
     const id = $('#default-exit-choice').value;
     const chosen = configuredExits().find(exit => exit.id === id);
     if (!chosen) return;
-    if (!exitCanConnect(chosen)) { defaultExitDialog.close(); await beginConnectionSetup(id); return; }
-    const { field } = defaultExitContext;
+    const { field, operation_id: operationID } = defaultExitContext;
+    const cancelGeneration = setupCancelGeneration;
+    if (!exitCanConnect(chosen)) { defaultExitDialog.close(); await beginConnectionSetup(id, operationID); return; }
     defaultExitBusy = true; renderDefaultExitDialog();
     try {
       if (id !== String(fieldValue(state.savedValues, field)) && !(await saveExitChanges({ [field]: id }, '连接选项已保存'))) {
         defaultExitError(operationError?.detail?.message || String(operationError?.detail || t('无法保存默认出口，请重试。')));
         return;
       }
+      if (cancelGeneration !== setupCancelGeneration) return;
       defaultExitDialog.close();
       if (state.external || $('#desktop-connect').disabled || connectionExitRecord()?.id !== id) {
         notice(t('操作未完成'), t('默认出口已保存，但当前不可用，请检查后再连接。'));
         return;
       }
-      await desktopAction('connect');
+      await desktopAction('connect', '', operationID);
     } finally {
       defaultExitBusy = false; renderDefaultExitDialog();
     }
@@ -2420,6 +2484,7 @@
       connectionLost = true;
       renderConnectionCenter();
     } finally {
+      adoptSharedSetupCancel();
       if (pendingSetupCancel) {
         if (!connectionLost && await dispatchSetupCancel()) await refreshState();
       } else { await consumeNativeConnect(); await advanceConnectionSetup(); }
@@ -2487,6 +2552,7 @@
   window.addEventListener('beforeunload', (event) => { if (state.dirty || Object.keys(connectionChanges()).length) { event.preventDefault(); event.returnValue = ''; } });
   document.addEventListener('visibilitychange', () => { syncRouteMotion(); refreshPage(); });
   window.addEventListener('tailsplit-window-shown', refreshPage);
+  window.addEventListener('storage', event => { if (event.key?.startsWith(sharedCancelPrefix)) refreshPage(); });
   window.addEventListener('hashchange', async () => {
     if (mygoWindow) return;
     const incoming = new URLSearchParams(location.hash.slice(1));

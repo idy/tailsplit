@@ -144,6 +144,10 @@ func prepareDesktopExitLogin(controller desktopExitLoginController, id string) e
 // Complete on the event loop: workers never mutate LoginFlow or expose helper errors.
 func finishDesktopExitLogin(flow *tray.LoginFlow, err error) error {
 	if err != nil {
+		if errors.Is(err, tray.ErrOperationCanceled) {
+			flow.Cancel()
+			return err
+		}
 		if errors.Is(err, errDesktopGlobalLogin) {
 			flow.Fail(err.Error())
 			return err

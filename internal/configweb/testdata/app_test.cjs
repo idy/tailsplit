@@ -103,7 +103,8 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   let poll;
   const window = new Element();
   let nonce = 0;
-  window.crypto = { getRandomValues: (bytes) => { bytes.fill(++nonce); return bytes; } };
+  let operationNonce = 0;
+  window.crypto = { getRandomValues: (bytes) => { bytes.fill(++nonce); return bytes; }, randomUUID: () => `operation-${++operationNonce}` };
   const messages = [];
   if (native.startsWith('mygo-')) {
     window.mygo = { platform: native === 'mygo-macos' ? 'darwin' : 'win32', window: {
@@ -120,7 +121,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     return button;
   });
   $('#window-controls').hidden = true;
-  const app = { $, requests, messages, windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
+  const app = { $, requests, messages, canceledOperations: new Set(), windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', operation_id: snapshot.active ? 'existing-operation' : '', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
     language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: localeOptions.override || (() => undefined) };
   const document = {
     documentElement: new Element(), hidden: false, querySelector: $, createElement: (tag) => { const element = new Element(); element.tagName = tag; return element; },
@@ -136,16 +137,23 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   };
   app.document = document;
   const storage = localeOptions.storage || new Map();
+  const sharedStorage = localeOptions.localStorage || new Map();
   app.storage = storage;
+  app.localStorage = sharedStorage;
+  const storageAPI = data => ({ setItem(key, value) { data.set(key, value); }, getItem(key) { return data.get(key); }, removeItem(key) { data.delete(key); }, key(index) { return [...data.keys()][index] ?? null; }, get length() { return data.size; } });
   const sandbox = {
     document, window, URL, URLSearchParams, location: { hash: localeOptions.hash || '#token=fixture', pathname: '/' },
-    history: { replaceState() {} }, sessionStorage: { setItem(key, value) { storage.set(key, value); }, getItem(key) { return storage.get(key); }, removeItem(key) { storage.delete(key); } },
+    history: { replaceState() {} }, sessionStorage: storageAPI(storage), localStorage: storageAPI(sharedStorage),
     navigator: { languages: localeOptions.languages || ['zh-CN'], clipboard: { writeText: async () => {} } },
     setTimeout: (callback) => { timers.set(++timer, callback); return timer; },
     clearTimeout: (id) => timers.delete(id), setInterval: (callback) => { poll = callback; },
     fetch: async (path, options) => {
       const request = { path, method: options.method, headers: options.headers, data: options.body && JSON.parse(options.body) };
       requests.push(request);
+      if (path === '/api/action' && request.data.operation_id) {
+        if (app.canceledOperations.has(request.data.operation_id)) return response({ error: 'operation canceled' }, false);
+        app.snapshot.operation_id = request.data.operation_id;
+      }
       const overridden = app.override(request);
       if (overridden !== undefined) return overridden;
       if (path === '/api/language') {
@@ -154,9 +162,16 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
       }
       if (path === '/api/state') return response(app.snapshot);
       if (path === '/api/connect-request') {
-        const claimed = Boolean(request.data.request) && request.data.request === app.snapshot.connect_request;
+        const claimed = Boolean(request.data.request) && !app.canceledOperations.has(request.data.operation_id || request.data.request) && request.data.request === app.snapshot.connect_request;
         if (claimed) app.snapshot.connect_request = '';
         return response({ claimed });
+      }
+      if (path === '/api/cancel') {
+        const { request: id, operation_id: operation } = request.data;
+        if (id && id === app.snapshot.connect_request) app.snapshot.connect_request = '';
+        if (operation) app.canceledOperations.add(operation);
+        if (operation && operation === app.snapshot.operation_id) Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+        return response({ ok: true });
       }
       if (path === '/api/config') return response(app.config);
       if (path === '/api/preview') {
@@ -1271,15 +1286,16 @@ test('a stale poll cannot restore old device state after a desktop action', asyn
   const old = deferred(); let delay = true;
   app.override = (request) => {
     if (request.path === '/api/state' && delay) { delay = false; return old.promise; }
-    if (request.path === '/api/action' && request.data.action === 'disconnect') {
+    if (request.path === '/api/cancel') {
       app.snapshot = { ...app.snapshot, active: false, state: 'stopped', backend_state: 'NeedsLogin', hostname: '', network: '', exit_nodes: [] };
       return response({ ok: true });
     }
     return undefined;
   };
   const polling = app.poll(); await settle();
-  // Use the disconnect event to drive the shared desktop action machinery.
+  // The controller always publishes an identity for an active helper.
   app.snapshot.active = true;
+  app.snapshot.operation_id = 'stale-poll-operation';
   await app.poll();
   await app.$('#desktop-disconnect').emit('click');
   old.resolve(response(exitsSnapshot({ revision: 'original' }))); await polling;
@@ -1384,7 +1400,7 @@ test('backend-normalized scalar exit IDs remain selectable and survive Add', asy
     let started = false;
     app.override = request => {
       if (request.path === '/api/action') {
-        assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+        assert.deepEqual(actionFields(request), { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
         started = true;
         app.snapshot = { ...app.snapshot, active: true, mode: 'login', state: 'login', focus: firstAddedID };
         return response({ ok: true });
@@ -1473,7 +1489,7 @@ test('Add signs in and names the first exit without assigning a traffic default'
       return response(app.config);
     }
     if (request.path === '/api/action') {
-      assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+      assert.deepEqual(actionFields(request), { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
       assert.equal(extraRow(app, firstAddedID), undefined, 'no row exists before successful authorization');
       app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: [{ id: firstAddedID, auto_name: true, exit_node: '' }] } };
       app.snapshot = exitsSnapshot({ state: 'authenticated', mode: 'login', revision: 'added', exits: { [firstAddedID]: officeSnapshot({ network: 'example.com', magic_dns_suffix: 'tail123.ts.net' }).exits.office } });
@@ -1502,7 +1518,7 @@ test('Add remains pending until real authenticated device status arrives and can
   app.override = request => {
     if (request.path === '/api/action') {
       const id = authenticated ? secondAddedID : firstAddedID;
-      assert.deepEqual(request.data, { action: 'add-exit', exit: id, revision: app.config.revision });
+      assert.deepEqual(actionFields(request), { action: 'add-exit', exit: id, revision: app.config.revision });
       if (authenticated) app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: [{ id, auto_name: true, exit_node: '' }] } };
       app.snapshot = exitsSnapshot({ revision: app.config.revision, state: authenticated ? 'authenticated' : 'login', active: !authenticated,
         mode: 'login', focus: authenticated ? '' : id, exits: { [id]: authenticated ? officeSnapshot().exits.office : { backend_state: 'NeedsLogin' } } });
@@ -1597,7 +1613,9 @@ const activeGlobalDocument = () => {
   return initial;
 };
 const activeGlobalSnapshot = () => exitsSnapshot({ active: true, mode: 'tun', state: 'running' });
-const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/config-rebuild', '/api/config-repair', '/api/action'].includes(request.path));
+const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/config-rebuild', '/api/config-repair', '/api/action', '/api/cancel'].includes(request.path));
+const mutationAction = request => request.path === '/api/cancel' ? 'cancel' : request.data.action;
+const actionFields = request => { const { operation_id, ...fields } = request.data; if (operation_id !== undefined) assert.equal(typeof operation_id, 'string'); return fields; };
 // Call the listener directly to verify its guards independently of disabled UI.
 const invokeAdd = (app) => app.$('#add-exit').listeners.click[0]();
 const answerAddConsent = (app, answer) => {
@@ -1786,7 +1804,7 @@ test('a rejected or superseded staged Add never leaves a browser-saved profile',
     const app = await page(exitsSnapshot(), '', {}, initial);
     app.override = request => {
       if (request.path !== '/api/action') return undefined;
-      assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+      assert.deepEqual(actionFields(request), { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
       if (condition === 'revision') {
         app.config = { ...initial, revision: 'newer' };
         app.snapshot = { ...app.snapshot, revision: 'newer', state: 'failed', error: 'configuration changed' };
@@ -2151,7 +2169,7 @@ test('Global connection uses its selected extra while unrelated primary and exit
   assert.equal(app.$('#desktop-login').hidden, false, 'primary sign-in still belongs to primary row');
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'connect', revision: app.config.revision });
+    assert.deepEqual(actionFields(request), { action: 'connect', revision: app.config.revision });
     Object.assign(app.snapshot, { active: true, state: 'running', mode: 'tun', routing_mode: 'global' });
     return response({ ok: true });
   };
@@ -2541,7 +2559,7 @@ for (const mode of ['split', 'global']) test(`${mode} connect requires explicit 
     }
     if (request.path === '/api/action') {
       calls.push('connect');
-      assert.deepEqual(request.data, { action: 'connect', revision: app.config.revision });
+      assert.deepEqual(actionFields(request), { action: 'connect', revision: app.config.revision });
       assert.equal(app.config.values.rules[field], 'office');
       return response({ ok: true });
     }
@@ -2566,7 +2584,7 @@ test('a single saved device without ready login is guided directly to sign-in be
   const app = await page(officeSnapshot({ backend_state: '' }), '', {}, initial);
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'login-exit', exit: 'office' });
+    assert.deepEqual(actionFields(request), { action: 'login-exit', exit: 'office' });
     Object.assign(app.snapshot, { state: 'login', mode: 'login', focus: 'office', active: true });
     return response({ ok: true });
   };
@@ -2681,7 +2699,7 @@ test('the explicit no-device direct-only Windows fixture connects without a gate
   const app = await page({ desktop: true, active: false, state: 'stopped', backend_state: 'Direct' }, '', {}, initial);
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'connect', revision: app.config.revision });
+    assert.deepEqual(actionFields(request), { action: 'connect', revision: app.config.revision });
     app.snapshot = { ...app.snapshot, active: true, state: 'running', mode: 'proxy', backend_state: 'Direct' };
     return response({ ok: true });
   };
@@ -2708,7 +2726,7 @@ test('retained final, route groups and gateway selectors reserve new device IDs'
   const app = await page(exitsSnapshot(), '', {}, initial);
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+    assert.deepEqual(actionFields(request), { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
     return response({ ok: true });
   };
   await invokeAdd(app);
@@ -2793,7 +2811,7 @@ test('Global current-device sign-in recovers the pending authorization without c
   snapshot.state = 'blocked'; snapshot.exits.office.backend_state = 'NeedsLogin';
   const app = await page(snapshot, '', {}, activeGlobalGatewayDocument());
   await savedExitLogin(app, 'office').emit('click');
-  assert.deepEqual(mutations(app).map(request => request.data), [{ action: 'login-exit', exit: 'office' }]);
+  assert.deepEqual(mutations(app).map(actionFields), [{ action: 'login-exit', exit: 'office' }]);
   assert.ok(!app.$('#add-exit-consent-dialog').open);
   assert.equal(app.snapshot.active, true);
 });
@@ -3045,7 +3063,7 @@ test('guided installation is visible, rejects duplicate Connect, and cancellatio
   await app.$('#desktop-connect').emit('click');
   assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1);
   await app.$('#connection-setup-cancel').emit('click');
-  assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect']);
+  assert.deepEqual(mutations(app).map(mutationAction), ['add-exit', 'cancel']);
   backend.finishAdd(); // Even a late result cannot restore the canceled intent.
   await app.poll();
   assert.ok(!app.$('#exit-picker-dialog').open);
@@ -3265,7 +3283,7 @@ test('canceling inactive approval prevents a later status update from connecting
   await app.$('#connection-setup-cancel').emit('click');
   app.snapshot.exits.office.backend_state = 'Running';
   await app.poll();
-  assert.equal(mutations(app).length, 0);
+  assert.deepEqual(mutations(app).map(mutationAction), ['cancel']);
 });
 
 test('a browser panel cannot consume a Connect intent intended for the native window', async () => {
@@ -3371,18 +3389,10 @@ test('cancellation stops the helper despite a failed or stalled claim endpoint a
       const id = 'cancel-before-claim';
       const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', connect_request: id }, native,
         { page: 'home', hash: `#token=fixture&connect=${id}`, storage }, guidedDocument());
-      app.override = request => {
-        if (request.path === '/api/connect-request') return stalled ? deferred().promise : response({ error: 'claim failed' }, false);
-        if (request.path !== '/api/action') return undefined;
-        assert.deepEqual(request.data, { action: 'disconnect', connect_request: id });
-        // Model the server's exact-ID acknowledgment inside disconnect.
-        if (app.snapshot.connect_request === request.data.connect_request) app.snapshot.connect_request = '';
-        Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
-        return response({ ok: true });
-      };
+      app.override = request => request.path === '/api/connect-request' ? stalled ? deferred().promise : response({ error: 'claim failed' }, false) : undefined;
       const cancel = app.$('#connection-setup-cancel').emit('click');
       await settle();
-      assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1, 'disconnect must start without waiting for a claim');
+      assert.equal(mutations(app).filter(r => r.path === '/api/cancel').length, 1, 'disconnect must start without waiting for a claim');
       await cancel;
       assert.equal(app.requests.some(r => r.path === '/api/connect-request'), false);
       assert.equal(app.snapshot.connect_request, '');
@@ -3404,7 +3414,6 @@ test('an in-flight native claim cannot resume setup after cancellation', async (
     app.snapshot.connect_request = 'in-flight-cancel';
     app.override = request => {
       if (request.path === '/api/connect-request') return claim.promise;
-      if (request.path === '/api/action' && request.data.action === 'disconnect') app.snapshot.connect_request = '';
       return backend(request);
     };
     const poll = app.poll();
@@ -3412,17 +3421,17 @@ test('an in-flight native claim cannot resume setup after cancellation', async (
     assert.equal(app.requests.filter(r => r.path === '/api/connect-request').length, 1);
     const cancel = app.$('#connection-setup-cancel').emit('click');
     await settle();
-    assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1);
+    assert.equal(mutations(app).filter(r => r.path === '/api/cancel').length, 1);
     await cancel;
     claim.resolve(succeeds ? response({ claimed: true }) : response({ error: 'late claim failure' }, false));
     await poll;
-    assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect']);
+    assert.deepEqual(mutations(app).map(mutationAction), ['add-exit', 'cancel']);
     assert.equal(app.$('#connection-setup').hidden, true);
     assert.equal(app.$('#notice').hidden, true, 'a late canceled claim failure cannot replace the cancellation result');
   }
 });
 
-test('cancellation dispatches during an in-flight setup action and stops a late helper again', async () => {
+test('cancellation names an in-flight action before its helper starts and prevents late startup', async () => {
   const app = await page({ desktop: true }, 'mygo-windows', { page: 'home' }, guidedDocument());
   guidedBackend(app, { deferAdd: true });
   const backend = app.override;
@@ -3431,11 +3440,10 @@ test('cancellation dispatches during an in-flight setup action and stops a late 
     if (request.path === '/api/action' && request.data.action === 'add-exit') {
       const result = backend(request);
       return add.promise.then(() => {
-        Object.assign(app.snapshot, { active: true, state: 'authorizing', mode: 'login' });
+        if (!app.canceledOperations.has(request.data.operation_id)) Object.assign(app.snapshot, { active: true, state: 'authorizing', mode: 'login' });
         return result;
       });
     }
-    if (request.path === '/api/action' && request.data.action === 'disconnect' && request.data.connect_request === app.snapshot.connect_request) app.snapshot.connect_request = '';
     return backend(request);
   };
   const start = app.$('#home-setup').emit('click');
@@ -3443,11 +3451,14 @@ test('cancellation dispatches during an in-flight setup action and stops a late 
   app.snapshot.connect_request = 'cancel-busy-action';
   assert.equal(app.$('#connection-setup-cancel').disabled, false);
   await app.$('#connection-setup-cancel').emit('click');
-  assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1, 'Stop must dispatch before Add returns');
-  assert.equal(JSON.parse(app.storage.get('tailsplit-setup-cancel')).request, 'cancel-busy-action', 'retain cancellation while earlier work can still start');
+  assert.equal(mutations(app).filter(r => r.path === '/api/cancel').length, 1, 'Stop must dispatch before Add returns');
+  const startID = mutations(app).find(r => r.data.action === 'add-exit').data.operation_id;
+  assert.ok(startID);
+  assert.equal(app.requests.find(r => r.path === '/api/cancel').data.operation_id, startID, 'cancellation uses the ID known before Add responds');
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false, 'server acknowledgment revokes further work for the ID');
   add.resolve();
   await start;
-  assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect', 'disconnect']);
+  assert.deepEqual(mutations(app).map(mutationAction), ['add-exit', 'cancel']);
   assert.equal(app.snapshot.active, false);
   assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
   assert.equal(app.$('#connection-setup').hidden, true);
@@ -3462,7 +3473,6 @@ test('cancellation dispatches during a node save and prevents its late result fr
   const save = deferred();
   app.override = request => {
     if (request.path === '/api/config' && request.method === 'POST') return save.promise.then(() => backend(request));
-    if (request.path === '/api/action' && request.data.action === 'disconnect' && request.data.connect_request === app.snapshot.connect_request) app.snapshot.connect_request = '';
     return backend(request);
   };
   const apply = app.$('#apply-exit-picker').emit('click');
@@ -3470,11 +3480,12 @@ test('cancellation dispatches during a node save and prevents its late result fr
   app.snapshot.connect_request = 'cancel-busy-save';
   assert.equal(app.$('#connection-setup-cancel').disabled, false);
   await app.$('#connection-setup-cancel').emit('click');
-  assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1);
-  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+  assert.equal(mutations(app).filter(r => r.path === '/api/cancel').length, 1);
+  const saveID = mutations(app).find(r => r.path === '/api/config').data.operation_id;
+  assert.equal(app.requests.find(r => r.path === '/api/cancel').data.operation_id, saveID);
   save.resolve();
   await apply;
-  assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 2);
+  assert.equal(mutations(app).filter(r => r.path === '/api/cancel').length, 1);
   assert.equal(mutations(app).some(r => r.data.action === 'connect'), false);
   assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
 });
@@ -3485,8 +3496,8 @@ test('cancellation sends despite lost state polling and retries after reconnecti
   let offline = true;
   app.override = request => {
     if (offline && request.path === '/api/state') return response({ error: 'state unavailable' }, false);
-    if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'disconnect', connect_request: 'cancel-offline' });
+    if (request.path !== '/api/cancel') return undefined;
+    assert.deepEqual(request.data, { request: 'cancel-offline', operation_id: 'existing-operation' });
     if (offline) return response({ error: 'disconnect unavailable' }, false);
     Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '', connect_request: '' });
     return response({ ok: true });
@@ -3513,24 +3524,24 @@ test('cancellation sends despite lost state polling and retries after reconnecti
 test('failed cancellation survives a reload and retries Stop before considering Connect', async () => {
   for (const id of ['', 'cancel-reload']) {
     const storage = new Map([
-      ['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: id })],
+      ['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: id, operation_id: 'reload-operation' })],
       ...(id ? [['tailsplit-browser-connect', JSON.stringify({ token: 'fixture', request: id })]] : []),
     ]);
     const snapshot = { desktop: true, active: false, state: 'stopped', connect_request: id };
-    const failed = await page(snapshot, '', { page: 'home', storage, override: request => request.path === '/api/action' ? response({ error: 'still offline' }, false) : undefined }, guidedDocument());
+    const failed = await page(snapshot, '', { page: 'home', storage, override: request => request.path === '/api/cancel' ? response({ error: 'still offline' }, false) : undefined }, guidedDocument());
     assert.ok(mutations(failed).length > 0);
-    assert.ok(mutations(failed).every(r => r.data.action === 'disconnect'), 'each retry must stop rather than restart setup');
+    assert.ok(mutations(failed).every(r => r.path === '/api/cancel'), 'each retry must cancel its original target rather than disconnect arbitrarily');
     assert.equal(failed.requests.some(r => r.path === '/api/connect-request'), false);
     assert.equal(storage.has('tailsplit-setup-cancel'), true);
     const reloaded = await page(snapshot, '', { page: 'home', storage, override: request => {
       if (request.path === '/api/state') return response(snapshot);
-      if (request.path === '/api/action') {
-        assert.deepEqual(request.data, { action: 'disconnect', ...(id ? { connect_request: id } : {}) });
+      if (request.path === '/api/cancel') {
+        assert.deepEqual(request.data, { request: id, operation_id: 'reload-operation' });
         snapshot.connect_request = '';
         return response({ ok: true });
       }
     } }, guidedDocument());
-    assert.deepEqual(mutations(reloaded).map(r => r.data.action), ['disconnect']);
+    assert.deepEqual(mutations(reloaded).map(mutationAction), ['cancel']);
     assert.equal(reloaded.requests.some(r => r.path === '/api/connect-request'), false);
     assert.equal(storage.has('tailsplit-setup-cancel'), false);
     assert.equal(storage.has('tailsplit-browser-connect'), false);
@@ -3550,9 +3561,10 @@ test('late claim results cannot clear cancellation markers before Stop acknowled
     app.snapshot.connect_request = 'cancel-before-ack';
     app.override = request => {
       if (request.path === '/api/connect-request') return claim.promise;
-      if (request.path === '/api/action' && request.data.action === 'disconnect') return stop.promise.then(() => {
-        app.snapshot.connect_request = '';
-        return backend(request);
+      if (request.path === '/api/cancel') return stop.promise.then(() => {
+        Object.assign(app.snapshot, { connect_request: '', active: false, state: 'stopped', mode: '' });
+        app.canceledOperations.add(request.data.operation_id);
+        return response({ ok: true });
       });
       return backend(request);
     };
@@ -3565,11 +3577,11 @@ test('late claim results cannot clear cancellation markers before Stop acknowled
     assert.equal(JSON.parse(app.storage.get('tailsplit-setup-cancel')).request, 'cancel-before-ack');
     assert.equal(app.storage.has('tailsplit-connect-request'), false, 'a late claim cannot acknowledge an unfinished cancellation');
     await app.$('#connection-setup-cancel').emit('click');
-    assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1, 'only one Stop may be in flight');
+    assert.equal(mutations(app).filter(r => r.path === '/api/cancel').length, 1, 'only one Stop may be in flight');
     stop.resolve();
     await cancel;
     assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
-    assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect']);
+    assert.deepEqual(mutations(app).map(mutationAction), ['add-exit', 'cancel']);
   }
 });
 
@@ -3585,8 +3597,8 @@ test('restored cancellations are capability-scoped and preserve a newer explicit
   const snapshot = { desktop: true, active: false, state: 'stopped', connect_request: 'new-click' };
   const app = await page(snapshot, '', { page: 'home', storage, override: request => {
     if (request.path === '/api/state') return response(snapshot);
-    if (request.path === '/api/action' && request.data.action === 'disconnect') {
-      assert.equal(request.data.connect_request, 'old-canceled-click');
+    if (request.path === '/api/cancel') {
+      assert.equal(request.data.request, 'old-canceled-click');
       assert.equal(snapshot.connect_request, 'new-click');
       return response({ ok: true });
     }
@@ -3596,8 +3608,129 @@ test('restored cancellations are capability-scoped and preserve a newer explicit
       return response({ claimed: true });
     }
   } }, guidedDocument());
-  assert.deepEqual(mutations(app).map(r => r.data.action), ['disconnect', 'add-exit']);
+  assert.deepEqual(mutations(app).map(mutationAction), ['cancel', 'add-exit']);
   assert.equal(storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('a fresh fallback cannot claim a cancellation left by a closed original tab', async () => {
+  const localStorage = new Map();
+  const id = 'cross-tab-canceled';
+  const snapshot = { desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'original-op', connect_request: id };
+  const original = await page(snapshot, '', { page: 'home', hash: `#token=fixture&connect=${id}`, localStorage }, guidedDocument());
+  original.override = request => request.path === '/api/cancel' ? response({ error: 'not delivered' }, false) : undefined;
+  await original.$('#connection-setup-cancel').emit('click');
+  assert.equal(original.snapshot.connect_request, id, 'the failed request never reached the controller');
+  assert.equal(JSON.parse(localStorage.get(`tailsplit-setup-cancel:request:${id}`)).acknowledged, undefined);
+  // Drop all original session state: only origin-wide storage survives closure.
+  const fresh = await page({ ...snapshot, active: false, state: 'stopped', mode: '' }, '', {
+    page: 'home', hash: `#token=fixture&connect=${id}`, localStorage, storage: new Map(),
+    override: request => request.path === '/api/cancel' ? response({ error: 'still unavailable' }, false) : undefined,
+  }, guidedDocument());
+  assert.ok(mutations(fresh).length > 0);
+  assert.ok(mutations(fresh).every(request => request.path === '/api/cancel'));
+  assert.equal(fresh.requests.some(request => request.path === '/api/connect-request'), false);
+  assert.equal(JSON.parse(fresh.storage.get('tailsplit-setup-cancel')).operation_id, 'original-op');
+});
+
+test('a delayed claim in another panel stays canceled even after the original receives acknowledgment', async () => {
+  const localStorage = new Map();
+  const id = 'cross-tab-late-claim';
+  const snapshot = { desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'cross-tab-op', connect_request: id };
+  const original = await page(snapshot, '', { page: 'home', hash: `#token=fixture&connect=${id}`, localStorage }, guidedDocument());
+  const claimant = await page(snapshot, 'mygo-windows', { page: 'home', localStorage }, guidedDocument());
+  const claim = deferred();
+  claimant.override = request => request.path === '/api/connect-request' ? claim.promise : undefined;
+  Object.assign(claimant.snapshot, { active: false, state: 'stopped', mode: '' });
+  const polling = claimant.poll();
+  await settle();
+  assert.equal(claimant.requests.filter(request => request.path === '/api/connect-request').length, 1);
+  await original.$('#connection-setup-cancel').emit('click');
+  assert.equal(JSON.parse(localStorage.get(`tailsplit-setup-cancel:request:${id}`)).acknowledged, true, 'retain a tombstone after successful cancellation');
+  claim.resolve(response({ claimed: true }));
+  await polling;
+  assert.equal(mutations(claimant).length, 0, 'a late successful claim must never restart setup');
+  assert.equal(claimant.$('#connection-setup').hidden, true);
+});
+
+test('restoring an old cancellation never changes a newer running session', async () => {
+  const storage = new Map([['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: 'old-request', operation_id: 'old-operation' })]]);
+  const app = await page({ desktop: true, active: true, state: 'running', mode: 'tun', operation_id: 'new-operation', connect_request: 'new-request', backend_state: 'Running' }, '', { page: 'home', storage }, guidedDocument());
+  const cancel = mutations(app);
+  assert.equal(cancel.length, 1);
+  assert.equal(cancel[0].path, '/api/cancel');
+  assert.deepEqual(cancel[0].data, { request: 'old-request', operation_id: 'old-operation' });
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.snapshot.operation_id, 'new-operation');
+  assert.equal(app.snapshot.connect_request, 'new-request');
+  assert.equal(app.$('#home-status').textContent, '已连接');
+  assert.equal(storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('a cancellation from another capability cannot suppress the matching native request', async () => {
+  const id = 'same-public-id';
+  const localStorage = new Map([[`tailsplit-setup-cancel:request:${id}`, JSON.stringify({ token: 'another-capability', request: id, operation_id: id })]]);
+  const app = await page({ desktop: true, connect_request: id }, 'mygo-windows', { page: 'home', localStorage }, guidedDocument());
+  assert.equal(app.requests.filter(request => request.path === '/api/connect-request').length, 1);
+  assert.equal(app.requests.some(request => request.path === '/api/cancel'), false);
+  assert.equal(mutations(app).filter(request => request.data.action === 'add-exit').length, 1);
+});
+
+test('guided native setup retains one operation ID through login, save and connect', async () => {
+  const app = await page({ desktop: true }, 'mygo-windows', {}, guidedDocument());
+  guidedBackend(app);
+  app.snapshot.connect_request = 'native-flow-identity';
+  await app.poll();
+  await pickerNode(app, '100.101.0.11').choice.emit('click');
+  await app.$('#apply-exit-picker').emit('click');
+  const requests = mutations(app);
+  assert.deepEqual(requests.map(request => request.data.action || 'save'), ['add-exit', 'save', 'connect']);
+  assert.ok(requests.every(request => request.data.operation_id === 'native-flow-identity'));
+});
+
+test('another panel resumes operation-only cancellation after the native request was already claimed', async () => {
+  const localStorage = new Map([['tailsplit-setup-cancel:operation:claimed-operation', JSON.stringify({ token: 'fixture', request: '', operation_id: 'claimed-operation' })]]);
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'claimed-operation', connect_request: '' }, '', { page: 'home', localStorage }, guidedDocument());
+  assert.deepEqual(mutations(app).map(mutationAction), ['cancel']);
+  assert.deepEqual(mutations(app)[0].data, { request: '', operation_id: 'claimed-operation' });
+  assert.equal(app.snapshot.active, false);
+  assert.equal(localStorage.has('tailsplit-setup-cancel:operation:claimed-operation'), false);
+});
+
+test('acknowledged native tombstones suppress a fresh stale fallback without another stop', async () => {
+  const id = 'acknowledged-request';
+  const localStorage = new Map([[`tailsplit-setup-cancel:request:${id}`, JSON.stringify({ token: 'fixture', request: id, operation_id: 'old-operation', acknowledged: true })]]);
+  const app = await page({ desktop: true, connect_request: id }, '', { page: 'home', hash: `#token=fixture&connect=${id}`, localStorage }, guidedDocument());
+  assert.equal(app.requests.some(request => request.path === '/api/connect-request'), false);
+  assert.equal(mutations(app).length, 0);
+  assert.equal(app.storage.has('tailsplit-browser-connect'), false);
+});
+
+test('an unreadable shared cancellation record cannot silently grant native setup', async () => {
+  const id = 'unreadable-cancellation';
+  const localStorage = new Map([[`tailsplit-setup-cancel:request:${id}`, '{broken']]);
+  const app = await page({ desktop: true, connect_request: id }, 'mygo-windows', { page: 'home', localStorage }, guidedDocument());
+  assert.equal(app.requests.some(request => request.path === '/api/connect-request'), false);
+  assert.equal(mutations(app).length, 0);
+  localStorage.delete(`tailsplit-setup-cancel:request:${id}`);
+  await app.poll();
+  assert.equal(app.requests.filter(request => request.path === '/api/connect-request').length, 1);
+  assert.equal(mutations(app).filter(request => request.data.action === 'add-exit').length, 1);
+});
+
+test('adopting a shared cancellation clears the matching local setup intent', async () => {
+  const localStorage = new Map();
+  const app = await page({ desktop: true }, '', { page: 'home', localStorage }, guidedDocument());
+  const backend = guidedBackend(app, { deferAdd: true });
+  await app.$('#home-setup').emit('click');
+  const operationID = mutations(app)[0].data.operation_id;
+  localStorage.set(`tailsplit-setup-cancel:operation:${operationID}`, JSON.stringify({ token: 'fixture', request: '', operation_id: operationID }));
+  await app.poll();
+  assert.deepEqual(mutations(app).map(mutationAction), ['add-exit', 'cancel']);
+  assert.equal(app.$('#connection-setup').hidden, true);
+  backend.finishAdd();
+  await app.poll();
+  assert.equal(app.$('#exit-picker-dialog').open || false, false);
+  assert.equal(mutations(app).some(request => request.data.action === 'connect'), false);
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {
@@ -3951,7 +4084,7 @@ test('guided setup can confirm the same configured node after it recovers withou
   const app = await page(snapshot, '', {}, initial);
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'connect', revision: 'original' });
+    assert.deepEqual(actionFields(request), { action: 'connect', revision: 'original' });
     Object.assign(app.snapshot, { active: true, mode: 'proxy', state: 'running', active_revision: 'original' });
     return response({ ok: true });
   };

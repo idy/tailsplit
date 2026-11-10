@@ -30,8 +30,10 @@ Windows executables are unsigned; verify the release checksums before installati
 ## Get connected
 
 1. Open **Home** and select **Set up** on a fresh installation. Once an exit is configured, Home shows the connection switch. TailSplit guides you through system service authorization and Tailscale sign-in when needed.
-2. Choose an exit node and use **Save & connect** to finish the requested connection. You can cancel or retry any incomplete step. Cancellation stops the helper and clears the matching pending tray request, preventing setup from resuming after a reload. Until confirmed, cancellation remains pending and retries when the panel reconnects, including after a reload.
+2. Choose an exit node and use **Save & connect** to finish the requested connection. You can cancel or retry any incomplete step.
 3. Review routing rules in Settings as needed. New configurations enable automatic connection on later launches once a gateway is configured. Signing in through **Add exit** alone does not connect.
+
+Cancellation stops the matching setup or connection and clears its pending tray request. Until confirmed, it stays pending across reloads and retries when the panel reconnects. Panels share canceled-request records so a newly opened panel cannot resume an old request. Retries leave any later connection running.
 
 **Home** shows this computer fanning out to Direct and each exit referenced by saved routing policy, including implicit private-domain routes, following the GizMoth serial-map layout. Global mode shows only its selected exit. Solid paths indicate a confirmed connection; dashed paths are saved routes not currently applied. Each destination shows upload and download speed from successive real router-byte samples. Missing samples display **—**, while a confirmed idle sample displays **0 B/s**. Counters reset on a new engine session. Directional pulses appear only on routes with positive measured byte deltas and stop on idle, missing or stale samples. Upload moves outward from this computer; download moves inward. TCP/UDP streams count payload; native TUN flows count IP packet bytes, excluding Tailscale transport and control overhead. These are routed-byte rates rather than physical-interface usage.
 

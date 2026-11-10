@@ -50,6 +50,56 @@ func TestDesktopPreviewBindsActiveRevisionUntilDisconnect(t *testing.T) {
 	}
 }
 
+func TestDesktopPreviewGuardsCanceledOperationsAcrossLoginSaveAndConnect(t *testing.T) {
+	options := testDesktopPreview(t)
+	canceledCtx := tray.WithOperationID(context.Background(), "canceled-before-admission")
+	if err := options.Cancel(context.Background(), "", tray.OperationID(canceledCtx)); err != nil {
+		t.Fatal(err)
+	}
+	if err := options.Action(canceledCtx, "login"); !errors.Is(err, tray.ErrOperationCanceled) {
+		t.Fatal("preview admitted canceled setup", err)
+	}
+	ctx := tray.WithOperationID(context.Background(), "guided-setup")
+	if err := options.Action(ctx, "login"); err != nil {
+		t.Fatal(err)
+	}
+	if options.Snapshot().OperationID != "guided-setup" {
+		t.Fatal("login lost owner", options.Snapshot())
+	}
+	if err := options.Apply(ctx, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, _ := tray.ReadConfigDocument(options.ConfigPath)
+	if err := options.Connect(ctx, revision); err != nil {
+		t.Fatal(err)
+	}
+	if got := options.Snapshot(); !got.Active || got.OperationID != "guided-setup" {
+		t.Fatal(got)
+	}
+	if err := options.Cancel(context.Background(), "old-native-request", "canceled-before-admission"); err != nil {
+		t.Fatal(err)
+	}
+	if got := options.Snapshot(); !got.Active || got.OperationID != "guided-setup" {
+		t.Fatal("stale cancel stopped new preview", got)
+	}
+	if err := options.Cancel(context.Background(), "", "guided-setup"); err != nil {
+		t.Fatal(err)
+	}
+	if options.Snapshot().Active {
+		t.Fatal("preview cancel retained connection")
+	}
+	if err := options.Connect(ctx, revision); !errors.Is(err, tray.ErrOperationCanceled) {
+		t.Fatal("late preview action revived canceled setup", err)
+	}
+	if err := options.Apply(ctx, nil, func() error { t.Error("canceled save ran"); return nil }); !errors.Is(err, tray.ErrOperationCanceled) {
+		t.Fatal(err)
+	}
+	fresh := tray.WithOperationID(context.Background(), "explicit-retry")
+	if err := options.Connect(fresh, revision); err != nil {
+		t.Fatal("fresh preview retry failed", err)
+	}
+}
+
 func TestDesktopPreviewApplyAdvancesActiveRevision(t *testing.T) {
 	options := testDesktopPreview(t)
 	previewAction(t, options, "login")

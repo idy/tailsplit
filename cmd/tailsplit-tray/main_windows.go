@@ -204,10 +204,12 @@ func runWindowsDesktop() (runErr error) {
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
+		ClaimConnectOperation: controller.ClaimConnectOperation,
+		Cancel:                func(_ context.Context, request, operation string) error { return controller.Cancel(request, operation) },
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return app.do(ctx, func() error {
 				app.login.Cancel()
-				return finishDesktopExitLogin(&app.login, controller.AddExit(id, revision))
+				return finishDesktopExitLogin(&app.login, controller.ForOperation(tray.OperationID(ctx)).AddExit(id, revision))
 			})
 		},
 		RemoveExit: func(ctx context.Context, id, revision string) error {
@@ -218,7 +220,7 @@ func runWindowsDesktop() (runErr error) {
 		},
 		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
 			return app.do(ctx, func() error {
-				err := controller.ReconfigureChecked(check, update)
+				err := controller.ReconfigureOperation(tray.OperationID(ctx), check, update)
 				if preferences, readErr := tray.ReadPreferences(*config); readErr == nil {
 					app.updates.updater.SetAutomatic(preferences.CheckForUpdates)
 				}
@@ -227,7 +229,11 @@ func runWindowsDesktop() (runErr error) {
 		},
 		Connect: func(ctx context.Context, revision string) error {
 			return app.do(ctx, func() error {
-				operation, err := checkedDesktopConnectOperation(*config, revision, controller, &app.login)
+				scoped := controller.ForOperation(tray.OperationID(ctx))
+				if err := scoped.Check(); err != nil {
+					return err
+				}
+				operation, err := checkedDesktopConnectOperation(*config, revision, scoped, &app.login)
 				if err != nil || operation == nil {
 					return err
 				}
@@ -406,18 +412,22 @@ func (a *windowsApp) operate() {
 
 func (a *windowsApp) action(ctx context.Context, action string) error {
 	return a.do(ctx, func() error {
+		controller := a.controller.ForOperation(tray.OperationID(ctx))
+		if err := controller.Check(); err != nil {
+			return err
+		}
 		action, exit := splitExitAction(action)
 		switch action {
 		case "add-exit":
 			a.login.Cancel()
-			return finishDesktopExitLogin(&a.login, a.controller.AddExit(exit))
+			return finishDesktopExitLogin(&a.login, controller.AddExit(exit))
 		case "login-exit":
-			return requestDesktopExitLogin(a.controller, &a.login, exit)
+			return requestDesktopExitLogin(controller, &a.login, exit)
 		case "logout-exit":
 			a.login.Cancel()
 			return a.controller.LogoutExit(exit)
 		case "connect":
-			operation, err := desktopConnectOperation(a.controller, &a.login)
+			operation, err := desktopConnectOperation(controller, &a.login)
 			if err != nil || operation == nil {
 				return err
 			}
@@ -427,19 +437,19 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			return a.controller.Stop()
 		case "login":
 			return nativePrimarySignIn(a.configPath, a.window.Show,
-				func() error { return requestDesktopLogin(a.controller, &a.login) })
+				func() error { return requestDesktopLogin(controller, &a.login) })
 		case "logout":
 			a.login.Cancel()
 			return a.controller.Logout()
 		case "switch-network":
 			a.login.Cancel()
-			if err := a.controller.SwitchNetwork(); err != nil {
+			if err := controller.SwitchNetwork(); err != nil {
 				return err
 			}
 			a.login.Request()
 			return nil
 		case "refresh-exits":
-			return a.controller.RefreshExitNodes()
+			return controller.RefreshExitNodes()
 		case "startup-on":
 			return tray.SetLoginItem(true)
 		case "startup-off":

@@ -14,12 +14,13 @@ import (
 // Claiming consumes the intent before guided setup begins, even when that flow
 // later cancels. The controller callback compares and clears the ID atomically.
 func (s *Server) claimConnectRequest(w http.ResponseWriter, r *http.Request) {
-	if s.options.ClaimConnectRequest == nil {
+	if s.options.ClaimConnectRequest == nil && s.options.ClaimConnectOperation == nil {
 		http.NotFound(w, r)
 		return
 	}
 	var request struct {
-		Request string `json:"request"`
+		Request     string `json:"request"`
+		OperationID string `json:"operation_id,omitempty"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 	decoder.DisallowUnknownFields()
@@ -28,7 +29,37 @@ func (s *Server) claimConnectRequest(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "request", "无法读取操作请求。")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"claimed": s.options.ClaimConnectRequest(request.Request)})
+	claimed := false
+	if s.options.ClaimConnectOperation != nil {
+		claimed = s.options.ClaimConnectOperation(request.Request, request.OperationID)
+	} else if request.OperationID == "" || request.OperationID == request.Request {
+		claimed = s.options.ClaimConnectRequest(request.Request)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"claimed": claimed})
+}
+
+// Cancellation bypasses the desktop action queue and only targets exact IDs.
+func (s *Server) cancelOperation(w http.ResponseWriter, r *http.Request) {
+	if s.options.Cancel == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var request struct {
+		Request     string `json:"request"`
+		OperationID string `json:"operation_id"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	var extra any
+	if decoder.Decode(&request) != nil || decoder.Decode(&extra) != io.EOF || request.Request == "" && request.OperationID == "" {
+		fail(w, http.StatusBadRequest, "request", "无法读取操作请求。")
+		return
+	}
+	if err := s.options.Cancel(r.Context(), request.Request, request.OperationID); err != nil {
+		fail(w, http.StatusConflict, "cancel", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // Desktop controls use the same capability and origin policy as configuration
@@ -43,6 +74,7 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		Exit           string `json:"exit,omitempty"`
 		Revision       string `json:"revision,omitempty"`
 		ConnectRequest string `json:"connect_request,omitempty"`
+		OperationID    string `json:"operation_id,omitempty"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 	decoder.DisallowUnknownFields()
@@ -56,6 +88,31 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		(request.ConnectRequest != "" && request.Action != "disconnect") {
 		fail(w, http.StatusBadRequest, "action", "未知操作。")
 		return
+	}
+	if request.Action == "disconnect" && (request.ConnectRequest != "" || request.OperationID != "") {
+		if request.Exit != "" || s.options.Cancel == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if err := s.options.Cancel(r.Context(), request.ConnectRequest, request.OperationID); err != nil {
+			fail(w, http.StatusConflict, "cancel", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	if request.OperationID != "" {
+		switch request.Action {
+		case "connect", "login", "login-exit", "add-exit", "switch-network", "refresh-exits":
+		default:
+			fail(w, http.StatusBadRequest, "action", "未知操作。")
+			return
+		}
+		if s.options.Cancel == nil {
+			http.NotFound(w, r)
+			return
+		}
+		r = r.WithContext(tray.WithOperationID(r.Context(), request.OperationID))
 	}
 	var operation func() error
 	switch request.Action {
@@ -150,13 +207,11 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		}
 		operation = func() error { return s.options.Action(r.Context(), action) }
 	}
-	// Cancel the exact intent within the disconnect request, so a failed or
-	// stalled claim endpoint cannot delay stopping a helper or replay the intent.
-	// A stale ID must neither consume a newer click nor prevent disconnection.
-	if request.Action == "disconnect" && request.ConnectRequest != "" && s.options.ClaimConnectRequest != nil {
-		s.options.ClaimConnectRequest(request.ConnectRequest)
-	}
 	if err := operation(); err != nil {
+		if errors.Is(err, tray.ErrOperationCanceled) {
+			fail(w, http.StatusConflict, "canceled", err.Error())
+			return
+		}
 		if errors.Is(err, tray.ErrConfigChanged) {
 			fail(w, http.StatusConflict, "conflict", "配置文件已更新，请重新读取后重试。")
 			return

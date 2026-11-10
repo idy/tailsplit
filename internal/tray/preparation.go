@@ -17,6 +17,10 @@ type servicePreparation struct {
 // PrepareService publishes startup authorization through the ordinary snapshot
 // and owns a cancelable operation independently of any network helper process.
 func (c *Controller) PrepareService(ctx context.Context, prepare func(context.Context) error) error {
+	return c.prepareService(ctx, "", prepare)
+}
+
+func (c *Controller) prepareService(ctx context.Context, operation string, prepare func(context.Context) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -24,6 +28,10 @@ func (c *Controller) PrepareService(ctx context.Context, prepare func(context.Co
 		return errors.New("service preparation is required")
 	}
 	c.mu.Lock()
+	if err := c.operationAllowedLocked(operation); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	if c.closed || c.stopping || c.reconfiguring || c.loggingOut || c.command != nil || c.pendingAdd != nil || c.preparation != nil || c.pingCancel != nil {
 		c.mu.Unlock()
 		return tailsplit.ErrPingBusy
@@ -32,6 +40,7 @@ func (c *Controller) PrepareService(ctx context.Context, prepare func(context.Co
 	op := &servicePreparation{cancel: cancel, done: make(chan struct{})}
 	previousState, previousMode, previousError, previousCode := c.snapshot.State, c.snapshot.Mode, c.snapshot.Error, c.snapshot.ErrorCode
 	c.preparation = op
+	c.ownOperationLocked(operation)
 	c.snapshot.State, c.snapshot.Mode, c.snapshot.Error, c.snapshot.ErrorCode = "authorizing", servicePreparationMode, "", ""
 	c.mu.Unlock()
 
@@ -66,6 +75,7 @@ func (c *Controller) CancelServicePreparation() bool {
 	if c.preparation == nil {
 		return false
 	}
+	c.markCanceledLocked(c.operationID)
 	c.preparation.cancel()
 	c.snapshot.State = "stopping"
 	return true

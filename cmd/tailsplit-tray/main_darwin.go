@@ -265,6 +265,8 @@ func main() {
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
+		ClaimConnectOperation: controller.ClaimConnectOperation,
+		Cancel:                func(_ context.Context, request, operation string) error { return controller.Cancel(request, operation) },
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return submit(configurationApply{ctx: ctx, action: "add-exit:" + id, revision: revision})
 		},
@@ -386,6 +388,7 @@ func main() {
 			if pendingAction == "" {
 				pendingAction = "startup-service"
 			}
+			startupOperation := controller.ForOperation("")
 			go func() {
 				err := prepareDesktopStartup(ctx, func(ctx context.Context) error {
 					// app-run performs its own exact-build readiness check before
@@ -393,17 +396,17 @@ func main() {
 					if desktopProofMode() || startupAction == "connect" {
 						return nil
 					}
-					return controller.PrepareService(ctx, func(ctx context.Context) error {
+					return startupOperation.PrepareService(ctx, func(ctx context.Context) error {
 						return appservice.UpgradeExisting(ctx, *helper, io.Discard)
 					})
 				}, func() error {
 					switch startupAction {
 					case "login":
-						return controller.StartLogin()
+						return startupOperation.StartLogin()
 					case "connect":
-						return controller.Start()
+						return startupOperation.Start()
 					case "refresh-exits":
-						return controller.RefreshExitNodes()
+						return startupOperation.RefreshExitNodes()
 					default:
 						return nil
 					}
@@ -511,13 +514,22 @@ func main() {
 						request.done <- configweb.ErrBusy
 						continue
 					}
+					var actionController desktopActionController = controller
+					if id := tray.OperationID(request.ctx); id != "" {
+						scoped := controller.ForOperation(id)
+						if err := scoped.Check(); err != nil {
+							request.done <- err
+							continue
+						}
+						actionController = scoped
+					}
 					var operation func() error
 					if request.action != "" {
 						var err error
 						if request.action == "connect" && request.revision != "" {
-							operation, err = checkedDesktopConnectOperation(*config, request.revision, controller, &flow)
+							operation, err = checkedDesktopConnectOperation(*config, request.revision, actionController, &flow)
 						} else {
-							operation, err = desktopActionOperation(request.action, controller, &flow, func(enabled bool) error {
+							operation, err = desktopActionOperation(request.action, actionController, &flow, func(enabled bool) error {
 								return setDesktopStartup(enabled, tray.SetLoginItem, tray.LoginItem, tray.OpenLoginItemSettings)
 							}, request.revision)
 						}
@@ -532,7 +544,9 @@ func main() {
 						flow.Cancel()
 						operation = request.update
 						if !request.direct {
-							operation = func() error { return controller.ReconfigureChecked(request.check, request.update) }
+							operation = func() error {
+								return controller.ReconfigureOperation(tray.OperationID(request.ctx), request.check, request.update)
+							}
 						}
 					}
 					pendingRequest, pendingAction = request.done, request.action

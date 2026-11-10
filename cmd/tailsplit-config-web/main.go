@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"os"
@@ -43,6 +44,20 @@ func main() {
 func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 	var mutex sync.Mutex
 	snapshot := tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
+	canceled := make(map[string]bool)
+	revokedRequests := make(map[string]bool)
+	revokedOperations := make(map[string]bool)
+	requestOperations := make(map[string]string)
+	operationAllowed := func(id string) bool { return !canceled[id] && !revokedOperations[id] }
+	ownOperation := func(id string) {
+		if id == "" {
+			id = rand.Text()
+		}
+		if snapshot.OperationID != "" && snapshot.OperationID != id {
+			canceled[snapshot.OperationID] = true
+		}
+		snapshot.OperationID = id
+	}
 	options := configweb.Options{
 		ConfigPath: configPath, Listen: listen, Preview: true,
 		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
@@ -50,6 +65,12 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			defer mutex.Unlock()
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if id := tray.OperationID(ctx); id != "" {
+				if !operationAllowed(id) || snapshot.Active && snapshot.OperationID != id {
+					return tray.ErrOperationCanceled
+				}
+				ownOperation(id)
 			}
 			if check != nil {
 				if err := check(snapshot); err != nil {
@@ -104,6 +125,43 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		return err
 	}
 	if desktop {
+		options.Cancel = func(_ context.Context, request, operation string) error {
+			mutex.Lock()
+			defer mutex.Unlock()
+			if request != "" {
+				revokedRequests[request] = true
+				if snapshot.ConnectRequest == request && requestOperations[request] == "" {
+					requestOperations[request] = request
+				}
+				if bound := requestOperations[request]; bound != "" {
+					revokedOperations[request] = true
+					revokedOperations[bound] = true
+				}
+				if snapshot.ConnectRequest == request {
+					snapshot.ConnectRequest = ""
+				}
+			}
+			if operation != "" {
+				canceled[operation] = true
+				if snapshot.OperationID == operation {
+					snapshot.State, snapshot.Mode, snapshot.Active, snapshot.ActiveRevision = "stopped", "", false, ""
+				}
+			}
+			return nil
+		}
+		options.ClaimConnectOperation = func(request, operation string) bool {
+			mutex.Lock()
+			defer mutex.Unlock()
+			if operation == "" {
+				operation = request
+			}
+			if request == "" || snapshot.ConnectRequest != request || revokedRequests[request] || canceled[request] || !operationAllowed(operation) {
+				return false
+			}
+			requestOperations[request] = operation
+			snapshot.ConnectRequest = ""
+			return true
+		}
 		// A broken configuration must remain editable in the preview.
 		if config, err := tailsplit.Load(configPath); err == nil {
 			updatePreviewSnapshot(&snapshot, config)
@@ -211,7 +269,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				"\x1b[33mWARN\x1b[0m[0004] preview simulation: selected exit is unavailable\n" +
 				"\x1b[31mERROR\x1b[0m[0005] preview simulation: DNS lookup timed out\n", nil
 		}
-		actionWithRevision := func(ctx context.Context, action, expectedRevision string) error {
+		actionWithRevision := func(ctx context.Context, action, expectedRevision string) (actionErr error) {
 			mutex.Lock()
 			defer mutex.Unlock()
 			defer func() {
@@ -221,6 +279,22 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			}()
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			name, _, _ := strings.Cut(action, ":")
+			switch name {
+			case "connect", "login", "login-exit", "add-exit", "switch-network", "refresh-exits":
+				id := tray.OperationID(ctx)
+				if !operationAllowed(id) {
+					return tray.ErrOperationCanceled
+				}
+				// Failed admission and a reused discovery result do not replace
+				// the current owner. Publish ownership with successful admission.
+				adopt := name != "refresh-exits" || id != "" && !snapshot.Active
+				defer func() {
+					if actionErr == nil && adopt {
+						ownOperation(id)
+					}
+				}()
 			}
 			if action == "connect" && expectedRevision != "" {
 				if err := tray.CheckConfigRevision(configPath, expectedRevision); err != nil {
@@ -313,6 +387,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				}
 				updatePreviewSnapshot(&snapshot, config)
 			case "disconnect":
+				canceled[snapshot.OperationID] = snapshot.OperationID != ""
 				snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
 			case "logout":
 				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin", RoutingMode: snapshot.RoutingMode}
