@@ -21,6 +21,10 @@ type TrafficSnapshot struct {
 	SessionID string                     `json:"session_id"`
 	SampledAt time.Time                  `json:"sampled_at"`
 	Routes    map[string]TrafficCounters `json:"routes"`
+	// PrivateExits lists the compiled runtime's private-name owners by logical
+	// exit ID, including blocked owners whose reserved namespaces reject traffic.
+	// It describes ownership, not availability; an empty array means no owners.
+	PrivateExits []string `json:"private_exits"`
 }
 
 // TrafficCounters measures local-user upload and download at the routed inbound.
@@ -38,15 +42,20 @@ type routeTraffic struct {
 
 type trafficCollector struct {
 	session string
-	// Both maps are immutable after construction; connections update atomics.
-	tags   map[string]*routeTraffic
-	routes map[string]*routeTraffic
+	// Route maps and ownership are immutable after construction; connections
+	// update only the counters' atomics.
+	tags         map[string]*routeTraffic
+	routes       map[string]*routeTraffic
+	privateExits []string
 }
 
 var _ adapter.ConnectionTracker = (*trafficCollector)(nil)
 
-func newTrafficCollector(config Config, options option.Options) *trafficCollector {
-	t := &trafficCollector{session: rand.Text(), tags: map[string]*routeTraffic{}, routes: map[string]*routeTraffic{}}
+func newTrafficCollector(config Config, options option.Options, privateExits []string) *trafficCollector {
+	t := &trafficCollector{
+		session: rand.Text(), tags: map[string]*routeTraffic{}, routes: map[string]*routeTraffic{},
+		privateExits: append([]string{}, privateExits...),
+	}
 	add := func(tag, id string) {
 		counter := new(routeTraffic)
 		t.tags[tag], t.routes[id] = counter, counter
@@ -78,7 +87,10 @@ func newTrafficCollector(config Config, options option.Options) *trafficCollecto
 }
 
 func (t *trafficCollector) snapshot() TrafficSnapshot {
-	snapshot := TrafficSnapshot{SessionID: t.session, SampledAt: time.Now().UTC(), Routes: make(map[string]TrafficCounters, len(t.routes))}
+	snapshot := TrafficSnapshot{
+		SessionID: t.session, SampledAt: time.Now().UTC(), Routes: make(map[string]TrafficCounters, len(t.routes)),
+		PrivateExits: append([]string{}, t.privateExits...),
+	}
 	for id, counter := range t.routes {
 		snapshot.Routes[id] = TrafficCounters{UploadBytes: counter.upload.Load(), DownloadBytes: counter.download.Load()}
 	}

@@ -32,7 +32,7 @@ func fixtureTraffic(focus string) *trafficCollector {
 	return newTrafficCollector(Config{Focus: focus, Exits: []ExitConfig{{ID: "office"}}}, option.Options{
 		Outbounds: []option.Outbound{{Tag: "direct"}},
 		Endpoints: []option.Endpoint{{Type: "tailscale", Tag: "tailnet"}, {Type: "tailscale", Tag: "exit-office"}},
-	})
+	}, nil)
 }
 
 type trafficTestConn struct {
@@ -160,7 +160,7 @@ func TestTrafficNativeFlowsConcurrentAndSessionReset(t *testing.T) {
 func TestTrafficOnlyCompiledLocalRoutesAndFocusedExit(t *testing.T) {
 	collector := newTrafficCollector(Config{Focus: "office"}, option.Options{
 		Endpoints: []option.Endpoint{{Type: "tailscale", Tag: "tailnet"}},
-	})
+	}, nil)
 	if got := collector.snapshot().Routes; !reflect.DeepEqual(got, map[string]TrafficCounters{"office": {}}) {
 		t.Fatal("focused Global session invented inactive main/direct routes:", got)
 	}
@@ -169,6 +169,154 @@ func TestTrafficOnlyCompiledLocalRoutesAndFocusedExit(t *testing.T) {
 	} {
 		if flow := collector.RoutedFlow(context.Background(), adapter.InboundContext{Inbound: test.inbound}, nil, trafficTestOutbound{tag: test.outbound}); flow != nil {
 			t.Fatal("counting non-local or unknown route:", test)
+		}
+	}
+}
+
+func TestCompiledPrivateExitsFollowCanonicalSuffixOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		change  func(*Config)
+		blocked map[string]bool
+		want    []string
+	}{
+		{name: "distinct primary and extra", want: []string{MainExit, "office"}},
+		{name: "no suffix ownership", change: func(c *Config) {
+			c.DNS.MagicDomains = nil
+			c.Exits[0].Tailnet = "Office"
+			c.Rules.Routes = []RouteConfig{{Exit: "office", Domains: []string{"ordinary.example"}}}
+			c.Rules.ProxyDomains = []string{"proxy.example"}
+		}, want: []string{}},
+		{name: "canonical primary wins duplicate", change: func(c *Config) {
+			c.DNS.MagicDomains = []string{"*.PRIMARY.TS.NET."}
+			c.Exits[0].MagicDNSSuffix = "Primary.TS.NET."
+		}, want: []string{MainExit}},
+		{name: "custom primary wins canonical duplicate", change: func(c *Config) {
+			c.DNS.MagicDomains = nil
+			c.Tailscale.Domains = []string{"BÜCHER.example.", "service.example", "service.example"}
+			c.Exits[0].MagicDNSSuffix = "xn--bcher-kva.example"
+		}, want: []string{MainExit}},
+		{name: "first extra wins duplicate", change: func(c *Config) {
+			c.DNS.MagicDomains = nil
+			c.Exits[1].ExitNode = "100.101.0.12"
+			c.Exits[1].MagicDNSSuffix = "Office.TS.NET."
+		}, want: []string{"office"}},
+		{name: "longest suffix keeps both owners", change: func(c *Config) {
+			c.DNS.MagicDomains = []string{"ts.net"}
+		}, want: []string{MainExit, "office"}},
+		{name: "blocked primary retains duplicate", change: func(c *Config) {
+			c.Rules.DefaultExit = "office"
+			c.Exits[0].MagicDNSSuffix = "primary.ts.net"
+		}, blocked: map[string]bool{MainExit: true}, want: []string{MainExit}},
+		{name: "blocked first extra retains duplicate", change: func(c *Config) {
+			c.Exits[1].ExitNode = "100.101.0.12"
+			c.Exits[1].MagicDNSSuffix = "office.ts.net"
+		}, blocked: map[string]bool{"office": true}, want: []string{MainExit, "office"}},
+		{name: "pending extra has no ownership", change: func(c *Config) {
+			c.Exits[0].ExitNode, c.Exits[0].Tailnet = "", "Office"
+		}, want: []string{MainExit}},
+		{name: "focused extra uses logical ID", change: func(c *Config) {
+			c.Focus = "office"
+		}, want: []string{"office"}},
+		{name: "Global extra uses logical ID", change: func(c *Config) {
+			c.Rules.Mode, c.Rules.GlobalExit = RoutingGlobal, "office"
+		}, want: []string{"office"}},
+		{name: "Global primary", change: func(c *Config) {
+			c.Rules.Mode = RoutingGlobal
+		}, want: []string{MainExit}},
+		{name: "extras only", change: func(c *Config) {
+			c.Tailscale, c.DNS.MagicDomains = nil, nil
+			c.Rules.DefaultExit = "office"
+		}, want: []string{"office"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := focusedExitTestConfig(t)
+			config.Rules.Final, config.Rules.Routes = "direct", nil
+			if test.change != nil {
+				test.change(&config)
+			}
+			compiled, err := compileWithOptions(t.Context(), config, compileOptions{validateTraffic: true, blockedExits: test.blocked})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(compiled.privateExits, test.want) {
+				t.Fatalf("compiled private owners = %v; want %v", compiled.privateExits, test.want)
+			}
+			if len(compiled.privateExits) > len(config.ExitIDs()) {
+				t.Fatal("private ownership exceeds configured devices")
+			}
+		})
+	}
+}
+
+func TestEngineTrafficPrivateExitsUsePreparedPlanAndStayIndependent(t *testing.T) {
+	if !TailscaleEnabled {
+		t.Skip("constructing a native Tailscale engine requires with_gvisor")
+	}
+	config := focusedExitTestConfig(t)
+	config.Tailscale.AuthKeyEnv = ""
+	config.Rules.Final, config.Rules.Routes = "direct", nil
+	config.Exits[0].Tailnet = "Office"
+	runtime, err := CompileContext(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(runtime.privateExits, []string{MainExit}) {
+		t.Fatal("unobserved office device invented a private namespace:", runtime.privateExits)
+	}
+	// Preflight learns this namespace from the SDK and recompiles only runtime.
+	current := &adapter.TailscaleEndpointStatus{BackendState: "Running", NetworkName: "Office", MagicDNSSuffix: "office.ts.net"}
+	latest := map[string]Status{"office": connectionStatus(current, config.Exits[0].ExitNode)}
+	if err := isolateOptionalExits(t.Context(), config, &runtime, nil, latest, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{MainExit, "office"}
+	if !reflect.DeepEqual(runtime.privateExits, want) || config.Exits[0].MagicDNSSuffix != "" {
+		t.Fatal("prepared plan lost observed ownership or rewrote saved metadata:", runtime.privateExits, config.Exits)
+	}
+	// Later live metadata now collides with main, while a later saved draft drops
+	// main's suffix. Neither is the policy already compiled for this engine.
+	current.MagicDNSSuffix = "primary.ts.net"
+	latest["office"] = connectionStatus(current, config.Exits[0].ExitNode)
+	config.DNS.MagicDomains = nil
+	config.Exits[0].MagicDNSSuffix = "changed.ts.net"
+	engine, err := Open(t.Context(), config, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := engine.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	// The collector must own a copy even if the caller reuses its compiled plan.
+	runtime.privateExits[0] = "mutated-plan"
+	first := engine.Traffic()
+	if !reflect.DeepEqual(first.PrivateExits, want) {
+		t.Fatal("engine ownership came from saved/live metadata instead of its prepared plan:", first.PrivateExits)
+	}
+	first.PrivateExits[0] = "mutated-snapshot"
+	if got := engine.Traffic(); !reflect.DeepEqual(got.PrivateExits, want) || got.SessionID != first.SessionID {
+		t.Fatal("traffic samples alias private ownership or changed runtime session:", got)
+	}
+}
+
+func TestTrafficPrivateExitsAlwaysEncodesAnArray(t *testing.T) {
+	for _, owners := range [][]string{nil, {}, {MainExit, "office"}} {
+		snapshot := newTrafficCollector(Config{}, option.Options{}, owners).snapshot()
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var encoded map[string]json.RawMessage
+		if err := json.Unmarshal(data, &encoded); err != nil {
+			t.Fatal(err)
+		}
+		if got := encoded["private_exits"]; len(got) == 0 || got[0] != '[' {
+			t.Fatalf("private_exits must be an explicit array, even without owners: %s", data)
+		}
+		if len(owners) == 0 && string(encoded["private_exits"]) != "[]" {
+			t.Fatalf("no-owner metadata must be explicit []: %s", data)
 		}
 	}
 }

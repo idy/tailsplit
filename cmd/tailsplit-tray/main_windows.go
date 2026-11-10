@@ -257,7 +257,7 @@ func runWindowsDesktop() (runErr error) {
 	showConfiguration = func() {
 		if err := app.window.Show(); err != nil {
 			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-			if err := mygo.Shell.OpenExternal(page.URL()); err != nil {
+			if err := mygo.Shell.OpenExternal(tray.ConfigurationWindowConnectURL(page.URL(), controller.Snapshot().ConnectRequest)); err != nil {
 				windowsError(err.Error())
 			}
 		}

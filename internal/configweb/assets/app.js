@@ -65,6 +65,7 @@
   const isLocked = () => state.busy || state.loading || state.switching;
 
   const fragment = new URLSearchParams(location.hash.slice(1));
+  let browserConnectRequest = fragment.get('connect') || '';
   let token = fragment.get('token');
   try {
     if (token) sessionStorage.setItem('tailsplit-config-token', token);
@@ -835,10 +836,10 @@
     window.TailSplitSelect?.sync();
   }
   async function consumeNativeConnect() {
-    // Only the native panel opened by the tray may consume its intent. A visible
-    // browser configuration page must not win the polling race against MyGo.
-    if (!mygoWindow) return;
     const request = desktopLive?.connect_request;
+    // MyGo owns ordinary native requests. A browser may handle only the exact
+    // intent placed in the URL when the host explicitly opened its fallback.
+    if (!mygoWindow && (!browserConnectRequest || browserConnectRequest !== request)) return;
     if (!request || request === lastNativeConnect) return;
     if (!connectionSetup && !(networkActive() && desktopLive.state === 'running') && (isLocked() || isDesktopBusy() || desktopLive.active)) return;
     try {
@@ -2085,21 +2086,26 @@
     const roles = new Map();
     const add = (id, role) => (roles.get(id) || roles.set(id, []).get(id)).push(role);
     if (requiresDefaultExit(values)) add(defaultID, t('默认代理出口'));
-    // Match CompileContext's implicit private-domain ownership and ordering.
-    const ownedSuffixes = new Set();
-    if (values.tailscale) {
-      const magicDomains = fieldValue(values, 'dns.magic_domains');
-      const primaryDomains = [...(Array.isArray(magicDomains) ? magicDomains : []), ...(Array.isArray(values.tailscale.domains) ? values.tailscale.domains : [])];
-      if (primaryDomains.length) add('main', t('私有域名'));
-      for (const suffix of primaryDomains) ownedSuffixes.add(canonicalRouteSuffix(suffix));
-    }
-    for (const exit of exitList(values)) {
-      const live = exitLive(exit.id);
-      const observed = applied && !excludedDevice(live) && exitSignedIn(exit.id) ? live.magic_dns_suffix : '';
-      const suffix = canonicalRouteSuffix(observed || exit.magic_dns_suffix || (String(exit.tailnet || '').toLowerCase().endsWith('.ts.net') ? exit.tailnet : ''));
-      if (exit.exit_node && suffix && !ownedSuffixes.has(suffix)) {
-        ownedSuffixes.add(suffix);
-        add(exit.id, t('私有域名'));
+    // Active ownership comes from the compiled session, never later SDK status.
+    // Saved-only previews retain the compiler's canonical suffix precedence.
+    const privateExits = desktopLive?.traffic?.private_exits;
+    if (applied && Array.isArray(privateExits)) {
+      const owners = new Set(privateExits);
+      for (const exit of records) if (exit.exit_node && owners.has(exit.id)) add(exit.id, t('私有域名'));
+    } else {
+      const ownedSuffixes = new Set();
+      if (values.tailscale) {
+        const magicDomains = fieldValue(values, 'dns.magic_domains');
+        const primaryDomains = [...(Array.isArray(magicDomains) ? magicDomains : []), ...(Array.isArray(values.tailscale.domains) ? values.tailscale.domains : [])];
+        if (primaryDomains.length) add('main', t('私有域名'));
+        for (const suffix of primaryDomains) ownedSuffixes.add(canonicalRouteSuffix(suffix));
+      }
+      for (const exit of exitList(values)) {
+        const suffix = canonicalRouteSuffix(exit.magic_dns_suffix || (String(exit.tailnet || '').toLowerCase().endsWith('.ts.net') ? exit.tailnet : ''));
+        if (exit.exit_node && suffix && !ownedSuffixes.has(suffix)) {
+          ownedSuffixes.add(suffix);
+          add(exit.id, t('私有域名'));
+        }
       }
     }
     const groups = new Map();
@@ -2410,6 +2416,16 @@
   window.addEventListener('beforeunload', (event) => { if (state.dirty || Object.keys(connectionChanges()).length) { event.preventDefault(); event.returnValue = ''; } });
   document.addEventListener('visibilitychange', () => { syncRouteMotion(); refreshPage(); });
   window.addEventListener('tailsplit-window-shown', refreshPage);
+  window.addEventListener('hashchange', async () => {
+    if (mygoWindow) return;
+    const incoming = new URLSearchParams(location.hash.slice(1));
+    const request = incoming.get('connect');
+    if (!request) return;
+    if (incoming.get('token') !== token) { location.reload(); return; }
+    browserConnectRequest = request;
+    history.replaceState(null, '', location.pathname);
+    await refreshPage();
+  });
   $('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('home'); });
   if (!token) {
     $('#loading').hidden = true;

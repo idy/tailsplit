@@ -186,7 +186,7 @@ func openWithLogWriter(ctx context.Context, config Config, compiled Compiled, wr
 		return nil, errors.New("could not initialize the embedded sing-box engine")
 	}
 	release = false
-	traffic := newTrafficCollector(config, options)
+	traffic := newTrafficCollector(config, options, compiled.privateExits)
 	instance.Router().AppendTracker(traffic)
 	engine := &Engine{ctx: ctx, box: instance, cancel: cancel, unlock: unlock, routingMode: config.Rules.Mode, traffic: traffic}
 	for _, in := range options.Inbounds {

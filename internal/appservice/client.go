@@ -511,8 +511,8 @@ func (c *stateLeaseConnection) Close() error {
 }
 
 // Forward keeps the app channel alive until privileged cleanup completes.
-// Cancellation abandons output while draining the service to EOF. A single
-// write to caller-owned output can outlive Forward.
+// Cancellation abandons ordinary output and gives stopped a bounded delivery
+// window while draining to service EOF. A caller-owned write can outlive Forward.
 func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 	stop := sync.OnceFunc(func() { stopSession(connection) })
 	done := make(chan struct{})
@@ -537,49 +537,93 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 		}
 	}()
 	defer close(writes)
-	outputCanceled := false
-	writeLine := func(line []byte) error {
-		if ctx.Err() != nil {
+	outputCanceled, writePending := false, false
+	writeLine := func(line []byte, terminal bool) error {
+		if ctx.Err() != nil && !terminal {
 			outputCanceled = true
 			return nil
 		}
-		select {
-		case writes <- append(append([]byte(nil), line...), '\n'):
-		case <-ctx.Done():
-			outputCanceled = true
-			return nil
-		}
-		select {
-		case err := <-written:
-			return err
-		case <-ctx.Done():
-			// Prefer a completed write's real error over simultaneous cancellation.
+		if writePending {
+			// Never queue the terminal event behind an already blocked writer.
 			select {
 			case err := <-written:
-				return err
+				writePending = false
+				if err != nil {
+					return err
+				}
 			default:
-				outputCanceled = true
 				return nil
+			}
+		}
+		writeCtx := ctx
+		var cancelGrace context.CancelFunc
+		defer func() {
+			if cancelGrace != nil {
+				cancelGrace()
+			}
+		}()
+		abandon := func() bool {
+			if terminal && cancelGrace == nil {
+				// Only stopped gets output grace. Service cleanup has no deadline.
+				writeCtx, cancelGrace = context.WithTimeout(context.Background(), 100*time.Millisecond)
+				return false
+			}
+			outputCanceled = true
+			return true
+		}
+		data := append(append([]byte(nil), line...), '\n')
+	submit:
+		for {
+			select {
+			case writes <- data:
+				writePending = true
+				break submit
+			case <-writeCtx.Done():
+				if abandon() {
+					return nil
+				}
+			}
+		}
+		for {
+			select {
+			case err := <-written:
+				writePending = false
+				return err
+			case <-writeCtx.Done():
+				// Prefer a completed write's real error over simultaneous cancellation.
+				select {
+				case err := <-written:
+					writePending = false
+					return err
+				default:
+				}
+				if abandon() {
+					return nil
+				}
 			}
 		}
 	}
 	scanner := bufio.NewScanner(connection)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
-	stopped := false
+	stopped, terminalTried := false, false
 	var writeErr error
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if writeErr == nil && !outputCanceled {
-			if err := writeLine(line); err != nil {
-				writeErr = err
-				stop()
-			}
-		}
 		var event struct {
 			Event string `json:"event"`
 		}
-		if json.Unmarshal(line, &event) == nil && event.Event == "stopped" {
-			stopped = true
+		terminal := json.Unmarshal(line, &event) == nil && event.Event == "stopped"
+		stopped = stopped || terminal
+		forward := !outputCanceled
+		if terminal && ctx.Err() != nil {
+			forward = !terminalTried
+		}
+		if writeErr == nil && forward {
+			terminalTried = terminalTried || terminal
+			if err := writeLine(line, terminal); err != nil {
+				writeErr = err
+				stop()
+			}
 		}
 	}
 	if writeErr == nil {

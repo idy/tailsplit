@@ -314,12 +314,12 @@ func main() {
 			return
 		}
 		if configurationWindow == nil {
-			openPath(configurationPage.URL())
+			openPath(tray.ConfigurationWindowConnectURL(configurationPage.URL(), controller.Snapshot().ConnectRequest))
 			return
 		}
 		if err := configurationWindow.Show(); err != nil {
 			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-			openPath(configurationPage.URL())
+			openPath(tray.ConfigurationWindowConnectURL(configurationPage.URL(), controller.Snapshot().ConnectRequest))
 		}
 	}
 	close(panelReady)

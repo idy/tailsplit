@@ -138,7 +138,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const storage = localeOptions.storage || new Map();
   app.storage = storage;
   const sandbox = {
-    document, window, URL, URLSearchParams, location: { hash: '#token=fixture' },
+    document, window, URL, URLSearchParams, location: { hash: localeOptions.hash || '#token=fixture', pathname: '/' },
     history: { replaceState() {} }, sessionStorage: { setItem(key, value) { storage.set(key, value); }, getItem(key) { return storage.get(key); } },
     navigator: { languages: localeOptions.languages || ['zh-CN'], clipboard: { writeText: async () => {} } },
     setTimeout: (callback) => { timers.set(++timer, callback); return timer; },
@@ -168,6 +168,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
       return response({ valid: true });
     },
   };
+  app.location = sandbox.location;
   vm.createContext(sandbox);
   vm.runInContext(i18nSource, sandbox, { filename: 'i18n.js' });
   vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -3286,7 +3287,8 @@ test('home includes an authenticated runtime-discovered private-domain owner', a
   const initial = multiExitDocument('100.101.0.11');
   initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct' };
   initial.values.exits[0].tailnet = '';
-  const app = await page({ ...officeSnapshot({ magic_dns_suffix: 'learned.ts.net' }), active: true, mode: 'proxy', state: 'running' }, '', { page: 'home' }, initial);
+  const app = await page({ ...officeSnapshot({ magic_dns_suffix: 'learned.ts.net' }), active: true, mode: 'proxy', state: 'running',
+    traffic: { session_id: 'compiled-owner', sampled_at: new Date().toISOString(), routes: {}, private_exits: ['office'] } }, '', { page: 'home' }, initial);
   const rows = () => app.$('#home-routes').children.map(item => item.children[0]);
   assert.deepEqual(rows().map(row => row.dataset.exit), ['direct', 'main', 'office']);
   assert.equal(rows()[2].children[1].textContent, '私有域名');
@@ -3313,6 +3315,48 @@ test('home does not merge compiler-distinct numeric domain suffixes through URL 
   initial.values.exits[0].magic_dns_suffix = '0x1.0x2.0x3.0x4';
   const app = await page({}, '', { page: 'home' }, initial);
   assert.deepEqual(app.$('#home-routes').children.map(item => item.children[0].dataset.exit), ['direct', 'main', 'office']);
+});
+
+test('only the designated browser fallback may claim its matching native Connect request', async () => {
+  const fallback = await page({ desktop: true }, '', { page: 'home', hash: '#token=fixture&connect=fallback-click' }, guidedDocument());
+  guidedBackend(fallback, { deferAdd: true });
+  fallback.snapshot.connect_request = 'fallback-click';
+  await fallback.poll();
+  assert.equal(fallback.snapshot.connect_request, '');
+  assert.equal(mutations(fallback).filter(r => r.data.action === 'add-exit').length, 1);
+  const stale = await page({ desktop: true }, '', { page: 'home', hash: '#token=fixture&connect=old-click' }, guidedDocument());
+  stale.snapshot.connect_request = 'new-native-click';
+  await stale.poll();
+  assert.equal(stale.requests.some(r => r.path === '/api/connect-request'), false, 'an old fallback tab cannot consume later native clicks');
+});
+
+test('a reused browser fallback receives an intent from a new fragment without reloading', async () => {
+  const app = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  guidedBackend(app, { deferAdd: true });
+  app.snapshot.connect_request = 'reused-browser-click';
+  app.location.hash = '#token=fixture&connect=reused-browser-click';
+  await app.windowEvents.emit('hashchange');
+  assert.equal(app.snapshot.connect_request, '');
+  assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1);
+});
+
+test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct' };
+  initial.values.dns = { magic_domains: ['primary.ts.net'] };
+  initial.values.exits[0].tailnet = '';
+  const snapshot = { ...officeSnapshot({ magic_dns_suffix: 'old-office.ts.net' }), active: true, mode: 'proxy', state: 'running',
+    traffic: { session_id: 'frozen-policy', sampled_at: new Date().toISOString(), routes: {}, private_exits: ['main', 'office'] } };
+  const app = await page(snapshot, '', { page: 'home' }, initial);
+  const exits = () => app.$('#home-routes').children.map(item => item.children[0].dataset.exit);
+  assert.deepEqual(exits(), ['direct', 'main', 'office']);
+  app.snapshot.exits.office.magic_dns_suffix = 'primary.ts.net';
+  await app.poll();
+  assert.deepEqual(exits(), ['direct', 'main', 'office'], 'a new live suffix cannot hide an existing compiled owner');
+  app.snapshot.traffic.private_exits = ['main'];
+  app.snapshot.exits.office.magic_dns_suffix = 'new-office.ts.net';
+  await app.poll();
+  assert.deepEqual(exits(), ['direct', 'main'], 'a live-only suffix cannot invent an owner absent from the compiled policy');
 });
 
 test('pending primary machine approval explains the administrator action and does not relaunch login', async () => {

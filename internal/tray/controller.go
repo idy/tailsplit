@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -93,6 +94,7 @@ func (s Snapshot) clone() Snapshot {
 	s.ExitNodes = append([]tailsplit.ExitNode(nil), s.ExitNodes...)
 	if s.Traffic != nil {
 		traffic := *s.Traffic
+		traffic.PrivateExits = slices.Clone(s.Traffic.PrivateExits)
 		traffic.Routes = make(map[string]tailsplit.TrafficCounters, len(s.Traffic.Routes))
 		for id, counters := range s.Traffic.Routes {
 			traffic.Routes[id] = counters

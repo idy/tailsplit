@@ -136,6 +136,115 @@ func TestForwardBlockedConsumerCancelsWithoutReleasingLiveState(t *testing.T) {
 	}
 }
 
+func TestForwardBlockedShutdownOutputStillWaitsForServiceEOF(t *testing.T) {
+	for _, timing := range []string{"before terminal write", "during terminal write"} {
+		t.Run(timing, func(t *testing.T) {
+			directory := privateTestDirectory(t)
+			unlock, err := tailsplit.LockSavedState(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			broker, core := net.Pipe()
+			connection := &stateLeaseConnection{Conn: broker, release: unlock}
+			reader, pipeWriter := io.Pipe()
+			writer := &blockedForwardWriter{writer: pipeWriter, entered: make(chan struct{}), exited: make(chan struct{})}
+			ctx, cancel := context.WithCancel(t.Context())
+			forwardReturned, finished := make(chan struct{}), make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				defer close(finished)
+				err := Forward(ctx, connection, writer)
+				close(forwardReturned)
+				done <- errors.Join(err, connection.Close())
+			}()
+			t.Cleanup(func() {
+				cancel()
+				_ = reader.Close()
+				_ = pipeWriter.Close()
+				_ = core.Close()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("broker did not finish fixture cleanup")
+				}
+			})
+			readStop := func() {
+				t.Helper()
+				_ = core.SetReadDeadline(time.Now().Add(time.Second))
+				var command [5]byte
+				if _, err := io.ReadFull(core, command[:]); err != nil || string(command[:]) != "stop\n" {
+					t.Fatalf("service did not receive stop: %q %v", command, err)
+				}
+			}
+			if timing == "before terminal write" {
+				cancel()
+				readStop()
+			}
+			const terminal = "{\"event\":\"stopped\"}\n"
+			_ = core.SetWriteDeadline(time.Now().Add(time.Second))
+			if _, err := io.WriteString(core, terminal); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-writer.entered:
+			case <-time.After(time.Second):
+				t.Fatal("shutdown event was not offered to output")
+			}
+			if timing == "during terminal write" {
+				cancel()
+				readStop()
+			}
+			// The terminal write must time out so the broker can resume draining.
+			_ = core.SetWriteDeadline(time.Now().Add(time.Second))
+			if _, err := io.WriteString(core, "{\"event\":\"log\",\"message\":\"cleanup\"}\n"); err != nil {
+				t.Fatal("blocked shutdown output prevented service drain", err)
+			}
+			select {
+			case <-forwardReturned:
+				t.Fatal("shutdown output timeout replaced service EOF")
+			default:
+			}
+			if release, err := tailsplit.LockSavedState(directory); err == nil {
+				_ = release()
+				t.Fatal("shutdown output timeout released live state")
+			}
+			_ = core.Close()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("blocked terminal output retained completed service state")
+			}
+			if release, err := tailsplit.LockSavedState(directory); err != nil {
+				t.Fatal("service EOF did not release state", err)
+			} else {
+				_ = release()
+			}
+			select {
+			case <-writer.exited:
+				t.Fatal("broker closed caller-owned output")
+			default:
+			}
+			stopRead := time.AfterFunc(time.Second, func() { _ = reader.CloseWithError(context.DeadlineExceeded) })
+			defer stopRead.Stop()
+			data := make([]byte, len(terminal))
+			if _, err := io.ReadFull(reader, data); err != nil || string(data) != terminal {
+				t.Fatalf("pending shutdown event changed: %q %v", data, err)
+			}
+			select {
+			case <-writer.exited:
+			case <-time.After(time.Second):
+				t.Fatal("terminal writer did not finish when its consumer resumed")
+			}
+			if calls := writer.calls.Load(); calls != 1 {
+				t.Fatal("shutdown output started additional writes", calls)
+			}
+		})
+	}
+}
+
 type shortForwardWriter struct{}
 
 func (shortForwardWriter) Write(data []byte) (int, error) { return len(data) - 1, nil }
@@ -143,12 +252,15 @@ func (shortForwardWriter) Write(data []byte) (int, error) { return len(data) - 1
 func TestForwardStopsAndDrainsAfterOutputFailure(t *testing.T) {
 	writeErr := errors.New("fixture output failed")
 	for _, test := range []struct {
-		name   string
-		writer io.Writer
-		want   error
+		name     string
+		writer   io.Writer
+		want     error
+		canceled bool
 	}{
-		{"write error", failingEventWriter{writeErr}, writeErr},
-		{"short write", shortForwardWriter{}, io.ErrShortWrite},
+		{"write error", failingEventWriter{writeErr}, writeErr, false},
+		{"short write", shortForwardWriter{}, io.ErrShortWrite, false},
+		{"canceled write error", failingEventWriter{writeErr}, writeErr, true},
+		{"canceled short write", shortForwardWriter{}, io.ErrShortWrite, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			broker, core := net.Pipe()
@@ -171,7 +283,12 @@ func TestForwardStopsAndDrainsAfterOutputFailure(t *testing.T) {
 				}
 				serviceDone <- err
 			}()
-			if err := Forward(t.Context(), broker, test.writer); !errors.Is(err, test.want) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if test.canceled {
+				cancel()
+			}
+			if err := Forward(ctx, broker, test.writer); !errors.Is(err, test.want) {
 				t.Fatal("forwarding lost its output error", err)
 			}
 			if err := <-serviceDone; err != nil {
