@@ -835,6 +835,9 @@
     window.TailSplitSelect?.sync();
   }
   async function consumeNativeConnect() {
+    // Only the native panel opened by the tray may consume its intent. A visible
+    // browser configuration page must not win the polling race against MyGo.
+    if (!mygoWindow) return;
     const request = desktopLive?.connect_request;
     if (!request || request === lastNativeConnect) return;
     if (!connectionSetup && !(networkActive() && desktopLive.state === 'running') && (isLocked() || isDesktopBusy() || desktopLive.active)) return;
@@ -878,17 +881,20 @@
     panel.hidden = !setup && !service && !serviceError;
     if (panel.hidden) return;
     const failed = setup?.stage === 'failed' || serviceError;
-    const approval = sessionNeedsApproval(live);
+    const checkingApproval = setup?.stage === 'approval' && live.active;
+    const approvalRetry = setup?.stage === 'approval' && !live.active;
+    const approval = setup?.stage === 'approval' || sessionNeedsApproval(live);
+    const approvalError = setup?.approvalError || (live.state === 'failed' ? backendError(live) : '');
     const title = failed ? serviceError ? '后台服务需要安装或更新' : '连接设置未完成' : service ? '需要安装或更新后台服务' :
-      approval ? '等待管理员批准设备' : setup?.stage === 'node' ? '选择节点后即可连接' : setup?.stage === 'connecting' ? '正在连接 TailSplit' : '正在设置出口';
+      checkingApproval ? '正在检查设备批准状态' : approval ? '等待管理员批准设备' : setup?.stage === 'node' ? '选择节点后即可连接' : setup?.stage === 'connecting' ? '正在连接 TailSplit' : '正在设置出口';
     const detail = failed ? manualService ? '请重新运行 TailSplit 安装程序修复 Windows 后台服务，完成后再重试连接。' : setup?.error || backendError(live) : service ? '请完成已打开的系统安装器，应用会继续这次操作。可以取消，稍后重试。' :
-      approval ? approvalHelp() : setup?.stage === 'node' ? '选择一个在线节点并确认；应用会保存出口并继续这次连接。' :
+      checkingApproval ? '正在刷新设备状态，不会重新发起登录。' : approval ? approvalError || (approvalRetry ? t('设备获批后，点击“检查批准状态”以继续连接。') : approvalHelp()) : setup?.stage === 'node' ? '选择一个在线节点并确认；应用会保存出口并继续这次连接。' :
       setup?.stage === 'connecting' ? '正在使用已确认的出口连接。' : '正在准备设备授权。完成浏览器登录后会自动打开节点选择，再继续连接。';
     setStatusText('#connection-setup-title', t(title));
     setStatusText('#connection-setup-detail', message(detail));
     panel.classList.toggle('error', failed);
-    $('#connection-setup-retry').hidden = !failed;
-    setStatusText('#connection-setup-retry', t(serviceError ? '安装服务并继续连接' : '重试连接'));
+    $('#connection-setup-retry').hidden = !failed && !approvalRetry;
+    setStatusText('#connection-setup-retry', t(approvalRetry ? '检查批准状态' : serviceError ? '安装服务并继续连接' : '重试连接'));
     $('#connection-setup-retry').disabled = isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || !state.savedValid || networkActive();
     $('#connection-setup-cancel').hidden = !setup && !live.active;
     $('#connection-setup-cancel').disabled = isDesktopBusy() || quickBusy || connectionLost;
@@ -916,7 +922,7 @@
     if (state.dirty || state.external || setup.revision !== state.revision || setup.field !== connectionExitField()) {
       setupFailed(t('配置已更改，自动连接已暂停。请检查配置后重新开启。')); return;
     }
-    if (setup.stage !== 'prepare' && desktopLive?.state === 'failed') { setupFailed(backendError(desktopLive) || operationError?.detail); return; }
+    if (!['prepare', 'approval'].includes(setup.stage) && desktopLive?.state === 'failed') { setupFailed(backendError(desktopLive) || operationError?.detail); return; }
     if (setup.stage === 'login' && setup.loginRequested && !desktopLive?.active && desktopLive?.state === 'stopped' && !exitSignedIn(setup.exit)) {
       setupFailed(t('登录已取消，可以重试连接。')); return;
     }
@@ -942,7 +948,13 @@
         setup.stage = 'approval';
         return; // Administrator approval must not relaunch browser sign-in.
       }
-      if (setup.stage === 'approval') setup.stage = 'login';
+      if (setup.stage === 'approval') {
+        if (!exitSignedIn(setup.exit)) {
+          if (!desktopLive.active && exitLive(setup.exit).backend_state === 'NeedsLogin') setupFailed(t('设备需要重新登录，请重试连接。'));
+          return; // A status refresh can temporarily clear cached device metadata.
+        }
+        setup.stage = 'login';
+      }
       if (!exitSignedIn(setup.exit)) {
         if (!setup.loginRequested) {
           setup.stage = 'login'; setup.loginRequested = true;
@@ -969,7 +981,16 @@
     } finally { setupAdvancing = false; renderConnectionSetup(); }
   }
   $('#connection-setup-cancel').addEventListener('click', cancelConnectionSetup);
-  $('#connection-setup-retry').addEventListener('click', () => {
+  $('#connection-setup-retry').addEventListener('click', async () => {
+    if (connectionSetup?.stage === 'approval') {
+      if (desktopLive?.active || $('#connection-setup-retry').disabled) return;
+      const setup = connectionSetup;
+      setup.approvalError = '';
+      const ok = await desktopAction('refresh-exits');
+      if (connectionSetup === setup && !ok) setup.approvalError = operationError?.detail;
+      renderConnectionSetup();
+      return;
+    }
     if (!connectionSetup && !requiresDefaultExit(state.savedValues)) return desktopAction('connect');
     const exit = configuredExits().some(exit => exit.id === connectionSetup?.exit) ? connectionSetup.exit : connectionExitRecord()?.id || '';
     return beginConnectionSetup(exit);
@@ -2031,7 +2052,17 @@
       trafficRates.clear(); renderHomeRates(false);
     }, remaining);
   }
-  // Destinations come only from saved routing. Tones describe confirmed state, never traffic.
+  function canonicalRouteSuffix(raw) {
+    const value = String(raw || '').replace(/^\*\./, '').replace(/^\./, '').replace(/\.$/, '');
+    if (!value) return '';
+    // The extra label applies URL's IDNA mapping without reinterpreting a
+    // numeric domain as an IPv4 address, which the compiler does not do.
+    try {
+      const host = new URL(`https://${value}.invalid`).hostname.toLowerCase();
+      return host.endsWith('.invalid') ? host.slice(0, -8) : '';
+    } catch (_) { return ''; }
+  }
+  // Saved policy plus authenticated runtime metadata determine private routes.
   function homeRoutes({ global, applied, blocked }) {
     const values = state.savedValues;
     const records = configuredExits(values);
@@ -2060,10 +2091,12 @@
       const magicDomains = fieldValue(values, 'dns.magic_domains');
       const primaryDomains = [...(Array.isArray(magicDomains) ? magicDomains : []), ...(Array.isArray(values.tailscale.domains) ? values.tailscale.domains : [])];
       if (primaryDomains.length) add('main', t('私有域名'));
-      for (const suffix of primaryDomains) ownedSuffixes.add(String(suffix).toLowerCase());
+      for (const suffix of primaryDomains) ownedSuffixes.add(canonicalRouteSuffix(suffix));
     }
     for (const exit of exitList(values)) {
-      const suffix = String(exit.magic_dns_suffix || (String(exit.tailnet || '').toLowerCase().endsWith('.ts.net') ? exit.tailnet : '')).toLowerCase();
+      const live = exitLive(exit.id);
+      const observed = applied && !excludedDevice(live) && exitSignedIn(exit.id) ? live.magic_dns_suffix : '';
+      const suffix = canonicalRouteSuffix(observed || exit.magic_dns_suffix || (String(exit.tailnet || '').toLowerCase().endsWith('.ts.net') ? exit.tailnet : ''));
       if (exit.exit_node && suffix && !ownedSuffixes.has(suffix)) {
         ownedSuffixes.add(suffix);
         add(exit.id, t('私有域名'));

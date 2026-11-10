@@ -138,7 +138,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const storage = localeOptions.storage || new Map();
   app.storage = storage;
   const sandbox = {
-    document, window, URLSearchParams, location: { hash: '#token=fixture' },
+    document, window, URL, URLSearchParams, location: { hash: '#token=fixture' },
     history: { replaceState() {} }, sessionStorage: { setItem(key, value) { storage.set(key, value); }, getItem(key) { return storage.get(key); } },
     navigator: { languages: localeOptions.languages || ['zh-CN'], clipboard: { writeText: async () => {} } },
     setTimeout: (callback) => { timers.set(++timer, callback); return timer; },
@@ -2986,7 +2986,7 @@ test('Connect without exits adds a device, confirms its node and default, then c
 });
 
 test('native Connect enters the same guided flow once and cannot replay after cancellation or reload', async () => {
-  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const app = await page({ desktop: true }, 'mygo-windows', {}, guidedDocument());
   guidedBackend(app);
   app.snapshot.connect_request = 'native-connect-1';
   await app.poll();
@@ -2995,12 +2995,12 @@ test('native Connect enters the same guided flow once and cannot replay after ca
   await app.$('#cancel-exit-picker').emit('click');
   await app.poll();
   assert.equal(mutations(app).length, 1);
-  const reloaded = await page(app.snapshot, '', { storage: app.storage }, app.config);
+  const reloaded = await page(app.snapshot, 'mygo-windows', { storage: app.storage }, app.config);
   assert.equal(mutations(reloaded).length, 0);
 });
 
 test('native Connect with a settings draft explains the block and cannot start after the draft is discarded', async () => {
-  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const app = await page({ desktop: true }, 'mygo-windows', {}, guidedDocument());
   guidedBackend(app);
   await app.input('#level', 'debug');
   app.snapshot.connect_request = 'native-draft';
@@ -3206,7 +3206,7 @@ test('missing default can be selected even when another referenced device needs 
 });
 
 test('native window show wakes a visible page immediately without waiting for its polling timer', async () => {
-  const app = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  const app = await page({ desktop: true }, 'mygo-macos', { page: 'home' }, guidedDocument());
   guidedBackend(app);
   app.snapshot.connect_request = 'native-show-immediate';
   await app.windowEvents.emit('tailsplit-window-shown');
@@ -3214,6 +3214,105 @@ test('native window show wakes a visible page immediately without waiting for it
   assert.equal(app.$('#exit-picker-dialog').open, true);
   await app.windowEvents.emit('tailsplit-window-shown');
   assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1, 'repeated Show does not replay the request');
+});
+
+test('inactive approval can be checked without login and resumes only after fresh approval', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'office', final: 'direct' };
+  const app = await page(officeSnapshot({ backend_state: 'NeedsMachineAuth' }), '', {}, initial);
+  let checks = 0;
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    if (request.data.action === 'refresh-exits') {
+      checks++;
+      if (checks === 1) {
+        Object.assign(app.snapshot, { active: true, mode: 'discovery', state: 'discovering' });
+        app.snapshot.exits.office.backend_state = '';
+      } else {
+        Object.assign(app.snapshot, { active: false, mode: 'discovery', state: 'stopped', error: '' });
+        app.snapshot.exits.office.backend_state = 'Running';
+      }
+    } else {
+      assert.equal(request.data.action, 'connect', 'checking approval must not relaunch browser authorization');
+      Object.assign(app.snapshot, { active: true, mode: 'proxy', state: 'running', active_revision: app.config.revision });
+    }
+    return response({ ok: true });
+  };
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#connection-setup-retry').textContent, '检查批准状态');
+  assert.equal(app.$('#connection-setup-retry').hidden, false);
+  await app.$('#connection-setup-retry').emit('click');
+  assert.equal(app.$('#connection-setup-title').textContent, '正在检查设备批准状态');
+  await app.$('#connection-setup-retry').emit('click');
+  assert.equal(checks, 1, 'an active check is not started twice');
+  Object.assign(app.snapshot, { active: false, state: 'failed', error: 'administrator approval pending' });
+  app.snapshot.exits.office.backend_state = 'NeedsMachineAuth';
+  await app.poll();
+  assert.equal(app.$('#connection-setup-title').textContent, '等待管理员批准设备');
+  assert.equal(app.$('#connection-setup-retry').hidden, false);
+  await app.poll();
+  assert.equal(checks, 1, 'state polling never starts an unbounded discovery loop');
+  await app.$('#connection-setup-retry').emit('click');
+  assert.deepEqual(mutations(app).map(r => r.data.action), ['refresh-exits', 'refresh-exits', 'connect']);
+});
+
+test('canceling inactive approval prevents a later status update from connecting', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'office', final: 'direct' };
+  const app = await page(officeSnapshot({ backend_state: 'NeedsMachineAuth' }), '', {}, initial);
+  await app.$('#desktop-connect').emit('click');
+  await app.$('#connection-setup-cancel').emit('click');
+  app.snapshot.exits.office.backend_state = 'Running';
+  await app.poll();
+  assert.equal(mutations(app).length, 0);
+});
+
+test('a browser panel cannot consume a Connect intent intended for the native window', async () => {
+  const browser = await page({ desktop: true, connect_request: 'native-only' }, '', { page: 'home' }, guidedDocument());
+  await browser.windowEvents.emit('tailsplit-window-shown');
+  await browser.poll();
+  assert.equal(browser.requests.some(r => r.path === '/api/connect-request'), false);
+  assert.equal(browser.snapshot.connect_request, 'native-only');
+  assert.equal(mutations(browser).length, 0);
+  const native = await page({ desktop: true }, 'mygo-macos', { page: 'home' }, guidedDocument());
+  guidedBackend(native, { deferAdd: true });
+  native.snapshot.connect_request = browser.snapshot.connect_request;
+  await native.windowEvents.emit('tailsplit-window-shown');
+  assert.equal(native.snapshot.connect_request, '');
+  assert.equal(mutations(native).filter(r => r.data.action === 'add-exit').length, 1);
+});
+
+test('home includes an authenticated runtime-discovered private-domain owner', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct' };
+  initial.values.exits[0].tailnet = '';
+  const app = await page({ ...officeSnapshot({ magic_dns_suffix: 'learned.ts.net' }), active: true, mode: 'proxy', state: 'running' }, '', { page: 'home' }, initial);
+  const rows = () => app.$('#home-routes').children.map(item => item.children[0]);
+  assert.deepEqual(rows().map(row => row.dataset.exit), ['direct', 'main', 'office']);
+  assert.equal(rows()[2].children[1].textContent, '私有域名');
+  app.snapshot.active_revision = 'different-session-document';
+  await app.poll();
+  assert.deepEqual(rows().map(row => row.dataset.exit), ['direct', 'main'], 'runtime metadata cannot be attributed to a different saved document');
+});
+
+test('home canonicalizes private suffix ownership like the compiler', async () => {
+  for (const [primary, secondary] of [['office.ts.net.', 'office.ts.net'], ['*.OFFICE.ts.net.', '.office.ts.net'], ['bücher.example.', 'xn--bcher-kva.example']]) {
+    const initial = multiExitDocument('100.101.0.11');
+    initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct' };
+    initial.values.dns = { magic_domains: [primary] };
+    initial.values.exits[0].magic_dns_suffix = secondary;
+    const app = await page({}, '', { page: 'home' }, initial);
+    assert.deepEqual(app.$('#home-routes').children.map(item => item.children[0].dataset.exit), ['direct', 'main'], `${primary} and ${secondary} have the same owner`);
+  }
+});
+
+test('home does not merge compiler-distinct numeric domain suffixes through URL IPv4 parsing', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', default_exit: 'main', final: 'direct' };
+  initial.values.dns = { magic_domains: ['01.02.03.04'] };
+  initial.values.exits[0].magic_dns_suffix = '0x1.0x2.0x3.0x4';
+  const app = await page({}, '', { page: 'home' }, initial);
+  assert.deepEqual(app.$('#home-routes').children.map(item => item.children[0].dataset.exit), ['direct', 'main', 'office']);
 });
 
 test('pending primary machine approval explains the administrator action and does not relaunch login', async () => {
@@ -3479,14 +3578,14 @@ test('route flow follows only positive per-route byte deltas and stops without f
 });
 
 test('native connection intent is globally consumed and cannot replay in another page', async () => {
-  const app = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  const app = await page({ desktop: true }, 'mygo-windows', { page: 'home' }, guidedDocument());
   guidedBackend(app, { deferAdd: true });
   app.snapshot.connect_request = 'claimed-once';
   await app.windowEvents.emit('tailsplit-window-shown');
   assert.equal(app.snapshot.connect_request, '', 'the controller acknowledgment clears the intent');
   assert.equal(app.requests.filter(r => r.path === '/api/connect-request').length, 1);
   await app.$('#connection-setup-cancel').emit('click');
-  const fresh = await page(app.snapshot, '', { page: 'home', storage: new Map() }, app.config);
+  const fresh = await page(app.snapshot, 'mygo-windows', { page: 'home', storage: new Map() }, app.config);
   assert.equal(mutations(fresh).length, 0, 'a fresh WebView must not connect after cancellation');
   fresh.override = request => request.path === '/api/connect-request' ? response({ claimed: false }) : undefined;
   fresh.snapshot.connect_request = 'claimed-once';

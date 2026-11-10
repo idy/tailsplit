@@ -511,6 +511,8 @@ func (c *stateLeaseConnection) Close() error {
 }
 
 // Forward keeps the app channel alive until privileged cleanup completes.
+// Cancellation abandons output while draining the service to EOF. A single
+// write to caller-owned output can outlive Forward.
 func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 	stop := sync.OnceFunc(func() { stopSession(connection) })
 	done := make(chan struct{})
@@ -522,14 +524,53 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 		}
 	}()
 	defer close(done)
+	writes, written := make(chan []byte), make(chan error, 1)
+	// One worker owns output and copied bytes only. An arbitrary caller-owned
+	// Writer may remain blocked after cancellation, without holding the lease.
+	go func() {
+		for data := range writes {
+			n, err := output.Write(data)
+			if err == nil && n != len(data) {
+				err = io.ErrShortWrite
+			}
+			written <- err
+		}
+	}()
+	defer close(writes)
+	outputCanceled := false
+	writeLine := func(line []byte) error {
+		if ctx.Err() != nil {
+			outputCanceled = true
+			return nil
+		}
+		select {
+		case writes <- append(append([]byte(nil), line...), '\n'):
+		case <-ctx.Done():
+			outputCanceled = true
+			return nil
+		}
+		select {
+		case err := <-written:
+			return err
+		case <-ctx.Done():
+			// Prefer a completed write's real error over simultaneous cancellation.
+			select {
+			case err := <-written:
+				return err
+			default:
+				outputCanceled = true
+				return nil
+			}
+		}
+	}
 	scanner := bufio.NewScanner(connection)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	stopped := false
 	var writeErr error
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if writeErr == nil {
-			if _, err := output.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+		if writeErr == nil && !outputCanceled {
+			if err := writeLine(line); err != nil {
 				writeErr = err
 				stop()
 			}
@@ -539,6 +580,13 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 		}
 		if json.Unmarshal(line, &event) == nil && event.Event == "stopped" {
 			stopped = true
+		}
+	}
+	if writeErr == nil {
+		// A canceled output may have completed while service cleanup was draining.
+		select {
+		case writeErr = <-written:
+		default:
 		}
 	}
 	if writeErr != nil {

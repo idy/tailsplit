@@ -60,12 +60,19 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				return err
 			}
 			if desktop {
-				config, err := tailsplit.Load(configPath)
+				data, revision, err := tray.ReadConfigDocument(configPath)
+				if err != nil {
+					return err
+				}
+				config, err := tray.ValidateConfigDocument(configPath, data)
 				if err != nil {
 					return err
 				}
 				// Apply already owns mutex; this only updates the simulated state.
 				updatePreviewSnapshot(&snapshot, config)
+				if snapshot.Active && (snapshot.Mode == "proxy" || snapshot.Mode == "tun") {
+					snapshot.ActiveRevision = revision
+				}
 			}
 			return nil
 		},
@@ -79,6 +86,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		if err := tray.RemoveExitDocument(configPath, id, revision, func(id string) error {
 			// Preview logout is simulated; no device identity or network is opened.
 			snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
+			snapshot.ActiveRevision = ""
 			if id == tailsplit.MainExit {
 				snapshot.BackendState, snapshot.Hostname, snapshot.NetworkName, snapshot.ExitNode = "", "", "", ""
 				snapshot.ExitNodes, snapshot.PingAvailable = nil, false
@@ -206,6 +214,11 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		actionWithRevision := func(ctx context.Context, action, expectedRevision string) error {
 			mutex.Lock()
 			defer mutex.Unlock()
+			defer func() {
+				if !snapshot.Active || (snapshot.Mode != "proxy" && snapshot.Mode != "tun") {
+					snapshot.ActiveRevision = ""
+				}
+			}()
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -261,7 +274,14 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			}
 			switch action {
 			case "connect", "login", "refresh-exits":
-				config, err := tailsplit.Load(configPath)
+				data, revision, err := tray.ReadConfigDocument(configPath)
+				if err != nil {
+					return err
+				}
+				if action == "connect" && expectedRevision != "" && revision != expectedRevision {
+					return tray.ErrConfigChanged
+				}
+				config, err := tray.ValidateConfigDocument(configPath, data)
 				if err != nil {
 					return err
 				}
@@ -280,6 +300,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 						return fmt.Errorf("Preview simulation: sign in before connecting.")
 					}
 					snapshot.State, snapshot.Active = "running", true
+					snapshot.ActiveRevision = revision
 					if len(config.ExitIDs()) == 0 {
 						snapshot.BackendState = "Direct"
 					}
