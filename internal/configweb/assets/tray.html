@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>TailSplit</title>
-  <link rel="preload" href="/fonts/montserrat-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/lato-regular-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/vendor/magpie/fonts/montserrat-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/vendor/magpie/fonts/lato-regular-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/vendor/magpie/css/magpie.css">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/tray.css">
   <script src="/i18n.js" defer></script>
@@ -19,7 +20,7 @@
   </defs></svg>
   <header class="popup-header">
     <h1>TailSplit</h1>
-    <button class="icon-button" data-open-panel aria-label="打开主界面" title="打开主界面"><svg class="icon" aria-hidden="true"><use href="#i-open"/></svg></button>
+    <button class="icon-button mds-icon-button" data-open-panel aria-label="打开主界面" title="打开主界面"><svg class="icon mds-icon" aria-hidden="true"><use href="#i-open"/></svg></button>
   </header>
   <main class="popup-main">
     <div class="popup-connection">
@@ -27,8 +28,8 @@
         <div class="popup-status"><i id="status-dot" aria-hidden="true"></i><strong id="status">正在读取</strong></div>
         <p id="connection-detail">正在读取本机配置…</p>
       </div>
-      <button id="connect" class="connection-switch" role="switch" aria-checked="false" aria-label="连接 TailSplit" aria-describedby="connection-detail" disabled></button>
-      <button id="setup" class="button small" hidden>设置出口</button>
+      <button id="connect" class="connection-switch mds-switch" role="switch" aria-checked="false" aria-label="连接 TailSplit" aria-describedby="connection-detail" disabled><span class="mds-switch-track" aria-hidden="true"></span></button>
+      <button id="setup" class="button small mds-button mds-button--small" hidden>设置出口</button>
     </div>
     <div class="popup-details">
       <div class="popup-row"><span class="popup-label">模式</span><span id="routing-mode">—</span></div>
@@ -37,7 +38,7 @@
         <span class="popup-exit-value" id="exit-name">—</span>
       </div>
     </div>
-    <div class="popup-error" id="error" role="alert" hidden><p id="error-message"></p><button class="link-button" id="retry">重试</button></div>
+    <div class="popup-error" id="error" role="alert" hidden><p id="error-message"></p><button class="link-button mds-link-button" id="retry">重试</button></div>
     <p class="popup-preview" id="preview-note" hidden>预览 · 连接状态为模拟数据</p>
   </main>
   <footer class="popup-footer">
