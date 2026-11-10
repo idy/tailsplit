@@ -54,7 +54,7 @@ test('language fallback and interpolation keep external values literal', () => {
 });
 
 test('Global Add consent explains the protection loss and failure behavior in both languages', () => {
-  const dialog = html.match(/<dialog id="add-exit-consent-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  const dialog = html.match(/<dialog\b[^>]*\bid="add-exit-consent-dialog"[^>]*>[\s\S]*?<\/dialog>/)?.[0];
   assert.ok(dialog);
   assert.match(dialog, /aria-labelledby="add-exit-consent-title" aria-describedby="add-exit-consent-description"/);
   assert.match(dialog, /<form method="dialog">/);
@@ -93,7 +93,7 @@ test('Global login and gateway consent describe explicit disconnect and stopped 
 });
 
 test('removal consent retains original rules and explains replacement and network restoration', () => {
-  const dialog = html.match(/<dialog id="remove-exit-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  const dialog = html.match(/<dialog\b[^>]*\bid="remove-exit-dialog"[^>]*>[\s\S]*?<\/dialog>/)?.[0];
   assert.ok(dialog);
   const description = dialog.match(/<p[^>]*>([^<]+)<\/p>/)[1];
   const { i18n } = languagePage(['en']);

@@ -90,10 +90,6 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   });
   const appPages = ['connection', 'logs', 'settings'].map((name) => { const element = $(`#page-${name}`); element.id = `page-${name}`; return element; });
   const settingsPages = sections.map((nav) => { const element = $(`#section-${nav.dataset.section}`); element.id = `section-${nav.dataset.section}`; return element; });
-  $('#form-tab').setAttribute('aria-selected', 'true');
-  $('#yaml-tab').setAttribute('aria-selected', 'false');
-  $('#form-tab').tabIndex = 0;
-  $('#yaml-tab').tabIndex = -1;
   $('#yaml-editor').hidden = true;
   const navigation = sections[0];
   const events = new Element();
@@ -130,8 +126,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
       selector === '[data-window-action]' ? windowButtons :
       selector === '[data-section]' ? sections :
       selector === '[data-page]' ? pages : selector === '.app-page' ? appPages : selector === '.settings-page' ? settingsPages :
-      selector === '[data-routing-mode]' ? modes : selector === '[data-desktop-action]' ? desktopActions :
-      selector === '.editor-tabs button, [data-section]' ? [$('#form-tab'), $('#yaml-tab'), ...sections] : [],
+      selector === '[data-routing-mode]' ? modes : selector === '[data-desktop-action]' ? desktopActions : [],
     addEventListener: (...args) => events.addEventListener(...args),
   };
   app.document = document;
@@ -501,7 +496,6 @@ test('every page exposes its own refresh in the shared titlebar slot without a s
   for (const [name, refresh] of [['connection', '#refresh-exits'], ['settings', '#reload'], ['logs', '#desktop-log-refresh']]) {
     await app.$(`[data-page="${name}"]`).emit('click');
     for (const id of ['#refresh-exits', '#reload', '#desktop-log-refresh']) assert.equal(app.$(id).hidden, id !== refresh);
-    assert.equal(app.$('#settings-tools').hidden, name !== 'settings');
     if (name === 'settings') {
       const reads = app.requests.filter(request => request.path === '/api/config').length;
       await app.$(refresh).emit('click');
@@ -543,7 +537,7 @@ test('titlebar updates preserve the current YAML draft and do not switch pages',
   await app.$('#update-pill').emit('click');
   assert.equal(app.$('#update-pill-version').textContent, '安装中…');
   assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
-  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.$('#yaml-editor').hidden, false);
   assert.deepEqual(app.requests.filter((r) => r.path === '/api/update-action').map((r) => r.data.action), ['check', 'install']);
   assert.equal(app.requests.some((r) => r.path === '/api/config' && r.method === 'POST'), false);
 });
@@ -555,7 +549,7 @@ test('a rejected form preview keeps edits when changing mode', async () => {
   await app.input('#mtu', '1400.5');
   await app.$('#yaml-tab').emit('click');
   assert.equal(app.$('#mtu').value, '1400.5');
-  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'false');
+  assert.equal(app.$('#yaml-editor').hidden, true);
   assert.equal(app.$('#save').disabled, true);
   await app.input('#mtu', '1500');
   await app.$('#yaml-tab').emit('click');
@@ -595,39 +589,39 @@ test('an external reload response cannot replace a newer browser draft', async (
   assert.doesNotMatch(app.$('#raw-yaml').value, /external edit/);
 });
 
-test('editor arrow navigation keeps only the selected tab in the Tab sequence', async () => {
+test('contextual YAML editing focuses the editor and returns to its opening action', async () => {
   const app = await page();
-  assert.equal(app.$('#form-tab').tabIndex, 0);
-  assert.equal(app.$('#yaml-tab').tabIndex, -1);
-  await app.$('.editor-tabs').emit('keydown', { key: 'ArrowRight' });
-  assert.equal(app.$('#yaml-tab').tabIndex, 0);
-  assert.equal(app.$('#form-tab').tabIndex, -1);
+  const focused = [];
+  for (const id of ['#raw-yaml', '#yaml-tab']) app.$(id).focus = () => focused.push(id);
+  await app.$('#yaml-tab').emit('click');
   assert.equal(app.$('#yaml-editor').hidden, false);
-  await app.$('.editor-tabs').emit('keydown', { key: 'Home' });
-  assert.equal(app.$('#form-tab').tabIndex, 0);
-  assert.equal(app.$('#yaml-tab').tabIndex, -1);
+  assert.equal(app.$('#yaml-tab').hidden, true);
+  assert.deepEqual(focused, ['#raw-yaml']);
+  await app.$('#form-tab').emit('click');
   assert.equal(app.$('#form-editor').hidden, false);
+  assert.equal(app.$('#yaml-tab').hidden, false);
+  assert.deepEqual(focused, ['#raw-yaml', '#yaml-tab']);
 });
 
 test('connection warnings and offline errors clear after recovery', async () => {
   const app = await page({ active: true, mode: 'proxy', state: 'blocked' });
-  assert.equal(app.$('#connection-status').classList.contains('attention'), true);
+  assert.equal(app.$('#connection-status').dataset.tone, 'warn');
   assert.equal(app.$('#connection-status').title, '出口不可用 · 已阻断');
   app.override = (request) => request.path === '/api/state' ? response({ error: 'Offline' }, false) : undefined;
   await app.poll();
-  assert.equal(app.$('#connection-status').classList.contains('error'), true);
-  assert.equal(app.$('#connection-status').classList.contains('attention'), false);
+  assert.equal(app.$('#connection-status').dataset.tone, 'error');
+  assert.notEqual(app.$('#connection-status').dataset.tone, 'warn');
   assert.equal(app.$('#connection-status').title, '页面连接中断');
   app.override = () => undefined;
   app.snapshot.state = 'failed';
   await app.poll();
   assert.equal(app.$('#connection-status span').textContent, '连接异常');
-  assert.equal(app.$('#connection-status').classList.contains('error'), true);
+  assert.equal(app.$('#connection-status').dataset.tone, 'error');
   app.snapshot.state = 'running';
   await app.poll();
   assert.equal(app.$('#connection-status span').textContent, '已连接');
-  assert.equal(app.$('#connection-status').classList.contains('connected'), true);
-  assert.equal(app.$('#connection-status').classList.contains('error'), false);
+  assert.equal(app.$('#connection-status').dataset.tone, 'good');
+  assert.notEqual(app.$('#connection-status').dataset.tone, 'error');
 });
 
 test('only a running proxy is presented as connected', async () => {
@@ -635,12 +629,12 @@ test('only a running proxy is presented as connected', async () => {
   for (const state of ['blocked', 'checking-exit', 'waiting-exit', 'missing-exit', 'connecting', 'login']) {
     app.snapshot = { active: true, mode: 'tun', state, revision: 'original' };
     await app.poll();
-    assert.equal(app.$('#connection-status').classList.contains('connected'), false, state);
+    assert.notEqual(app.$('#connection-status').dataset.tone, 'good', state);
     assert.notEqual(app.$('#connection-status span').textContent, '已连接', state);
   }
   app.snapshot.state = 'running';
   await app.poll();
-  assert.equal(app.$('#connection-status').classList.contains('connected'), true);
+  assert.equal(app.$('#connection-status').dataset.tone, 'good');
 });
 
 test('current network follows authentication and keeps user names literal across languages', async () => {
@@ -678,6 +672,25 @@ test('update controls are independent of desktop connection controls', async () 
   app.snapshot.updates = null;
   await app.poll();
   assert.equal(app.$('#app-updates').hidden, true);
+});
+
+test('update actions keep distinct shared glyphs through idle, busy, failure and current states', async () => {
+  const app = await page({ updates: updateState() });
+  for (const [phase, updates, icon, busy] of [
+    ['idle', {}, 'up', false],
+    ['checking', { checking: true }, 'spinner', true],
+    ['downloading', { downloading: true }, 'spinner', true],
+    ['error', { error: 'unavailable' }, 'alert', false],
+    ['available', { latest_version: '0.6.2', available: true }, 'up', false],
+    ['current', { latest_version: '0.6.1', last_checked: '2026-11-10T00:00:00Z' }, 'check', false],
+  ]) {
+    app.snapshot.updates = updateState(updates);
+    await app.poll(); await settle();
+    assert.equal(app.$('#update-pill .icon use').attributes.get('href'), `/vendor/magpie/icons/icons.svg#${icon}`, phase);
+    assert.equal(app.$('#update-pill').attributes.get('aria-busy'), String(busy), phase);
+    assert.equal(app.$('#update-pill').dataset.tone, phase === 'error' ? 'error' : 'accent', phase);
+    assert.equal(app.$('#update-pill').hidden, phase === 'current', phase);
+  }
 });
 
 test('automatic update preferences save without applying or dirtying the editor', async () => {
@@ -742,7 +755,7 @@ test('backend update phases disable actions and show bounded download progress',
     for (const selector of ['#update-check', '#update-pill', '#update-automatic']) assert.equal(app.$(selector).disabled, true, phase);
     await app.$('#update-check').emit('click');
     assert.equal(app.$('#update-pill').hidden, false);
-    assert.equal(app.$('#update-pill').classList.contains('busy'), true);
+    assert.equal(app.$('#update-pill').attributes.get('aria-busy'), 'true');
     if (phase === 'downloading') {
       app.snapshot.updates.installing = true;
       await app.poll();
@@ -823,7 +836,7 @@ test('release notes are bounded plain text and background errors stay inline', a
   await app.poll();
   assert.equal(app.$('#update-pill-version').textContent, '重试更新');
   assert.equal(app.$('#update-pill').title, 'Update check failed');
-  assert.equal(app.$('#update-pill').classList.contains('error'), true);
+  assert.equal(app.$('#update-pill').dataset.tone, 'error');
   assert.equal(app.$('#notice').hidden, true);
 });
 
@@ -903,7 +916,7 @@ test('language changes preserve incomplete YAML drafts without saving or reconne
   await app.$('#ui-language').emit('change');
   assert.equal(app.i18n.language, 'en');
   assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
-  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.$('#yaml-editor').hidden, false);
   assert.equal(app.$('#save-state span:last-child').textContent, 'Checking changes…');
   assert.equal(app.requests.some(r => r.path === '/api/action' || r.method === 'POST' && r.path === '/api/config'), false);
   app.$('#ui-language').value = 'zh';
@@ -944,12 +957,12 @@ test('pending language requests do not block edits or send duplicate requests', 
 
 test('changing language cannot restore a stale connected indicator after a failed poll', async () => {
   const app = await page({ state: 'running', active: true, mode: 'proxy' });
-  assert.equal(app.$('#connection-status').classList.contains('connected'), true);
+  assert.equal(app.$('#connection-status').dataset.tone, 'good');
   app.override = r => r.path === '/api/state' ? Promise.reject(new Error('Offline')) : undefined;
   await app.poll();
   app.$('#ui-language').value = 'en';
   await app.$('#ui-language').emit('change');
-  assert.equal(app.$('#connection-status').classList.contains('connected'), false);
+  assert.notEqual(app.$('#connection-status').dataset.tone, 'good');
   assert.equal(app.$('#connection-status span').textContent, 'Page connection lost');
 });
 
@@ -997,7 +1010,7 @@ test('log-level changes in YAML mode update the source and saved payload without
   await app.$('#yaml-tab').emit('click');
   await app.$('[data-page="logs"]').emit('click');
   await app.input('#level', 'debug');
-  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.$('#yaml-editor').hidden, false);
   assert.equal(app.$('#raw-yaml').value, edited.replace('info', 'debug'));
   app.override = (request) => request.path === '/api/config' && request.method === 'POST'
     ? response(doc(request.data.yaml, 'updated')) : undefined;
@@ -1056,6 +1069,30 @@ const exitsSnapshot = (changes = {}) => ({
 });
 const exitChoice = (app, id) => app.$('#exit-list').children.flatMap(row => row.children).find(child => child.dataset.exitChoice === id);
 
+test('unchanged live polls do not mutate attributes observed by Magpie dropdowns', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  const writes = [];
+  for (const selector of ['#kill-switch', '#connection-exit']) {
+    const select = app.$(selector);
+    for (const property of ['disabled', 'title']) {
+      let value = select[property];
+      Object.defineProperty(select, property, {
+        get: () => value,
+        set: next => { writes.push([selector, property, next]); value = next; },
+        configurable: true,
+      });
+    }
+  }
+  await app.poll(); await settle();
+  await app.poll(); await settle();
+  assert.deepEqual(writes, [], 'no-op mutations close an open shared dropdown');
+  app.snapshot = { ...app.snapshot, desktop: false };
+  await app.poll(); await settle();
+  assert.equal(app.$('#kill-switch').disabled, true);
+  assert.equal(app.$('#connection-exit').disabled, true);
+  assert.ok(writes.some(([, property]) => property === 'disabled'), 'real state changes still update controls');
+});
+
 test('page navigation preserves incomplete YAML and keeps settings at a separate destination', async () => {
   const app = await page(exitsSnapshot());
   await app.$('[data-page="settings"]').emit('click');
@@ -1067,7 +1104,7 @@ test('page navigation preserves incomplete YAML and keeps settings at a separate
     assert.equal(app.$('[data-page="settings"]').classes.has('active'), name === 'settings');
     assert.equal(app.$('#raw-yaml').value, 'unfinished: [');
   }
-  assert.equal(app.$('#yaml-tab').attributes.get('aria-selected'), 'true');
+  assert.equal(app.$('#yaml-editor').hidden, false);
   assert.equal(app.requests.some((r) => r.method === 'POST' && r.path === '/api/config'), false);
 });
 
@@ -1561,7 +1598,7 @@ test('a config reload from a superseded state poll cannot overwrite the latest v
   pending.resolve(response(doc('log_level: debug\n', 'external')));
   await oldPoll;
   assert.equal(app.$('#level').value, 'info');
-  assert.equal(app.$('#connection-status').classList.contains('error'), true);
+  assert.equal(app.$('#connection-status').dataset.tone, 'error');
 });
 
 test('failed Add login request never announces a successful Add', async () => {
@@ -2017,7 +2054,7 @@ const pickerLatency = (app, id) => app.$('#exit-list').children.find(row => row.
 
 test('Ping live regions are available inside and outside the picker dialog', () => {
   const html = readFileSync(join(__dirname, '../assets/index.html'), 'utf8');
-  const dialog = html.match(/<dialog class="exit-picker-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  const dialog = html.match(/<dialog\b[^>]*\bid="exit-picker-dialog"[^>]*>[\s\S]*?<\/dialog>/)?.[0];
   assert.ok(dialog);
   assert.doesNotMatch(html, /data-page="nodes"/);
   assert.match(dialog, /id="picker-ping-announcement" role="status" aria-atomic="true"/);
@@ -2085,15 +2122,15 @@ test('Ping preserves radio selection while the picker uses plain check icons', a
     assert.equal(exitChoice(app, id).children[0].className, 'node-check');
     assert.equal(exitChoice(app, id).children[0].hidden, false);
   }
-  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check');
-  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '/vendor/magpie/icons/icons.svg#check');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '/vendor/magpie/icons/icons.svg#check');
   assert.equal(app.$('#apply-exit-picker').disabled, true);
   assert.equal(nodeLatency(app, '100.64.0.20').className, 'node-latency medium');
   await exitChoice(app, '100.64.0.20').emit('click');
   assert.equal(exitChoice(app, '100.64.0.10').attributes.get('aria-checked'), 'false');
   assert.equal(exitChoice(app, '100.64.0.20').attributes.get('aria-checked'), 'true');
-  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check');
-  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '/vendor/magpie/icons/icons.svg#check');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '/vendor/magpie/icons/icons.svg#check');
   assert.equal(app.$('#apply-exit-picker').disabled, false);
   assert.equal(exitChoice(app, '100.64.0.20').children[1].textContent, 'travel');
   const descendants = element => [element, ...element.children.flatMap(descendants)];
@@ -2102,8 +2139,8 @@ test('Ping preserves radio selection while the picker uses plain check icons', a
     assert.equal(descendants(list).some(element => element.textContent.includes('100.64.')), false);
   }
   await app.$('#cancel-exit-picker').emit('click');
-  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '#i-check');
-  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '#i-check');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.10')), '/vendor/magpie/icons/icons.svg#check');
+  assert.equal(iconFor(exitChoice(app, '100.64.0.20')), '/vendor/magpie/icons/icons.svg#check');
   assert.equal(app.requests.some(request => request.path === '/api/config' && request.method === 'POST'), false);
 });
 

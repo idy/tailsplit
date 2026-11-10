@@ -25,6 +25,23 @@ archives and Debian packages. The macOS app also carries the networking-core and
 dependency notices in its Resources directory. The full corresponding project
 source is available in this repository.
 
+## Magpie Design System
+
+The desktop configuration panel bundles
+[Magpie Design System](https://github.com/idy/magpie-design-system) v0.4.2,
+Copyright (c) idy, under the MIT License. The unmodified CSS, JavaScript,
+fonts, icons and full license are in `internal/configweb/assets/vendor/magpie/`.
+Source revision: `aefce96c4022b692bf7e2f4e05d64901a130964f`.
+The local manifest pins file checksums; `scripts/vendor-magpie.mjs` restores
+or verifies the pinned assets. The upstream Magpie MIT notice is retained at
+`vendor/magpie/css/Magpie-MIT.txt`. Its visual language is inspired by
+[Magpie](https://github.com/yetone/magpie) by yetone.
+
+TailSplit's adapter connects the shared dropdown to the existing configuration
+render lifecycle. Application layout overrides remain outside the vendor files.
+Bundled fonts retain the SIL Open Font License notices and the Phosphor icons
+retain their MIT notice beside the upstream assets.
+
 ## Page companion
 
 The configuration panel bundles [Peetty](https://github.com/idy/peetty) 0.2.0,

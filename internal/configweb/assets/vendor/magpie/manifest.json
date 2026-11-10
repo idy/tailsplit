@@ -1,0 +1,33 @@
+{
+  "repository": "idy/magpie-design-system",
+  "version": "v0.4.2",
+  "baseRelease": "v0.4.2",
+  "commit": "aefce96c4022b692bf7e2f4e05d64901a130964f",
+  "files": {
+    "LICENSE": "0dd08639ea8a1207ed64d5fce280b7165bc84208aaade1bc45b05be9fe5a41cd",
+    "css/Magpie-MIT.txt": "79d2c8444715d4bc453ec4f8a0aaf2051a4c1ee5ac08f5bd2e5848aef87c7572",
+    "css/base.css": "6f21a4695bc4bdee680cf7dce2e654c3a2c9ce73359f5f088e9a22f6b95321be",
+    "css/components.css": "d53a1ec7f788534b6350ba20119c2af3ee86dfc00127bff1c49ea5d3cd46d123",
+    "css/fonts.css": "b981b4a29928dbef5f6263ad95d125e4769b0c1a0c57a2e6c1420b9b3d21195e",
+    "css/layout.css": "d6283952c95ae1c2228163ba1face98e2e476693e1eafb841fa02133bb029fba",
+    "css/magpie.css": "5076b11b4857538fa7eb7113294d6bb05c1401d51dce0aa18c20247adec7cf87",
+    "css/tokens.css": "992131f3233fb9ccd25a5395b6666196fc25a40d7d1fefac1b4166f5f8fa6b4c",
+    "fonts/Lato-OFL.txt": "19e7e97ffc31e58fa0e54919b8189b2ddcc6fd75539f387e2822b107b6a51423",
+    "fonts/Monda-OFL.txt": "2580ebdbe22c4eb2a42f5960cafd80b6a87e21f3d738dffc1ec27ed8dfac2ba7",
+    "fonts/Montserrat-OFL.txt": "861d64229728cd65a98d119612c12769582574d1a092f0b63c8b0fd474e7065f",
+    "fonts/README.md": "c8731597558aa0fb16974c86b7e0d3d657dc7c24e1a4ffc0ea9ead64a74f06ac",
+    "fonts/lato-bold-latin.woff2": "7a7ce1a34f3e9944fe88fc61abbc93b6db383afa2b90815fd7ccea456fbce4e5",
+    "fonts/lato-regular-latin.woff2": "d4ae5188a65370ecfe28f42293bbee8297cfd5712c6aadfdb270d48f2bcd88b0",
+    "fonts/monda-latin.woff2": "479006dcb36ad3bb7b8f782b28b6825cba949d76f94e4f8cf62bd3a562990118",
+    "fonts/montserrat-latin.woff2": "6438d7b8ea9c7c3992d5e2fd2afdb1ff948570a3ef0bedae76247b51632960ba",
+    "icons/LICENSE": "ddbe6082ec3cf979db47e5af549d2849c5d6182b3e005ef91ce1dbb9eb122f11",
+    "icons/README.md": "dab3bb7cd8e693bbfed9acf55ab17a61f6b0a39571c1e10315094402d143d6fc",
+    "icons/caret-down.svg": "78378db92be2e8617b8756a4a09196817a50fb3a3e8e971851c7b06d2380d3ba",
+    "icons/check.svg": "fe090b3fec058b91709ab0c35961e5efcbbf697128860cc794242a4fa69ffe97",
+    "icons/icons.svg": "d780e8ea20bc4f980711c7014fbd3957ef6e0bd663d554e0e27cf89c48f0837f",
+    "icons/manifest.json": "4a5106b9e8ff1cc68d780163f90485d8e1db9a7c655f69e5d1e99fc5e53deba6",
+    "icons/spinner.svg": "30e5a1af9807600147a847bcb21c6e45584755b2accbbeca131b948ba25ed910",
+    "js/magpie.js": "f6e053a9bd7c81fe45fe5564046a1078e0559084e2f8bbb952ec316a02ef0d84",
+    "js/select.js": "18303897c9bc4b2adcfed0cb22e04022c0f2b5ad9de46fe085a1edf9d3bbb62e"
+  }
+}
