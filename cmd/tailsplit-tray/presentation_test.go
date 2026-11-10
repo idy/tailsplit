@@ -6,31 +6,28 @@ import (
 	"github.com/idy/tailsplit/internal/tray"
 )
 
-func TestPrimaryMenuActionMatchesTheActualSession(t *testing.T) {
+func TestFallbackMenuActionMatchesTheOverallSession(t *testing.T) {
 	tests := []struct {
 		snapshot tray.Snapshot
 		action   string
 	}{
 		{tray.Snapshot{State: "stopped"}, "连接"},
 		{tray.Snapshot{State: "authenticated", BackendState: "Running"}, "连接"},
-		{tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}, "登录 Tailscale…"},
+		{tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}, "连接"},
 		{tray.Snapshot{State: "running", Mode: "tun", Active: true}, "断开连接"},
 		{tray.Snapshot{State: "running", Mode: "proxy", Active: true}, "断开连接"},
 		{tray.Snapshot{State: "blocked", Mode: "tun", RoutingMode: "global", Active: true}, "断开连接"},
-		{tray.Snapshot{State: "discovering", Active: true}, "取消"},
-		{tray.Snapshot{State: "authenticating", Active: true}, "取消登录"},
-		{tray.Snapshot{State: "failed"}, "重试连接"},
+		{tray.Snapshot{State: "discovering", Active: true}, "断开连接"},
+		{tray.Snapshot{State: "authenticating", Active: true}, "断开连接"},
+		{tray.Snapshot{State: "failed"}, "连接"},
 		// Cached connection labels cannot make a finished session look active.
 		{tray.Snapshot{State: "running", Mode: "tun"}, "连接"},
 	}
 	for _, test := range tests {
 		view := connectionPresentation(test.snapshot)
 		if view.Action != test.action || view.Summary == "" {
-			t.Fatalf("wrong primary action for %+v: %+v", test.snapshot, view)
+			t.Fatalf("wrong connection action for %+v: %+v", test.snapshot, view)
 		}
-	}
-	if got := shortMenuTitle("一个很长的设备名称用来验证菜单不会无限变宽12345678901234567890"); len([]rune(got)) > 26 {
-		t.Fatal("long device name expands the top-level menu")
 	}
 }
 
@@ -57,25 +54,25 @@ func TestOnlyALiveSessionCountsAsConnected(t *testing.T) {
 	}
 }
 
-func TestReconnectRemainsAvailableAfterFailure(t *testing.T) {
+func TestFallbackMenuIgnoresPrimaryDeviceLoginWhenTrafficUsesAnotherExit(t *testing.T) {
 	for _, test := range []struct {
 		snapshot tray.Snapshot
-		enabled  bool
+		summary  string
+		action   string
 	}{
-		{tray.Snapshot{State: "failed"}, true},
-		{tray.Snapshot{State: "failed", Mode: "tun"}, true},
-		{tray.Snapshot{State: "stopped"}, true},
-		{tray.Snapshot{State: "authenticated", BackendState: "Running"}, true},
-		{tray.Snapshot{State: "running", Active: true, Mode: "tun"}, true},
-		{tray.Snapshot{State: "running", Active: true, Mode: "proxy"}, true},
-		{tray.Snapshot{State: "discovering", Active: true, Mode: "discovery"}, false},
-		{tray.Snapshot{State: "login", Active: true, Mode: "login"}, false},
-		{tray.Snapshot{State: "authorizing", Active: true, Mode: "tun"}, false},
-		{tray.Snapshot{State: "stopping", Active: true, Mode: "tun"}, false},
-		{tray.Snapshot{State: "logging-out", Active: true}, false},
+		{tray.Snapshot{State: "running", Active: true, Mode: "tun", RoutingMode: "global"}, "Global proxy · Connected", "Disconnect"},
+		{tray.Snapshot{State: "running", Active: true, Mode: "proxy"}, "Proxy connected", "Disconnect"},
+		{tray.Snapshot{State: "blocked", Active: true, Mode: "tun"}, "Exit unavailable · Traffic blocked", "Disconnect"},
+		{tray.Snapshot{State: "authorizing", Active: true, Mode: "tun"}, "Waiting for network service installation", "Disconnect"},
+		{tray.Snapshot{State: "stopped"}, "Disconnected", "Connect"},
+		{tray.Snapshot{State: "failed"}, "Connection failed; view logs", "Connect"},
 	} {
-		if actual := canReconnect(test.snapshot); actual != test.enabled {
-			t.Fatalf("Reconnect enabled=%v for %+v; want %v", actual, test.snapshot, test.enabled)
+		test.snapshot.BackendState = "NeedsLogin"
+		test.snapshot.TrafficExit = "office"
+		test.snapshot.Exits = map[string]tray.ExitSnapshot{"office": {BackendState: "Running"}}
+		view := connectionPresentationForLanguage(test.snapshot, "en")
+		if view.Summary != test.summary || view.Action != test.action {
+			t.Fatalf("primary sign-in state overrode the overall session: %+v, want %q / %q", view, test.summary, test.action)
 		}
 	}
 }

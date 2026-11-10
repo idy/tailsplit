@@ -10,3 +10,34 @@ void tailsplit_restore_mygo_frame(uintptr_t handle) {
     [window setFrameUsingName:@"TailSplitConfigurationWindow"];
     [window setFrameAutosaveName:@"TailSplitConfigurationWindow"];
 }
+
+// Opt-in proof only: an inert, app-local target for a real AppKit outside click.
+// No global input is generated and no application action can be activated.
+uintptr_t tailsplit_new_popup_proof_target(void) {
+    NSWindow *window = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(100, 100, 160, 80)
+        styleMask:NSWindowStyleMaskBorderless
+        backing:NSBackingStoreBuffered defer:NO];
+    [window setReleasedWhenClosed:NO];
+    [window setTitle:@"TailSplit popup dismissal proof"];
+    [window orderFront:nil];
+    return (uintptr_t)(__bridge void *)window;
+}
+
+void tailsplit_click_popup_proof_target(uintptr_t handle) {
+    NSWindow *window = (__bridge NSWindow *)(void *)handle;
+    for (NSNumber *type in @[@(NSEventTypeLeftMouseDown), @(NSEventTypeLeftMouseUp)]) {
+        NSEvent *event = [NSEvent mouseEventWithType:(NSEventType)[type unsignedIntegerValue]
+            location:NSMakePoint(20, 20) modifierFlags:0
+            timestamp:[NSProcessInfo processInfo].systemUptime
+            windowNumber:window.windowNumber context:nil
+            eventNumber:0 clickCount:1 pressure:1];
+        [NSApp postEvent:event atStart:NO];
+    }
+}
+
+void tailsplit_close_popup_proof_target(uintptr_t handle) {
+    NSWindow *window = (__bridge NSWindow *)(void *)handle;
+    [window close];
+    [window release];
+}

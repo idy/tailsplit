@@ -10,24 +10,11 @@ type menuText struct {
 }
 
 // Accessed only by the native menu event loop. Relabel the same objects so
-// language changes retain check states, enablement and click handlers.
+// language changes retain enablement and click handlers.
 var nativeMenuText []menuText
 
-func addMenu(parent *systray.MenuItem, title, tooltip string, checked ...bool) *systray.MenuItem {
-	var item *systray.MenuItem
-	if parent == nil {
-		if len(checked) != 0 {
-			item = systray.AddMenuItemCheckbox(tr(title), tr(tooltip), checked[0])
-		} else {
-			item = systray.AddMenuItem(tr(title), tr(tooltip))
-		}
-	} else {
-		if len(checked) != 0 {
-			item = parent.AddSubMenuItemCheckbox(tr(title), tr(tooltip), checked[0])
-		} else {
-			item = parent.AddSubMenuItem(tr(title), tr(tooltip))
-		}
-	}
+func addMenu(title, tooltip string) *systray.MenuItem {
+	item := systray.AddMenuItem(tr(title), tr(tooltip))
 	nativeMenuText = append(nativeMenuText, menuText{item, title, tooltip})
 	return item
 }
