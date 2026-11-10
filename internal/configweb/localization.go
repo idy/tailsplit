@@ -116,6 +116,7 @@ var errorTranslations = map[string]string{
 	"请求必须使用 JSON。":                         "Requests must use JSON.",
 	"配置不得超过 1 MiB，且只能提交一份内容。":              "Configuration must not exceed 1 MiB and must contain only one document.",
 	"配置文件已由其他操作修改，请重新读取后再保存。":              "The configuration was changed by another operation. Reload it before saving.",
+	"配置文件已更新，请重新读取后重试。":                    "The configuration changed. Reload it and try again.",
 	"无法生成配置响应。":                            "Could not encode the configuration response.",
 	"无法读取操作请求。":                            "Could not read the action request.",
 	"未知操作。":                                "Unknown action.",

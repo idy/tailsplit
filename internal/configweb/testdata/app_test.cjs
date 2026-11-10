@@ -1523,6 +1523,47 @@ test('Add remains pending until real authenticated device status arrives and can
   assert.equal(app.$('#toast').textContent, 'unchanged', 'authenticated polling must not announce Add repeatedly');
 });
 
+test('a polled Add completion opens its picker when the committed row first appears', async () => {
+  const initial = exitDocument(); initial.values.tailscale = null;
+  const app = await page(exitsSnapshot(), '', {}, initial);
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    app.snapshot = exitsSnapshot({ active: true, state: 'login', mode: 'login', focus: firstAddedID,
+      exits: { [firstAddedID]: { backend_state: 'NeedsLogin' } } });
+    return response({ ok: true });
+  };
+  await app.$('#add-exit').emit('click');
+  assert.equal(extraRow(app, firstAddedID), undefined);
+  assert.ok(!app.$('#exit-picker-dialog').open);
+  app.config = { ...initial, revision: 'committed', values: { ...initial.values,
+    exits: [{ id: firstAddedID, auto_name: true, exit_node: '' }] } };
+  app.snapshot = exitsSnapshot({ active: false, state: 'authenticated', mode: 'login', revision: 'committed',
+    exits: { [firstAddedID]: officeSnapshot().exits.office } });
+  await app.poll();
+  assert.ok(extraRow(app, firstAddedID), 'the committed profile must be visible');
+  assert.equal(app.$('#toast').textContent, '出口已添加', 'success must not wait for another poll');
+  assert.equal(app.$('#exit-picker-dialog').open, true, 'the first committed render must open the picker');
+  await app.$('#cancel-exit-picker').emit('click');
+  app.$('#toast').textContent = 'no-repeat';
+  await app.poll();
+  assert.equal(app.$('#toast').textContent, 'no-repeat');
+  assert.equal(app.$('#exit-picker-dialog').open, false);
+});
+
+test('a config reload from a superseded state poll cannot overwrite the latest view', async () => {
+  const app = await page();
+  const pending = deferred();
+  app.snapshot = { state: 'stopped', revision: 'external' };
+  app.override = request => request.path === '/api/config' ? pending.promise : undefined;
+  const oldPoll = app.poll(); await settle();
+  app.snapshot = { state: 'failed', revision: 'original', error: 'latest failure' };
+  await app.poll();
+  pending.resolve(response(doc('log_level: debug\n', 'external')));
+  await oldPoll;
+  assert.equal(app.$('#level').value, 'info');
+  assert.equal(app.$('#connection-status').classList.contains('error'), true);
+});
+
 test('failed Add login request never announces a successful Add', async () => {
   const app = await page(exitsSnapshot(), '', {}, exitDocument());
   app.override = request => {

@@ -1735,8 +1735,12 @@
         const generation = state.generation;
         if (!state.dirty) {
           const doc = await api('config');
+          if (request !== stateRequest) return;
           if (generation === state.generation && !state.dirty && !isLocked()) {
             useDocument(doc);
+            // Resolve Add completion against the committed inventory now,
+            // without applying an older status to a newer configuration.
+            if (doc.revision === live.revision) updateDesktop(live);
             return;
           }
           if (doc.revision === state.revision) return;
