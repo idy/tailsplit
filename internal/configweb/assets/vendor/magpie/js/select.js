@@ -53,6 +53,7 @@ export function initSelect(select) {
   // Keep focus on the combobox. aria-activedescendant identifies the option
   // being browsed; aria-selected and the check mark reflect the committed value.
   let expanded = false;
+  let anchorRect = null;
   let active = -1;
   let rows = [];
   let typed = '';
@@ -98,6 +99,7 @@ export function initSelect(select) {
   function close() {
     if (!expanded) return;
     expanded = false;
+    anchorRect = null;
     if (topLayer && menu.matches(':popover-open')) menu.hidePopover();
     menu.hidden = true;
     trigger.setAttribute('aria-expanded', 'false');
@@ -159,6 +161,7 @@ export function initSelect(select) {
 
   function place() {
     const rect = trigger.getBoundingClientRect();
+    anchorRect = rect;
     const viewport = doc.documentElement.clientWidth;
     const width = Math.min(Math.max(rect.width, 180), viewport - 16);
     menu.style.width = `${width}px`;
@@ -216,7 +219,7 @@ export function initSelect(select) {
       if (expanded) { event.preventDefault(); event.stopPropagation(); close(); }
       return;
     }
-    if (key === 'Tab') { if (expanded) choose(active); return; }
+    if (key === 'Tab') { close(); return; }
     if (['Enter', ' ', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) {
       event.preventDefault();
       if (key === 'Enter' || (key === ' ' && (!typed || Date.now() - typedAt > 700))) {
@@ -263,7 +266,12 @@ export function initSelect(select) {
   });
   listen(doc, 'pointerdown', (event) => { if (!trigger.contains(event.target) && !menu.contains(event.target)) close(); }, { capture: true });
   listen(doc, 'focusin', (event) => { if (!trigger.contains(event.target) && !menu.contains(event.target)) close(); });
-  listen(doc, 'scroll', (event) => { if (!menu.contains(event.target)) close(); }, { capture: true });
+  listen(doc, 'scroll', (event) => {
+    if (!expanded || !anchorRect || menu.contains(event.target)) return;
+    // Unrelated scrollers do not detach the menu from its trigger.
+    const rect = trigger.getBoundingClientRect();
+    if (['left', 'top', 'width', 'height'].some(key => rect[key] !== anchorRect[key])) close();
+  }, { capture: true });
   listen(win, 'resize', close);
   listen(select, 'input', refresh);
   listen(select, 'change', refresh);

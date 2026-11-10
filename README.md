@@ -243,9 +243,9 @@ tray. Its entry point is `cmd/tailsplit-tray`, with `internal/desktopwindow` and
 The embedded configuration panel uses a local copy of
 [Magpie Design System](https://github.com/idy/magpie-design-system) for
 its tokens, components, fonts and dropdown behavior. The vendored source is
-pinned to commit `aefce96c4022b692bf7e2f4e05d64901a130964f` (v0.4.2),
+pinned to commit `46ba098239979506a4ccc14721aac044483c66bc` (v0.4.3),
 including the text dropdown and preference-row variants extracted upstream.
-This is the published v0.4.2 release. Assets are pinned with
+This is the published v0.4.3 release. Assets are pinned with
 SHA-256 hashes under `internal/configweb/assets/vendor/magpie/`; run
 `node scripts/vendor-magpie.mjs --check` to verify them, or omit `--check` to
 restore the pinned files. Node.js 18+ is needed only for this maintenance

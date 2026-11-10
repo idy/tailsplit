@@ -28,10 +28,10 @@ source is available in this repository.
 ## Magpie Design System
 
 The desktop configuration panel bundles
-[Magpie Design System](https://github.com/idy/magpie-design-system) v0.4.2,
+[Magpie Design System](https://github.com/idy/magpie-design-system) v0.4.3,
 Copyright (c) idy, under the MIT License. The unmodified CSS, JavaScript,
 fonts, icons and full license are in `internal/configweb/assets/vendor/magpie/`.
-Source revision: `aefce96c4022b692bf7e2f4e05d64901a130964f`.
+Source revision: `46ba098239979506a4ccc14721aac044483c66bc`.
 The local manifest pins file checksums; `scripts/vendor-magpie.mjs` restores
 or verifies the pinned assets. The upstream Magpie MIT notice is retained at
 `vendor/magpie/css/Magpie-MIT.txt`. Its visual language is inspired by

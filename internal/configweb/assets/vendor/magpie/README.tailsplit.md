@@ -2,11 +2,13 @@
 
 Upstream: https://github.com/idy/magpie-design-system
 
-Release: **[v0.4.2](https://github.com/idy/magpie-design-system/releases/tag/v0.4.2)**
+Release: **[v0.4.3](https://github.com/idy/magpie-design-system/releases/tag/v0.4.3)**
 
-Pinned source: `aefce96c4022b692bf7e2f4e05d64901a130964f`
+Pinned source: `46ba098239979506a4ccc14721aac044483c66bc`
 
-Upstream contribution: https://github.com/idy/magpie-design-system/pull/1
+Upstream controls: https://github.com/idy/magpie-design-system/pull/1
+
+Dropdown dismissal fixes: https://github.com/idy/magpie-design-system/pull/2
 
 This release includes the upstream text-dropdown, preference-row and
 stacked-row variants extracted from TailSplit, plus slim 20px update

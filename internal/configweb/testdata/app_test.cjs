@@ -1093,6 +1093,41 @@ test('unchanged live polls do not mutate attributes observed by Magpie dropdowns
   assert.ok(writes.some(([, property]) => property === 'disabled'), 'real state changes still update controls');
 });
 
+test('gateway polling selects an unset native placeholder once and preserves stable values', async () => {
+  for (const [language, label] of [['zh', '未设置'], ['en', 'Not set']]) {
+    for (const exit of ['', '100.64.0.10']) {
+      const app = await page(exitsSnapshot(), '', { language, preference: language }, exitDocument(exit));
+      const select = app.$('#connection-exit');
+      let selectedIndex = -1;
+      const writes = [];
+      // A native select with no selected option reports the same empty value
+      // as a selected placeholder; assigning value must update selectedIndex.
+      Object.defineProperties(select, {
+        selectedIndex: { get: () => selectedIndex },
+        value: {
+          get: () => select.children[selectedIndex]?.value ?? '',
+          set: value => {
+            writes.push(value);
+            selectedIndex = select.children.findIndex(option => option.value === value);
+          },
+        },
+      });
+      assert.equal(select.selectedIndex, -1);
+      assert.equal(select.value, '');
+      assert.equal(select.children[0].disabled, true);
+      assert.equal(select.children[0].textContent, label);
+      const expected = exit ? 'main' : '';
+      await app.poll(); await settle();
+      assert.equal(select.selectedIndex, select.children.findIndex(option => option.value === expected));
+      assert.equal(select.value, expected);
+      assert.deepEqual(writes, [expected]);
+      await app.poll(); await settle();
+      await app.poll(); await settle();
+      assert.deepEqual(writes, [expected], 'stable empty and nonempty selections must not be reassigned');
+    }
+  }
+});
+
 test('page navigation preserves incomplete YAML and keeps settings at a separate destination', async () => {
   const app = await page(exitsSnapshot());
   await app.$('[data-page="settings"]').emit('click');

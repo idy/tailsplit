@@ -20,7 +20,7 @@
   // Magpie observes native select attributes. Avoid no-op mutations during live
   // polling so an open menu keeps its keyboard/pointer interaction intact.
   function updateSelect(select, value, disabled, title) {
-    if (select.value !== value) select.value = value;
+    if (select.value !== value || select.selectedIndex === -1) select.value = value;
     if (select.disabled !== disabled) select.disabled = disabled;
     if (title !== undefined && select.title !== title) select.title = title;
   }

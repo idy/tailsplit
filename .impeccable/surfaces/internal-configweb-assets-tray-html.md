@@ -13,7 +13,7 @@ Mode: Operate. A compact, repeated-use desktop surface anchored to the menu bar 
 
 THESIS: Make the real connection and selected traffic exit clear at a glance. Remove the obsolete primary-device menu tree.
 
-OWN-WORLD: Load the pinned Magpie 0.4.2 stylesheet before product styles; use its semantic tokens, fonts, buttons and controlled switch track. Existing neutral canvas, white/dark grouped rows, inherited neutral connection switch and textual green/amber connection state. Bundled Montserrat/Monda/Lato and established Chinese fallbacks.
+OWN-WORLD: Load the pinned Magpie 0.4.3 stylesheet before product styles; use its semantic tokens, fonts, buttons and controlled switch track. Existing neutral canvas, white/dark grouped rows, inherited neutral connection switch and textual green/amber connection state. Bundled Montserrat/Monda/Lato and established Chinese fallbacks.
 
 STORY: Read connection status, connect or disconnect, inspect the current mode and gateway, then open the full panel for changes. Mode and gateway are strictly read-only: no click, selector, chevron, pointer cursor or hover treatment. Quit retains normal network cleanup.
 

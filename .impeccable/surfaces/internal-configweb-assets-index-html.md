@@ -13,7 +13,7 @@ Visitor mode: Operate. Desktop users authorize embedded Tailscale devices, choos
 
 THESIS: Migrate the existing connection center to the user's specified idy/magpie-design-system, preserving its tasks and navigation.
 
-OWN-WORLD: Self-host unmodified Magpie source pinned to aefce96c4022b692bf7e2f4e05d64901a130964f (v0.4.2), including shared text-dropdown, preference-row, stacked-row and compact toolbar variants. Controlled switches use the shared light knob; responsive update pills draw 20px capsule faces aligned with switch tracks inside transparent click targets, distinct update/progress/error glyphs, and equal 8px intervals between all visible header regions. Use its --mds-* tokens and mds-* components: neutral system appearances, blue actions, 14px Lato body, Montserrat actions, regular Monda headings, 34px controls and shared radius scale. Keep monospace for YAML and logs.
+OWN-WORLD: Self-host unmodified Magpie source pinned to 46ba098239979506a4ccc14721aac044483c66bc (v0.4.3), including shared text-dropdown, preference-row, stacked-row and compact toolbar variants. Controlled switches use the shared light knob; responsive update pills draw 20px capsule faces aligned with switch tracks inside transparent click targets, distinct update/progress/error glyphs, and equal 8px intervals between all visible header regions. Use its --mds-* tokens and mds-* components: neutral system appearances, blue actions, 14px Lato body, Montserrat actions, regular Monda headings, 34px controls and shared radius scale. Keep monospace for YAML and logs.
 
 STORY: Add or sign in to an exit, open its picker, test nodes individually, confirm selection and connect. Existing authentication, save/reconnect, revision checks and draft protections remain authoritative.
 

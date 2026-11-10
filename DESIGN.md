@@ -251,7 +251,7 @@ components:
 
 TailSplit uses the user-approved idy/magpie-design-system for its embedded desktop configuration panel: neutral system appearances, blue actions, Lato body copy, Montserrat actions and Monda headings. This shared system serves the local macOS and Windows panel; PRODUCT.md remains authoritative for networking, identity and authorization behavior.
 
-The build vendors unmodified Magpie source at commit aefce96c4022b692bf7e2f4e05d64901a130964f (v0.4.2), including the extracted text-dropdown and preference-row variants. Shared tokens, fonts, document defaults, components and layout load before TailSplit’s product stylesheet. TailSplit owns native-host geometry, the centered workspace, exit selection, diagnostics and responsive integration. Preserve these incumbent decisions when extending the panel.
+The build vendors unmodified Magpie source at commit 46ba098239979506a4ccc14721aac044483c66bc (v0.4.3), including the extracted text-dropdown and preference-row variants. Shared tokens, fonts, document defaults, components and layout load before TailSplit’s product stylesheet. TailSplit owns native-host geometry, the centered workspace, exit selection, diagnostics and responsive integration. Preserve these incumbent decisions when extending the panel.
 
 **Key Characteristics:**
 
@@ -357,7 +357,7 @@ Shared settings groups and cards use surface fill, fine borders and the large sh
 
 The ES-module adapter in `select.js` delegates rendering, keyboard navigation, positioning and teardown to Magpie’s `initSelect`. Native selects remain the value and input/change event model. `TailSplitSelect.sync()` initializes single selects, destroys removed controls and refreshes silent value-label changes. Magpie observes option and disabled-state mutations. The shared mds-select--text variant keeps the titlebar, gateway and Log level triggers unboxed, without a product-specific presentation adapter. `ui.js` loads localization, the adapter, the app and companion in dependency order.
 
-The app’s no-op polling guard only assigns select value, disabled and title when changed; option signatures avoid rebuilding unchanged lists. This preserves open menus and keyboard/pointer interaction during state polls. Shared menus are viewport-positioned, bounded and scrollable; active options use neutral selection and selected options a green check. Dynamic options, localization, draft protections and existing handlers remain connected.
+The app’s no-op polling guard assigns a select value when changed or when no option is selected, keeping localized empty placeholders selected; disabled and title change only when needed. Option signatures avoid rebuilding unchanged lists. Tab dismisses without committing, and unrelated scrolling keeps a menu open while its trigger stays in place. This preserves open menus and keyboard/pointer interaction during state polls. Shared menus are viewport-positioned, bounded and scrollable; active options use neutral selection and selected options a green check. Dynamic options, localization, draft protections and existing handlers remain connected.
 
 ### Page Companion
 

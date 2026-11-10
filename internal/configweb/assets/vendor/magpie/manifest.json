@@ -1,8 +1,8 @@
 {
   "repository": "idy/magpie-design-system",
-  "version": "v0.4.2",
-  "baseRelease": "v0.4.2",
-  "commit": "aefce96c4022b692bf7e2f4e05d64901a130964f",
+  "version": "v0.4.3",
+  "baseRelease": "v0.4.3",
+  "commit": "46ba098239979506a4ccc14721aac044483c66bc",
   "files": {
     "LICENSE": "0dd08639ea8a1207ed64d5fce280b7165bc84208aaade1bc45b05be9fe5a41cd",
     "css/Magpie-MIT.txt": "79d2c8444715d4bc453ec4f8a0aaf2051a4c1ee5ac08f5bd2e5848aef87c7572",
@@ -28,6 +28,6 @@
     "icons/manifest.json": "4a5106b9e8ff1cc68d780163f90485d8e1db9a7c655f69e5d1e99fc5e53deba6",
     "icons/spinner.svg": "30e5a1af9807600147a847bcb21c6e45584755b2accbbeca131b948ba25ed910",
     "js/magpie.js": "f6e053a9bd7c81fe45fe5564046a1078e0559084e2f8bbb952ec316a02ef0d84",
-    "js/select.js": "18303897c9bc4b2adcfed0cb22e04022c0f2b5ad9de46fe085a1edf9d3bbb62e"
+    "js/select.js": "6228e3ad9922ef8325adc566b696fae6e0185c2da136fc8a4e21159af2ec731b"
   }
 }
