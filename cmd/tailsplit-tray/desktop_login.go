@@ -49,6 +49,36 @@ type desktopExitLoginController interface {
 	Stop() error
 }
 
+type desktopConnectController interface {
+	desktopLoginController
+	StartExitLogin(string) error
+	TrafficExitID() (string, error)
+	Start() error
+}
+
+// Both desktop hosts prepare Connect against the selected traffic device. Known
+// signed-out devices use the existing login/browser flow before carrying traffic.
+// Flow mutations stay on the event loop; the returned Start can run on a worker.
+func desktopConnectOperation(controller desktopConnectController, flow *tray.LoginFlow) (func() error, error) {
+	snapshot := controller.Snapshot()
+	if snapshot.Active {
+		return nil, nil
+	}
+	exit, err := controller.TrafficExitID()
+	if err != nil {
+		return nil, err
+	}
+	if exit == tailsplit.MainExit {
+		if snapshot.BackendState == "NeedsLogin" {
+			return nil, requestDesktopLogin(controller, flow)
+		}
+	} else if snapshot.Exits[exit].BackendState == "NeedsLogin" {
+		return nil, requestDesktopExitLogin(controller, flow, exit)
+	}
+	flow.Cancel()
+	return controller.Start, nil
+}
+
 // splitExitAction reads per-device add, login and logout actions.
 func splitExitAction(action string) (string, string) {
 	name, id, ok := strings.Cut(action, ":")

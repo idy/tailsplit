@@ -57,6 +57,19 @@ test('connection preflight and errors never claim connected', () => {
   }
 });
 
+test('discovery helpers show reading exits instead of connecting', () => {
+  for (const live of [
+    { active: true, mode: 'discovery', state: 'starting' },
+    { active: true, mode: 'discovery', state: 'discovering' },
+    { active: true, state: 'discovering' },
+  ]) {
+    const view = popupView(config, live);
+    assert.equal(view.status, '正在读取出口');
+    assert.equal(view.carrying, false);
+    assert.equal(view.tone, 'warn');
+  }
+});
+
 test('an unnamed gateway uses its node name without appending an IP', () => {
   const unnamed = structuredClone(config);
   delete unnamed.values.exits[0].name;

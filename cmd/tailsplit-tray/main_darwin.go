@@ -74,23 +74,7 @@ func desktopActionOperation(action string, controller desktopActionController, f
 		flow.Cancel()
 		return func() error { return controller.LogoutExit(exit) }, nil
 	case "connect":
-		snapshot := controller.Snapshot()
-		if snapshot.Active {
-			return nil, nil
-		}
-		exit, err := controller.TrafficExitID()
-		if err != nil {
-			return nil, err
-		}
-		if exit == tailsplit.MainExit {
-			if snapshot.BackendState == "NeedsLogin" {
-				return nil, requestDesktopLogin(controller, flow)
-			}
-		} else if snapshot.Exits[exit].BackendState == "NeedsLogin" {
-			return nil, requestDesktopExitLogin(controller, flow, exit)
-		}
-		flow.Cancel()
-		return controller.Start, nil
+		return desktopConnectOperation(controller, flow)
 	case "disconnect":
 		flow.Cancel()
 		return controller.Stop, nil

@@ -6,6 +6,8 @@
     'TailSplit · 本地配置': 'TailSplit · Settings',
     '打开主界面': 'Open TailSplit',
     '等待登录': 'Waiting for sign-in',
+    '等待安装后台服务': 'Waiting for network service installation',
+    '配置文件已更新，请重新读取后重试。': 'The configuration has changed. Reload it and try again.',
     '设置出口': 'Set up exit',
     '模式': 'Mode',
     '退出': 'Quit',

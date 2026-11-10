@@ -25,7 +25,7 @@
         detail = live.mode === 'tun' ? '系统流量已接管' : '应用代理已开启';
       } else if (live.mode === 'login' || live.state === 'needs_login') {
         status = '等待登录'; detail = '请在浏览器中完成授权';
-      } else if (live.mode === 'exits') {
+      } else if (live.mode === 'discovery' || live.state === 'discovering') {
         status = '正在读取出口';
       } else if (live.state === 'stopping') {
         status = '正在断开'; detail = '正在恢复系统网络';

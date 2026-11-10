@@ -403,7 +403,11 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			a.login.Cancel()
 			return a.controller.LogoutExit(exit)
 		case "connect":
-			return a.controller.Start()
+			operation, err := desktopConnectOperation(a.controller, &a.login)
+			if err != nil || operation == nil {
+				return err
+			}
+			return operation()
 		case "disconnect":
 			a.login.Cancel()
 			return a.controller.Stop()
