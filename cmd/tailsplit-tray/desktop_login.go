@@ -73,13 +73,43 @@ func desktopConnectOperation(controller desktopConnectController, flow *tray.Log
 
 // Complete on the event loop after Start has cleared stale identity metadata.
 // Only explicit Connect requests use this; automatic startup never opens login.
-func finishDesktopConnect(flow *tray.LoginFlow, err error) error {
+func finishDesktopConnect(flow *tray.LoginFlow, err error, operation ...string) error {
 	if err != nil {
-		flow.Cancel()
+		cancelDesktopAuthorization(flow, operation...)
 		return err
 	}
-	flow.Request()
+	return requestDesktopAuthorization(flow, operation...)
+}
+
+func cancelDesktopAuthorization(flow *tray.LoginFlow, operation ...string) {
+	if len(operation) > 0 && operation[0] != "" {
+		flow.CancelOperation(operation[0])
+		return
+	}
+	flow.Cancel()
+}
+
+func requestDesktopAuthorization(flow *tray.LoginFlow, operation ...string) error {
+	if len(operation) == 0 || operation[0] == "" {
+		flow.Request()
+		return nil
+	}
+	if flow.OperationCanceled(operation[0]) {
+		return tray.ErrOperationCanceled
+	}
+	if !flow.RequestOperation(operation[0], operation[1:]...) && len(operation) > 1 && flow.OperationCanceled(operation[1]) {
+		return tray.ErrOperationCanceled
+	}
 	return nil
+}
+
+func desktopLoginIdentity(controller interface{ Snapshot() tray.Snapshot }) []string {
+	owner := controller.Snapshot().OperationID
+	operation := owner
+	if scoped, ok := controller.(*tray.Operation); ok {
+		operation = scoped.ID
+	}
+	return []string{operation, owner}
 }
 
 // checkedDesktopConnectOperation runs on the operation gate and checks again on
@@ -142,10 +172,10 @@ func prepareDesktopExitLogin(controller desktopExitLoginController, id string) e
 }
 
 // Complete on the event loop: workers never mutate LoginFlow or expose helper errors.
-func finishDesktopExitLogin(flow *tray.LoginFlow, err error) error {
+func finishDesktopExitLogin(flow *tray.LoginFlow, err error, operation ...string) error {
 	if err != nil {
 		if errors.Is(err, tray.ErrOperationCanceled) {
-			flow.Cancel()
+			cancelDesktopAuthorization(flow, operation...)
 			return err
 		}
 		if errors.Is(err, errDesktopGlobalLogin) {
@@ -159,12 +189,12 @@ func finishDesktopExitLogin(flow *tray.LoginFlow, err error) error {
 		flow.Fail("无法准备登录，请查看日志")
 		return errors.New(tr("无法准备登录，请查看日志"))
 	}
-	flow.Request()
-	return nil
+	return requestDesktopAuthorization(flow, operation...)
 }
 
 func requestDesktopExitLogin(controller desktopExitLoginController, flow *tray.LoginFlow, id string) error {
-	return finishDesktopExitLogin(flow, prepareDesktopExitLogin(controller, id))
+	err := prepareDesktopExitLogin(controller, id)
+	return finishDesktopExitLogin(flow, err, desktopLoginIdentity(controller)...)
 }
 
 // A signed-in helper for another device cannot authorize main. Preserve pending
@@ -194,5 +224,6 @@ func prepareDesktopLogin(controller desktopLoginController) error {
 }
 
 func requestDesktopLogin(controller desktopLoginController, flow *tray.LoginFlow) error {
-	return finishDesktopExitLogin(flow, prepareDesktopLogin(controller))
+	err := prepareDesktopLogin(controller)
+	return finishDesktopExitLogin(flow, err, desktopLoginIdentity(controller)...)
 }

@@ -390,7 +390,7 @@ func TestInternalSaveRestartInheritsOperationAndNativeClaimDoesNotReplaceIt(t *t
 	}
 }
 
-func TestRequestOnlyCancelRevokesClaimedOperationWithoutStoppingLiveHelper(t *testing.T) {
+func TestRequestOnlyCancelRevokesClaimedOperationWithoutStoppingUnrelatedHelper(t *testing.T) {
 	for _, customBinding := range []bool{false, true} {
 		t.Run(map[bool]string{false: "request-is-operation", true: "retained-custom-binding"}[customBinding], func(t *testing.T) {
 			c := testController(t, "normal")
@@ -425,7 +425,7 @@ func TestRequestOnlyCancelRevokesClaimedOperationWithoutStoppingLiveHelper(t *te
 	}
 }
 
-func TestRequestOnlyCancelNeverSignalsAnAlreadyAdmittedOperation(t *testing.T) {
+func TestRequestOnlyCancelStopsItsAlreadyAdmittedNativeOwner(t *testing.T) {
 	c := testController(t, "normal")
 	c.RequestConnectionSetup()
 	id := c.Snapshot().ConnectRequest
@@ -439,8 +439,8 @@ func TestRequestOnlyCancelNeverSignalsAnAlreadyAdmittedOperation(t *testing.T) {
 	if err := c.Cancel(id, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Snapshot(); !got.Active || got.State != "running" || got.OperationID != id {
-		t.Fatal("request-only revocation signaled active operation", got)
+	if got := c.Snapshot(); got.Active || got.OperationID != id {
+		t.Fatal("request-only cancellation failed to stop its retained native owner", got)
 	}
 	if err := c.ForOperation(id).Start(); !errors.Is(err, ErrOperationCanceled) {
 		t.Fatal("revoked binding still admitted work", err)
@@ -450,6 +450,56 @@ func TestRequestOnlyCancelNeverSignalsAnAlreadyAdmittedOperation(t *testing.T) {
 	}
 	if c.Snapshot().Active {
 		t.Fatal("explicit operation cancellation did not stop owner")
+	}
+}
+
+func TestNativeBindingCancelStopsBoundOwnerDespiteStaleSnapshotAndPreservesNewerOwner(t *testing.T) {
+	for _, newer := range []bool{false, true} {
+		t.Run(map[bool]string{false: "bound-active", true: "unrelated-newer"}[newer], func(t *testing.T) {
+			c := testController(t, "normal")
+			c.RequestConnectionSetup()
+			request := c.Snapshot().ConnectRequest
+			if !c.ClaimConnectOperation(request, "bound-operation") {
+				t.Fatal("claim failed")
+			}
+			if err := c.ForOperation("bound-operation").Start(); err != nil {
+				t.Fatal(err)
+			}
+			waitState(t, c, "running")
+			if newer {
+				if err := c.Stop(); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.ForOperation("newer-operation").Start(); err != nil {
+					t.Fatal(err)
+				}
+				waitState(t, c, "running")
+			}
+			c.RequestConnectionSetup()
+			latest := c.Snapshot().ConnectRequest
+			var notified []string
+			if err := c.CancelWithNotify(request, "stale-snapshot-operation", func(ids []string) { notified = ids }); err != nil {
+				t.Fatal(err)
+			}
+			got := c.Snapshot()
+			if got.Active != newer || got.ConnectRequest != latest || newer && got.OperationID != "newer-operation" {
+				t.Fatal("native binding cancellation selected wrong owner", got)
+			}
+			for _, id := range []string{request, "bound-operation", "stale-snapshot-operation"} {
+				found := false
+				for _, target := range notified {
+					if target == id {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("host missed effective cancellation target", id, notified)
+				}
+			}
+			if err := c.ForOperation("bound-operation").Start(); !errors.Is(err, ErrOperationCanceled) {
+				t.Fatal("bound owner was readmitted", err)
+			}
+		})
 	}
 }
 

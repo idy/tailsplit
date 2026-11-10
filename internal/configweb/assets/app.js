@@ -1013,7 +1013,11 @@
     try {
       // The controller revokes this exact operation, including commands still
       // awaiting admission. A retry must never stop a different, newer session.
-      await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
+      if (mygoWindow) {
+        // WebView storage is isolated from the browser fallback. Deliver the
+        // revocation directly to the shared native host, even when HTTP fails.
+        await window.mygo.call('TailSplitPanel.Cancel', cancel.request, cancel.operation_id || '');
+      } else await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
       if (cancel.request) markNativeConnectHandled(cancel.request);
       rememberSetupCancel(null);
       return !pendingSetupCancel;
@@ -1698,7 +1702,7 @@
         (!desktopLive?.revision || desktopLive.revision === revision)))) return false;
     operationError = null; clearNotice();
     stateRequest++;
-    quickOperation = connectionSetup?.operation_id || desktopLive?.operation_id || '';
+    quickOperation = connectionSetup?.operation_id || (desktopLive?.active ? desktopLive.operation_id : '') || newOperationID();
     quickBusy = true; state.busy = true; updateActions();
     try {
       const doc = await api('config', { yaml: state.saved, changes, revision: state.revision, ...(quickOperation ? { operation_id: quickOperation } : {}) });

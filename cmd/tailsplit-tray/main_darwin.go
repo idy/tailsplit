@@ -262,11 +262,13 @@ func main() {
 		})
 	var showConfiguration func()
 	panelReady := make(chan struct{})
+	loginCancellations := newDesktopLoginCancellations()
+	cancelConnection := loginCancellations.callback(controller)
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
 		ClaimConnectOperation: controller.ClaimConnectOperation,
-		Cancel:                func(_ context.Context, request, operation string) error { return controller.Cancel(request, operation) },
+		Cancel:                cancelConnection,
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return submit(configurationApply{ctx: ctx, action: "add-exit:" + id, revision: revision})
 		},
@@ -308,6 +310,7 @@ func main() {
 			controller.RecordDesktopEvent("Could not prepare MyGo window: " + err.Error())
 		}
 		if configurationWindow != nil {
+			configurationWindow.SetCancelHandler(cancelConnection)
 			go func() {
 				if err := configurationWindow.Run(); err != nil {
 					controller.RecordDesktopEvent("MyGo window stopped: " + err.Error())
@@ -371,8 +374,9 @@ func main() {
 			defer ticker.Stop()
 			var connected bool
 			var flow tray.LoginFlow
+			startupOperation := controller.ForOperation("")
 			if *loginImmediately {
-				flow.Request()
+				flow.RequestOperation(startupOperation.ID)
 			}
 			browserDone := make(chan error, 1)
 			logoutDone := make(chan error, 1)
@@ -388,7 +392,7 @@ func main() {
 			if pendingAction == "" {
 				pendingAction = "startup-service"
 			}
-			startupOperation := controller.ForOperation("")
+			pendingOperation := startupOperation.ID
 			go func() {
 				err := prepareDesktopStartup(ctx, func(ctx context.Context) error {
 					// app-run performs its own exact-build readiness check before
@@ -418,7 +422,7 @@ func main() {
 			}()
 			completeRequest := func(err error) bool {
 				reply := pendingRequest
-				pendingRequest, pendingAction = nil, ""
+				pendingRequest, pendingAction, pendingOperation = nil, "", ""
 				if reply == nil {
 					return false
 				}
@@ -437,6 +441,7 @@ func main() {
 			refreshLoginItem()
 			ticks := 0
 			openReadyLogin := func(snapshot tray.Snapshot) {
+				loginCancellations.apply(&flow)
 				if editing || loggingOut {
 					return
 				}
@@ -452,6 +457,8 @@ func main() {
 				select {
 				case <-ctx.Done():
 					return
+				case <-loginCancellations.events():
+					loginCancellations.apply(&flow)
 				case <-connect.ClickedCh:
 					if controller.CancelServicePreparation() {
 						flow.Cancel()
@@ -469,27 +476,30 @@ func main() {
 						controller.RequestConnectionSetup()
 						showConfiguration()
 					} else {
-						operation, err := desktopActionOperation("connect", controller, &flow, nil)
+						scoped := controller.ForOperation("")
+						operation, err := desktopActionOperation("connect", scoped, &flow, nil)
 						if err != nil {
 							showError(tr("无法应用设置，请检查配置和后台服务"))
 							continue
 						}
 						if operation != nil {
 							editing = true
-							pendingAction = "connect"
+							pendingAction, pendingOperation = "connect", scoped.ID
 							go func() { settingsDone <- operation() }()
 						} else {
 							openReadyLogin(controller.Snapshot())
 						}
 					}
 				case err := <-browserDone:
+					loginCancellations.apply(&flow)
 					controller.RecordLoginBrowserResult(err)
 					flow.Complete(err)
 				case err := <-logoutDone:
+					loginCancellations.apply(&flow)
 					loggingOut = false
 					if err == nil && switchingNetwork {
 						reloadPreferences()
-						flow.Request()
+						err = requestDesktopAuthorization(&flow, pendingOperation, controller.Snapshot().OperationID)
 						openReadyLogin(controller.Snapshot())
 					} else if err != nil {
 						flow.Fail("无法重新登录，请查看日志")
@@ -499,6 +509,7 @@ func main() {
 						showError(tr("无法重新登录，请查看日志"))
 					}
 				case request := <-configurationRequests:
+					loginCancellations.apply(&flow)
 					if err := request.ctx.Err(); err != nil {
 						request.done <- err
 						continue
@@ -515,8 +526,12 @@ func main() {
 						continue
 					}
 					var actionController desktopActionController = controller
-					if id := tray.OperationID(request.ctx); id != "" {
-						scoped := controller.ForOperation(id)
+					operationID := tray.OperationID(request.ctx)
+					name, _ := splitExitAction(request.action)
+					starts := name == "connect" || name == "login" || name == "login-exit" || name == "add-exit" || name == "switch-network" || name == "refresh-exits"
+					if operationID != "" || starts {
+						scoped := controller.ForOperation(operationID)
+						operationID = scoped.ID
 						if err := scoped.Check(); err != nil {
 							request.done <- err
 							continue
@@ -549,7 +564,7 @@ func main() {
 							}
 						}
 					}
-					pendingRequest, pendingAction = request.done, request.action
+					pendingRequest, pendingAction, pendingOperation = request.done, request.action, operationID
 					if request.action == "logout" || request.action == "switch-network" {
 						loggingOut = true
 						switchingNetwork = request.action == "switch-network"
@@ -559,6 +574,7 @@ func main() {
 						go func() { settingsDone <- operation() }()
 					}
 				case err := <-settingsDone:
+					loginCancellations.apply(&flow)
 					userConnect := pendingAction == "connect" && !startupPending
 					if startupPending && errors.Is(err, context.Canceled) {
 						flow.Cancel()
@@ -573,13 +589,13 @@ func main() {
 						refreshLoginItem()
 					}
 					if action, _ := splitExitAction(pendingAction); action == "login-exit" || action == "login" || action == "add-exit" {
-						err = finishDesktopExitLogin(&flow, err)
+						err = finishDesktopExitLogin(&flow, err, pendingOperation, controller.Snapshot().OperationID)
 						if err == nil {
 							openReadyLogin(controller.Snapshot())
 						}
 					}
 					if userConnect {
-						err = finishDesktopConnect(&flow, err)
+						err = finishDesktopConnect(&flow, err, pendingOperation, controller.Snapshot().OperationID)
 						if err == nil {
 							openReadyLogin(controller.Snapshot())
 						}

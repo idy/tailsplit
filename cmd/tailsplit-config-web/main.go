@@ -44,20 +44,7 @@ func main() {
 func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 	var mutex sync.Mutex
 	snapshot := tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
-	canceled := make(map[string]bool)
-	revokedRequests := make(map[string]bool)
-	revokedOperations := make(map[string]bool)
-	requestOperations := make(map[string]string)
-	operationAllowed := func(id string) bool { return !canceled[id] && !revokedOperations[id] }
-	ownOperation := func(id string) {
-		if id == "" {
-			id = rand.Text()
-		}
-		if snapshot.OperationID != "" && snapshot.OperationID != id {
-			canceled[snapshot.OperationID] = true
-		}
-		snapshot.OperationID = id
-	}
+	operations := newPreviewOperations()
 	options := configweb.Options{
 		ConfigPath: configPath, Listen: listen, Preview: true,
 		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
@@ -67,10 +54,10 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				return err
 			}
 			if id := tray.OperationID(ctx); id != "" {
-				if !operationAllowed(id) || snapshot.Active && snapshot.OperationID != id {
+				if !operations.allowed(id) || snapshot.Active && snapshot.OperationID != id {
 					return tray.ErrOperationCanceled
 				}
-				ownOperation(id)
+				operations.own(&snapshot, id)
 			}
 			if check != nil {
 				if err := check(snapshot); err != nil {
@@ -128,39 +115,13 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		options.Cancel = func(_ context.Context, request, operation string) error {
 			mutex.Lock()
 			defer mutex.Unlock()
-			if request != "" {
-				revokedRequests[request] = true
-				if snapshot.ConnectRequest == request && requestOperations[request] == "" {
-					requestOperations[request] = request
-				}
-				if bound := requestOperations[request]; bound != "" {
-					revokedOperations[request] = true
-					revokedOperations[bound] = true
-				}
-				if snapshot.ConnectRequest == request {
-					snapshot.ConnectRequest = ""
-				}
-			}
-			if operation != "" {
-				canceled[operation] = true
-				if snapshot.OperationID == operation {
-					snapshot.State, snapshot.Mode, snapshot.Active, snapshot.ActiveRevision = "stopped", "", false, ""
-				}
-			}
+			operations.cancel(&snapshot, request, operation)
 			return nil
 		}
 		options.ClaimConnectOperation = func(request, operation string) bool {
 			mutex.Lock()
 			defer mutex.Unlock()
-			if operation == "" {
-				operation = request
-			}
-			if request == "" || snapshot.ConnectRequest != request || revokedRequests[request] || canceled[request] || !operationAllowed(operation) {
-				return false
-			}
-			requestOperations[request] = operation
-			snapshot.ConnectRequest = ""
-			return true
+			return operations.claim(&snapshot, request, operation)
 		}
 		// A broken configuration must remain editable in the preview.
 		if config, err := tailsplit.Load(configPath); err == nil {
@@ -284,7 +245,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			switch name {
 			case "connect", "login", "login-exit", "add-exit", "switch-network", "refresh-exits":
 				id := tray.OperationID(ctx)
-				if !operationAllowed(id) {
+				if !operations.allowed(id) {
 					return tray.ErrOperationCanceled
 				}
 				// Failed admission and a reused discovery result do not replace
@@ -292,7 +253,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				adopt := name != "refresh-exits" || id != "" && !snapshot.Active
 				defer func() {
 					if actionErr == nil && adopt {
-						ownOperation(id)
+						operations.own(&snapshot, id)
 					}
 				}()
 			}
@@ -387,7 +348,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 				}
 				updatePreviewSnapshot(&snapshot, config)
 			case "disconnect":
-				canceled[snapshot.OperationID] = snapshot.OperationID != ""
+				operations.canceled[snapshot.OperationID] = snapshot.OperationID != ""
 				snapshot.State, snapshot.Mode, snapshot.Active = "stopped", "", false
 			case "logout":
 				snapshot = tray.Snapshot{State: "stopped", BackendState: "NeedsLogin", RoutingMode: snapshot.RoutingMode}
@@ -436,6 +397,65 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 		}
 	}
 	return options
+}
+
+// Like the native controller, the simulator retains native bindings after claim
+// and cancellation. Its caller owns the preview mutex for every method.
+type previewOperations struct {
+	canceled, revokedRequests, revokedOperations map[string]bool
+	requests                                     map[string]string
+}
+
+func newPreviewOperations() *previewOperations {
+	return &previewOperations{canceled: make(map[string]bool), revokedRequests: make(map[string]bool), revokedOperations: make(map[string]bool), requests: make(map[string]string)}
+}
+
+func (o *previewOperations) allowed(id string) bool {
+	return !o.canceled[id] && !o.revokedOperations[id]
+}
+
+func (o *previewOperations) own(snapshot *tray.Snapshot, id string) {
+	if id == "" {
+		id = rand.Text()
+	}
+	if snapshot.OperationID != "" && snapshot.OperationID != id {
+		o.canceled[snapshot.OperationID] = true
+	}
+	snapshot.OperationID = id
+}
+
+func (o *previewOperations) claim(snapshot *tray.Snapshot, request, operation string) bool {
+	if operation == "" {
+		operation = request
+	}
+	if request == "" || snapshot.ConnectRequest != request || o.revokedRequests[request] || o.canceled[request] || !o.allowed(operation) {
+		return false
+	}
+	o.requests[request] = operation
+	snapshot.ConnectRequest = ""
+	return true
+}
+
+func (o *previewOperations) cancel(snapshot *tray.Snapshot, request, operation string) {
+	if request != "" {
+		o.revokedRequests[request] = true
+		if snapshot.ConnectRequest == request && o.requests[request] == "" {
+			o.requests[request] = request
+		}
+		if snapshot.ConnectRequest == request {
+			snapshot.ConnectRequest = ""
+		}
+	}
+	bound := o.requests[request]
+	if bound != "" {
+		o.revokedOperations[request], o.revokedOperations[bound] = true, true
+	}
+	if operation != "" {
+		o.canceled[operation] = true
+	}
+	if operation != "" && snapshot.OperationID == operation || bound != "" && snapshot.OperationID == bound {
+		snapshot.State, snapshot.Mode, snapshot.Active, snapshot.ActiveRevision = "stopped", "", false, ""
+	}
 }
 
 // The caller owns the preview mutex. Reading configuration never starts an

@@ -158,11 +158,36 @@ func (o *Operation) SwitchNetwork() error {
 	return o.StartLogin()
 }
 
-// Cancel consumes only the specified pending native intent. The operation ID is
-// independently tombstoned, even if its action has not reached admission yet.
-// Never turn an absent or stale identity into an unconditional Stop.
+// Cancel targets the explicit operation and the retained native-request binding.
+// A stale snapshot cannot hide an admitted native owner, and neither identity can
+// stop a different, newer owner. Unknown IDs only retain admission tombstones.
 func (c *Controller) Cancel(request, operation string) error {
+	return c.CancelWithNotify(request, operation, nil)
+}
+
+// CancelWithNotify publishes the exact revoked identities before waiting for
+// cleanup. Native hosts enqueue these for their login-flow event loop; notify
+// must not mutate that event-loop-owned flow from the cancellation goroutine.
+func (c *Controller) CancelWithNotify(request, operation string, notify func([]string)) error {
 	c.mu.Lock()
+	bound := c.requestOperations[request]
+	targets := []string{}
+	addTarget := func(id string) {
+		if id == "" {
+			return
+		}
+		for _, previous := range targets {
+			if previous == id {
+				return
+			}
+		}
+		targets = append(targets, id)
+	}
+	addTarget(operation)
+	if bound != "" {
+		addTarget(request)
+		addTarget(bound)
+	}
 	if request != "" {
 		if c.revokedRequests == nil {
 			c.revokedRequests = make(map[string]bool)
@@ -179,17 +204,19 @@ func (c *Controller) Cancel(request, operation string) error {
 			c.connectRequest = ""
 		}
 	}
-	if operation == "" {
-		c.mu.Unlock()
-		return nil
-	}
 	c.markCanceledLocked(operation)
-	if c.operationID != operation {
-		c.mu.Unlock()
+	matched := operation != "" && c.operationID == operation || bound != "" && c.operationID == bound
+	var stop stoppedResources
+	if matched {
+		stop = c.captureStopLocked()
+	}
+	c.mu.Unlock()
+	if notify != nil {
+		notify(targets)
+	}
+	if !matched {
 		return nil
 	}
-	stop := c.captureStopLocked()
-	c.mu.Unlock()
 	return c.waitStopped(stop)
 }
 

@@ -43,16 +43,17 @@ type windowsOperation struct {
 }
 
 type windowsApp struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	controller  *tray.Controller
-	configPath  string
-	window      *desktopwindow.Window
-	operations  chan windowsOperation
-	login       tray.LoginFlow
-	browserDone chan error
-	quit        sync.Once
-	updates     *desktopUpdates
+	ctx                context.Context
+	cancel             context.CancelFunc
+	controller         *tray.Controller
+	configPath         string
+	window             *desktopwindow.Window
+	operations         chan windowsOperation
+	login              tray.LoginFlow
+	loginCancellations *desktopLoginCancellations
+	browserDone        chan error
+	quit               sync.Once
+	updates            *desktopUpdates
 }
 
 func desktopPipeDescriptor(sid string) string {
@@ -188,7 +189,7 @@ func runWindowsDesktop() (runErr error) {
 	defer cancel()
 	// Keep one bounded pending request while the dispatcher handles its status
 	// tick. An unbuffered nonblocking send can reject a click while idle.
-	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
+	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1), loginCancellations: newDesktopLoginCancellations()}
 	go app.operate()
 	preferences, err := tray.ReadPreferences(*config)
 	if err != nil {
@@ -201,15 +202,19 @@ func runWindowsDesktop() (runErr error) {
 		}, launchWindowsUpdate)
 	var showConfiguration func()
 	panelReady := make(chan struct{})
+	cancelConnection := app.loginCancellations.callback(controller)
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
 		ClaimConnectOperation: controller.ClaimConnectOperation,
-		Cancel:                func(_ context.Context, request, operation string) error { return controller.Cancel(request, operation) },
+		Cancel:                cancelConnection,
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return app.do(ctx, func() error {
 				app.login.Cancel()
-				return finishDesktopExitLogin(&app.login, controller.ForOperation(tray.OperationID(ctx)).AddExit(id, revision))
+				scoped := controller.ForOperation(tray.OperationID(ctx))
+				err := scoped.AddExit(id, revision)
+				app.loginCancellations.apply(&app.login)
+				return finishDesktopExitLogin(&app.login, err, desktopLoginIdentity(scoped)...)
 			})
 		},
 		RemoveExit: func(ctx context.Context, id, revision string) error {
@@ -237,7 +242,9 @@ func runWindowsDesktop() (runErr error) {
 				if err != nil || operation == nil {
 					return err
 				}
-				return finishDesktopConnect(&app.login, operation())
+				err = operation()
+				app.loginCancellations.apply(&app.login)
+				return finishDesktopConnect(&app.login, err, desktopLoginIdentity(scoped)...)
 			})
 		},
 		UpdateState: app.updates.snapshot, UpdateAction: app.updates.action,
@@ -260,6 +267,7 @@ func runWindowsDesktop() (runErr error) {
 	if err != nil {
 		return err
 	}
+	app.window.SetCancelHandler(cancelConnection)
 	showConfiguration = func() {
 		if err := app.window.Show(); err != nil {
 			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
@@ -381,7 +389,10 @@ func (a *windowsApp) operate() {
 		select {
 		case <-a.ctx.Done():
 			return
+		case <-a.loginCancellations.events():
+			a.loginCancellations.apply(&a.login)
 		case request := <-a.operations:
+			a.loginCancellations.apply(&a.login)
 			if err := request.ctx.Err(); err != nil {
 				request.done <- err
 			} else if a.login.Opening() {
@@ -389,11 +400,15 @@ func (a *windowsApp) operate() {
 				// Do not let that completion overwrite a newer login or switch.
 				request.done <- configweb.ErrBusy
 			} else {
-				request.done <- request.apply()
+				err := request.apply()
+				a.loginCancellations.apply(&a.login)
+				request.done <- err
 			}
 		case err := <-a.browserDone:
+			a.loginCancellations.apply(&a.login)
 			a.login.Complete(err)
 		case <-ticker.C:
+			a.loginCancellations.apply(&a.login)
 			if link := a.login.Next(a.controller.Snapshot()); link != "" {
 				go func() {
 					ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
@@ -420,7 +435,9 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 		switch action {
 		case "add-exit":
 			a.login.Cancel()
-			return finishDesktopExitLogin(&a.login, controller.AddExit(exit))
+			err := controller.AddExit(exit)
+			a.loginCancellations.apply(&a.login)
+			return finishDesktopExitLogin(&a.login, err, desktopLoginIdentity(controller)...)
 		case "login-exit":
 			return requestDesktopExitLogin(controller, &a.login, exit)
 		case "logout-exit":
@@ -431,7 +448,9 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			if err != nil || operation == nil {
 				return err
 			}
-			return finishDesktopConnect(&a.login, operation())
+			err = operation()
+			a.loginCancellations.apply(&a.login)
+			return finishDesktopConnect(&a.login, err, desktopLoginIdentity(controller)...)
 		case "disconnect":
 			a.login.Cancel()
 			return a.controller.Stop()
@@ -446,8 +465,8 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			if err := controller.SwitchNetwork(); err != nil {
 				return err
 			}
-			a.login.Request()
-			return nil
+			a.loginCancellations.apply(&a.login)
+			return requestDesktopAuthorization(&a.login, desktopLoginIdentity(controller)...)
 		case "refresh-exits":
 			return controller.RefreshExitNodes()
 		case "startup-on":

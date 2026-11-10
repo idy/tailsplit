@@ -21,20 +21,21 @@ var ErrNotReady = errors.New("TailSplit window is not ready")
 // Window keeps its page alive while hidden, preserving unsaved settings drafts.
 // MyGo owns the sole native event loop; Run only waits for this window's lifetime.
 type Window struct {
-	url       string
-	port      uint16
-	native    *mygo.Window // UI thread only.
-	loaded    bool         // UI thread only.
-	load      *pageLoad    // UI thread only.
-	visible   atomic.Bool
-	quitting  atomic.Bool
-	everShown atomic.Bool
-	start     sync.Once
-	create    sync.Once
-	finish    sync.Once
-	done      chan struct{}
-	mu        sync.Mutex
-	err       error
+	url           string
+	port          uint16
+	native        *mygo.Window // UI thread only.
+	loaded        bool         // UI thread only.
+	load          *pageLoad    // UI thread only.
+	visible       atomic.Bool
+	quitting      atomic.Bool
+	everShown     atomic.Bool
+	start         sync.Once
+	create        sync.Once
+	finish        sync.Once
+	done          chan struct{}
+	mu            sync.Mutex
+	err           error
+	cancelHandler func(context.Context, string, string) error
 }
 
 func New(rawURL string, background bool) (*Window, error) {
@@ -131,6 +132,7 @@ func (w *Window) createWindow() {
 			Page: mygo.PageOptions{Session: mygo.NewEphemeralSession(), TrustedOrigins: []string{origin}, DevTools: mygo.DevToolsDisabled},
 		})
 		frame := w.native
+		panelCancellation.register(frame, frame.Page(), w)
 		if os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR") == "" {
 			restoreNativeFrame(frame.NativeHandle())
 		}

@@ -12,13 +12,65 @@ import (
 // LoginFlow is owned by the UI event loop. A click can precede the new auth
 // URL after logout; queue that intent instead of silently discarding it.
 type LoginFlow struct {
-	pending     bool
-	opening     bool
-	message     string
-	showMessage bool
+	pending            bool
+	opening            bool
+	message            string
+	showMessage        bool
+	operationID        string
+	ownerID            string
+	canceledOperations map[string]bool
+}
+
+// RequestOperation binds this browser intent to its action and the helper
+// supplying authorization. All methods remain owned by the desktop event loop.
+func (f *LoginFlow) RequestOperation(operation string, owner ...string) bool {
+	if operation == "" {
+		f.Request()
+		return f.pending
+	}
+	ownerID := operation
+	if len(owner) > 0 {
+		ownerID = owner[0]
+	}
+	if f.canceledOperations[operation] || f.canceledOperations[ownerID] || f.opening {
+		return false
+	}
+	f.operationID, f.ownerID = operation, ownerID
+	f.request()
+	return true
+}
+
+func (f *LoginFlow) OperationCanceled(operation string) bool { return f.canceledOperations[operation] }
+
+// Retain revocation even before an asynchronous action completion requests its
+// browser intent. A delayed cancellation must not clear a different newer flow.
+func (f *LoginFlow) CancelOperation(operation string) bool {
+	if operation == "" {
+		return false
+	}
+	if f.canceledOperations == nil {
+		f.canceledOperations = make(map[string]bool)
+	}
+	f.canceledOperations[operation] = true
+	if f.operationID != operation && f.ownerID != operation {
+		return false
+	}
+	if f.operationID != "" {
+		f.canceledOperations[f.operationID] = true
+	}
+	f.Cancel()
+	return true
 }
 
 func (f *LoginFlow) Request() {
+	if f.opening {
+		return
+	}
+	f.operationID, f.ownerID = "", ""
+	f.request()
+}
+
+func (f *LoginFlow) request() {
 	if f.opening {
 		return
 	}
@@ -35,6 +87,10 @@ func (f *LoginFlow) Cancel() {
 
 func (f *LoginFlow) Next(snapshot Snapshot) string {
 	if !f.pending || f.opening {
+		return ""
+	}
+	if f.operationID != "" && (f.canceledOperations[f.operationID] || snapshot.OperationID != f.ownerID) {
+		f.CancelOperation(f.operationID)
 		return ""
 	}
 	if snapshot.State == "failed" {
@@ -78,6 +134,10 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 
 func (f *LoginFlow) Complete(err error) {
 	f.opening = false
+	if f.operationID != "" && f.canceledOperations[f.operationID] {
+		f.Cancel()
+		return
+	}
 	if err != nil {
 		f.showMessage = true
 		f.message = "打开失败，请复制登录链接"

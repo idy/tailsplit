@@ -121,7 +121,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     return button;
   });
   $('#window-controls').hidden = true;
-  const app = { $, requests, messages, canceledOperations: new Set(), windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', operation_id: snapshot.active ? 'existing-operation' : '', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
+  const app = { $, requests, messages, nativeCalls: [], nativeOverride: () => undefined, canceledOperations: new Set(), windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', operation_id: snapshot.active ? 'existing-operation' : '', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
     language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: localeOptions.override || (() => undefined) };
   const document = {
     documentElement: new Element(), hidden: false, querySelector: $, createElement: (tag) => { const element = new Element(); element.tagName = tag; return element; },
@@ -136,6 +136,13 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     addEventListener: (...args) => events.addEventListener(...args),
   };
   app.document = document;
+  const applyCancellation = data => {
+    const { request: id, operation_id: operation } = data;
+    if (id && id === app.snapshot.connect_request) app.snapshot.connect_request = '';
+    if (operation) app.canceledOperations.add(operation);
+    if (operation && operation === app.snapshot.operation_id) Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+    return { ok: true };
+  };
   const storage = localeOptions.storage || new Map();
   const sharedStorage = localeOptions.localStorage || new Map();
   app.storage = storage;
@@ -150,6 +157,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     fetch: async (path, options) => {
       const request = { path, method: options.method, headers: options.headers, data: options.body && JSON.parse(options.body) };
       requests.push(request);
+      if (path === '/api/config' && request.method === 'POST' && app.canceledOperations.has(request.data.operation_id)) return response({ error: 'operation canceled', code: 'canceled' }, false);
       if (path === '/api/action' && request.data.operation_id) {
         if (app.canceledOperations.has(request.data.operation_id)) return response({ error: 'operation canceled' }, false);
         app.snapshot.operation_id = request.data.operation_id;
@@ -166,13 +174,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
         if (claimed) app.snapshot.connect_request = '';
         return response({ claimed });
       }
-      if (path === '/api/cancel') {
-        const { request: id, operation_id: operation } = request.data;
-        if (id && id === app.snapshot.connect_request) app.snapshot.connect_request = '';
-        if (operation) app.canceledOperations.add(operation);
-        if (operation && operation === app.snapshot.operation_id) Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
-        return response({ ok: true });
-      }
+      if (path === '/api/cancel') return response(applyCancellation(request.data));
       if (path === '/api/config') return response(app.config);
       if (path === '/api/preview') {
         let text = request.data.yaml;
@@ -182,6 +184,16 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
       }
       return response({ valid: true });
     },
+  };
+  if (window.mygo) window.mygo.call = async (method, id, operation) => {
+    assert.equal(method, 'TailSplitPanel.Cancel');
+    const request = { path: '/api/cancel', method: 'NATIVE', transport: 'native', bridgeMethod: method, data: { request: id, operation_id: operation } };
+    requests.push(request); app.nativeCalls.push(request);
+    const overridden = app.nativeOverride(request);
+    const result = overridden === undefined ? response(applyCancellation(request.data)) : await overridden;
+    const value = await result.json();
+    if (!result.ok) throw new Error(value.error || 'native cancellation failed');
+    return value;
   };
   app.location = sandbox.location;
   vm.createContext(sandbox);
@@ -1613,7 +1625,7 @@ const activeGlobalDocument = () => {
   return initial;
 };
 const activeGlobalSnapshot = () => exitsSnapshot({ active: true, mode: 'tun', state: 'running' });
-const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/config-rebuild', '/api/config-repair', '/api/action', '/api/cancel'].includes(request.path));
+const mutations = (app) => app.requests.filter(request => ['POST', 'NATIVE'].includes(request.method) && ['/api/config', '/api/config-rebuild', '/api/config-repair', '/api/action', '/api/cancel'].includes(request.path));
 const mutationAction = request => request.path === '/api/cancel' ? 'cancel' : request.data.action;
 const actionFields = request => { const { operation_id, ...fields } = request.data; if (operation_id !== undefined) assert.equal(typeof operation_id, 'string'); return fields; };
 // Call the listener directly to verify its guards independently of disabled UI.
@@ -3559,15 +3571,12 @@ test('late claim results cannot clear cancellation markers before Stop acknowled
     const backend = app.override;
     const claim = deferred(), stop = deferred();
     app.snapshot.connect_request = 'cancel-before-ack';
-    app.override = request => {
-      if (request.path === '/api/connect-request') return claim.promise;
-      if (request.path === '/api/cancel') return stop.promise.then(() => {
-        Object.assign(app.snapshot, { connect_request: '', active: false, state: 'stopped', mode: '' });
-        app.canceledOperations.add(request.data.operation_id);
-        return response({ ok: true });
-      });
-      return backend(request);
-    };
+    app.override = request => request.path === '/api/connect-request' ? claim.promise : backend(request);
+    app.nativeOverride = request => stop.promise.then(() => {
+      Object.assign(app.snapshot, { connect_request: '', active: false, state: 'stopped', mode: '' });
+      app.canceledOperations.add(request.data.operation_id);
+      return response({ ok: true });
+    });
     const poll = app.poll();
     await settle();
     const cancel = app.$('#connection-setup-cancel').emit('click');
@@ -3731,6 +3740,87 @@ test('adopting a shared cancellation clears the matching local setup intent', as
   await app.poll();
   assert.equal(app.$('#exit-picker-dialog').open || false, false);
   assert.equal(mutations(app).some(request => request.data.action === 'connect'), false);
+});
+
+test('native cancellation reaches the shared host when HTTP fails and browser storage is isolated', async () => {
+  for (const platform of ['mygo-macos', 'mygo-windows']) {
+    const id = `native-cancel-${platform}`;
+    const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'native-owner', connect_request: id }, platform, { page: 'home', localStorage: new Map() }, guidedDocument());
+    native.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP request never reaches controller' }, false) : undefined;
+    await native.$('#connection-setup-cancel').emit('click');
+    assert.equal(native.nativeCalls.length, 1);
+    assert.deepEqual(native.nativeCalls[0].data, { request: id, operation_id: 'native-owner' });
+    assert.equal(native.requests.filter(request => request.path === '/api/cancel' && request.method === 'POST').length, 0, 'native cancellation cannot depend on HTTP');
+    assert.equal(native.snapshot.active, false);
+    assert.equal(native.snapshot.connect_request, '');
+    const browser = await page(native.snapshot, '', { page: 'home', hash: `#token=fixture&connect=${id}`, storage: new Map(), localStorage: new Map() }, native.config);
+    assert.equal(browser.requests.some(request => request.path === '/api/connect-request'), false);
+    assert.equal(mutations(browser).length, 0, 'separate browser storage cannot revive the revoked host request');
+  }
+});
+
+test('native host revocation survives the panel closing before IPC acknowledgment', async () => {
+  const id = 'native-close-before-ack';
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: id, connect_request: id }, 'mygo-macos', { page: 'home' }, guidedDocument());
+  const ack = deferred();
+  native.nativeOverride = request => {
+    native.snapshot.connect_request = '';
+    native.canceledOperations.add(request.data.operation_id);
+    Object.assign(native.snapshot, { active: false, state: 'stopped', mode: '' });
+    return ack.promise;
+  };
+  const cancel = native.$('#connection-setup-cancel').emit('click');
+  await settle();
+  const fallback = await page(native.snapshot, '', { page: 'home', hash: `#token=fixture&connect=${id}`, localStorage: new Map(), storage: new Map() }, native.config);
+  assert.equal(mutations(fallback).length, 0);
+  assert.equal(fallback.requests.some(request => request.path === '/api/connect-request'), false);
+  ack.resolve(response({ ok: true }));
+  await cancel;
+});
+
+test('disconnected quick saves allocate a fresh operation instead of the canceled owner', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  const app = await page({ ...officeSnapshot(), active: false, state: 'stopped', operation_id: 'canceled-connection' }, '', {}, initial);
+  app.canceledOperations.add('canceled-connection');
+  app.override = request => {
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.ok(request.data.operation_id);
+    assert.notEqual(request.data.operation_id, 'canceled-connection');
+    app.config = { ...initial, revision: 'idle-saved', values: { ...initial.values, rules: { ...initial.values.rules, default_exit: 'office' } } };
+    app.snapshot.revision = app.config.revision;
+    return response(app.config);
+  };
+  app.$('#connection-exit').value = 'office';
+  await app.$('#connection-exit').emit('change');
+  assert.equal(app.config.revision, 'idle-saved');
+  assert.equal(app.snapshot.active, false);
+  assert.equal(app.$('#connection-exit').value, 'office');
+});
+
+test('Global edits that disconnect first save with a fresh operation ID', async () => {
+  const initial = activeGlobalGatewayDocument();
+  const app = await page({ ...activeGlobalGatewaySnapshot(), operation_id: 'global-canceled-owner' }, '', {}, initial);
+  app.override = request => {
+    if (request.path === '/api/action' && request.data.action === 'disconnect') {
+      app.canceledOperations.add(app.snapshot.operation_id);
+      Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+      return response({ ok: true });
+    }
+    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
+    assert.ok(request.data.operation_id);
+    assert.notEqual(request.data.operation_id, 'global-canceled-owner');
+    app.config = { ...initial, revision: 'global-edited', values: { ...initial.values, rules: { ...initial.values.rules, global_exit: 'spare' } } };
+    app.snapshot.revision = app.config.revision;
+    return response(app.config);
+  };
+  app.$('#connection-exit').value = 'spare';
+  const changing = app.$('#connection-exit').emit('change');
+  await settle();
+  answerAddConsent(app, 'gateway');
+  await changing;
+  assert.equal(app.config.revision, 'global-edited');
+  assert.equal(app.snapshot.active, false);
+  assert.equal(app.$('#connection-exit').value, 'spare');
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {

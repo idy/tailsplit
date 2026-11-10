@@ -149,7 +149,7 @@ type Controller struct {
 	canceledOperations map[string]bool   // Lifetime tombstones also cover pre-admission cancellation.
 	requestOperations  map[string]string // Retained native request -> operation binding.
 	revokedRequests    map[string]bool
-	revokedOperations  map[string]bool // Revoked native bindings reject future admission only.
+	revokedOperations  map[string]bool // Revoked native bindings reject future admission.
 	stopGeneration     uint64
 	stopCompletion     *stopCompletion
 }

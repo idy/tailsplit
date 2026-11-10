@@ -100,6 +100,46 @@ func TestDesktopPreviewGuardsCanceledOperationsAcrossLoginSaveAndConnect(t *test
 	}
 }
 
+func TestDesktopPreviewNativeBindingCancelUsesBoundOwnerDespiteStaleSnapshot(t *testing.T) {
+	for _, newer := range []bool{false, true} {
+		operations := newPreviewOperations()
+		snapshot := tray.Snapshot{ConnectRequest: "native-request"}
+		if !operations.claim(&snapshot, "native-request", "bound-owner") {
+			t.Fatal("claim failed")
+		}
+		operations.own(&snapshot, "bound-owner")
+		snapshot.State, snapshot.Mode, snapshot.Active, snapshot.ActiveRevision = "running", "proxy", true, "revision"
+		if newer {
+			operations.own(&snapshot, "newer-owner")
+		}
+		snapshot.ConnectRequest = "newer-request"
+		operations.cancel(&snapshot, "native-request", "stale-snapshot-owner")
+		if snapshot.Active != newer || snapshot.ConnectRequest != "newer-request" || newer && snapshot.OperationID != "newer-owner" {
+			t.Fatal("preview native binding canceled wrong owner", snapshot)
+		}
+		if operations.allowed("bound-owner") || operations.allowed("stale-snapshot-owner") {
+			t.Fatal("preview cancellation lost admission tombstone")
+		}
+	}
+	operations := newPreviewOperations()
+	snapshot := tray.Snapshot{ConnectRequest: "request-only"}
+	if !operations.claim(&snapshot, "request-only", "bound-owner") {
+		t.Fatal("claim failed")
+	}
+	operations.own(&snapshot, "bound-owner")
+	snapshot.Active = true
+	operations.cancel(&snapshot, "request-only", "")
+	if snapshot.Active {
+		t.Fatal("request-only preview cancel retained admitted bound owner")
+	}
+	operations.own(&snapshot, "browser-owner")
+	snapshot.Active = true
+	operations.cancel(&snapshot, "browser-owner", "")
+	if !snapshot.Active || !operations.allowed("browser-owner") {
+		t.Fatal("unknown request poisoned arbitrary preview operation")
+	}
+}
+
 func TestDesktopPreviewApplyAdvancesActiveRevision(t *testing.T) {
 	options := testDesktopPreview(t)
 	previewAction(t, options, "login")
