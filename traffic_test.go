@@ -143,8 +143,9 @@ func TestTrafficNativeFlowsConcurrentAndSessionReset(t *testing.T) {
 		t.Fatal("native flow lost direction or concurrent increments:", got)
 	}
 	after := collector.snapshot()
-	if !after.SampledAt.After(before.SampledAt) || after.SessionID != before.SessionID {
-		t.Fatal("sample does not preserve session and advance time")
+	// Windows can return the same wall-clock tick for consecutive samples.
+	if after.SampledAt.IsZero() || after.SampledAt.Before(before.SampledAt) || after.SessionID != before.SessionID {
+		t.Fatal("sample lost its session or timestamp moved backward")
 	}
 	before.Routes["office"] = TrafficCounters{}
 	if collector.snapshot().Routes["office"].UploadBytes == 0 {
