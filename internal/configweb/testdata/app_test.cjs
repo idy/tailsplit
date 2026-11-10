@@ -139,7 +139,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   app.storage = storage;
   const sandbox = {
     document, window, URL, URLSearchParams, location: { hash: localeOptions.hash || '#token=fixture', pathname: '/' },
-    history: { replaceState() {} }, sessionStorage: { setItem(key, value) { storage.set(key, value); }, getItem(key) { return storage.get(key); } },
+    history: { replaceState() {} }, sessionStorage: { setItem(key, value) { storage.set(key, value); }, getItem(key) { return storage.get(key); }, removeItem(key) { storage.delete(key); } },
     navigator: { languages: localeOptions.languages || ['zh-CN'], clipboard: { writeText: async () => {} } },
     setTimeout: (callback) => { timers.set(++timer, callback); return timer; },
     clearTimeout: (id) => timers.delete(id), setInterval: (callback) => { poll = callback; },
@@ -3338,6 +3338,47 @@ test('a reused browser fallback receives an intent from a new fragment without r
   await app.windowEvents.emit('hashchange');
   assert.equal(app.snapshot.connect_request, '');
   assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1);
+});
+
+test('an unclaimed browser fallback request survives reload while the desktop is busy', async () => {
+  const storage = new Map();
+  const app = await page({ desktop: true, active: true, state: 'discovering', mode: 'discovery', connect_request: 'reload-pending' }, '',
+    { page: 'home', hash: '#token=fixture&connect=reload-pending', storage }, guidedDocument());
+  assert.equal(mutations(app).length, 0);
+  assert.equal(JSON.parse(storage.get('tailsplit-browser-connect')).request, 'reload-pending');
+  const reloaded = await page(app.snapshot, '', { page: 'home', hash: '#token=fixture', storage }, app.config);
+  assert.equal(mutations(reloaded).length, 0);
+  guidedBackend(reloaded, { deferAdd: true });
+  Object.assign(reloaded.snapshot, { active: false, state: 'stopped', mode: '' });
+  await reloaded.poll();
+  assert.equal(reloaded.snapshot.connect_request, '');
+  assert.equal(storage.has('tailsplit-browser-connect'), false, 'a successful claim removes the remembered marker');
+  assert.equal(mutations(reloaded).filter(r => r.data.action === 'add-exit').length, 1);
+});
+
+test('browser fallback persistence is scoped to the current panel capability', async () => {
+  const storage = new Map([['tailsplit-browser-connect', JSON.stringify({ token: 'another-panel', request: 'old-request' })]]);
+  const app = await page({ desktop: true, connect_request: 'old-request' }, '', { page: 'home', storage }, guidedDocument());
+  assert.equal(app.requests.some(r => r.path === '/api/connect-request'), false);
+  assert.equal(storage.has('tailsplit-browser-connect'), false);
+  assert.equal(mutations(app).length, 0);
+});
+
+test('canceling an unclaimed fallback consumes it before stopping the busy helper', async () => {
+  const storage = new Map();
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', connect_request: 'cancel-before-claim' }, '',
+    { page: 'home', hash: '#token=fixture&connect=cancel-before-claim', storage }, guidedDocument());
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    assert.equal(request.data.action, 'disconnect');
+    Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+    return response({ ok: true });
+  };
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.snapshot.connect_request, '');
+  assert.equal(storage.has('tailsplit-browser-connect'), false);
+  const reloaded = await page(app.snapshot, '', { page: 'home', storage }, app.config);
+  assert.equal(mutations(reloaded).length, 0, 'cancel cannot replay after a reload');
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {

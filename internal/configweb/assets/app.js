@@ -71,6 +71,24 @@
     if (token) sessionStorage.setItem('tailsplit-config-token', token);
     else token = sessionStorage.getItem('tailsplit-config-token');
   } catch (_) { /* The current tab can still use the fragment in private mode. */ }
+  const browserConnectKey = 'tailsplit-browser-connect';
+  function rememberBrowserConnect(request) {
+    browserConnectRequest = request;
+    try {
+      if (request) sessionStorage.setItem(browserConnectKey, JSON.stringify({ token, request }));
+      else sessionStorage.removeItem(browserConnectKey);
+    } catch (_) { /* The current page can still handle its URL-bound intent. */ }
+  }
+  function forgetBrowserConnect(request) {
+    if (browserConnectRequest === request) rememberBrowserConnect('');
+  }
+  try {
+    if (!fragment.has('connect')) {
+      const remembered = JSON.parse(sessionStorage.getItem(browserConnectKey) || 'null');
+      if (remembered?.token === token && typeof remembered.request === 'string') browserConnectRequest = remembered.request;
+    }
+    rememberBrowserConnect(browserConnectRequest);
+  } catch (_) { /* Malformed or unavailable storage never grants an intent. */ }
   if (location.hash) history.replaceState(null, '', location.pathname);
 
   async function api(path, data) {
@@ -835,6 +853,11 @@
     setStatusText('#connection-exit-label', t(savedMode() === 'global' ? '全局出口' : '默认出口'));
     window.TailSplitSelect?.sync();
   }
+  function markNativeConnectHandled(request) {
+    lastNativeConnect = request;
+    try { sessionStorage.setItem('tailsplit-connect-request', request); } catch (_) {}
+    forgetBrowserConnect(request);
+  }
   async function consumeNativeConnect() {
     const request = desktopLive?.connect_request;
     // MyGo owns ordinary native requests. A browser may handle only the exact
@@ -844,13 +867,12 @@
     if (!connectionSetup && !(networkActive() && desktopLive.state === 'running') && (isLocked() || isDesktopBusy() || desktopLive.active)) return;
     try {
       const result = await api('connect-request', { request });
-      if (!result.claimed) return;
+      if (!result.claimed) { forgetBrowserConnect(request); return; }
     } catch (error) {
       notice('操作未完成', message(error));
       return;
     }
-    lastNativeConnect = request;
-    try { sessionStorage.setItem('tailsplit-connect-request', request); } catch (_) {}
+    markNativeConnectHandled(request);
     if (connectionSetup || networkActive()) return;
     showPage('connection');
     if (state.dirty) { notice('操作未完成', t('请先保存配置，再连接。')); return; }
@@ -902,6 +924,13 @@
     setStatusText('#connection-setup-cancel', t(failed && !live.active ? '关闭' : '取消连接'));
   }
   async function cancelConnectionSetup() {
+    const request = desktopLive?.connect_request;
+    if (request && (mygoWindow || browserConnectRequest === request)) {
+      try {
+        await api('connect-request', { request });
+        markNativeConnectHandled(request);
+      } catch (error) { notice('操作未完成', message(error)); return; }
+    }
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
     if (exitDialog.open) exitDialog.close();
@@ -2422,7 +2451,7 @@
     const request = incoming.get('connect');
     if (!request) return;
     if (incoming.get('token') !== token) { location.reload(); return; }
-    browserConnectRequest = request;
+    rememberBrowserConnect(request);
     history.replaceState(null, '', location.pathname);
     await refreshPage();
   });

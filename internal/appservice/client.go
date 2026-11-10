@@ -514,6 +514,10 @@ func (c *stateLeaseConnection) Close() error {
 // Cancellation abandons ordinary output and gives stopped a bounded delivery
 // window while draining to service EOF. A caller-owned write can outlive Forward.
 func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
+	return forwardWithTerminalGrace(ctx, connection, output, 100*time.Millisecond)
+}
+
+func forwardWithTerminalGrace(ctx context.Context, connection net.Conn, output io.Writer, terminalGrace time.Duration) error {
 	stop := sync.OnceFunc(func() { stopSession(connection) })
 	done := make(chan struct{})
 	go func() {
@@ -543,18 +547,6 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 			outputCanceled = true
 			return nil
 		}
-		if writePending {
-			// Never queue the terminal event behind an already blocked writer.
-			select {
-			case err := <-written:
-				writePending = false
-				if err != nil {
-					return err
-				}
-			default:
-				return nil
-			}
-		}
 		writeCtx := ctx
 		var cancelGrace context.CancelFunc
 		defer func() {
@@ -564,16 +556,45 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 		}()
 		abandon := func() bool {
 			if terminal && cancelGrace == nil {
-				// Only stopped gets output grace. Service cleanup has no deadline.
-				writeCtx, cancelGrace = context.WithTimeout(context.Background(), 100*time.Millisecond)
+				// Pending acknowledgement, terminal handoff and completion share
+				// one grace deadline. Service cleanup has no deadline.
+				writeCtx, cancelGrace = context.WithTimeout(context.Background(), terminalGrace)
 				return false
 			}
 			outputCanceled = true
 			return true
 		}
+		waitForWrite := func() error {
+			for {
+				select {
+				case err := <-written:
+					writePending = false
+					return err
+				case <-writeCtx.Done():
+					// Prefer a completed write's real error over simultaneous cancellation.
+					select {
+					case err := <-written:
+						writePending = false
+						return err
+					default:
+					}
+					if abandon() {
+						return nil
+					}
+				}
+			}
+		}
+		if writePending {
+			if err := waitForWrite(); err != nil || writePending {
+				return err
+			}
+		}
 		data := append(append([]byte(nil), line...), '\n')
 	submit:
 		for {
+			if writeCtx.Err() != nil && abandon() {
+				return nil
+			}
 			select {
 			case writes <- data:
 				writePending = true
@@ -584,24 +605,7 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 				}
 			}
 		}
-		for {
-			select {
-			case err := <-written:
-				writePending = false
-				return err
-			case <-writeCtx.Done():
-				// Prefer a completed write's real error over simultaneous cancellation.
-				select {
-				case err := <-written:
-					writePending = false
-					return err
-				default:
-				}
-				if abandon() {
-					return nil
-				}
-			}
-		}
+		return waitForWrite()
 	}
 	scanner := bufio.NewScanner(connection)
 	scanner.Buffer(make([]byte, 4096), 1<<20)

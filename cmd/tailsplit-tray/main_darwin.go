@@ -295,6 +295,11 @@ func main() {
 		Quit: systray.Quit,
 	})
 	var configurationWindow *desktopwindow.Window
+	fallback := configurationFallback{launch: func() {
+		if configurationPage != nil {
+			openPath(tray.ConfigurationWindowConnectURL(configurationPage.URL(), controller.Snapshot().ConnectRequest))
+		}
+	}}
 	if configurationPage != nil {
 		configurationWindow, err = desktopwindow.New(configurationPage.URL(), true)
 		if err != nil {
@@ -304,6 +309,7 @@ func main() {
 			go func() {
 				if err := configurationWindow.Run(); err != nil {
 					controller.RecordDesktopEvent("MyGo window stopped: " + err.Error())
+					fallback.nativeFailed(ctx.Err() == nil && configurationWindow.WantsVisible())
 				}
 			}()
 		}
@@ -313,13 +319,14 @@ func main() {
 			openPath("-t", *config)
 			return
 		}
+		fallback.beginShow()
 		if configurationWindow == nil {
-			openPath(tray.ConfigurationWindowConnectURL(configurationPage.URL(), controller.Snapshot().ConnectRequest))
+			fallback.open()
 			return
 		}
 		if err := configurationWindow.Show(); err != nil {
 			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-			openPath(tray.ConfigurationWindowConnectURL(configurationPage.URL(), controller.Snapshot().ConnectRequest))
+			fallback.open()
 		}
 	}
 	close(panelReady)

@@ -150,7 +150,7 @@ func (w *Window) createWindow() {
 			}
 		})
 		frame.OnClose(func(event *mygo.CloseEvent) {
-			if !w.quitting.Load() {
+			if !w.quitting.Load() && !w.isDone() {
 				event.PreventDefault()
 				w.visible.Store(false)
 				w.hideWindow()
@@ -241,6 +241,10 @@ func (w *Window) hideWindow() {
 		mygo.App.Dock.Hide()
 	}
 }
+
+// WantsVisible reports the current visibility intent even when loading failed
+// before a native window could be shown. Hosts use it for asynchronous fallback.
+func (w *Window) WantsVisible() bool { return w.visible.Load() && !w.quitting.Load() }
 
 func (w *Window) Show() error {
 	if w.isDone() || w.quitting.Load() {

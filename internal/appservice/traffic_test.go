@@ -245,6 +245,126 @@ func TestForwardBlockedShutdownOutputStillWaitsForServiceEOF(t *testing.T) {
 	}
 }
 
+func TestForwardPendingOutputSharesShutdownGrace(t *testing.T) {
+	writeErr := errors.New("pending output failed")
+	for _, test := range []struct {
+		name            string
+		resumeAfter     time.Duration
+		earlierErr      error
+		terminalBlocked bool
+	}{
+		{"transient pending write", 250 * time.Millisecond, nil, false},
+		{"earlier write error", 250 * time.Millisecond, writeErr, false},
+		{"persistent pending write", 0, nil, false},
+		{"shared deadline across writes", 700 * time.Millisecond, nil, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const grace = time.Second // Leave scheduling headroom when checking one shared budget.
+			const traffic = "{\"event\":\"traffic\"}\n"
+			const terminal = "{\"event\":\"stopped\"}\n"
+			broker, core := net.Pipe()
+			reader, pipeWriter := io.Pipe()
+			writer := &blockedForwardWriter{writer: pipeWriter, entered: make(chan struct{}), exited: make(chan struct{})}
+			ctx, cancel := context.WithCancel(t.Context())
+			done, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				done <- forwardWithTerminalGrace(ctx, broker, writer, grace)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				_ = reader.Close()
+				_ = pipeWriter.Close()
+				_ = core.Close()
+				_ = broker.Close()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("broker did not finish fixture cleanup")
+				}
+			})
+			_ = core.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := io.WriteString(core, traffic); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-writer.entered:
+			case <-time.After(time.Second):
+				t.Fatal("ordinary output did not start")
+			}
+			cancel()
+			_ = core.SetReadDeadline(time.Now().Add(time.Second))
+			var command [5]byte
+			if _, err := io.ReadFull(core, command[:]); err != nil || string(command[:]) != "stop\n" {
+				t.Fatalf("service did not receive stop: %q %v", command, err)
+			}
+			started := time.Now()
+			if _, err := io.WriteString(core, terminal); err != nil {
+				t.Fatal(err)
+			}
+			_ = core.Close()
+			stopRead := time.AfterFunc(3*grace, func() { _ = reader.CloseWithError(context.DeadlineExceeded) })
+			defer stopRead.Stop()
+			readEvent := func(want string) {
+				t.Helper()
+				data := make([]byte, len(want))
+				if _, err := io.ReadFull(reader, data); err != nil || string(data) != want {
+					t.Fatalf("forwarding changed event order or bytes: %q %v", data, err)
+				}
+			}
+			if test.resumeAfter > 0 {
+				select {
+				case err := <-done:
+					t.Fatalf("dropped shutdown before pending output could resume: %v", err)
+				case <-time.After(test.resumeAfter):
+				}
+				if test.earlierErr != nil {
+					_ = reader.CloseWithError(test.earlierErr)
+				} else {
+					readEvent(traffic)
+					if !test.terminalBlocked {
+						readEvent(terminal)
+					}
+				}
+			}
+			// A fresh budget for the terminal write would finish at 1.7 seconds.
+			// One shared budget must finish within this 1.5-second ceiling.
+			remaining := time.Until(started.Add(3 * grace / 2))
+			select {
+			case err := <-done:
+				if err != test.earlierErr {
+					t.Fatalf("pending output lost its original error: %v", err)
+				}
+			case <-time.After(remaining):
+				t.Fatal("shutdown restarted or exceeded its shared output budget")
+			}
+			if test.resumeAfter == 0 {
+				select {
+				case <-writer.exited:
+					t.Fatal("broker closed caller-owned output")
+				default:
+				}
+				readEvent(traffic)
+			}
+			if test.terminalBlocked {
+				readEvent(terminal)
+			}
+			select {
+			case <-writer.exited:
+			case <-time.After(time.Second):
+				t.Fatal("pending writer did not finish after its consumer resumed")
+			}
+			wantCalls := int32(1)
+			if test.earlierErr == nil && test.resumeAfter > 0 {
+				wantCalls = 2
+			}
+			if calls := writer.calls.Load(); calls != wantCalls {
+				t.Fatalf("unexpected queued writes: %d, want %d", calls, wantCalls)
+			}
+		})
+	}
+}
+
 type shortForwardWriter struct{}
 
 func (shortForwardWriter) Write(data []byte) (int, error) { return len(data) - 1, nil }
