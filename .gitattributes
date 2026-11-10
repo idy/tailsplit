@@ -1,3 +1,7 @@
 # Preserve notices and embedded rules verbatim on every host.
 LICENSES/* -text -whitespace
 internal/domainrules/supplemental.txt -text -whitespace
+# Keep vendored Magpie checksums stable across platform checkouts.
+internal/configweb/assets/vendor/magpie/** -text
+# Phosphor's upstream license uses CRLF line endings.
+internal/configweb/assets/vendor/magpie/icons/LICENSE whitespace=cr-at-eol

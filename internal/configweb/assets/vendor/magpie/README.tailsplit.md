@@ -2,7 +2,8 @@
 
 Upstream: https://github.com/idy/magpie-design-system
 
-Release: **[v0.4.2](https://github.com/idy/magpie-design-system/releases/tag/v0.4.2)**  
+Release: **[v0.4.2](https://github.com/idy/magpie-design-system/releases/tag/v0.4.2)**
+
 Pinned source: `aefce96c4022b692bf7e2f4e05d64901a130964f`
 
 Upstream contribution: https://github.com/idy/magpie-design-system/pull/1
@@ -10,7 +11,8 @@ Upstream contribution: https://github.com/idy/magpie-design-system/pull/1
 This release includes the upstream text-dropdown, preference-row and
 stacked-row variants extracted from TailSplit, plus slim 20px update
 faces and controlled button switches using the shared track and knob. The published tag is locked to the source commit above. TailSplit consumes
-those shared classes directly instead of maintaining local copies.  
+those shared classes directly instead of maintaining local copies.
+
 License: MIT; bundled fonts and icons retain their own notices.
 
 The `css/`, `js/`, `fonts/`, `icons/` and `LICENSE` files are unmodified
