@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.9.0
+
+- Replace the macOS and Windows desktop window and tray hosts with MyGo. Preserve
+  native menus, tray artwork, single-instance opening, window geometry,
+  close-to-tray behavior, keyboard shortcuts and unsaved configuration drafts.
+- Unify titlebar controls across Exit Nodes, Settings and Logs. Use the website's
+  Montserrat, Monda and Lato fonts, center content within a shared 1040px maximum,
+  and keep scrolling below the titlebar. Highlight complete exit rows during
+  keyboard navigation and align update progress immediately beside Refresh.
+- Publish a newly added exit only after successful authentication and helper
+  cleanup. Reserve fresh device namespaces without reusing saved or abandoned
+  identities, retain existing logins, and require fresh authorization after an
+  explicit logout or revocation.
+- Keep Add exit bound to the displayed configuration revision throughout native
+  dispatch and publication. Report stale capacity, duplicate and invalid-document
+  changes as reload conflicts, localize those errors, and reconcile authenticated
+  additions as soon as their committed configuration appears.
+- Prepare an already-installed network service during desktop startup, with
+  cancelable progress, administrator authorization and exact helper build checks.
+  Preserve first-time installation behavior and explicit Global disconnect consent.
+- Update directly to the latest stable release, recheck the version before
+  confirmation, and expose consistent checking, confirmation and installation
+  progress in both the titlebar and native menus.
+- Preserve pending FakeIP cache migration when adding the first service-backed
+  exit; retain per-device ownership and never overwrite established service cache
+  or restore an explicitly logged-out identity from a stale copy.
+- Remove the separate Windows window DLL and its build tooling while retaining
+  protected upgrade backups and rollback for existing installations.
+
 ## 0.8.1
 
 - Add a bundled Peetty Miru companion to the desktop configuration page, with
