@@ -74,17 +74,20 @@
   const nativeJournalScopeKey = 'tailsplit-native-journal-scope';
   const validJournalScope = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(value);
   let nativeJournalScope = validJournalScope(fragment.get('journal')) ? fragment.get('journal') : '';
+  let nativeJournalBackup = fragment.get('journal_backup') === '1';
   if (mygoWindow) {
     try {
       if (fragment.has('journal')) {
-        if (nativeJournalScope) sessionStorage.setItem(nativeJournalScopeKey, JSON.stringify({ token, scope: nativeJournalScope }));
+        if (nativeJournalScope) sessionStorage.setItem(nativeJournalScopeKey, JSON.stringify({ token, scope: nativeJournalScope, backup: nativeJournalBackup }));
         else sessionStorage.removeItem(nativeJournalScopeKey);
       } else {
         const remembered = JSON.parse(sessionStorage.getItem(nativeJournalScopeKey) || 'null');
-        if (remembered?.token === token && validJournalScope(remembered.scope)) nativeJournalScope = remembered.scope;
-        else sessionStorage.removeItem(nativeJournalScopeKey);
+        if (remembered?.token === token && validJournalScope(remembered.scope)) {
+          nativeJournalScope = remembered.scope;
+          nativeJournalBackup = remembered.backup === true;
+        } else sessionStorage.removeItem(nativeJournalScopeKey);
       }
-    } catch (_) { /* The fragment still supplies this native load's scope. */ }
+    } catch (_) { /* The fragment still supplies this native load's scope and negotiated store. */ }
   }
   const nativeJournalPrefix = mygoWindow && nativeJournalScope ? `tailsplit-native-cancel-${nativeJournalScope}-` : '';
   const browserConnectKey = 'tailsplit-browser-connect';
@@ -108,6 +111,15 @@
   if (location.hash) history.replaceState(null, '', location.pathname);
 
   async function api(path, data) {
+    // No native intent may be claimed or helper started without a live recovery
+    // sink. Cancellation and disconnection remain available in degraded storage.
+    const startsOperation = path === 'connect-request' || path === 'action' &&
+      ['connect', 'add-exit', 'login', 'login-exit', 'switch-network', 'refresh-exits'].includes(data?.action) ||
+      path === 'config' && data !== undefined;
+    if (mygoWindow && startsOperation && !nativeRecoveryAvailable({
+      request: path === 'connect-request' ? data?.request || '' : '',
+      operation_id: data?.operation_id || desktopLive?.operation_id || '',
+    })) throw nativeRecoveryError();
     const response = await fetch(`/api/${path}`, {
       method: data === undefined ? 'GET' : 'POST',
       headers: { Authorization: `Bearer ${token || ''}`, 'Accept-Language': locale.language, ...(mygoWindow && ['state', 'connect-request'].includes(path) ? { 'X-TailSplit-Panel': 'native' } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
@@ -709,7 +721,7 @@
   });
 
   $('#save').addEventListener('click', async () => {
-    if (isLocked()) return;
+    if (isLocked() || !canStartNativeOperation()) return;
     state.busy = true; updateActions();
     try {
       if (!(await flushPreview()) || !state.valid || state.external) return;
@@ -764,6 +776,9 @@
   ];
   function sharedSetupCancel(request, operationID) {
     sharedCancelReadable = true;
+    // This private profile had no source writes before host negotiation. A
+    // disabled origin store cannot contain a prior cancellation from this panel.
+    if (mygoWindow && !nativeJournalBackup) return null;
     for (const key of sharedCancelKeys({ request, operation_id: operationID })) {
       try {
         const cancel = JSON.parse(localStorage.getItem(key) || 'null');
@@ -790,7 +805,7 @@
     } catch (_) { return []; }
   }
   function nativeBackupRecords() {
-    if (!nativeJournalPrefix) return [];
+    if (!nativeJournalPrefix || !nativeJournalBackup) return [];
     const records = [];
     try {
       for (let index = 0; index < localStorage.length; index++) {
@@ -801,6 +816,38 @@
     return records;
   }
   function nativeJournalRecords() { return [...nativeCookieRecords(), ...nativeBackupRecords()]; }
+  function nativeRecoveryAvailable(target = {}) {
+    if (!mygoWindow) return true;
+    if (!nativeJournalPrefix) return false;
+    // The extra field invalidates this as cancellation intent. Probe at least
+    // the actual target's encoded size so a tiny write cannot mask quota loss.
+    const name = `${nativeJournalPrefix}probe`;
+    const value = encodeURIComponent(JSON.stringify({ scope: nativeJournalScope,
+      request: target.request || '', operation_id: target.operation_id || '', probe: Math.random().toString(36) }));
+    let cookieStored = false, backupStored = false;
+    try {
+      document.cookie = `${name}=${value}; Max-Age=5; Path=/; SameSite=Strict`;
+      cookieStored = document.cookie.split(';').some(part => part.trim() === `${name}=${value}`);
+    } catch (_) { /* The negotiated backup can still provide recovery. */ }
+    finally { try { document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Strict`; } catch (_) {} }
+    if (nativeJournalBackup) {
+      try {
+        localStorage.setItem(name, value);
+        backupStored = localStorage.getItem(name) === value;
+      } catch (_) { /* Cookie confirmation can still admit this operation. */ }
+      finally { try { if (localStorage.getItem(name) === value) localStorage.removeItem(name); } catch (_) {} }
+    }
+    return cookieStored || backupStored;
+  }
+  function nativeRecoveryError() {
+    return new Error(t('此面板无法保存取消恢复记录，已暂停启动操作。请重新启动 TailSplit 后重试。'));
+  }
+  function canStartNativeOperation() {
+    if (nativeRecoveryAvailable()) return true;
+    operationError = { title: '操作未完成', detail: nativeRecoveryError() };
+    clearNotice(); renderConnectionCenter();
+    return false;
+  }
   function journalNativeCancel(cancel, previous) {
     if (!nativeJournalPrefix) return false;
     const target = cancel || previous;
@@ -809,7 +856,9 @@
     if (!cancel) {
       for (const item of matching) {
         try { document.cookie = `${item.name}=; Max-Age=0; Path=/; SameSite=Strict`; } catch (_) {}
-        try { if (localStorage.getItem(item.name) === item.value) localStorage.removeItem(item.name); } catch (_) {}
+        if (nativeJournalBackup) {
+          try { if (localStorage.getItem(item.name) === item.value) localStorage.removeItem(item.name); } catch (_) {}
+        }
       }
       return true;
     }
@@ -821,10 +870,12 @@
       document.cookie = `${name}=${value}; Path=/; SameSite=Strict`;
       cookieStored = nativeCookieRecords().some(item => item.name === name && item.value === value);
     } catch (_) { /* A verified native-origin backup may still be available. */ }
-    try {
-      localStorage.setItem(name, value);
-      backupStored = localStorage.getItem(name) === value;
-    } catch (_) { /* Cookie delivery or an acknowledged transport may still work. */ }
+    if (nativeJournalBackup) {
+      try {
+        localStorage.setItem(name, value);
+        backupStored = localStorage.getItem(name) === value;
+      } catch (_) { /* Cookie delivery or an acknowledged transport may still work. */ }
+    }
     return cookieStored || backupStored;
   }
   function rememberSetupCancel(cancel) {
@@ -836,6 +887,9 @@
       if (cancel) sessionStorage.setItem(setupCancelKey, serialized);
       else sessionStorage.removeItem(setupCancelKey);
     } catch (_) { /* Cancellation remains pending in this page without storage. */ }
+    // A native profile whose origin store was disabled before first use relies
+    // on its cookie journal and host transport, without touching that store.
+    if (mygoWindow && !nativeJournalBackup) return;
     // Separate keys prevent concurrent tabs from overwriting each other's
     // cancellations. They survive the originating tab closing before delivery.
     for (const key of sharedCancelKeys(cancel || previous || {})) {
@@ -1090,7 +1144,8 @@
     const cancel = pendingSetupCancel;
     if (mygoWindow) setupCancelJournalConfirmed = journalNativeCancel(cancel);
     if (!cancel.request && !cancel.operation_id) { rememberSetupCancel(null); return true; }
-    setupCancelSending = true; setupCancelError = null;
+    setupCancelSending = true;
+    setupCancelError = mygoWindow && !setupCancelJournalConfirmed ? t('取消尚未确认，恢复日志也未能保存。请保留此面板并重试，仍失败时可从菜单栏或托盘退出 TailSplit。') : null;
     operationError = null; clearNotice(); stateRequest++;
     renderConnectionCenter();
     try {
@@ -1130,6 +1185,7 @@
   }
   async function beginConnectionSetup(exit = '', operationID = '') {
     if (isLocked() || isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop || !state.loaded || !state.savedValid || state.dirty || state.external || networkActive()) return;
+    if (!canStartNativeOperation()) return;
     // Retry may be requested after a local conflict while authorization is alive.
     if (desktopLive.active && !(await desktopAction('disconnect'))) return;
     connectionSetup = { exit, operation_id: operationID || newOperationID(), revision: state.revision, field: connectionExitField(), stage: 'prepare', added: false, loginRequested: false };
@@ -1750,6 +1806,7 @@
   $('#apply-exit-picker').addEventListener('click', applyConnectionChanges);
   async function desktopAction(action, exit = '', operationID = '') {
     if (isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop) return false;
+    if (['connect', 'add-exit', 'login', 'login-exit', 'switch-network', 'refresh-exits'].includes(action) && !canStartNativeOperation()) return false;
     const login = action === 'login' || action === 'login-exit';
     const owner = desktopLive.focus || (networkActive() ? connectionExitRecord()?.id : '') || 'main';
     if (login && networkActive() && savedMode() === 'global' && (exit || 'main') !== owner) {
@@ -1856,6 +1913,7 @@
   }
   async function addExit(forConnection = false) {
     if (addingExit || !canManageExits() || exitList().length >= 8) return false;
+    if (!canStartNativeOperation()) return false;
     const revision = state.revision;
     const consentRequired = networkActive() && savedMode() === 'global';
     addingExit = true; renderConnectionCenter();
@@ -1961,6 +2019,7 @@
   }
   async function connectWithExit(operationID = '') {
     if ($('#desktop-connect').disabled || state.external || defaultExitDialog.open) return;
+    if (!canStartNativeOperation()) return;
     if (requiresDefaultExit(state.savedValues)) {
       const records = configuredExits();
       if (!records.length) return beginConnectionSetup('', operationID);

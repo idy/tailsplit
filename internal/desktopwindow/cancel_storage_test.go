@@ -1,12 +1,16 @@
 package desktopwindow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"os/exec"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -245,15 +249,17 @@ func TestJournalBackupUsesStrictCookieDecoder(t *testing.T) {
 // Exercise the actual host-generated scripts with a localStorage model, without
 // starting a native app or loading the credential-bearing main page.
 type scriptStorageState struct {
-	Origin        string            `json:"origin"`
-	Path          string            `json:"path"`
-	Ready         bool              `json:"ready"`
-	Marker        bool              `json:"marker"`
-	Denied        bool              `json:"denied"`
-	FailReadAfter int               `json:"failReadAfter"`
-	Store         map[string]string `json:"store"`
-	Code          string            `json:"code"`
-	Reads         []string          `json:"-"`
+	Origin         string            `json:"origin"`
+	Path           string            `json:"path"`
+	Ready          bool              `json:"ready"`
+	Marker         bool              `json:"marker"`
+	Denied         bool              `json:"denied"`
+	WriteRejected  bool              `json:"writeRejected"`
+	StartupDelayMS int               `json:"startupDelayMS"`
+	FailReadAfter  int               `json:"failReadAfter"`
+	Store          map[string]string `json:"store"`
+	Code           string            `json:"code"`
+	Reads          []string          `json:"-"`
 }
 
 func scriptStorageEval(t *testing.T, state *scriptStorageState) func(context.Context, string) (any, error) {
@@ -269,13 +275,28 @@ func scriptStorageEval(t *testing.T, state *scriptStorageState) func(context.Con
 			return nil, err
 		}
 		const harness = `const input=JSON.parse(process.argv[1]);const values=new Map(Object.entries(input.store));const reads=[];
+		if(input.startupDelayMS)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,input.startupDelayMS);
 		global.location={origin:input.origin,pathname:input.path};global.document={readyState:input.ready?'complete':'loading',querySelector:()=>input.marker?{content:'1'}:null};
-		const storage={get length(){return values.size},key:i=>[...values.keys()][i],getItem:name=>{if(input.failReadAfter&&reads.length>=input.failReadAfter)throw new Error('temporary reader failure');reads.push(name);return values.has(name)?values.get(name):null},removeItem:name=>values.delete(name)};
-		Object.defineProperty(global,'localStorage',{get(){if(input.denied)throw new Error('storage denied');return storage}});
+		const storage={get length(){return values.size},key:i=>[...values.keys()][i],setItem:(name,value)=>{if(!input.writeRejected)values.set(name,value)},getItem:name=>{if(input.failReadAfter&&reads.length>=input.failReadAfter)throw new Error('temporary reader failure');reads.push(name);return values.has(name)?values.get(name):null},removeItem:name=>values.delete(name)};
+		Object.defineProperty(global,'localStorage',{get(){if(input.denied){const error=new Error('storage denied');error.name='SecurityError';throw error}return storage}});
 		const value=eval(input.code);process.stdout.write(JSON.stringify({value,store:Object.fromEntries(values),reads}));`
-		output, err := exec.CommandContext(ctx, node, "-e", harness, string(input)).Output()
-		if err != nil {
+		// Native Eval's two-second timeout is not a budget for starting a cold
+		// Node process. Keep this test-only interpreter separately bounded.
+		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		budget := 30 * time.Second
+		if deadline, ok := t.Deadline(); ok && time.Until(deadline)-time.Second < budget {
+			budget = time.Until(deadline) - time.Second
+		}
+		harnessCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), budget)
+		defer stop()
+		command := exec.CommandContext(harnessCtx, node, "-e", harness, string(input))
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		output, err := command.Output()
+		if err != nil {
+			return nil, fmt.Errorf("reader Node harness: %w (startup context: %v; native eval context: %v; stderr: %s)", err, harnessCtx.Err(), ctx.Err(), strings.TrimSpace(stderr.String()))
 		}
 		var result struct {
 			Value string            `json:"value"`
@@ -287,6 +308,134 @@ func scriptStorageEval(t *testing.T, state *scriptStorageState) func(context.Con
 		}
 		state.Store, state.Reads = result.Store, result.Reads
 		return result.Value, nil
+	}
+}
+
+func TestInitialDeniedBackupDisablesScopeBeforeSourceLoadAndCookieRecovery(t *testing.T) {
+	var probes, reads atomic.Int32
+	storage := &journalStorage{
+		negotiate: func(context.Context) (bool, error) { probes.Add(1); return false, nil },
+		ready: func(context.Context) error {
+			t.Error("disabled scope probed keeper again")
+			return errJournalReaderNotReady
+		},
+		list: func(context.Context) ([]journalStorageEntry, error) {
+			reads.Add(1)
+			return nil, errJournalReaderNotReady
+		},
+	}
+	backup := &negotiatedJournalBackup{storage: storage}
+	const raw = "http://127.0.0.1:43821/#token=fixture&journal=scope&connect=request"
+	for range 2 {
+		source, err := prepareJournalSourceURL(context.Background(), raw, backup)
+		parsed, parseErr := url.Parse(source)
+		if err != nil || parseErr != nil || parsed.Fragment == "" {
+			t.Fatal("source failed initial negotiation", err, parseErr)
+		}
+		fragment, _ := url.ParseQuery(parsed.Fragment)
+		if fragment.Get("journal_backup") != "0" || fragment.Get("journal") != "scope" || fragment.Get("token") != "fixture" || fragment.Get("connect") != "request" {
+			t.Fatal("negotiation changed source identity or enabled denied backup", source)
+		}
+	}
+	cookie := journalCookie(t, "scope", "cookie", "", "cookie-owner")
+	cookies := []mygo.Cookie{cookie}
+	journal := &cancellationJournal{scope: "scope", backup: backup.recoveryStore(), list: func() ([]mygo.Cookie, error) { return cookies, nil }, remove: func(mygo.Cookie) error { cookies = nil; return nil }}
+	calls := 0
+	ctx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	waitJournal(t, journal.recover(ctx, func(context.Context, string, string) error { calls++; return nil }))
+	if probes.Load() != 1 || reads.Load() != 0 || calls != 1 {
+		t.Fatal("permanently denied backup kept scope recovery alive or skipped cookie intent", probes.Load(), reads.Load(), calls)
+	}
+}
+
+func TestEnabledBackupNeverDowngradesAfterSourceMayHaveWrittenRecords(t *testing.T) {
+	var probes atomic.Int32
+	var denied atomic.Bool
+	backup := &negotiatedJournalBackup{storage: &journalStorage{
+		negotiate: func(context.Context) (bool, error) { probes.Add(1); return !denied.Load(), nil },
+		ready:     func(context.Context) error { return nil },
+		list:      func(context.Context) ([]journalStorageEntry, error) { return nil, errJournalReaderNotReady },
+	}}
+	const raw = "http://127.0.0.1:43821/#token=fixture&journal=scope&journal_backup=0"
+	for i := 0; i < 2; i++ {
+		source, err := prepareJournalSourceURL(context.Background(), raw, backup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, _ := url.Parse(source)
+		fragment, _ := url.ParseQuery(parsed.Fragment)
+		if fragment.Get("journal_backup") != "1" {
+			t.Fatal("enabled scope changed mode", source)
+		}
+		denied.Store(true)
+	}
+	if _, err := backup.recoveryStore().list(context.Background()); !errors.Is(err, errJournalReaderNotReady) {
+		t.Fatal("later enabled-store failure was mistaken for empty disabled backup", err)
+	}
+	if probes.Load() != 1 || backup.mode.Load() != journalBackupEnabled {
+		t.Fatal("source reload renegotiated and discarded enabled-store responsibility", probes.Load(), backup.mode.Load())
+	}
+}
+
+func TestEarlyNegotiationFailureCannotProduceAnAdmittedSourceURL(t *testing.T) {
+	var reads atomic.Int32
+	backup := &negotiatedJournalBackup{storage: &journalStorage{
+		negotiate: func(context.Context) (bool, error) { return false, errJournalReaderNotReady },
+		list: func(context.Context) ([]journalStorageEntry, error) {
+			reads.Add(1)
+			return nil, errJournalReaderNotReady
+		},
+	}}
+	ctx, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stop()
+	source, err := prepareJournalSourceURL(ctx, "http://127.0.0.1:43821/#journal=scope", backup)
+	if source != "" || !errors.Is(err, context.DeadlineExceeded) || backup.mode.Load() != journalBackupUnknown {
+		t.Fatal("unconfirmed initial reader was turned into an admitted mode", source, err, backup.mode.Load())
+	}
+	journal := &cancellationJournal{scope: "scope", backup: backup.recoveryStore(), list: func() ([]mygo.Cookie, error) { return nil, nil }}
+	waitJournal(t, journal.recover(context.Background(), func(context.Context, string, string) error {
+		t.Error("early failure invented a cancellation")
+		return nil
+	}))
+	if reads.Load() != 0 {
+		t.Fatal("pre-admission failure retained an unreadable store that no source could write")
+	}
+}
+
+func TestNativeRecoveryReaderNegotiatesUsabilityWithVerifiedScopedProbe(t *testing.T) {
+	for _, mode := range []string{"usable", "denied", "silent-rejection", "not-ready"} {
+		t.Run(mode, func(t *testing.T) {
+			state := &scriptStorageState{Origin: "http://127.0.0.1:43821", Path: journalReaderPath, Ready: true, Marker: true, Store: map[string]string{"unrelated": "retained"}}
+			state.Denied = mode == "denied"
+			state.WriteRejected = mode == "silent-rejection"
+			state.Ready = mode != "not-ready"
+			reader := newJournalStorageReader("scope", state.Origin, scriptStorageEval(t, state))
+			usable, err := reader.negotiate(context.Background())
+			if mode == "not-ready" {
+				if !errors.Is(err, errJournalReaderNotReady) {
+					t.Fatal("unready document became a definitive disabled mode", usable, err)
+				}
+			} else if err != nil || usable != (mode == "usable") {
+				t.Fatal("incorrect initial storage decision", usable, err)
+			}
+			if !reflect.DeepEqual(state.Store, map[string]string{"unrelated": "retained"}) {
+				t.Fatal("availability probe changed unrelated storage or left a cancellation-shaped marker", state.Store)
+			}
+			for _, name := range state.Reads {
+				if !strings.HasPrefix(name, cancelJournalPrefix+"scope-probe-") {
+					t.Fatal("probe read unscoped data", name)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryReaderHarnessStartupDoesNotUseProductionEvalDeadline(t *testing.T) {
+	state := &scriptStorageState{Origin: "http://127.0.0.1:43821", Path: journalReaderPath, Ready: true, Marker: true, Store: map[string]string{}, StartupDelayMS: int(journalReaderTimeout/time.Millisecond) + 100}
+	reader := newJournalStorageReader("scope", state.Origin, scriptStorageEval(t, state))
+	if err := reader.ready(context.Background()); err != nil {
+		t.Fatal("cold interpreter startup consumed native Eval timeout", err)
 	}
 }
 

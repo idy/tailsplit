@@ -2,11 +2,15 @@ package desktopwindow
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -26,9 +30,10 @@ type journalStorageEntry struct {
 // This reader runs only host-supplied Eval on the separate, untrusted keeper.
 // Its document has no app scripts, capability or Go-call bridge.
 type journalStorage struct {
-	ready  func(context.Context) error
-	list   func(context.Context) ([]journalStorageEntry, error)
-	remove func(context.Context, journalStorageEntry) error
+	ready     func(context.Context) error
+	negotiate func(context.Context) (bool, error)
+	list      func(context.Context) ([]journalStorageEntry, error)
+	remove    func(context.Context, journalStorageEntry) error
 }
 
 type journalStorageResult struct {
@@ -36,10 +41,12 @@ type journalStorageResult struct {
 	Entries []journalStorageEntry `json:"entries"`
 	Removed bool                  `json:"removed"`
 	Changed bool                  `json:"changed"`
+	Usable  *bool                 `json:"usable"`
 }
 
 func newJournalStorageReader(scope, origin string, eval func(context.Context, string) (any, error)) *journalStorage {
 	prefix := cancelJournalPrefix + scope + "-"
+	probeName, probeValue := prefix+"probe-"+rand.Text(), rand.Text()
 	guard := `location.origin === ` + strconv.Quote(origin) + ` && location.pathname === ` + strconv.Quote(journalReaderPath) +
 		` && document.readyState === 'complete' && document.querySelector('meta[name="tailsplit-native-recovery"]')?.content === '1'`
 	call := func(ctx context.Context, body string) (journalStorageResult, error) {
@@ -71,6 +78,30 @@ func newJournalStorageReader(scope, origin string, eval func(context.Context, st
 			_, err := call(ctx, `return JSON.stringify({ready:true,entries});`)
 			return err
 		},
+		negotiate: func(ctx context.Context) (bool, error) {
+			if scope == "" {
+				return false, errJournalReaderNotReady
+			}
+			result, err := call(ctx, `const name = `+strconv.Quote(probeName)+`, value = `+strconv.Quote(probeValue)+`;
+				try {
+					const storage = localStorage;
+					storage.setItem(name, value);
+					const usable = storage.getItem(name) === value;
+					if (usable) storage.removeItem(name);
+					return JSON.stringify({ready:true,entries,usable});
+				} catch (error) {
+					if (['SecurityError','QuotaExceededError','NS_ERROR_DOM_QUOTA_REACHED'].includes(error?.name))
+						return JSON.stringify({ready:true,entries,usable:false});
+					throw error;
+				}`)
+			if err != nil {
+				return false, err
+			}
+			if result.Usable == nil {
+				return false, errJournalReaderNotReady
+			}
+			return *result.Usable, nil
+		},
 		list: func(ctx context.Context) ([]journalStorageEntry, error) {
 			result, err := call(ctx, `const prefix = `+strconv.Quote(prefix)+`;
 				for (let i = 0; i < localStorage.length; i++) {
@@ -99,19 +130,101 @@ func newJournalStorageReader(scope, origin string, eval func(context.Context, st
 	}
 }
 
-func waitJournalStorageReady(ctx context.Context, storage *journalStorage) error {
+const (
+	journalBackupUnknown uint32 = iota
+	journalBackupDisabled
+	journalBackupEnabled
+)
+
+// The recovery view is immutable; its mode may transition only once, before
+// source admission. A later read failure can never disable an enabled store.
+type negotiatedJournalBackup struct {
+	storage *journalStorage
+	mu      sync.Mutex
+	mode    atomic.Uint32
+}
+
+func (b *negotiatedJournalBackup) prepare(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch b.mode.Load() {
+	case journalBackupDisabled:
+		return false, nil
+	case journalBackupEnabled:
+		if b.storage.ready == nil {
+			return true, errJournalReaderNotReady
+		}
+		return true, b.storage.ready(ctx)
+	}
+	if b.storage.negotiate == nil {
+		return false, errJournalReaderNotReady
+	}
+	usable, err := b.storage.negotiate(ctx)
+	if err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if usable {
+		b.mode.Store(journalBackupEnabled)
+	} else {
+		b.mode.Store(journalBackupDisabled)
+	}
+	return usable, nil
+}
+
+func (b *negotiatedJournalBackup) recoveryStore() *journalStorage {
+	return &journalStorage{
+		list: func(ctx context.Context) ([]journalStorageEntry, error) {
+			// Unknown is possible only before any source load. There cannot be
+			// source-written records to recover at that initial failure boundary.
+			if b.mode.Load() != journalBackupEnabled {
+				return nil, nil
+			}
+			return b.storage.list(ctx)
+		},
+		remove: func(ctx context.Context, entry journalStorageEntry) error {
+			if b.mode.Load() != journalBackupEnabled {
+				return nil
+			}
+			return b.storage.remove(ctx, entry)
+		},
+	}
+}
+
+func journalSourceURL(raw string, enabled bool) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", errJournalReaderNotReady
+	}
+	fragment, err := url.ParseQuery(parsed.Fragment)
+	if err != nil {
+		return "", errJournalReaderNotReady
+	}
+	mode := "0"
+	if enabled {
+		mode = "1"
+	}
+	fragment.Set("journal_backup", mode)
+	parsed.Fragment, parsed.RawFragment = fragment.Encode(), ""
+	return parsed.String(), nil
+}
+
+func prepareJournalSourceURL(ctx context.Context, raw string, backup *negotiatedJournalBackup) (string, error) {
 	ticker := time.NewTicker(pageProbeInterval)
 	defer ticker.Stop()
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := storage.ready(ctx); err == nil {
-			return nil
+		enabled, err := backup.prepare(ctx)
+		if err == nil {
+			return journalSourceURL(raw, enabled)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		case <-ticker.C:
 		}
 	}
@@ -119,14 +232,15 @@ func waitJournalStorageReady(ctx context.Context, storage *journalStorage) error
 
 // Gate every source load on the keeper's same-origin reader, using the ordinary
 // page-load token to discard completions from superseded or canceled attempts.
-func (w *Window) loadPageWithJournalReader(frame *mygo.Window, origin string, storage *journalStorage) {
+func (w *Window) loadPageWithJournalReader(frame *mygo.Window, origin string, backup *negotiatedJournalBackup) {
 	w.stopLoadProbe()
 	w.loaded = false
 	w.preparingJournal = true
 	load := newPageLoad()
 	w.load = load
+	rawURL := w.url // Immutable; derive the negotiated load URL without changing it.
 	go func() {
-		err := waitJournalStorageReady(load.ctx, storage)
+		sourceURL, err := prepareJournalSourceURL(load.ctx, rawURL, backup)
 		if errors.Is(err, context.Canceled) {
 			return
 		}
@@ -139,7 +253,7 @@ func (w *Window) loadPageWithJournalReader(frame *mygo.Window, origin string, st
 				return
 			}
 			w.preparingJournal = false
-			w.loadPage(frame, origin)
+			w.loadPage(frame, origin, sourceURL)
 		})
 	}()
 }

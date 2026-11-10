@@ -160,7 +160,8 @@ func (w *Window) createWindow() {
 		w.releaseJournalSession = keeper.Destroy
 		w.journal = newCancellationJournal(session, w.journalScope, origin)
 		storage := newJournalStorageReader(w.journalScope, origin, keeper.Page().EvalContext)
-		w.journal.backup = storage
+		backup := &negotiatedJournalBackup{storage: storage}
+		w.journal.backup = backup.recoveryStore()
 		readerURL := origin + journalReaderPath
 		configurePagePolicy(keeper.Page(), w.port)
 		keeper.Page().OnWillNavigate(func(event *mygo.NavigateEvent) {
@@ -191,7 +192,7 @@ func (w *Window) createWindow() {
 				w.stopLoadProbe()
 				w.afterCancellationRecovery(func(_ *journalRecovery, _ bool) {
 					if !w.quitting.Load() && !w.isDone() && !frame.IsDestroyed() {
-						w.loadPageWithJournalReader(frame, origin, storage)
+						w.loadPageWithJournalReader(frame, origin, backup)
 					}
 				})
 			}
@@ -222,7 +223,7 @@ func (w *Window) createWindow() {
 			w.failAfterCancellationRecovery(errPanelLoad, frame.Destroy)
 			return
 		}
-		w.loadPageWithJournalReader(frame, origin, storage)
+		w.loadPageWithJournalReader(frame, origin, backup)
 		// The tray proof owns focus while exercising transient dismissal. Keep
 		// the full-window proof from racing its open/Escape/outside-click steps.
 		if directory := os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR"); directory != "" && os.Getenv("TAILSPLIT_TRAY_PROOF_DIR") == "" {
@@ -237,13 +238,13 @@ func (w *Window) createWindow() {
 	})
 }
 
-func (w *Window) loadPage(frame *mygo.Window, origin string) {
+func (w *Window) loadPage(frame *mygo.Window, origin, sourceURL string) {
 	w.stopLoadProbe()
 	w.loaded = false
 	load := newPageLoad()
 	w.load = load
 	setStartupStage(frame.NativeHandle(), 1, false)
-	if err := frame.Page().LoadURL(w.url); err != nil {
+	if err := frame.Page().LoadURL(sourceURL); err != nil {
 		w.failLoad(load, frame.IsDestroyed(), errPanelLoad, frame.Destroy)
 		return
 	}
