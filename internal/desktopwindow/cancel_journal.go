@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/url"
 	"strings"
@@ -28,13 +29,14 @@ type journalRecovery struct {
 	err  error // Published by closing done.
 }
 
-// The cookie store belongs to the native session, rather than its renderer.
-// It can be read without Eval or another message from a failed page. No panel
-// capability, login URL or device credentials enter this journal.
+// Both stores belong to the native session rather than the failed renderer.
+// Backup Eval runs only in the separate untrusted keeper. No panel capability,
+// login URL or device credentials enter this journal.
 type cancellationJournal struct {
 	scope  string
 	list   func() ([]mygo.Cookie, error)
 	remove func(mygo.Cookie) error
+	backup *journalStorage
 
 	mu         sync.Mutex
 	generation uint64
@@ -91,32 +93,78 @@ func (j *cancellationJournal) replay(cancel func(context.Context, string, string
 }
 
 func (j *cancellationJournal) replayBatch(cancel func(context.Context, string, string) error, ctx context.Context, acknowledged map[string]string) (bool, error) {
-	cookies, err := j.list()
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	processed := false
-	for _, cookie := range cookies {
+	var failures []error
+	attempted := make(map[string]bool)
+	deliver := func(cookie mygo.Cookie) bool {
 		record, valid := j.decode(cookie)
-		if !valid || acknowledged[cookie.Name] == cookie.Value {
-			continue
+		if !valid {
+			return false
 		}
 		if err := ctx.Err(); err != nil {
-			return processed, err
+			failures = append(failures, err)
+			return false
 		}
-		if cancel == nil {
-			return processed, ErrNotReady
+		// The same decoded record can appear under the same or distinct entry
+		// names in both stores. Delivery belongs to the logical target, while
+		// deletion still belongs to each exact source name and value.
+		data, _ := json.Marshal(record)
+		key := "\x00delivered:" + string(data)
+		if acknowledged[key] != "yes" {
+			if attempted[key] {
+				return false
+			}
+			attempted[key] = true
+			if cancel == nil {
+				failures = append(failures, ErrNotReady)
+				return false
+			}
+			if err := cancel(ctx, record.Request, record.OperationID); err != nil {
+				failures = append(failures, err)
+				return false
+			}
+			processed = true
+			acknowledged[key] = "yes"
 		}
-		if err := cancel(ctx, record.Request, record.OperationID); err != nil {
-			return processed, err // Keep the intent/session until delivery succeeds.
-		}
-		processed = true
 		acknowledged[cookie.Name] = cookie.Value
-		// Each cancellation has a distinct cookie name. An old acknowledgment
-		// cannot erase a newer cancellation written while cleanup was waiting.
-		_ = j.remove(cookie)
+		return true
 	}
-	return processed, nil
+	// Process the independent backup first. Even a cookie SDK call that stalls
+	// cannot delay a cancellation already obtained from the keeper reader.
+	if j.backup != nil {
+		entries, err := j.backup.list(ctx)
+		if err != nil {
+			failures = append(failures, err)
+		}
+		for _, entry := range entries {
+			if deliver(mygo.Cookie{Name: entry.Name, Value: entry.Value}) && j.backup.remove != nil {
+				err := j.backup.remove(ctx, entry)
+				if errors.Is(err, errJournalEntryChanged) {
+					processed = true // A newer value must be read before releasing the session.
+				} else if err != nil {
+					failures = append(failures, err)
+				}
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return processed, errors.Join(append(failures, err)...)
+	}
+	cookies, err := j.list()
+	if err != nil {
+		failures = append(failures, err)
+	}
+	for _, cookie := range cookies {
+		if deliver(cookie) && j.remove != nil {
+			// An acknowledged cookie may remain if native deletion fails. The
+			// shared delivery ledger prevents replay forever in that case.
+			_ = j.remove(cookie)
+		}
+	}
+	return processed, errors.Join(failures...)
 }
 
 func (j *cancellationJournal) recover(ctx context.Context, cancel func(context.Context, string, string) error) *journalRecovery {
@@ -249,7 +297,7 @@ func (w *Window) failAfterCancellationRecovery(err error, destroy func()) {
 	}
 	destroyOnce := sync.OnceFunc(destroy)
 	if w.releaseJournalSession != nil {
-		// A non-scriptable keeper owns another page of the same private session.
+		// An untrusted keeper owns another page of the same private session.
 		// Destroy the failed source first, so no JS can commit a new cookie after
 		// the final recovery scan but before session release.
 		w.complete(err)

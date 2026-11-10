@@ -126,6 +126,27 @@ func TestLocalPageRequiresCapabilityAndRejectsForeignOrigins(t *testing.T) {
 	}
 }
 
+func TestNativeRecoveryReaderIsStaticSameOriginAndContainsNoAppCapability(t *testing.T) {
+	server, _, _ := testServer(t)
+	status, body := request(t, server, "GET", "/native-recovery.html", nil, map[string]string{"Authorization": ""})
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`<meta name="tailsplit-native-recovery" content="1">`)) {
+		t.Fatal("native recovery reader route is missing", status, string(body))
+	}
+	for _, forbidden := range []string{"<script", "app.js", "localStorage", server.token, "tailsplit-config-token"} {
+		if bytes.Contains(body, []byte(forbidden)) {
+			t.Fatal("static recovery reader contains executable app state or capability", forbidden)
+		}
+	}
+	status, _ = request(t, server, "GET", "/native-recovery.html", nil, map[string]string{"Origin": "https://foreign.example", "Authorization": ""})
+	if status != http.StatusForbidden {
+		t.Fatal("recovery reader bypassed local origin checks", status)
+	}
+	status, _ = request(t, server, "POST", "/native-recovery.html", map[string]string{}, nil)
+	if status != http.StatusNotFound {
+		t.Fatal("recovery reader accepted a mutation route", status)
+	}
+}
+
 func TestFormPreviewSaveAndExternalEditConflict(t *testing.T) {
 	server, path, applied := testServer(t)
 	status, body := request(t, server, "GET", "/api/config", nil, nil)

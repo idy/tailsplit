@@ -25,6 +25,7 @@ type Window struct {
 	port                  uint16
 	native                *mygo.Window // UI thread only.
 	loaded                bool         // UI thread only.
+	preparingJournal      bool         // UI thread: source navigation waits for the keeper reader.
 	load                  *pageLoad    // UI thread only.
 	visible               atomic.Bool
 	quitting              atomic.Bool
@@ -43,7 +44,7 @@ type Window struct {
 	journalContext        context.Context
 	stopJournal           context.CancelFunc
 	recoveryDispatch      func(func()) // Test UI dispatcher; nil uses MyGo's main thread.
-	releaseJournalSession func()       // UI thread: releases the non-scriptable private-session keeper.
+	releaseJournalSession func()       // UI thread: releases the isolated private-session reader.
 	journalRelease        sync.Once
 }
 
@@ -158,6 +159,20 @@ func (w *Window) createWindow() {
 		})
 		w.releaseJournalSession = keeper.Destroy
 		w.journal = newCancellationJournal(session, w.journalScope, origin)
+		storage := newJournalStorageReader(w.journalScope, origin, keeper.Page().EvalContext)
+		w.journal.backup = storage
+		readerURL := origin + journalReaderPath
+		configurePagePolicy(keeper.Page(), w.port)
+		keeper.Page().OnWillNavigate(func(event *mygo.NavigateEvent) {
+			if event.URL != readerURL {
+				event.PreventDefault()
+			}
+		})
+		keeper.Page().OnRenderProcessGone(func(string) {
+			if !w.quitting.Load() && !keeper.IsDestroyed() {
+				_ = keeper.Page().LoadURL(readerURL)
+			}
+		})
 		panelCancellation.register(frame, frame.Page(), w)
 		if os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR") == "" {
 			restoreNativeFrame(frame.NativeHandle())
@@ -176,13 +191,13 @@ func (w *Window) createWindow() {
 				w.stopLoadProbe()
 				w.afterCancellationRecovery(func(_ *journalRecovery, _ bool) {
 					if !w.quitting.Load() && !w.isDone() && !frame.IsDestroyed() {
-						w.loadPage(frame, origin)
+						w.loadPageWithJournalReader(frame, origin, storage)
 					}
 				})
 			}
 		})
 		frame.Page().OnDidFinishLoad(func() {
-			if w.currentLoad(w.load, frame.IsDestroyed()) && tray.ConfigurationWindowAllows(w.port, frame.Page().URL()) {
+			if !w.preparingJournal && w.currentLoad(w.load, frame.IsDestroyed()) && tray.ConfigurationWindowAllows(w.port, frame.Page().URL()) {
 				w.pageLoaded(frame)
 			}
 		})
@@ -203,7 +218,11 @@ func (w *Window) createWindow() {
 				w.releaseJournalAfterRecovery(w.beginCancellationRecovery())
 			}
 		})
-		w.loadPage(frame, origin)
+		if err := keeper.Page().LoadURL(readerURL); err != nil {
+			w.failAfterCancellationRecovery(errPanelLoad, frame.Destroy)
+			return
+		}
+		w.loadPageWithJournalReader(frame, origin, storage)
 		// The tray proof owns focus while exercising transient dismissal. Keep
 		// the full-window proof from racing its open/Escape/outside-click steps.
 		if directory := os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR"); directory != "" && os.Getenv("TAILSPLIT_TRAY_PROOF_DIR") == "" {

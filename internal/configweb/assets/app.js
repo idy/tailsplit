@@ -71,8 +71,22 @@
     if (token) sessionStorage.setItem('tailsplit-config-token', token);
     else token = sessionStorage.getItem('tailsplit-config-token');
   } catch (_) { /* The current tab can still use the fragment in private mode. */ }
-  const nativeJournalScope = fragment.get('journal') || '';
-  const nativeJournalPrefix = mygoWindow && /^[A-Za-z0-9_-]{16,64}$/.test(nativeJournalScope) ? `tailsplit-native-cancel-${nativeJournalScope}-` : '';
+  const nativeJournalScopeKey = 'tailsplit-native-journal-scope';
+  const validJournalScope = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(value);
+  let nativeJournalScope = validJournalScope(fragment.get('journal')) ? fragment.get('journal') : '';
+  if (mygoWindow) {
+    try {
+      if (fragment.has('journal')) {
+        if (nativeJournalScope) sessionStorage.setItem(nativeJournalScopeKey, JSON.stringify({ token, scope: nativeJournalScope }));
+        else sessionStorage.removeItem(nativeJournalScopeKey);
+      } else {
+        const remembered = JSON.parse(sessionStorage.getItem(nativeJournalScopeKey) || 'null');
+        if (remembered?.token === token && validJournalScope(remembered.scope)) nativeJournalScope = remembered.scope;
+        else sessionStorage.removeItem(nativeJournalScopeKey);
+      }
+    } catch (_) { /* The fragment still supplies this native load's scope. */ }
+  }
+  const nativeJournalPrefix = mygoWindow && nativeJournalScope ? `tailsplit-native-cancel-${nativeJournalScope}-` : '';
   const browserConnectKey = 'tailsplit-browser-connect';
   function rememberBrowserConnect(request) {
     browserConnectRequest = request;
@@ -739,6 +753,7 @@
   let pendingSetupCancel = null;
   let setupCancelSending = false;
   let setupCancelError = null;
+  let setupCancelJournalConfirmed = false;
   let setupCancelGeneration = 0;
   const setupCancelKey = 'tailsplit-setup-cancel';
   const sharedCancelPrefix = 'tailsplit-setup-cancel:';
@@ -757,45 +772,65 @@
     }
     return null;
   }
-  function nativeJournalRecords() {
+  function decodeNativeJournal(name, value) {
+    if (!nativeJournalPrefix || !name?.startsWith(nativeJournalPrefix)) return [];
+    try {
+      const record = JSON.parse(decodeURIComponent(value));
+      return record?.scope === nativeJournalScope && typeof record.request === 'string' && typeof record.operation_id === 'string' &&
+        Object.keys(record).length === 3 && (record.request || record.operation_id) ? [{ name, value, record }] : [];
+    } catch (_) { return []; }
+  }
+  function nativeCookieRecords() {
     if (!nativeJournalPrefix) return [];
     try {
       return document.cookie.split(';').flatMap(part => {
         const separator = part.indexOf('=');
-        const name = part.slice(0, separator).trim();
-        if (separator < 0 || !name.startsWith(nativeJournalPrefix)) return [];
-        try {
-          const record = JSON.parse(decodeURIComponent(part.slice(separator + 1)));
-          return record?.scope === nativeJournalScope && typeof record.request === 'string' && typeof record.operation_id === 'string' &&
-            Object.keys(record).length === 3 && (record.request || record.operation_id) ? [{ name, record }] : [];
-        } catch (_) { return []; }
+        return separator < 0 ? [] : decodeNativeJournal(part.slice(0, separator).trim(), part.slice(separator + 1));
       });
     } catch (_) { return []; }
   }
-  function journalNativeCancel(cancel, previous) {
-    if (!nativeJournalPrefix) return;
+  function nativeBackupRecords() {
+    if (!nativeJournalPrefix) return [];
+    const records = [];
     try {
-      const records = nativeJournalRecords();
-      const target = cancel || previous;
-      if (!target) return;
-      const matching = records.filter(item => item.record.request === target.request && item.record.operation_id === (target.operation_id || ''));
-      if (!cancel) {
-        for (const item of matching) document.cookie = `${item.name}=; Max-Age=0; Path=/; SameSite=Strict`;
-      } else if (!matching.length) {
-        // A synchronous cookie-store write/read is recoverable by the host
-        // without renderer Eval, custom IPC delivery, or an HTTP request. It
-        // contains opaque operation IDs only, never the panel capability.
-        const record = { scope: nativeJournalScope, request: target.request, operation_id: target.operation_id || '' };
-        const name = nativeJournalPrefix + window.crypto.randomUUID();
-        document.cookie = `${name}=${encodeURIComponent(JSON.stringify(record))}; Path=/; SameSite=Strict`;
-        nativeJournalRecords(); // Complete the synchronous store round trip before dispatch.
+      for (let index = 0; index < localStorage.length; index++) {
+        const name = localStorage.key(index);
+        if (name?.startsWith(nativeJournalPrefix)) records.push(...decodeNativeJournal(name, localStorage.getItem(name)));
       }
-    } catch (_) { /* Keep the local intent and try both delivery channels. */ }
+    } catch (_) { /* Delivery may still be preserved by the cookie store. */ }
+    return records;
+  }
+  function nativeJournalRecords() { return [...nativeCookieRecords(), ...nativeBackupRecords()]; }
+  function journalNativeCancel(cancel, previous) {
+    if (!nativeJournalPrefix) return false;
+    const target = cancel || previous;
+    if (!target) return false;
+    const matching = nativeJournalRecords().filter(item => item.record.request === target.request && item.record.operation_id === (target.operation_id || ''));
+    if (!cancel) {
+      for (const item of matching) {
+        try { document.cookie = `${item.name}=; Max-Age=0; Path=/; SameSite=Strict`; } catch (_) {}
+        try { if (localStorage.getItem(item.name) === item.value) localStorage.removeItem(item.name); } catch (_) {}
+      }
+      return true;
+    }
+    const record = { scope: nativeJournalScope, request: target.request, operation_id: target.operation_id || '' };
+    const name = matching[0]?.name || nativeJournalPrefix + window.crypto.randomUUID();
+    const value = encodeURIComponent(JSON.stringify(record));
+    let cookieStored = false, backupStored = false;
+    try {
+      document.cookie = `${name}=${value}; Path=/; SameSite=Strict`;
+      cookieStored = nativeCookieRecords().some(item => item.name === name && item.value === value);
+    } catch (_) { /* A verified native-origin backup may still be available. */ }
+    try {
+      localStorage.setItem(name, value);
+      backupStored = localStorage.getItem(name) === value;
+    } catch (_) { /* Cookie delivery or an acknowledged transport may still work. */ }
+    return cookieStored || backupStored;
   }
   function rememberSetupCancel(cancel) {
     const previous = pendingSetupCancel;
     pendingSetupCancel = cancel;
-    journalNativeCancel(cancel, previous);
+    setupCancelJournalConfirmed = journalNativeCancel(cancel, previous);
     const serialized = cancel ? JSON.stringify({ token, request: cancel.request, operation_id: cancel.operation_id || '' }) : '';
     try {
       if (cancel) sessionStorage.setItem(setupCancelKey, serialized);
@@ -1053,6 +1088,7 @@
   async function dispatchSetupCancel() {
     if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
     const cancel = pendingSetupCancel;
+    if (mygoWindow) setupCancelJournalConfirmed = journalNativeCancel(cancel);
     if (!cancel.request && !cancel.operation_id) { rememberSetupCancel(null); return true; }
     setupCancelSending = true; setupCancelError = null;
     operationError = null; clearNotice(); stateRequest++;
@@ -1076,7 +1112,7 @@
       rememberSetupCancel(null);
       return !pendingSetupCancel;
     } catch (error) {
-      setupCancelError = error;
+      setupCancelError = mygoWindow && !setupCancelJournalConfirmed ? t('取消尚未确认，恢复日志也未能保存。请保留此面板并重试，仍失败时可从菜单栏或托盘退出 TailSplit。') : error;
       return false;
     } finally { setupCancelSending = false; renderConnectionCenter(); }
   }

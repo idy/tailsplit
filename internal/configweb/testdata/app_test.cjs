@@ -141,6 +141,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   Object.defineProperty(document, 'cookie', {
     get: () => [...cookies].map(([name, value]) => `${name}=${value}`).join('; '),
     set: raw => {
+      if (localeOptions.rejectCookies) return; // Browsers may reject writes without throwing.
       const [pair, ...attributes] = raw.split(';');
       const separator = pair.indexOf('=');
       if (separator < 0) return;
@@ -4003,6 +4004,91 @@ test('native cookie journal survives unavailable tab and origin storage', async 
   await native.$('#connection-setup-cancel').emit('click');
   assert.equal(cookies.size, 1);
   assert.equal(JSON.parse(decodeURIComponent([...cookies.values()][0])).operation_id, 'cookie-only-owner');
+});
+
+test('native journal scope survives ordinary reload after the fragment was removed', async () => {
+  const storage = new Map(), cookies = new Map();
+  const snapshot = { desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'reload-scope-owner', connect_request: '' };
+  const first = await page(snapshot, 'mygo-macos', { page: 'home', hash: '#token=fixture&journal=native-reload-scope', storage, cookies }, guidedDocument());
+  assert.deepEqual(JSON.parse(storage.get('tailsplit-native-journal-scope')), { token: 'fixture', scope: 'native-reload-scope' });
+  const reloaded = await page(first.snapshot, 'mygo-macos', { page: 'home', hash: '#', storage, cookies, localStorage: first.localStorage }, first.config);
+  reloaded.nativeOverride = () => response({ error: 'IPC not delivered' }, false);
+  reloaded.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP not delivered' }, false) : undefined;
+  await reloaded.$('#connection-setup-cancel').emit('click');
+  assert.equal(cookies.size, 1);
+  assert.match([...cookies.keys()][0], /^tailsplit-native-cancel-native-reload-scope-/);
+  assert.equal(JSON.parse(decodeURIComponent([...cookies.values()][0])).operation_id, 'reload-scope-owner');
+});
+
+test('native journal scope restoration is capability-scoped and explicit scope takes precedence', async () => {
+  const stale = new Map([['tailsplit-native-journal-scope', JSON.stringify({ token: 'old-panel', scope: 'other-native-scope' })]]);
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'scope-check' }, 'mygo-windows', { page: 'home', storage: stale }, guidedDocument());
+  app.nativeOverride = () => response({ error: 'IPC not delivered' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP not delivered' }, false) : undefined;
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.cookies.size, 0);
+  assert.equal(stale.has('tailsplit-native-journal-scope'), false);
+  const fresh = await page({ desktop: true }, 'mygo-windows', { page: 'home', storage: stale, hash: '#token=fixture&journal=explicit-native-scope' }, guidedDocument());
+  assert.equal(JSON.parse(fresh.storage.get('tailsplit-native-journal-scope')).scope, 'explicit-native-scope');
+});
+
+test('silently rejected cookies retain a verified native-origin backup before delivery fails', async () => {
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'cookie-blocked-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-backup-scope', rejectCookies: true }, guidedDocument());
+  native.nativeOverride = () => response({ error: 'IPC not delivered' }, false);
+  native.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP not delivered' }, false) : undefined;
+  await native.$('#connection-setup-cancel').emit('click');
+  assert.equal(native.cookies.size, 0);
+  const entries = [...native.localStorage].filter(([name]) => name.startsWith('tailsplit-native-cancel-native-backup-scope-'));
+  assert.equal(entries.length, 1);
+  assert.deepEqual(JSON.parse(decodeURIComponent(entries[0][1])), { scope: 'native-backup-scope', request: '', operation_id: 'cookie-blocked-owner' });
+  assert.equal(decodeURIComponent(entries[0][1]).includes('fixture'), false);
+  assert.doesNotMatch(native.$('#connection-setup-detail').textContent, /恢复日志也未能保存/);
+  assert.equal(native.storage.has('tailsplit-setup-cancel'), true);
+});
+
+test('a native context reload recovers from verified backup when cookies are blocked', async () => {
+  const localStorage = new Map();
+  const name = 'tailsplit-native-cancel-native-backup-scope-entry';
+  localStorage.set(name, encodeURIComponent(JSON.stringify({ scope: 'native-backup-scope', request: '', operation_id: 'backup-reload-owner' })));
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'backup-reload-owner' }, 'mygo-windows',
+    { page: 'home', hash: '#token=fixture&journal=native-backup-scope', rejectCookies: true, storage: new Map(), localStorage }, guidedDocument());
+  assert.equal(app.snapshot.active, false);
+  assert.equal(app.nativeCalls.length, 1);
+  assert.equal(localStorage.has(name), false);
+  assert.equal(app.cookies.size, 0);
+});
+
+test('unverified native journal writes report unavailable recovery instead of claiming persistence', async () => {
+  const localStorage = new Map();
+  const originalSet = localStorage.set.bind(localStorage);
+  localStorage.set = (name, value) => name.startsWith('tailsplit-native-cancel-') ? localStorage : originalSet(name, value);
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'unverified-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-backup-scope', rejectCookies: true, localStorage }, guidedDocument());
+  app.nativeOverride = () => response({ error: 'IPC not delivered' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP not delivered' }, false) : undefined;
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.cookies.size, 0);
+  assert.equal([...localStorage.keys()].some(name => name.startsWith('tailsplit-native-cancel-')), false);
+  assert.match(app.$('#connection-setup-detail').textContent, /取消尚未确认.*恢复日志也未能保存/);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+  assert.equal(app.snapshot.active, true);
+});
+
+test('backup acknowledgment does not remove another native cancellation entry', async () => {
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'backup-old-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-backup-scope', rejectCookies: true }, guidedDocument());
+  const ack = deferred();
+  app.nativeOverride = () => ack.promise;
+  const cancel = app.$('#connection-setup-cancel').emit('click');
+  await settle();
+  const newerName = 'tailsplit-native-cancel-native-backup-scope-newer';
+  app.localStorage.set(newerName, encodeURIComponent(JSON.stringify({ scope: 'native-backup-scope', request: 'new-request', operation_id: 'backup-new-owner' })));
+  Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+  ack.resolve(response({ ok: true }));
+  await cancel;
+  assert.equal(app.localStorage.has(newerName), true);
+  assert.equal([...app.localStorage.keys()].filter(name => name.startsWith('tailsplit-native-cancel-native-backup-scope-')).length, 1);
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {

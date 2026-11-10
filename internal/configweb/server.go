@@ -194,7 +194,7 @@ func (s *Server) handler() http.Handler {
 		}
 		switch r.URL.Path {
 		case "/", "/app.js", "/i18n.js", "/select.js", "/style.css", "/companion.js",
-			"/tray.html", "/tray.js", "/tray.css",
+			"/tray.html", "/tray.js", "/tray.css", "/native-recovery.html",
 			"/vendor/peetty/peetty.global.js", "/vendor/peetty/peetty.css", "/vendor/peetty/LICENSE.txt",
 			"/fonts/montserrat-latin.woff2", "/fonts/monda-latin.woff2",
 			"/fonts/lato-regular-latin.woff2", "/fonts/lato-bold-latin.woff2",
