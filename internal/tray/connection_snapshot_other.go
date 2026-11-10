@@ -2,8 +2,13 @@
 
 package tray
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
-// Unknown platforms cannot establish that an owner has exited.
-func snapshotProcessExited(int) bool       { return false }
-func snapshotOwnedByUser(os.FileInfo) bool { return false }
+func lockConnectionSnapshot(string) (*os.File, error) {
+	return nil, errors.New("snapshot locks are unsupported on this platform")
+}
+func unlockConnectionSnapshot(file *os.File) error { return file.Close() }
+func snapshotOwnedByUser(os.FileInfo) bool         { return false }

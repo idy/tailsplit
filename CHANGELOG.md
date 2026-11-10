@@ -19,7 +19,8 @@
   fail, native configuration editing when the panel cannot start, and the macOS
   network-service uninstaller in both the application and native fallback menus.
   Reclaim orphaned private connection snapshots on the next launch after an
-  abrupt exit, without deleting snapshots belonging to live processes.
+  abrupt exit using lifetime-bound file locks, including after PID reuse, while
+  preserving snapshots that are still in use.
 
 ## 0.9.0
 

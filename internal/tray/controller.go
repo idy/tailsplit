@@ -192,20 +192,20 @@ func (c *Controller) StartRevision(expected string) error {
 	if expected == "" || expected != revision {
 		return ErrConfigChanged
 	}
-	path, _, err := configCandidatePrefix(c.options.ConfigPath, data, fmt.Sprintf("%s%d-", connectionSnapshotPrefix, os.Getpid()))
+	path, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
 	if err != nil {
 		return err
 	}
 	if err := CheckConfigRevision(c.options.ConfigPath, expected); err != nil {
-		_ = os.Remove(path)
+		cleanup()
 		return err
 	}
 	if err := c.startConfigLocked("proxy", "", path); err != nil {
-		_ = os.Remove(path)
+		cleanup()
 		return err
 	}
 	done := c.done
-	go func() { <-done; _ = os.Remove(path) }()
+	go func() { <-done; cleanup() }()
 	return nil
 }
 

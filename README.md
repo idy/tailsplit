@@ -84,9 +84,11 @@ policies can connect without a default gateway or signing in to optional devices
 the native menu offers **Edit Configuration**. The full window's **TailSplit**
 application menu and native fallback menu retain **Uninstall Network Service**,
 which finishes connection cleanup before opening the bundled removal installer,
-even when the panel cannot open. On the next app launch, connection snapshots left
-by an abruptly exited owner are removed; live owners, unrecognized files and links
-are preserved.
+even when the panel cannot open. Each connection snapshot holds an OS file lock
+for its lifetime. On the next launch, snapshots with released locks are reclaimed
+even if an old PID has been reused; locked snapshots, unrecognized files and links
+are preserved. Snapshot creation and cleanup share a short directory lock so an
+in-progress write cannot be mistaken for an orphan.
 
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
