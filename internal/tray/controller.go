@@ -3,6 +3,7 @@ package tray
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,14 +40,19 @@ type Snapshot struct {
 	RoutingMode    string
 	// TrafficExit is the logical device selected by the current helper, which
 	// can differ from configuration saved since that helper started.
-	TrafficExit   string
-	Phase         string
-	BackendState  string
-	Error         string
-	Hostname      string
-	ExitNodes     []tailsplit.ExitNode
-	Active        bool
-	PingAvailable bool
+	TrafficExit    string
+	Phase          string
+	BackendState   string
+	Error          string
+	ErrorCode      string
+	AddedExit      string
+	AddedRevision  string
+	ConnectRequest string
+	Hostname       string
+	ExitNodes      []tailsplit.ExitNode
+	Active         bool
+	PingAvailable  bool
+	Traffic        *tailsplit.TrafficSnapshot
 	// Exits holds additional devices' latest status, keyed by exit ID. The
 	// identity fields above always describe the primary device; State, Active,
 	// Mode and RoutingMode describe the overall connection.
@@ -82,6 +88,14 @@ func (s Snapshot) LoginExitID() string {
 
 func (s Snapshot) clone() Snapshot {
 	s.ExitNodes = append([]tailsplit.ExitNode(nil), s.ExitNodes...)
+	if s.Traffic != nil {
+		traffic := *s.Traffic
+		traffic.Routes = make(map[string]tailsplit.TrafficCounters, len(s.Traffic.Routes))
+		for id, counters := range s.Traffic.Routes {
+			traffic.Routes[id] = counters
+		}
+		s.Traffic = &traffic
+	}
 	if s.Exits != nil {
 		exits := make(map[string]ExitSnapshot, len(s.Exits))
 		for id, exit := range s.Exits {
@@ -96,6 +110,7 @@ func (s Snapshot) clone() Snapshot {
 // reset replaces the primary state while keeping other devices' last status.
 func (c *Controller) reset(snapshot Snapshot) {
 	snapshot.Exits = c.snapshot.Exits
+	snapshot.ConnectRequest = c.snapshot.ConnectRequest
 	c.snapshot = snapshot
 }
 
@@ -142,6 +157,14 @@ func (c *Controller) Snapshot() Snapshot {
 	snapshot.TrafficExit = c.trafficExit
 	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
+}
+
+// RequestConnectionSetup lets a native Connect click enter the same guided
+// path as the window switch. It never starts a helper or changes configuration.
+func (c *Controller) RequestConnectionSetup() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.snapshot.ConnectRequest = rand.Text()
 }
 
 func (c *Controller) RecordLoginBrowserResult(err error) {
@@ -203,7 +226,7 @@ func (c *Controller) Restart() error {
 	return c.startReconfigured()
 }
 
-// StartLogin authenticates the embedded device without installing a service or
+// StartLogin authenticates the embedded device, preparing its service if needed, without
 // creating a TUN. Connecting the network is a separate, explicit Start action.
 func (c *Controller) StartLogin() error {
 	return c.start("login", tailsplit.MainExit)
@@ -384,9 +407,10 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	}
 	c.snapshot.State, c.snapshot.Mode = "starting", mode
 	c.snapshot.Focus = focus
+	c.snapshot.Traffic = nil
 	c.snapshot.RoutingMode = routingMode
 	c.trafficExit = trafficExit
-	c.snapshot.Error, c.snapshot.LoginURL = "", ""
+	c.snapshot.Error, c.snapshot.ErrorCode, c.snapshot.LoginURL = "", "", ""
 	if mode == "proxy" || mode == "tun" || mode == "discovery" {
 		// A new traffic/discovery helper must observe every device afresh. An
 		// optional endpoint can be omitted without ever producing SDK status.
@@ -411,6 +435,7 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 		if c.command == command {
 			c.finishPendingAddLocked(err)
 			c.command, c.input = nil, nil
+			c.snapshot.Traffic = nil
 			if !c.stopping && c.snapshot.State == "failed" {
 				// Preserve an actionable error delivered by the elevated core.
 			} else if !c.stopping && err == nil && (c.snapshot.State == "authenticated" ||
@@ -631,22 +656,24 @@ func (c *Controller) Close() error {
 
 func (c *Controller) onEvent(data []byte) {
 	var event struct {
-		Event          string               `json:"event"`
-		BackendState   string               `json:"backend_state"`
-		AuthURL        string               `json:"auth_url"`
-		ExitNode       string               `json:"exit_node"`
-		ExitOnline     bool                 `json:"exit_online"`
-		ExitVisible    bool                 `json:"exit_visible"`
-		NetworkName    string               `json:"network_name"`
-		MagicDNSSuffix string               `json:"magic_dns_suffix"`
-		Mode           string               `json:"mode"`
-		RoutingMode    string               `json:"routing_mode"`
-		Message        string               `json:"message"`
-		Phase          string               `json:"phase"`
-		Hostname       string               `json:"hostname"`
-		ExitNodes      []tailsplit.ExitNode `json:"exit_nodes"`
-		PingAvailable  bool                 `json:"ping_available"`
-		Exit           string               `json:"exit"`
+		Event          string                     `json:"event"`
+		BackendState   string                     `json:"backend_state"`
+		AuthURL        string                     `json:"auth_url"`
+		ExitNode       string                     `json:"exit_node"`
+		ExitOnline     bool                       `json:"exit_online"`
+		ExitVisible    bool                       `json:"exit_visible"`
+		NetworkName    string                     `json:"network_name"`
+		MagicDNSSuffix string                     `json:"magic_dns_suffix"`
+		Mode           string                     `json:"mode"`
+		RoutingMode    string                     `json:"routing_mode"`
+		Message        string                     `json:"message"`
+		Code           string                     `json:"code"`
+		Phase          string                     `json:"phase"`
+		Hostname       string                     `json:"hostname"`
+		ExitNodes      []tailsplit.ExitNode       `json:"exit_nodes"`
+		PingAvailable  bool                       `json:"ping_available"`
+		Exit           string                     `json:"exit"`
+		Traffic        *tailsplit.TrafficSnapshot `json:"traffic"`
 	}
 	if json.Unmarshal(data, &event) != nil {
 		return
@@ -660,6 +687,13 @@ func (c *Controller) onEvent(data []byte) {
 	if c.command == nil || c.stopping || c.snapshot.State == "failed" {
 		// A preflight error ends this session. Late status or ready events during
 		// cleanup must not replace its actionable error before the helper exits.
+		return
+	}
+	if event.Event == "traffic" {
+		if (c.snapshot.Mode == "proxy" || c.snapshot.Mode == "tun") && event.Traffic != nil &&
+			event.Traffic.SessionID != "" && !event.Traffic.SampledAt.IsZero() && event.Traffic.Routes != nil {
+			c.snapshot.Traffic = event.Traffic
+		}
 		return
 	}
 	if event.Mode != "" {
@@ -705,6 +739,7 @@ func (c *Controller) onEvent(data []byte) {
 		c.snapshot.State = "failed"
 		c.snapshot.LoginURL = ""
 		c.snapshot.Error = RedactLog(event.Message)
+		c.snapshot.ErrorCode = event.Code
 		_, _ = io.WriteString(c.log, c.snapshot.Error+"\n")
 		return
 	}

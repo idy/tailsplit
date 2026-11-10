@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/appservice"
@@ -108,6 +109,28 @@ func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.
 			_ = stream.send(status)
 		})
 	}()
-	<-ctx.Done()
-	return nil
+	return streamTraffic(ctx, engine.Traffic, stream)
+}
+
+// The same event stream is forwarded unchanged by appservice, including when
+// the engine runs in the privileged service. Sample only live traffic sessions.
+func streamTraffic(ctx context.Context, sample func() tailsplit.TrafficSnapshot, stream *eventStream) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		if err := stream.send(struct {
+			Event   string                    `json:"event"`
+			Traffic tailsplit.TrafficSnapshot `json:"traffic"`
+		}{Event: "traffic", Traffic: sample()}); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }

@@ -1,7 +1,9 @@
 package tray
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/idy/tailsplit"
@@ -67,5 +69,8 @@ func (c *Controller) finishPendingAddLocked(helperErr error) {
 		c.snapshot.State = "failed"
 		c.snapshot.Error = "已完成登录，但无法保存出口。请重新读取配置后重试。"
 		c.RecordDesktopEvent("Could not commit the authenticated exit: " + err.Error())
+		return
 	}
+	c.snapshot.AddedExit = pending.id
+	c.snapshot.AddedRevision = fmt.Sprintf("%x", sha256.Sum256(pending.data))
 }

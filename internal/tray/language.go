@@ -39,6 +39,8 @@ func Translate(language, text string) string {
 }
 
 var englishUI = map[string]string{
+	"等待管理员批准设备":                             "Awaiting device approval",
+	"等待 Tailnet 管理员批准此设备":                   "Waiting for the Tailnet administrator to approve this device",
 	"请从已安装的 TailSplit.app 升级":               "Update from the installed TailSplit.app",
 	"请先将 TailSplit.app 移到 Applications 再升级": "Move TailSplit.app to Applications before updating",
 	"App 更新目标不能是符号链接":                       "The app update target cannot be a symbolic link",

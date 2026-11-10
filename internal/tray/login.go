@@ -50,6 +50,11 @@ func (f *LoginFlow) Next(snapshot Snapshot) string {
 	if exit := snapshot.LoginExitID(); exit != tailsplit.MainExit {
 		backend = snapshot.Exits[exit].BackendState
 	}
+	if backend == "NeedsMachineAuth" {
+		f.showMessage = true
+		f.message = "等待 Tailnet 管理员批准此设备"
+		return ""
+	}
 	if backend == "Direct" && !completed {
 		f.pending = false
 		f.showMessage = true

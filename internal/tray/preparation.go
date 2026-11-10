@@ -30,9 +30,9 @@ func (c *Controller) PrepareService(ctx context.Context, prepare func(context.Co
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	op := &servicePreparation{cancel: cancel, done: make(chan struct{})}
-	previousState, previousMode, previousError := c.snapshot.State, c.snapshot.Mode, c.snapshot.Error
+	previousState, previousMode, previousError, previousCode := c.snapshot.State, c.snapshot.Mode, c.snapshot.Error, c.snapshot.ErrorCode
 	c.preparation = op
-	c.snapshot.State, c.snapshot.Mode, c.snapshot.Error = "authorizing", servicePreparationMode, ""
+	c.snapshot.State, c.snapshot.Mode, c.snapshot.Error, c.snapshot.ErrorCode = "authorizing", servicePreparationMode, "", ""
 	c.mu.Unlock()
 
 	err := prepare(runCtx)
@@ -43,13 +43,14 @@ func (c *Controller) PrepareService(ctx context.Context, prepare func(context.Co
 	}
 	cancel()
 	c.preparation = nil
-	c.snapshot.State, c.snapshot.Mode, c.snapshot.Error = previousState, previousMode, previousError
+	c.snapshot.State, c.snapshot.Mode, c.snapshot.Error, c.snapshot.ErrorCode = previousState, previousMode, previousError, previousCode
 	if err == nil && previousError == "后台网络服务准备失败，请重试" {
-		c.snapshot.State, c.snapshot.Mode, c.snapshot.Error = "stopped", "", ""
+		c.snapshot.State, c.snapshot.Mode, c.snapshot.Error, c.snapshot.ErrorCode = "stopped", "", "", ""
 	}
 	if err != nil && !errors.Is(err, context.Canceled) && !c.closed {
 		c.snapshot.State = "failed"
 		c.snapshot.Error = "后台网络服务准备失败，请重试"
+		c.snapshot.ErrorCode = "service-installation"
 		c.RecordDesktopEvent("Network service preparation failed: " + err.Error())
 	}
 	close(op.done)

@@ -464,6 +464,13 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 }
 
 func (a *windowsApp) menuAction(action string) {
+	if action == "connect" && !a.controller.Snapshot().Active {
+		a.controller.RequestConnectionSetup()
+		if err := a.window.Show(); err != nil {
+			windowsError(err.Error())
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
 	defer cancel()
 	if err := a.action(ctx, action); err != nil {

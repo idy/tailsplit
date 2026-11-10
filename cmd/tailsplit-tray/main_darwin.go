@@ -500,10 +500,16 @@ func main() {
 						flow.Cancel()
 						editing = true
 						go func() { settingsDone <- controller.Stop() }()
+					} else if configurationPage != nil {
+						controller.RequestConnectionSetup()
+						showConfiguration()
 					} else {
-						operation, _ := desktopActionOperation("connect", controller, &flow, nil)
-						if operation != nil {
-							_ = operation()
+						operation, err := desktopActionOperation("connect", controller, &flow, nil)
+						if err == nil && operation != nil {
+							err = operation()
+						}
+						if err != nil {
+							controller.RecordDesktopEvent("Could not connect: " + err.Error())
 						}
 						openReadyLogin(controller.Snapshot())
 					}

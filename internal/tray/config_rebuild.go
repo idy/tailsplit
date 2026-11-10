@@ -17,6 +17,10 @@ import (
 // A nonempty matching revision is required. Once complete, the private backup is
 // retained and its path is returned even if saving the new configuration fails.
 func RebuildConfigDocument(path, revision string) (backupPath string, err error) {
+	return backupAndSaveConfigDocument(path, revision, tailsplit.DefaultYAML)
+}
+
+func backupAndSaveConfigDocument(path, revision string, replacement []byte) (backupPath string, err error) {
 	original, current, err := ReadConfigDocument(path)
 	if err != nil {
 		return "", err
@@ -48,5 +52,5 @@ func RebuildConfigDocument(path, revision string) (backupPath string, err error)
 	}
 	complete = true
 
-	return backup.Name(), SaveConfigDocument(path, revision, tailsplit.DefaultYAML)
+	return backup.Name(), SaveConfigDocument(path, revision, replacement)
 }

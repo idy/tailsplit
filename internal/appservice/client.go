@@ -29,7 +29,7 @@ func Launch(ctx context.Context, executable string, config tailsplit.Config, out
 	connection, err := OpenSession(ctx, executable, "start", config, output)
 	if err != nil {
 		if !errors.Is(err, ErrNotInstalled) && ctx.Err() == nil {
-			_ = json.NewEncoder(output).Encode(map[string]string{"event": "error", "message": err.Error()})
+			_ = json.NewEncoder(output).Encode(ErrorEvent(err))
 		}
 		return err
 	}
@@ -103,7 +103,7 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 			if err := ctx.Err(); err != nil {
 				return Info{}, err
 			}
-			return Info{}, errors.New("network service installation did not finish; click Start after completing Installer")
+			return Info{}, errors.New("network service installation did not finish; complete Installer, then retry in TailSplit")
 		case <-ticker.C:
 			info, err := probe(installCtx, SocketPath, "0")
 			if err == nil && info.BuildID == expected {
@@ -127,25 +127,26 @@ func openSession(ctx context.Context, executable, operation string, config tails
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	info, err := probe(ctx, SocketPath, "0")
-	if operation == "start" {
-		info, err = EnsureInstalled(ctx, executable, output)
+	info, err := resolveSessionService(ctx, operation, func(ctx context.Context) (Info, error) {
+		info, err := probe(ctx, SocketPath, "0")
 		if err != nil {
-			return nil, err
+			if _, installedErr := os.Stat(ExecutablePath); installedErr == nil {
+				return Info{}, errors.New("后台服务没有响应；请从“设置与工具 → 后台网络服务 → 更新或修复…”恢复服务")
+			}
 		}
-	}
+		return info, err
+	}, func(ctx context.Context) (Info, error) {
+		return EnsureInstalled(ctx, executable, output)
+	})
 	if err != nil {
-		if _, installedErr := os.Stat(ExecutablePath); installedErr == nil {
-			return nil, errors.New("后台服务没有响应；请从“设置与工具 → 后台网络服务 → 更新或修复…”恢复服务")
-		}
-		return nil, err
+		return nil, installationFailure(err)
 	}
 	expected, err := executableID(executable)
 	if err != nil {
 		return nil, err
 	}
 	if info.BuildID != expected {
-		return nil, errors.New("update the TailSplit network service from this app before continuing")
+		return nil, installationFailure(errors.New("update the TailSplit network service from this app before continuing"))
 	}
 	if operation == "ping" && !info.PingAvailable {
 		return nil, tailsplit.ErrPingUnavailable
@@ -161,6 +162,26 @@ func openSession(ctx context.Context, executable, operation string, config tails
 		}
 		return connection, nil
 	})
+}
+
+// Only an explicit Connect or device sign-in may open Installer. Discovery,
+// Ping and logout remain non-installing, including automatic startup probes.
+// Preparing before the session/lease boundary also lets a first Add exit work
+// without an existing service or a configured traffic gateway.
+func resolveSessionService(ctx context.Context, operation string, probeService, ensureService func(context.Context) (Info, error)) (Info, error) {
+	if err := ctx.Err(); err != nil {
+		return Info{}, err
+	}
+	resolve := probeService
+	switch operation {
+	case "start", "login", "login-new":
+		resolve = ensureService
+	}
+	info, err := resolve(ctx)
+	if err == nil {
+		err = ctx.Err()
+	}
+	return info, err
 }
 
 // migrationIDs scopes ordinary-user reads to engines this operation can open.

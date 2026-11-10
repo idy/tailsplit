@@ -12,6 +12,14 @@ import (
 // Recovery uses the same operation gate and revision checks as ordinary saves.
 // It never replaces a valid document or reconnects an active network session.
 func (s *Server) rebuildConfig(w http.ResponseWriter, r *http.Request) {
+	s.recoverConfig(w, r, false)
+}
+
+func (s *Server) repairConfig(w http.ResponseWriter, r *http.Request) {
+	s.recoverConfig(w, r, true)
+}
+
+func (s *Server) recoverConfig(w http.ResponseWriter, r *http.Request, repair bool) {
 	var request struct {
 		Revision string `json:"revision"`
 	}
@@ -32,8 +40,12 @@ func (s *Server) rebuildConfig(w http.ResponseWriter, r *http.Request) {
 		if revision != request.Revision {
 			return tray.ErrConfigChanged
 		}
-		if s.describe(data).Valid {
+		doc := s.describe(data)
+		if doc.Valid {
 			return valid
+		}
+		if repair && !doc.Repairable {
+			return tray.ErrConfigNotRepairable
 		}
 		if snapshot.Active {
 			return active
@@ -43,7 +55,11 @@ func (s *Server) rebuildConfig(w http.ResponseWriter, r *http.Request) {
 	var backup string
 	err := s.options.Apply(r.Context(), check, func() error {
 		var err error
-		backup, err = tray.RebuildConfigDocument(s.options.ConfigPath, request.Revision)
+		if repair {
+			backup, err = tray.RepairConfigDocument(s.options.ConfigPath, request.Revision)
+		} else {
+			backup, err = tray.RebuildConfigDocument(s.options.ConfigPath, request.Revision)
+		}
 		return err
 	})
 	if err != nil {
@@ -55,8 +71,14 @@ func (s *Server) rebuildConfig(w http.ResponseWriter, r *http.Request) {
 			status, code = http.StatusConflict, "busy"
 		case errors.Is(err, active), errors.Is(err, valid):
 			status, code = http.StatusConflict, "config"
+		case errors.Is(err, tray.ErrConfigNotRepairable):
+			status, code = http.StatusUnprocessableEntity, "repair"
 		}
-		fail(w, status, code, "无法重建配置："+err.Error())
+		prefix := "无法重建配置："
+		if repair {
+			prefix = "无法自动修复配置："
+		}
+		fail(w, status, code, prefix+err.Error())
 		return
 	}
 	data, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)

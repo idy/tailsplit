@@ -29,9 +29,11 @@ Windows executables are unsigned; verify the release checksums before installati
 
 ## Get connected
 
-1. Open TailSplit and use **Add exit** to authorize a device in your chosen Tailnet, or sign in to an existing saved exit. Then choose its exit node.
-2. Review your routing rules in the configuration panel.
-3. Choose a default gateway and connect when ready. Signing in alone does not connect. New configurations enable automatic connection on later launches once a gateway is configured.
+1. Open **Home** and select **Set up** on a fresh installation. Once an exit is configured, Home shows the connection switch. TailSplit guides you through system service authorization and Tailscale sign-in when needed.
+2. Choose an exit node and use **Save & connect** to finish the requested connection. You can cancel or retry any incomplete step.
+3. Review routing rules in Settings as needed. New configurations enable automatic connection on later launches once a gateway is configured. Signing in through **Add exit** alone does not connect.
+
+**Home** shows this computer fanning out to Direct and each exit referenced by saved routing policy, following the GizMoth serial-map layout. Global mode shows only its selected exit. Solid paths indicate a confirmed connection; dashed paths are saved routes not currently applied. Each destination shows upload and download speed from successive real router-byte samples. Missing samples display **—**, while a confirmed idle sample displays **0 B/s**. Counters reset on a new engine session. Directional pulses appear only on routes with positive measured byte deltas and stop on idle, missing or stale samples. Upload moves outward from this computer; download moves inward. TCP/UDP streams count payload; native TUN flows count IP packet bytes, excluding Tailscale transport and control overhead. These are routed-byte rates rather than physical-interface usage.
 
 The **Exit Nodes** page lists your saved exits; its top-right switch starts or
 stops the connection. Above the list, **Add exit** sits on the left and the current
@@ -63,11 +65,19 @@ until you reconnect manually. Signing in to another saved device follows the
 same consent rule; active Global settings, node and DNS-metadata applies also
 require that separate disconnect. Exact no-op saves keep the current session.
 Native actions without confirmation require disconnecting first. Recovery of the
-current device's pending authorization keeps its helper. Turning on without a default
-still opens a selection dialog with no preselected option. Choose an
-exit and confirm to save it and connect; Cancel or Escape changes nothing. A
-failed or stale save never starts traffic. Settings drafts must be resolved
-first. An existing offline default is retained rather than silently replaced.
+current device's pending authorization keeps its helper. Turning on with no saved
+devices starts guided Add exit, sign-in and node selection. A saved device that
+needs login or a node enters the corresponding step instead of disabling the
+switch. Confirming its node saves that node and the current mode's default exit,
+then continues this one connection. With several saved devices and no default,
+a selection dialog has no preselected option; choosing an unready device guides
+its setup. An offline default opens its own picker and is never silently replaced.
+The macOS menu and Windows tray Connect actions open this same flow. Ordinary
+Add and Sign in still leave traffic disconnected. A visible status banner explains
+installation, authorization, node selection and failure, with Cancel and explicit
+Retry actions. Cancel or Escape drops the pending connection; failed saves and
+unrelated configuration revisions never start traffic. Settings drafts must be
+resolved first.
 
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
@@ -138,7 +148,11 @@ new additional profile and leaves both traffic exit selections unset until confi
 **Application proxy** lets individual applications use the local HTTP/SOCKS
 listeners. **System routing** captures system traffic when `tun.enabled` is set.
 Both modes create a DNS TUN and require the privileged network service:
-Windows Setup installs it; macOS requests administrator approval on first connection.
+Windows Setup installs it; macOS requests administrator approval when an explicit
+Add exit, Sign in or connection needs to install or update the bundled service.
+After installation, the original action continues; signing in still leaves traffic
+disconnected. The app shows the system-installer wait separately from Tailscale
+authorization.
 
 Configuration and device state are retained across normal updates. The network
 service checks import eligibility per device, reads only still-needed CLI or
@@ -151,6 +165,12 @@ before releasing the lease. A slow disconnect reports cleanup in progress and
 keeps the helper alive; the desktop does not force-kill it after its stop timeout.
 Older services without session recovery must be updated before connecting.
 
+Tailnets with device approval can require a separate administrator action after
+browser sign-in. TailSplit shows **Awaiting device approval** and explains how to
+approve the new device in the Tailscale admin console. Approval timeouts identify
+the affected exit instead of reporting a generic readiness error. Device approval
+is separate from authorizing a node to serve as an exit.
+
 New desktop profiles use [config.default.yaml](config.default.yaml): direct Internet
 IPv6 off, FakeIP and system TUN on, MTU 1400, Split/builtin rules, unmatched traffic
 direct, system DNS for direct traffic and `8.8.8.8` for proxy DNS. Auto-connect is
@@ -159,7 +179,12 @@ identity. Existing files, including their omitted-field behavior, are preserved.
 The CLI example uses the same portable preferences with an illustrative exit.
 
 If a saved configuration is invalid, its error banner offers **Edit YAML** or
-**Back up & rebuild**. Rebuilding asks for confirmation, backs up the original
+**Back up & rebuild**. When the only blocking issue is the obsolete `dns.listen`
+field, **Repair configuration** first backs up the source and removes that field,
+retaining saved exits, routing rules, comments and other settings. The entire
+result must pass strict validation; unknown fields, broken YAML and other errors
+are left for manual editing or rebuilding. Repair requires confirmation and stays
+disconnected, just like rebuilding. Rebuilding asks for confirmation, backs up the original
 file in the same folder, and restores the new-desktop defaults. It discards
 unsaved edits and resets saved exits and routing rules; device login data is
 retained. An active connection is disconnected first, including Global protection,

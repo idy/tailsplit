@@ -65,13 +65,14 @@ type Server struct {
 }
 
 type document struct {
-	YAML     string         `json:"yaml"`
-	Revision string         `json:"revision,omitempty"`
-	Path     string         `json:"path,omitempty"`
-	Values   map[string]any `json:"values"`
-	Valid    bool           `json:"valid"`
-	Parsed   bool           `json:"parsed"`
-	Error    string         `json:"error,omitempty"`
+	YAML       string         `json:"yaml"`
+	Revision   string         `json:"revision,omitempty"`
+	Path       string         `json:"path,omitempty"`
+	Values     map[string]any `json:"values"`
+	Valid      bool           `json:"valid"`
+	Parsed     bool           `json:"parsed"`
+	Error      string         `json:"error,omitempty"`
+	Repairable bool           `json:"repairable,omitempty"`
 }
 
 type editRequest struct {
@@ -134,6 +135,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/validate", s.validate)
 	mux.HandleFunc("POST /api/config", s.save)
 	mux.HandleFunc("POST /api/config-rebuild", s.rebuildConfig)
+	mux.HandleFunc("POST /api/config-repair", s.repairConfig)
 	mux.HandleFunc("POST /api/action", s.desktopAction)
 	mux.HandleFunc("POST /api/exit-ping", s.exitPing)
 	mux.HandleFunc("POST /api/exit-remove", s.removeExit)
@@ -220,6 +222,10 @@ func (s *Server) describe(data []byte) document {
 	}
 	if err != nil {
 		doc.Error = err.Error()
+		if repaired, repairErr := tray.PrepareConfigRepair(s.options.ConfigPath, data); repairErr == nil {
+			_, repairErr = s.candidateConfig(repaired)
+			doc.Repairable = repairErr == nil
+		}
 		return doc
 	}
 	doc.Valid = true
@@ -288,16 +294,26 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		"exit": snapshot.ExitNode, "network": snapshot.NetworkName, "magic_dns_suffix": snapshot.MagicDNSSuffix,
 		"hostname": snapshot.Hostname, "backend_state": snapshot.BackendState, "phase": snapshot.Phase,
 		"routing_mode": snapshot.RoutingMode, "logs_available": s.options.Logs != nil,
-		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
+		"error": snapshot.Error, "error_code": snapshot.ErrorCode, "revision": revision, "preview": s.options.Preview,
+		"added_exit": snapshot.AddedExit, "added_revision": snapshot.AddedRevision, "connect_request": snapshot.ConnectRequest,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
 		"ping_available": s.options.PingExit != nil && snapshot.PingAvailable,
 		"startup":        s.options.Startup != nil && s.options.Startup(),
 		"exits":          exitStates(snapshot), "focus": snapshot.Focus,
+		"traffic": activeTraffic(snapshot),
 	}
 	if s.options.UpdateState != nil {
 		state["updates"] = s.options.UpdateState()
 	}
 	writeJSON(w, http.StatusOK, state)
+}
+
+// No telemetry means unavailable, rather than an invented zero-byte route.
+func activeTraffic(snapshot tray.Snapshot) *tailsplit.TrafficSnapshot {
+	if !snapshot.Active || snapshot.Mode != "proxy" && snapshot.Mode != "tun" || snapshot.State == "failed" || snapshot.State == "stopping" {
+		return nil
+	}
+	return snapshot.Traffic
 }
 
 // exitStates exposes additional devices' credential-free status by exit ID.
@@ -576,7 +592,20 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 		fail(w, status, code, "无法应用配置："+err.Error())
 		return
 	}
-	s.readConfig(w, r)
+	// Do not acknowledge an unrelated external edit as the document just saved.
+	// Guided Connect must receive the exact revision its node confirmation wrote.
+	current, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "read", err.Error())
+		return
+	}
+	if !bytes.Equal(current, data) {
+		fail(w, http.StatusConflict, "conflict", "配置文件已由其他操作修改，请重新读取后再保存。")
+		return
+	}
+	doc := s.describe(data)
+	doc.Revision, doc.Path = revision, s.options.ConfigPath
+	writeJSON(w, http.StatusOK, doc)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

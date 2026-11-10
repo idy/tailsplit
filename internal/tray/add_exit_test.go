@@ -148,6 +148,10 @@ func TestAddExitPublishesOnlyAfterSuccessfulAuthentication(t *testing.T) {
 				if c.Snapshot().State != "authenticated" || !strings.Contains(string(after), "# preserve this document") {
 					t.Fatal("success state or comments lost")
 				}
+				_, revision, err := ReadConfigDocument(path)
+				if err != nil || c.Snapshot().AddedExit != "new-exit" || c.Snapshot().AddedRevision != revision {
+					t.Fatal("addition did not identify its exact committed document", err)
+				}
 			} else if string(after) != string(expected) {
 				t.Fatal("failed/canceled/stale addition modified saved configuration")
 			}

@@ -162,7 +162,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 			return appservice.Forward(ctx, connection, out)
 		}
 		if !errors.Is(err, appservice.ErrNotInstalled) || runtime.GOOS == "windows" {
-			_ = json.NewEncoder(out).Encode(map[string]string{"event": "error", "message": err.Error()})
+			_ = json.NewEncoder(out).Encode(appservice.ErrorEvent(err))
 			return err
 		}
 		// Device authentication alone never installs or starts the TUN service.

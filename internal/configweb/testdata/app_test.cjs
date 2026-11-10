@@ -75,7 +75,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const defaultExit = $('#default-exit'); defaultExit.dataset.field = 'rules.default_exit';
   const finalRoute = $('#final-route'); finalRoute.dataset.field = 'rules.final';
   const fields = [level, mtu, tun, ruleSource, routingMode, globalExit, defaultExit, finalRoute];
-  const pages = ['connection', 'logs', 'settings'].map((name) => {
+  const pages = ['home', 'connection', 'logs', 'settings'].map((name) => {
     const nav = $(`[data-page="${name}"]`); nav.dataset.page = name; return nav;
   });
   const sections = ['general', 'network', 'dns', 'routing', 'advanced', 'about'].map((name) => {
@@ -88,7 +88,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     const selector = action === 'refresh-exits' ? '#refresh-exits' : `#desktop-${action}`;
     const button = $(selector); button.dataset.desktopAction = action; return button;
   });
-  const appPages = ['connection', 'logs', 'settings'].map((name) => { const element = $(`#page-${name}`); element.id = `page-${name}`; return element; });
+  const appPages = ['home', 'connection', 'logs', 'settings'].map((name) => { const element = $(`#page-${name}`); element.id = `page-${name}`; return element; });
   const settingsPages = sections.map((nav) => { const element = $(`#section-${nav.dataset.section}`); element.id = `section-${nav.dataset.section}`; return element; });
   $('#form-tab').setAttribute('aria-selected', 'true');
   $('#yaml-tab').setAttribute('aria-selected', 'false');
@@ -135,9 +135,11 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     addEventListener: (...args) => events.addEventListener(...args),
   };
   app.document = document;
+  const storage = localeOptions.storage || new Map();
+  app.storage = storage;
   const sandbox = {
     document, window, URLSearchParams, location: { hash: '#token=fixture' },
-    history: { replaceState() {} }, sessionStorage: { setItem() {}, getItem() {} },
+    history: { replaceState() {} }, sessionStorage: { setItem(key, value) { storage.set(key, value); }, getItem(key) { return storage.get(key); } },
     navigator: { languages: localeOptions.languages || ['zh-CN'], clipboard: { writeText: async () => {} } },
     setTimeout: (callback) => { timers.set(++timer, callback); return timer; },
     clearTimeout: (id) => timers.delete(id), setInterval: (callback) => { poll = callback; },
@@ -167,6 +169,8 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   app.i18n = window.TailSplitI18n;
   await settle();
   assert.equal($('#level').value, 'info');
+  // Most cases exercise Exit Nodes; home cases opt in to the default destination.
+  if (localeOptions.page !== 'home') { await $('[data-page="connection"]').emit('click'); await settle(); }
   app.poll = () => poll();
   app.flushTimers = async () => {
     const callbacks = [...timers.values()]; timers.clear();
@@ -1587,7 +1591,7 @@ const activeGlobalDocument = () => {
   return initial;
 };
 const activeGlobalSnapshot = () => exitsSnapshot({ active: true, mode: 'tun', state: 'running' });
-const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/config-rebuild', '/api/action'].includes(request.path));
+const mutations = (app) => app.requests.filter(request => request.method === 'POST' && ['/api/config', '/api/config-rebuild', '/api/config-repair', '/api/action'].includes(request.path));
 // Call the listener directly to verify its guards independently of disabled UI.
 const invokeAdd = (app) => app.$('#add-exit').listeners.click[0]();
 const answerAddConsent = (app, answer) => {
@@ -2189,11 +2193,10 @@ test('the primary exit can be removed, leaving an addable empty list and dormant
   assert.equal(app.$('#exits-empty').hidden, false);
   assert.equal(app.$('#connection-exit').value, '');
   assert.equal(app.$('#add-exit').disabled, false);
-  await app.$('#desktop-connect').emit('click');
-  assert.equal(app.$('#default-exit-dialog').open, true);
-  assert.equal(app.$('#confirm-default-exit').disabled, true, 'empty exits cannot start as a direct fallback');
-  assert.equal(app.$('#default-exit-empty').hidden, false);
   assert.equal(app.requests.some(r => r.path === '/api/action'), false, 'the atomic removal API owns logout');
+  await app.$('#desktop-connect').emit('click');
+  assert.deepEqual(app.requests.filter(r => r.path === '/api/action').map(r => r.data.action), ['add-exit']);
+  assert.equal(app.requests.some(r => r.data?.action === 'connect'), false, 'empty exits never start as a direct fallback');
 });
 
 test('exit removal protects drafts, cancellation, and config changes during confirmation', async () => {
@@ -2552,23 +2555,21 @@ for (const mode of ['split', 'global']) test(`${mode} connect requires explicit 
   assert.equal(app.$('#connection-exit').value, 'office');
 });
 
-test('the default dialog discovers saved logins without choosing or connecting', async () => {
+test('a single saved device without ready login is guided directly to sign-in before choosing a default', async () => {
   const initial = withoutDefaultDocument(); initial.values.tailscale = null;
-  const snapshot = officeSnapshot({ backend_state: '' });
-  const app = await page(snapshot, '', {}, initial);
+  const app = await page(officeSnapshot({ backend_state: '' }), '', {}, initial);
   app.override = request => {
     if (request.path !== '/api/action') return undefined;
-    assert.deepEqual(request.data, { action: 'refresh-exits' });
-    app.snapshot = officeSnapshot();
+    assert.deepEqual(request.data, { action: 'login-exit', exit: 'office' });
+    Object.assign(app.snapshot, { state: 'login', mode: 'login', focus: 'office', active: true });
     return response({ ok: true });
   };
   await app.$('#desktop-connect').emit('click');
-  assert.equal(app.$('#default-exit-dialog').open, true);
-  assert.equal(app.$('#default-exit-choice').value, '');
-  assert.equal(app.$('#default-exit-choice').disabled, false);
-  assert.equal(app.$('#confirm-default-exit').disabled, true);
+  assert.ok(!app.$('#default-exit-dialog').open);
+  assert.equal(app.$('#connection-setup').hidden, false);
+  assert.equal(app.config.values.rules.default_exit, '-');
   assert.equal(app.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
-  assert.deepEqual(app.requests.filter(r => r.path === '/api/action').map(r => r.data.action), ['refresh-exits']);
+  assert.deepEqual(app.requests.filter(r => r.path === '/api/action').map(r => r.data.action), ['login-exit']);
 });
 
 test('canceling the default dialog leaves configuration and connection untouched', async () => {
@@ -2602,7 +2603,7 @@ test('a failed default save stays retryable and never starts traffic', async () 
   assert.equal(app.$('#confirm-default-exit').disabled, false);
 });
 
-test('default confirmation rejects changed configuration or an unavailable selection', async () => {
+test('default confirmation rejects changed configuration and guides a selected signed-out device to login', async () => {
   for (const stale of [false, true]) {
     const app = await page(officeSnapshot(), '', {}, withoutDefaultDocument());
     await app.$('#desktop-connect').emit('click');
@@ -2613,9 +2614,10 @@ test('default confirmation rejects changed configuration or an unavailable selec
       app.config = { ...app.config, revision: 'external-edit', yaml: app.config.yaml + '\n# external edit\n' };
     } else app.snapshot.exits.office.backend_state = 'NeedsLogin';
     await app.poll();
-    assert.equal(app.$('#confirm-default-exit').disabled, true);
+    assert.equal(app.$('#confirm-default-exit').disabled, stale);
     await app.$('#confirm-default-exit').emit('click');
-    assert.equal(app.requests.some(r => r.method === 'POST'), false);
+    assert.deepEqual(app.requests.filter(r => r.method === 'POST').map(r => r.data.action), stale ? [] : ['login-exit']);
+    assert.equal(app.requests.some(r => r.data?.action === 'connect'), false);
   }
 });
 
@@ -2645,8 +2647,13 @@ test('an offline configured default never silently switches to another exit', as
   snapshot.exit_nodes.forEach(node => { node.online = false; });
   const app = await page(snapshot, '', {}, initial);
   assert.equal(app.$('#connection-exit').value, 'main');
-  assert.equal(app.$('#desktop-connect').disabled, true);
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  await app.$('#desktop-connect').emit('click');
+  assert.ok(app.$('#exit-picker-dialog').open);
+  assert.equal(app.$('#connection-exit').value, 'main');
   assert.equal(app.requests.some(r => r.method === 'POST'), false);
+  await app.$('#cancel-exit-picker').emit('click');
+  assert.equal(app.$('#connection-setup').hidden, true);
 });
 
 test('unused signed-out or offline exits never disable Split connection', async () => {
@@ -2897,9 +2904,321 @@ test('a configured default with a node retains its bare-Tailnet readiness requir
   const initial = multiExitDocument('100.101.0.11');
   initial.values.rules = { mode: 'split', default_exit: 'office', final: 'direct', source: '' };
   const app = await page(officeSnapshot({ backend_state: 'NeedsLogin' }), '', {}, initial);
-  assert.equal(app.$('#desktop-connect').disabled, true);
-  assert.match(app.$('#desktop-hint').textContent, /登录 Tailscale/);
+  assert.equal(app.$('#desktop-connect').disabled, false);
+  await app.$('#desktop-connect').emit('click');
+  assert.deepEqual(mutations(app).map(request => request.data.action), ['login-exit']);
+  assert.ok(!mutations(app).some(request => request.data.action === 'connect'));
   assert.ok(!app.$('#default-exit-dialog').open);
+});
+
+function guidedDocument() {
+  return { ...doc('log_level: info\ntailscale: null\nexits: []\nrules: {source: builtin, default_exit: "-"}\n'), values: { log_level: 'info', tailscale: null, exits: [], rules: { mode: 'split', source: 'builtin', default_exit: '-', global_exit: '-' } } };
+}
+function guidedBackend(app, options = {}) {
+  const backend = { deferAdd: false, failAdd: false, failSave: false, lastAdded: '', ...options };
+  const nodes = [{ id: '100.101.0.11', name: 'chosen-gateway', online: true }];
+  backend.finishAdd = () => {
+    const id = backend.lastAdded;
+    const revision = `added-${id}`;
+    app.config = { ...app.config, revision, yaml: app.config.yaml + `# added ${id}\n`, values: { ...app.config.values, exits: [...app.config.values.exits, { id, auto_name: true, exit_node: '' }] } };
+    Object.assign(app.snapshot, { state: 'authenticated', mode: 'login', active: false, focus: '', error: '', error_code: '', revision, added_exit: id, added_revision: revision,
+      exits: { ...app.snapshot.exits, [id]: { backend_state: 'Running', network: 'work.example', exit_nodes: nodes } } });
+  };
+  app.override = request => {
+    if (request.path === '/api/action') {
+      const { action, exit } = request.data;
+      if (action === 'add-exit') {
+        backend.lastAdded = exit;
+        if (backend.failAdd) {
+          Object.assign(app.snapshot, { state: 'failed', active: false, error: 'service installation failed', error_code: 'service-installation' });
+          return response({ code: 'action', error: 'service installation failed' }, false);
+        }
+        Object.assign(app.snapshot, { state: 'authorizing', mode: 'login', active: true, focus: exit, error: '', error_code: '' });
+        if (!backend.deferAdd) backend.finishAdd();
+      } else if (action === 'connect') {
+        const id = app.config.values.rules.default_exit;
+        assert.ok(app.config.values.exits.find(exit => exit.id === id)?.exit_node, 'connect requires the confirmed node and default');
+        Object.assign(app.snapshot, { state: 'running', mode: 'proxy', active: true, focus: '', error: '', error_code: '' });
+      } else if (action === 'disconnect') Object.assign(app.snapshot, { state: 'stopped', mode: '', active: false, focus: '' });
+      else if (action === 'login-exit') Object.assign(app.snapshot, { state: 'authenticated', mode: 'login', active: false, exits: { ...app.snapshot.exits, [exit]: { backend_state: 'Running', network: 'work.example', exit_nodes: nodes } } });
+      else if (action === 'refresh-exits') app.snapshot.exits[app.snapshot.added_exit].exit_nodes = nodes;
+      return response({ ok: true });
+    }
+    if (request.path === '/api/config' && request.method === 'POST') {
+      if (backend.failSave) return response({ code: 'apply', error: 'save failed' }, false);
+      const values = JSON.parse(JSON.stringify(app.config.values));
+      for (const [path, value] of Object.entries(request.data.changes)) {
+        const [section, key] = path.split('.');
+        if (key) values[section][key] = value; else values[section] = value;
+      }
+      const revision = `saved-${app.requests.length}`;
+      app.config = { ...app.config, yaml: app.config.yaml + '# saved\n', values, revision };
+      app.snapshot.revision = revision;
+      return response(app.config);
+    }
+  };
+  return backend;
+}
+
+test('Connect without exits adds a device, confirms its node and default, then connects exactly once', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const backend = guidedBackend(app);
+  await app.$('#desktop-connect').emit('click');
+  assert.ok(app.$('#exit-picker-dialog').open);
+  assert.equal(app.$('#connection-setup-title').textContent, '选择节点后即可连接');
+  assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit']);
+  await pickerNode(app, '100.101.0.11').choice.emit('click');
+  assert.equal(app.$('#apply-exit-picker').textContent, '保存并连接');
+  await app.$('#apply-exit-picker').emit('click');
+  const save = mutations(app).find(r => r.path === '/api/config');
+  assert.equal(save.data.changes['rules.default_exit'], backend.lastAdded);
+  assert.equal(save.data.changes.exits[0].exit_node, '100.101.0.11');
+  assert.deepEqual(mutations(app).map(r => r.data.action || 'save'), ['add-exit', 'save', 'connect']);
+  assert.ok(app.snapshot.active);
+  assert.equal(app.$('#connection-setup').hidden, true);
+  await app.poll();
+  assert.equal(mutations(app).filter(r => r.data.action === 'connect').length, 1);
+});
+
+test('native Connect enters the same guided flow once and cannot replay after cancellation or reload', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  guidedBackend(app);
+  app.snapshot.connect_request = 'native-connect-1';
+  await app.poll();
+  assert.ok(app.$('#exit-picker-dialog').open);
+  assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1);
+  await app.$('#cancel-exit-picker').emit('click');
+  await app.poll();
+  assert.equal(mutations(app).length, 1);
+  const reloaded = await page(app.snapshot, '', { storage: app.storage }, app.config);
+  assert.equal(mutations(reloaded).length, 0);
+});
+
+test('native Connect with a settings draft explains the block and cannot start after the draft is discarded', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  guidedBackend(app);
+  await app.input('#level', 'debug');
+  app.snapshot.connect_request = 'native-draft';
+  await app.poll();
+  assert.match(app.$('#notice-detail').textContent, /先保存配置/);
+  assert.equal(mutations(app).length, 0);
+  const reload = app.$('#discard').emit('click');
+  app.$('#discard-dialog').returnValue = 'discard'; app.$('#discard-dialog').close();
+  await reload;
+  await app.poll();
+  assert.equal(mutations(app).length, 0);
+});
+
+test('an existing service mismatch displays an install action without requiring a log visit', async () => {
+  const app = await page({ desktop: true, state: 'failed', error: 'old service', error_code: 'service-installation' }, '', {}, guidedDocument());
+  guidedBackend(app, { deferAdd: true });
+  assert.equal(app.$('#connection-setup').hidden, false);
+  assert.equal(app.$('#connection-setup-title').textContent, '后台服务需要安装或更新');
+  assert.equal(app.$('#connection-setup-retry').textContent, '安装服务并继续连接');
+  await app.$('#connection-setup-retry').emit('click');
+  assert.equal(app.$('#connection-setup-title').textContent, '需要安装或更新后台服务');
+  assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit']);
+});
+
+test('manual Add still saves a node without choosing a default or connecting', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  guidedBackend(app);
+  await app.$('#add-exit').emit('click');
+  await pickerNode(app, '100.101.0.11').choice.emit('click');
+  await app.$('#apply-exit-picker').emit('click');
+  assert.equal(app.config.values.rules.default_exit, '-');
+  assert.equal(mutations(app).some(r => r.data.action === 'connect'), false);
+});
+
+test('guided installation is visible, rejects duplicate Connect, and cancellation prevents late connection', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const backend = guidedBackend(app, { deferAdd: true });
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(app.$('#connection-setup-title').textContent, '需要安装或更新后台服务');
+  assert.equal(app.$('#exits-card').hidden, true);
+  await app.$('#desktop-connect').emit('click');
+  assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1);
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect']);
+  backend.finishAdd(); // Even a late result cannot restore the canceled intent.
+  await app.poll();
+  assert.ok(!app.$('#exit-picker-dialog').open);
+  assert.ok(!mutations(app).some(r => r.data.action === 'connect'));
+});
+
+test('canceling the guided node picker leaves the saved device and never connects later', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  guidedBackend(app);
+  await app.$('#desktop-connect').emit('click');
+  await pickerNode(app, '100.101.0.11').choice.emit('click');
+  await app.$('#cancel-exit-picker').emit('click');
+  await app.poll();
+  assert.equal(app.config.values.exits.length, 1);
+  assert.equal(app.config.values.rules.default_exit, '-');
+  assert.equal(mutations(app).length, 1);
+  assert.equal(app.$('#connection-setup').hidden, true);
+});
+
+test('failed service installation has an explicit retry and never publishes or connects before success', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const backend = guidedBackend(app, { failAdd: true });
+  await app.$('#desktop-connect').emit('click');
+  const failedID = backend.lastAdded;
+  assert.equal(app.$('#connection-setup-retry').hidden, false);
+  assert.equal(app.$('#connection-setup-retry').textContent, '安装服务并继续连接');
+  assert.equal(app.config.values.exits.length, 0);
+  backend.failAdd = false;
+  await app.$('#connection-setup-retry').emit('click');
+  assert.notEqual(backend.lastAdded, failedID);
+  assert.ok(app.$('#exit-picker-dialog').open);
+  assert.ok(!mutations(app).some(r => r.data.action === 'connect'));
+});
+
+test('external edits during the Installer wait visibly pause automatic continuation', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  guidedBackend(app, { deferAdd: true });
+  await app.$('#desktop-connect').emit('click');
+  app.config = { ...app.config, revision: 'external-during-install', yaml: app.config.yaml + '# edit\n' };
+  app.snapshot.revision = app.config.revision;
+  await app.poll();
+  assert.equal(app.$('#connection-setup-title').textContent, '连接设置未完成');
+  assert.match(app.$('#connection-setup-detail').textContent, /自动连接已暂停/);
+  assert.ok(!mutations(app).some(r => r.data.action === 'connect'));
+});
+
+test('external edits after Add pause the connection intent even when the new device is authenticated', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const backend = guidedBackend(app, { deferAdd: true });
+  await app.$('#desktop-connect').emit('click');
+  backend.finishAdd();
+  app.config = { ...app.config, revision: 'external', yaml: app.config.yaml + '# external policy\n' };
+  app.snapshot.revision = 'external';
+  await app.poll();
+  assert.equal(app.$('#connection-setup-title').textContent, '连接设置未完成');
+  assert.match(app.$('#connection-setup-detail').textContent, /配置已更改/);
+  assert.ok(!app.$('#exit-picker-dialog').open);
+  assert.equal(mutations(app).filter(r => r.data.action === 'connect').length, 0);
+});
+
+test('guided node discovery has an explicit retry before node confirmation', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const backend = guidedBackend(app, { deferAdd: true });
+  await app.$('#desktop-connect').emit('click');
+  backend.finishAdd();
+  app.snapshot.exits[backend.lastAdded].exit_nodes = [];
+  await app.poll();
+  assert.ok(app.$('#exit-picker-dialog').open);
+  assert.equal(app.$('#exit-empty').hidden, false);
+  assert.equal(app.$('#picker-go-connection').hidden, false);
+  assert.equal(app.$('#picker-go-connection').textContent, '重新读取节点');
+  await app.$('#picker-go-connection').emit('click');
+  assert.ok(app.$('#exit-picker-dialog').open);
+  assert.ok(!mutations(app).some(r => r.data.action === 'connect'));
+  await pickerNode(app, '100.101.0.11').choice.emit('click');
+  await app.$('#apply-exit-picker').emit('click');
+  assert.equal(mutations(app).filter(r => r.data.action === 'connect').length, 1);
+});
+
+test('a failed guided node save stays retryable and cannot connect before the save succeeds', async () => {
+  const app = await page({ desktop: true }, '', {}, guidedDocument());
+  const backend = guidedBackend(app, { failSave: true });
+  await app.$('#desktop-connect').emit('click');
+  await pickerNode(app, '100.101.0.11').choice.emit('click');
+  await app.$('#apply-exit-picker').emit('click');
+  assert.ok(app.$('#exit-picker-dialog').open);
+  assert.equal(app.config.values.rules.default_exit, '-');
+  assert.equal(mutations(app).some(r => r.data.action === 'connect'), false);
+  backend.failSave = false;
+  await app.$('#apply-exit-picker').emit('click');
+  assert.equal(mutations(app).filter(r => r.data.action === 'connect').length, 1);
+});
+
+test('service installation while signing in explains the system Installer and resumes the login state', async () => {
+  for (const language of ['zh', 'en']) {
+    const app = await page({ desktop: true, state: 'authorizing', active: true, mode: 'login' }, '', { language, preference: language });
+    assert.equal(app.$('#connection-status span').textContent, language === 'zh' ? '等待安装后台服务' : 'Waiting for network service installation');
+    assert.match(app.$('#desktop-hint').textContent, language === 'zh' ? /系统安装器.*安装或更新/ : /system Installer/);
+    assert.ok(app.$('#desktop-login').disabled);
+    assert.equal(mutations(app).length, 0);
+    app.snapshot = { ...app.snapshot, state: 'login', backend_state: 'NeedsLogin' };
+    await app.poll();
+    assert.equal(app.$('#connection-status span').textContent, language === 'zh' ? '等待 Tailscale 登录' : 'Awaiting Tailscale sign-in');
+    assert.equal(mutations(app).length, 0);
+  }
+});
+
+test('pending primary machine approval explains the administrator action and does not relaunch login', async () => {
+  const initial = { ...doc(), values: { ...doc().values, tailscale: { exit_node: '100.64.0.10' } } };
+  const app = await page({ desktop: true, state: 'authenticating', active: true, mode: 'login', backend_state: 'NeedsMachineAuth' }, '', {}, initial);
+  assert.equal(app.$('#connection-status span').textContent, '等待管理员批准设备');
+  assert.match(app.$('#desktop-hint').textContent, /管理员.*批准此设备/);
+  assert.ok(app.$('#desktop-login').disabled);
+  await app.$('#desktop-login').emit('click');
+  assert.equal(mutations(app).length, 0);
+  await app.$('#choose-exit').emit('click');
+  assert.equal(app.$('#exit-empty-title').textContent, '等待管理员批准设备');
+  assert.match(app.$('#exit-empty-detail').textContent, /管理员.*批准此设备/);
+});
+
+test('focused additional device approval does not appear as signed-in primary or generic login', async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  const snapshot = { desktop: true, state: 'authenticating', active: true, mode: 'login', focus: 'office', backend_state: 'Running', exits: { office: { backend_state: 'NeedsMachineAuth', exit_nodes: [] } } };
+  const app = await page(snapshot, '', { language: 'en', preference: 'en' }, initial);
+  assert.equal(app.$('#connection-status span').textContent, 'Awaiting device approval');
+  assert.match(app.$('#desktop-hint').textContent, /administrator.*approve this device/);
+  app.snapshot = { ...snapshot, state: 'authenticated', active: false, focus: '', exits: { office: { backend_state: 'Running', exit_nodes: [] } } };
+  await app.poll();
+  assert.doesNotMatch(app.$('#desktop-hint').textContent, /administrator/);
+});
+
+test('automatic repair is offered only for a server-validated repair and cancel leaves the source untouched', async () => {
+  for (const repairable of [false, true]) {
+    const app = await page({ desktop: true }, '', {}, { ...doc(), valid: false, repairable, error: 'obsolete dns.listen' });
+    assert.equal(app.$('#notice-repair').hidden, !repairable);
+    if (repairable) {
+      const pending = app.$('#notice-repair').emit('click');
+      assert.ok(app.$('#repair-config-dialog').open);
+      assert.ok(app.$('#notice-rebuild').disabled);
+      app.$('#repair-config-dialog').returnValue = 'cancel'; app.$('#repair-config-dialog').close();
+      await pending;
+      assert.equal(mutations(app).length, 0);
+      assert.equal(app.$('#notice-repair').disabled, false);
+    }
+  }
+});
+
+test('automatic repair uses the saved revision and retains exits instead of rebuilding', async () => {
+  const original = multiExitDocument('100.101.0.11');
+  const app = await page(officeSnapshot(), '', {}, { ...original, valid: false, repairable: true, error: 'obsolete dns.listen' });
+  app.override = request => {
+    if (request.path === '/api/config-repair') {
+      assert.equal(request.data.revision, 'original');
+      app.config = { ...original, revision: 'repaired', backup_path: '/config/source.backup' };
+      app.snapshot.revision = 'repaired';
+      return response(app.config);
+    }
+  };
+  const pending = app.$('#notice-repair').emit('click');
+  app.$('#repair-config-dialog').returnValue = 'repair'; app.$('#repair-config-dialog').close();
+  await pending;
+  assert.deepEqual(mutations(app).map(request => request.path), ['/api/config-repair']);
+  assert.equal(app.$('#notice-title').textContent, '配置已自动修复');
+  assert.match(app.$('#notice-detail').textContent, /出口和分流规则已保留/);
+  assert.match(app.$('#notice-detail').textContent, /source.backup/);
+  assert.ok(app.$('#notice-repair').hidden);
+  assert.equal(app.$('#raw-yaml').value, original.yaml);
+});
+
+test('automatic repair conflicts keep the source and require reloading', async () => {
+  const original = { ...doc(), valid: false, repairable: true, error: 'obsolete dns.listen' };
+  const app = await page({ desktop: true }, '', {}, original);
+  app.override = request => request.path === '/api/config-repair' ? response({ code: 'conflict', error: 'changed on disk' }, false) : undefined;
+  const pending = app.$('#notice-repair').emit('click');
+  app.$('#repair-config-dialog').returnValue = 'repair'; app.$('#repair-config-dialog').close();
+  await pending;
+  assert.equal(app.$('#raw-yaml').value, original.yaml);
+  assert.ok(app.$('#notice-repair').disabled);
+  assert.ok(!app.$('#notice-reload').hidden);
 });
 
 test('configuration recovery only appears for invalid saved files and cancel or Escape changes nothing', async () => {
@@ -2985,6 +3304,189 @@ test('a changed file during rebuild confirmation is never overwritten', async ()
   app.$('#rebuild-config-dialog').returnValue = 'rebuild'; app.$('#rebuild-config-dialog').close();
   await pending;
   assert.equal(mutations(app).length, 0);
+});
+
+test('home fans out saved destinations and only marks confirmed routes as in effect', async () => {
+  const documentWith = (rules) => { const value = multiExitDocument('100.101.0.11'); value.values.rules = rules; return value; };
+  const split = { mode: 'split', default_exit: 'main', global_exit: 'office', final: 'direct', source: 'builtin',
+    routes: [{ exit: 'office', domains: ['work.example'] }, { exit: 'office', ips: ['10.0.0.0/8'] }] };
+  const rows = (app) => app.$('#home-routes').children.map(item => item.children[0]);
+  const summary = (app) => rows(app).map(row => [row.dataset.route, row.children[0].textContent, row.children[1].textContent]);
+
+  const idle = await page(officeSnapshot(), '', { page: 'home' }, documentWith(split));
+  assert.deepEqual(summary(idle), [['direct', '直连', '直连规则 · 未匹配流量'], ['exit', '主出口', '默认代理出口'], ['exit', 'Office', '2 个规则组']]);
+  assert.ok(rows(idle).every(row => row.className.endsWith('tone-planned')), 'saved routes stay planned while disconnected');
+  assert.equal(idle.$('#home-wires').children.length, 3);
+  assert.equal(idle.$('#home-wires-live').children.length, 0, 'no confirmed wire before a running session');
+  assert.equal(idle.$('#split-map').dataset.connected, 'false');
+
+  const running = { ...officeSnapshot(), active: true, mode: 'tun', state: 'running', routing_mode: 'split' };
+  const live = await page(running, '', { page: 'home' }, documentWith(split));
+  assert.equal(live.$('#split-map').dataset.connected, 'true');
+  assert.ok(rows(live).every(row => row.className.endsWith('tone-ok')));
+  assert.equal(live.$('#home-wires-live').children.length, 3);
+
+  const global = await page(officeSnapshot(), '', { page: 'home' }, documentWith({ ...split, mode: 'global' }));
+  assert.deepEqual(summary(global), [['exit', 'Office', '全部接管流量']], 'Global suppresses Direct');
+});
+
+test('home derives per-route rates from real byte deltas and retains destination controls', async () => {
+  const sample = (seconds, routes, session = 'engine-1') => ({ session_id: session, sampled_at: new Date(1700000000000 + seconds * 1000).toISOString(), routes });
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', default_exit: 'main', source: 'builtin', final: 'direct', routes: [{ exit: 'office', domains: ['work.example'] }] };
+  const app = await page({ ...officeSnapshot(), active: true, mode: 'tun', state: 'running', routing_mode: 'split',
+    traffic: sample(0, { main: { upload_bytes: 100, download_bytes: 200 }, office: { upload_bytes: 10, download_bytes: 20 } }) }, '', { page: 'home' }, initial);
+  const rows = () => app.$('#home-routes').children.map(item => item.children[0]);
+  const rates = id => {
+    const row = rows().find(row => row.dataset.exit === id);
+    return row.children[3].children.map(reading => reading.children[1].textContent);
+  };
+  assert.deepEqual(rates('main'), ['—', '—'], 'one sample cannot establish speed');
+  const original = rows()[1];
+  app.snapshot.traffic = sample(4, { main: { upload_bytes: 8292, download_bytes: 12583112 }, office: { upload_bytes: 4106, download_bytes: 8212 } });
+  await app.poll();
+  assert.deepEqual(rates('main'), ['2.0 KB/s', '3.0 MB/s']);
+  assert.deepEqual(rates('office'), ['1.0 KB/s', '2.0 KB/s']);
+  assert.deepEqual(rates('direct'), ['—', '—'], 'an absent counter is not zero traffic');
+  assert.equal(rows()[1], original, 'sample updates preserve focused controls');
+  await app.poll();
+  assert.deepEqual(rates('main'), ['2.0 KB/s', '3.0 MB/s'], 'duplicate samples never create zero rates');
+  app.snapshot.traffic = sample(8, { main: { upload_bytes: 8292, download_bytes: 12583112 } });
+  await app.poll();
+  assert.deepEqual(rates('main'), ['0 B/s', '0 B/s'], 'zero is valid only after equal consecutive counters');
+  app.snapshot.traffic = sample(10, { main: { upload_bytes: 8293, download_bytes: 12583113 } });
+  await app.poll();
+  assert.deepEqual(rates('main'), ['1 B/s', '1 B/s'], 'sub-byte-per-second values still have a defined unit');
+  app.snapshot.traffic = sample(12, { main: { upload_bytes: 1, download_bytes: 2 } }, 'engine-2');
+  await app.poll();
+  assert.deepEqual(rates('main'), ['—', '—'], 'new sessions reset the baseline');
+  app.snapshot.traffic = sample(16, { main: { upload_bytes: 4097, download_bytes: 8194 } }, 'engine-2');
+  await app.poll();
+  assert.deepEqual(rates('main'), ['1.0 KB/s', '2.0 KB/s']);
+  app.snapshot.traffic = sample(40, { main: { upload_bytes: 12000, download_bytes: 16000 } }, 'engine-2');
+  await app.poll();
+  assert.deepEqual(rates('main'), ['—', '—'], 'stale samples do not produce misleading averages');
+  app.snapshot.traffic = sample(44, { main: { upload_bytes: 0, download_bytes: 0 } }, 'engine-2');
+  await app.poll();
+  assert.deepEqual(rates('main'), ['—', '—'], 'counter resets are not negative rates');
+  Object.assign(app.snapshot, { active: false, state: 'stopped' });
+  await app.poll();
+  assert.deepEqual(rates('main'), ['—', '—'], 'disconnect clears readings');
+});
+
+test('route flow follows only positive per-route byte deltas and stops without fresh data', async () => {
+  const sample = (seconds, routes) => ({ session_id: 'flow-engine', sampled_at: new Date(1700000000000 + seconds * 1000).toISOString(), routes });
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode: 'split', source: 'builtin', final: 'direct', default_exit: 'main', routes: [{ exit: 'office', domains: ['work.example'] }] };
+  const zero = { upload_bytes: 0, download_bytes: 0 };
+  const app = await page({ ...officeSnapshot(), active: true, mode: 'tun', state: 'running', routing_mode: 'split',
+    traffic: sample(0, { direct: zero, main: zero, office: zero }) }, '', { page: 'home' }, initial);
+  const active = () => app.$('#home-wires-flow').children.filter(path => path.dataset.active === 'true')
+    .map(path => `${path.dataset.exit}:${path.dataset.direction}`);
+  assert.deepEqual(active(), [], 'one sample must not animate');
+  const moving = { direct: { upload_bytes: 1024, download_bytes: 0 }, main: { upload_bytes: 0, download_bytes: 2048 }, office: zero };
+  app.snapshot.traffic = sample(4, moving);
+  await app.poll();
+  assert.deepEqual(active(), ['direct:up', 'main:down'], 'idle Office stays still and upload/download follow their own routes');
+  await app.$('[data-page="settings"]').emit('click');
+  assert.equal(app.$('#split-map').dataset.flowPaused, 'true', 'leaving Home pauses its motion');
+  await app.$('[data-page="home"]').emit('click');
+  assert.equal(app.$('#split-map').dataset.flowPaused, 'false');
+  app.snapshot.traffic = sample(8, moving);
+  await app.poll();
+  assert.deepEqual(active(), [], 'an idle interval stops motion');
+  app.snapshot.traffic = sample(12, { ...moving, office: { upload_bytes: 4096, download_bytes: 4096 } });
+  await app.poll();
+  assert.deepEqual(active(), ['office:up', 'office:down']);
+  await app.flushTimers();
+  assert.deepEqual(active(), [], 'a stalled poll expires flow instead of leaving it running');
+  app.snapshot.traffic = sample(16, { direct: { upload_bytes: 2048, download_bytes: 0 }, main: zero, office: zero });
+  await app.poll();
+  Object.assign(app.snapshot, { active: false, state: 'stopped' });
+  await app.poll();
+  assert.deepEqual(active(), [], 'disconnect removes the active flow overlay');
+  const html = readFileSync(join(__dirname, '../assets/index.html'), 'utf8');
+  assert.doesNotMatch(html, /id="(?:home-final-route|home-policy-note|home-preview)"/);
+});
+
+test('home retains each missing explicit route when no exits remain', async () => {
+  const initial = guidedDocument();
+  initial.values.rules = { mode: 'split', final: 'direct', source: 'builtin',
+    routes: [{ exit: 'office', domains: ['work.example'] }, { exit: 'media', domains: ['media.example'] }] };
+  const app = await page({ desktop: true }, '', { page: 'home' }, initial);
+  const rows = app.$('#home-routes').children.map(item => item.children[0]);
+  assert.deepEqual(rows.map(row => row.dataset.exit), ['direct', 'main', 'office', 'media']);
+  assert.equal(rows[2].children[0].textContent, '缺少出口 · office');
+  assert.equal(rows[3].children[0].textContent, '缺少出口 · media');
+});
+
+test('home Setup starts guided setup and direct destination opens routing rules', async () => {
+  const app = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  assert.equal(app.$('#page-home').hidden, false);
+  assert.equal(app.$('#home-setup').hidden, false);
+  assert.equal(app.$('#home-setup').disabled, false);
+  assert.equal(app.$('#home-toggle-control').hidden, true);
+  guidedBackend(app);
+  await app.$('#home-setup').emit('click');
+  assert.ok(app.requests.some(request => request.path === '/api/action' && request.data.action === 'add-exit'));
+  assert.equal(app.$('#exit-picker-dialog').open, true);
+  await app.$('#cancel-exit-picker').emit('click');
+  const direct = app.$('#home-routes').children[0].children[0];
+  await app.$('#home-routes').emit('click', { target: direct });
+  assert.equal(app.$('#page-settings').hidden, false);
+  assert.equal(app.$('#section-routing').hidden, false);
+});
+
+test('home Setup completes first connection in both languages and yields to the switch', async () => {
+  for (const language of ['zh', 'en']) {
+    const app = await page({ desktop: true }, '', { page: 'home', language }, guidedDocument());
+    const backend = guidedBackend(app);
+    assert.equal(app.$('#home-setup').textContent, language === 'en' ? 'Set up' : '开始设置');
+    await app.$('#home-setup').emit('click');
+    assert.equal(app.$('#home-setup').hidden, true);
+    await pickerNode(app, '100.101.0.11').choice.emit('click');
+    await app.$('#apply-exit-picker').emit('click');
+    await app.poll();
+    assert.deepEqual(mutations(app).map(r => r.data.action || 'save'), ['add-exit', 'save', 'connect']);
+    assert.equal(app.config.values.rules.default_exit, backend.lastAdded);
+    await app.$('[data-page="home"]').emit('click');
+    assert.equal(app.$('#home-setup').hidden, true);
+    assert.equal(app.$('#home-toggle-control').hidden, false);
+    assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'true');
+  }
+});
+
+test('home Setup guards duplicate requests and returns after cancellation or installation failure', async () => {
+  const app = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  guidedBackend(app, { deferAdd: true });
+  await app.$('#home-setup').emit('click');
+  assert.equal(app.$('#home-setup').disabled, true);
+  await app.$('#home-setup').emit('click');
+  assert.equal(mutations(app).filter(r => r.data.action === 'add-exit').length, 1);
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.$('#home-setup').hidden, false);
+  assert.equal(app.$('#home-setup').disabled, false);
+  const failed = await page({ desktop: true }, '', { page: 'home' }, guidedDocument());
+  const backend = guidedBackend(failed, { failAdd: true });
+  await failed.$('#home-setup').emit('click');
+  assert.equal(failed.$('#home-setup').textContent, '重试设置');
+  assert.equal(failed.$('#home-setup').hidden, false);
+  assert.equal(failed.$('#home-setup').disabled, false);
+  backend.failAdd = false;
+  await failed.$('#home-setup').emit('click');
+  assert.equal(failed.$('#exit-picker-dialog').open, true);
+});
+
+test('home Setup respects read-only access and preserves configured or direct-only connections', async () => {
+  const readonly = await page({}, '', { page: 'home' }, guidedDocument());
+  assert.equal(readonly.$('#home-setup').disabled, true);
+  await readonly.$('#home-setup').emit('click');
+  assert.equal(mutations(readonly).length, 0);
+  const configured = await page(exitsSnapshot(), '', { page: 'home' }, multiExitDocument());
+  assert.equal(configured.$('#home-setup').hidden, true);
+  assert.equal(configured.$('#home-toggle-control').hidden, false);
+  const direct = await page({ desktop: true }, '', { page: 'home' }, doc());
+  assert.equal(direct.$('#home-setup').hidden, true, 'a deliberate direct-only policy does not require a Tailnet setup');
 });
 
 function pickerNode(app, id) {

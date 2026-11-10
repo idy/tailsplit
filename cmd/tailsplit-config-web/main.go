@@ -229,6 +229,8 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 					if err != nil {
 						return err
 					}
+					snapshot.AddedExit = exit
+					_, snapshot.AddedRevision, _ = tray.ReadConfigDocument(configPath)
 					name = "login-exit"
 				}
 				if snapshot.Exits == nil {

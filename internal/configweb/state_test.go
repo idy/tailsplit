@@ -54,12 +54,12 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 				"state": "running", "active": true, "mode": "tun", "routing_mode": "global",
 				"backend_state": "Running", "hostname": "preview-laptop", "phase": "",
 				"exit": "preview-exit", "network": "preview-tailnet.example", "magic_dns_suffix": "",
-				"error": "", "revision": revision, "preview": false,
+				"error": "", "error_code": "", "added_exit": "", "added_revision": "", "connect_request": "", "revision": revision, "preview": false,
 				"desktop": false, "startup": false, "logs_available": logsAvailable, "ping_available": false,
 				"exit_nodes": []any{map[string]any{
 					"id": "100.64.0.10", "name": "preview-exit", "online": true, "selected": true,
 				}},
-				"exits": map[string]any{}, "focus": "",
+				"exits": map[string]any{}, "focus": "", "traffic": nil,
 			}
 			if !reflect.DeepEqual(state, want) {
 				t.Fatalf("unexpected public state: got=%v want=%v", state, want)

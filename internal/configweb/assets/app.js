@@ -56,9 +56,9 @@
   };
   const state = {
     saved: '', base: '', draft: '', revision: '', changes: Object.create(null),
-    mode: 'form', page: 'connection', section: 'general', valid: false, parsed: false, values: {}, savedValues: {}, savedValid: false, loaded: false,
+    mode: 'form', page: 'home', section: 'general', valid: false, parsed: false, values: {}, savedValues: {}, savedValid: false, loaded: false,
     dirty: false, busy: false, loading: false, switching: false, validating: false,
-    previewing: false, external: false, savedError: '',
+    previewing: false, external: false, savedError: '', repairable: false,
     generation: 0, previewed: 0, pending: null, timer: null, toastTimer: null,
     customRuleSource: '',
   };
@@ -290,9 +290,12 @@
     $('#validate').disabled = !state.loaded || sourceMissing || locked || state.validating || state.previewing;
     $('#reload').disabled = locked;
     $('#notice-edit').hidden = $('#notice-rebuild').hidden = !state.loaded || state.savedValid;
-    $('#notice-edit').disabled = locked || rebuildPending;
-    $('#notice-rebuild').disabled = !canRebuildConfig();
-    $('#notice-rebuild').textContent = t(rebuildPending ? '正在重建…' : '备份并重建配置…');
+    $('#notice-edit').disabled = locked || Boolean(recoveryAction);
+    $('#notice-repair').hidden = !state.loaded || state.savedValid || !state.repairable;
+    $('#notice-repair').disabled = !canRecoverConfig() || !state.repairable;
+    $('#notice-repair').textContent = t(recoveryAction === 'repair' ? '正在修复…' : '自动修复配置…');
+    $('#notice-rebuild').disabled = !canRecoverConfig();
+    $('#notice-rebuild').textContent = t(recoveryAction === 'rebuild' ? '正在重建…' : '备份并重建配置…');
     $('#save').textContent = state.busy ? t('正在应用…') : t('保存并应用');
     $('#save-state').classList.toggle('dirty', state.dirty);
     $('#save-state').classList.toggle('invalid', (!state.valid || sourceMissing) && state.loaded && !state.previewing);
@@ -310,7 +313,7 @@
     $('#settings-section-select').disabled = locked;
     $('#settings-tools').hidden = state.page !== 'settings';
     $('#reload').hidden = state.page !== 'settings';
-    $('#refresh-exits').hidden = state.page !== 'connection';
+    $('#refresh-exits').hidden = !['home', 'connection'].includes(state.page);
     $('#desktop-log-refresh').hidden = state.page !== 'logs';
     setStatusText('#sidebar-proxy', String(fieldValue(state.savedValues, 'listen') || '127.0.0.1:17890'));
     $('#settings-draft').hidden = !state.dirty;
@@ -346,12 +349,14 @@
   }
 
   function useDocument(doc) {
+    acceptSetupDocument(doc);
     clearTimeout(state.timer); state.timer = null; state.generation++;
     state.previewed = state.generation; state.pending = null;
     state.saved = state.base = state.draft = doc.yaml;
     state.revision = doc.revision;
     state.values = state.savedValues = doc.values || {};
     state.savedValid = doc.valid;
+    state.repairable = doc.repairable === true;
     state.savedError = backendError(doc);
     state.changes = Object.create(null);
     state.valid = doc.valid; state.parsed = doc.parsed;
@@ -541,6 +546,7 @@
   function showPage(name) {
     const enteringLogs = name === 'logs' && state.page !== name;
     state.page = name;
+    syncRouteMotion();
     for (const nav of document.querySelectorAll('[data-page]')) {
       const active = nav.dataset.page === name;
       nav.classList.toggle('active', active);
@@ -556,7 +562,7 @@
     }
   }
   function renderPageTitle() {
-    const labels = { connection: t('出口节点列表'), logs: t('日志'), settings: t('设置') };
+    const labels = { home: t('首页'), connection: t('出口节点列表'), logs: t('日志'), settings: t('设置') };
     // Settings reads as a parent/child path, matching its sidebar submenu.
     const nested = state.page === 'settings';
     $('#crumb-parent').hidden = !nested;
@@ -607,21 +613,22 @@
   $('#notice-reload').addEventListener('click', reload);
   $('#notice-edit').addEventListener('click', () => { showMode('yaml'); showPage('settings'); $('#raw-yaml').focus(); });
 
-  let rebuildPending = false;
-  function canRebuildConfig() {
+  let recoveryAction = '';
+  function canRecoverConfig() {
     return state.loaded && !state.savedValid && state.revision && !state.external && !isLocked() &&
-      !rebuildPending && !isDesktopBusy() && !quickBusy && !connectionLost;
+      !recoveryAction && !isDesktopBusy() && !quickBusy && !connectionLost;
   }
-  $('#notice-rebuild').addEventListener('click', async () => {
-    if (!canRebuildConfig()) return;
+  async function recoverConfig(action) {
+    if (!canRecoverConfig() || action === 'repair' && !state.repairable) return;
     const revision = state.revision, generation = state.generation;
-    let rebuilt = false;
-    const dialog = $('#rebuild-config-dialog');
-    rebuildPending = true; updateActions();
+    let recovered = false;
+    const repair = action === 'repair';
+    const dialog = $(repair ? '#repair-config-dialog' : '#rebuild-config-dialog');
+    recoveryAction = action; updateActions();
     try {
       dialog.returnValue = 'cancel'; dialog.showModal();
       const answer = await new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
-      if (answer !== 'rebuild') return;
+      if (answer !== action) return;
       if (state.revision !== revision || state.generation !== generation || state.external || isLocked() || connectionLost || isDesktopBusy()) return;
       // Confirmation explicitly covers disconnecting and losing Global protection.
       // The server rechecks inactivity under the app's operation gate.
@@ -630,22 +637,27 @@
       operationError = null; stateRequest++;
       state.busy = true; updateActions();
       try {
-        const doc = await api('config-rebuild', { revision });
+        const doc = await api(`config-${action}`, { revision });
         useDocument(doc);
         pendingExitPicker = ''; pendingAddedExits.clear();
         showMode('form'); showPage('connection');
-        notice('配置已重建', { key: '原配置已备份至：{path}。请添加出口并重新配置分流规则。', values: { path: doc.backup_path } }, 'success');
-        rebuilt = true;
+        notice(repair ? '配置已自动修复' : '配置已重建', {
+          key: repair ? '已移除废弃字段 dns.listen，出口和分流规则已保留。原配置已备份至：{path}。' : '原配置已备份至：{path}。请添加出口并重新配置分流规则。',
+          values: { path: doc.backup_path },
+        }, 'success');
+        recovered = true;
       } catch (error) {
         if (error.code === 'conflict') state.external = true;
-        operationError = { title: error.code === 'conflict' ? '配置文件已更新' : '无法重建配置', detail: error, canReload: error.code === 'conflict' };
+        operationError = { title: error.code === 'conflict' ? '配置文件已更新' : repair ? '无法自动修复配置' : '无法重建配置', detail: error, canReload: error.code === 'conflict' };
         clearNotice();
       } finally { state.busy = false; await refreshState(); }
     } finally {
-      rebuildPending = false; updateActions();
-      if (rebuilt) $('#add-exit').focus({ preventScroll: true });
+      recoveryAction = ''; updateActions();
+      if (recovered) $('#add-exit').focus({ preventScroll: true });
     }
-  });
+  }
+  $('#notice-rebuild').addEventListener('click', () => recoverConfig('rebuild'));
+  $('#notice-repair').addEventListener('click', () => recoverConfig('repair'));
 
   $('#validate').addEventListener('click', async () => {
     if (isLocked() || state.validating || !(await flushPreview())) return;
@@ -696,6 +708,12 @@
   let quickBusy = false;
   let removingExit = false;
   let addingExit = false;
+  // An explicit Connect intent may span installation, sign-in and node selection.
+  // Ordinary Add/Sign in never creates this intent and therefore never connects.
+  let connectionSetup = null;
+  let setupAdvancing = false;
+  let lastNativeConnect = '';
+  try { lastNativeConnect = sessionStorage.getItem('tailsplit-connect-request') || ''; } catch (_) {}
   let stateRequest = 0;
   let selectedExit = null;
   // The picker edits one exit at a time: '' is the primary device.
@@ -714,6 +732,13 @@
   const exitPingGeneration = (exit) => pingExitGenerations.get(exit) || 0;
   const exitDialog = $('#exit-picker-dialog');
   const networkActive = (live = desktopLive) => Boolean(live?.active && ['tun', 'proxy'].includes(live.mode));
+  const needsApproval = (live) => live?.backend_state === 'NeedsMachineAuth';
+  function sessionNeedsApproval(live) {
+    if (!live || ['failed', 'stopping'].includes(live.state)) return false;
+    const id = live.focus || connectionExitRecord()?.id || 'main';
+    return needsApproval(id === 'main' ? live : live.exits?.[id]);
+  }
+  const approvalHelp = () => t('请让 Tailnet 管理员在 Tailscale 管理后台批准此设备，再重试登录。');
   const needsAuthentication = (live = desktopLive) => live?.backend_state === 'NeedsLogin' || live?.state === 'login' && !live?.focus;
   const excludedDevice = (live) => ['isolated', 'omitted'].includes(live?.phase);
   const signedIn = (live = desktopLive) => !excludedDevice(live) && !needsAuthentication(live) && (live?.backend_state === 'Running' || live?.state === 'authenticated' && !live?.focus);
@@ -806,6 +831,133 @@
     setStatusText('#connection-exit-label', t(savedMode() === 'global' ? '全局出口' : '默认出口'));
     window.TailSplitSelect?.sync();
   }
+  async function consumeNativeConnect() {
+    const request = desktopLive?.connect_request;
+    if (!request || request === lastNativeConnect) return;
+    if (!connectionSetup && !(networkActive() && desktopLive.state === 'running') && (isLocked() || isDesktopBusy() || desktopLive.active)) return;
+    lastNativeConnect = request;
+    try { sessionStorage.setItem('tailsplit-connect-request', request); } catch (_) {}
+    if (connectionSetup || networkActive()) return;
+    showPage('connection');
+    if (state.dirty) { notice('操作未完成', t('请先保存配置，再连接。')); return; }
+    if (!state.savedValid || state.external) { clearNotice(); showPage('settings'); return; }
+    await connectWithExit();
+  }
+  function setupFailed(detail) {
+    if (!connectionSetup) return;
+    const wasChoosingNode = connectionSetup.stage === 'node';
+    connectionSetup.stage = 'failed';
+    connectionSetup.error = detail || t('当前步骤未完成，请重试。');
+    if (wasChoosingNode && exitDialog.open) exitDialog.close();
+    renderConnectionSetup();
+  }
+  function acceptSetupDocument(doc) {
+    if (!connectionSetup || doc.revision === connectionSetup.revision) return;
+    // Only the exact document committed by this Add may advance the intent.
+    if (connectionSetup.added && desktopLive?.added_exit === connectionSetup.exit && desktopLive.added_revision === doc.revision) {
+      connectionSetup.revision = doc.revision;
+    } else setupFailed(t('配置已更改，自动连接已暂停。请检查配置后重新开启。'));
+  }
+  function renderConnectionSetup() {
+    const live = desktopLive || {};
+    const service = live.state === 'authorizing';
+    const serviceError = live.error_code === 'service-installation';
+    const setup = connectionSetup;
+    const panel = $('#connection-setup');
+    panel.hidden = !setup && !service && !serviceError;
+    if (panel.hidden) return;
+    const failed = setup?.stage === 'failed' || serviceError;
+    const approval = sessionNeedsApproval(live);
+    const title = failed ? serviceError ? '后台服务需要安装或更新' : '连接设置未完成' : service ? '需要安装或更新后台服务' :
+      approval ? '等待管理员批准设备' : setup?.stage === 'node' ? '选择节点后即可连接' : setup?.stage === 'connecting' ? '正在连接 TailSplit' : '正在设置出口';
+    const detail = failed ? setup?.error || backendError(live) : service ? '请完成已打开的系统安装器，应用会继续这次操作。可以取消，稍后重试。' :
+      approval ? approvalHelp() : setup?.stage === 'node' ? '选择一个在线节点并确认；应用会保存出口并继续这次连接。' :
+      setup?.stage === 'connecting' ? '正在使用已确认的出口连接。' : '正在准备设备授权。完成浏览器登录后会自动打开节点选择，再继续连接。';
+    setStatusText('#connection-setup-title', t(title));
+    setStatusText('#connection-setup-detail', message(detail));
+    panel.classList.toggle('error', failed);
+    $('#connection-setup-retry').hidden = !failed;
+    setStatusText('#connection-setup-retry', t(serviceError ? '安装服务并继续连接' : '重试连接'));
+    $('#connection-setup-retry').disabled = isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || !state.savedValid || networkActive();
+    $('#connection-setup-cancel').hidden = !setup && !live.active;
+    $('#connection-setup-cancel').disabled = isDesktopBusy() || quickBusy || connectionLost;
+    setStatusText('#connection-setup-cancel', t(failed && !live.active ? '关闭' : '取消连接'));
+  }
+  async function cancelConnectionSetup() {
+    connectionSetup = null;
+    pendingExitPicker = ''; pendingAddedExits.clear();
+    if (exitDialog.open) exitDialog.close();
+    if (desktopLive?.active) await desktopAction('disconnect');
+    renderConnectionCenter();
+  }
+  async function beginConnectionSetup(exit = '') {
+    if (isLocked() || isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop || !state.loaded || !state.savedValid || state.dirty || state.external || networkActive()) return;
+    // Retry may be requested after a local conflict while authorization is alive.
+    if (desktopLive.active && !(await desktopAction('disconnect'))) return;
+    connectionSetup = { exit, revision: state.revision, field: connectionExitField(), stage: 'prepare', added: false, loginRequested: false };
+    operationError = null; clearNotice(); showPage('connection'); renderConnectionSetup();
+    await advanceConnectionSetup();
+  }
+  async function advanceConnectionSetup() {
+    const setup = connectionSetup;
+    if (!setup || setupAdvancing || setup.stage === 'failed' || isLocked() || isDesktopBusy() || quickBusy || connectionLost) return;
+    if (!state.savedValid) { setupFailed(state.savedError || t('配置需要修正')); return; }
+    if (state.dirty || state.external || setup.revision !== state.revision || setup.field !== connectionExitField()) {
+      setupFailed(t('配置已更改，自动连接已暂停。请检查配置后重新开启。')); return;
+    }
+    if (setup.stage !== 'prepare' && desktopLive?.state === 'failed') { setupFailed(backendError(desktopLive) || operationError?.detail); return; }
+    if (setup.stage === 'login' && setup.loginRequested && !desktopLive?.active && desktopLive?.state === 'stopped' && !exitSignedIn(setup.exit)) {
+      setupFailed(t('登录已取消，可以重试连接。')); return;
+    }
+    if (setup.stage === 'connecting') {
+      if (desktopLive?.state === 'running' && networkActive()) { connectionSetup = null; toast(t('已连接')); renderConnectionSetup(); }
+      else if (!desktopLive?.active) setupFailed(t('连接没有启动，请重试。'));
+      return;
+    }
+    if (setup.stage === 'node') return; // Only the user's node confirmation advances this stage.
+    setupAdvancing = true;
+    try {
+      if (!setup.exit) {
+        if (configuredExits().length) { connectionSetup = null; await openDefaultExitDialog(); return; }
+        if (!(await addExit(true))) { if (connectionSetup === setup) setupFailed(operationError?.detail); return; }
+      }
+      if (connectionSetup !== setup) return;
+      const record = configuredExits().find(exit => exit.id === setup.exit);
+      if (!record) {
+        if (desktopLive?.active) return; // A staged Add is intentionally absent until authentication completes.
+        setupFailed(backendError(desktopLive) || t('出口尚未添加完成，请重试。')); return;
+      }
+      if (!exitSignedIn(setup.exit)) {
+        if (!setup.loginRequested) {
+          setup.stage = 'login'; setup.loginRequested = true;
+          const ok = await desktopAction(setup.exit === 'main' ? 'login' : 'login-exit', setup.exit === 'main' ? '' : setup.exit);
+          if (!ok && connectionSetup === setup) setupFailed(operationError?.detail);
+        }
+        if (connectionSetup !== setup || setup.stage === 'failed' || !exitSignedIn(setup.exit)) return;
+      }
+      if (desktopLive.active) return; // Wait for helper cleanup before saving or starting traffic.
+      if (!exitCanConnect(record)) {
+        setup.stage = 'node'; pendingExitPicker = '';
+        openExitPicker($('#desktop-connect'), exitKey(setup.exit));
+        return;
+      }
+      if (String(fieldValue(state.savedValues, setup.field)) !== setup.exit) {
+        setup.stage = 'saving';
+        const ok = await saveExitChanges({ [setup.field]: setup.exit }, '', doc => { if (connectionSetup === setup) setup.revision = doc.revision; });
+        if (!ok) { if (connectionSetup === setup) setupFailed(operationError?.detail); return; }
+      }
+      if (connectionSetup !== setup || state.dirty || state.external || state.revision !== setup.revision || setup.field !== connectionExitField() || !exitCanConnect(configuredExits().find(exit => exit.id === setup.exit))) return;
+      setup.stage = 'connecting';
+      if (!(await desktopAction('connect')) && connectionSetup === setup) setupFailed(operationError?.detail);
+      if (connectionSetup === setup && desktopLive?.state === 'running' && networkActive()) { connectionSetup = null; toast(t('已连接')); }
+    } finally { setupAdvancing = false; renderConnectionSetup(); }
+  }
+  $('#connection-setup-cancel').addEventListener('click', cancelConnectionSetup);
+  $('#connection-setup-retry').addEventListener('click', () => {
+    if (!connectionSetup && !requiresDefaultExit(state.savedValues)) return desktopAction('connect');
+    const exit = configuredExits().some(exit => exit.id === connectionSetup?.exit) ? connectionSetup.exit : connectionExitRecord()?.id || '';
+    return beginConnectionSetup(exit);
+  });
   const defaultExitDialog = $('#default-exit-dialog');
   let defaultExitContext = null;
   let defaultExitBusy = false;
@@ -827,7 +979,7 @@
       select.replaceChildren(placeholder, ...records.map((exit) => {
         const option = document.createElement('option'); option.value = exit.id;
         option.textContent = exitLabel(exit.id);
-        option.disabled = !exitCanConnect(exit); return option;
+        option.disabled = false; return option;
       }));
       select.value = records.some((exit) => exit.id === current) ? current : '';
     }
@@ -837,13 +989,15 @@
     const global = defaultExitContext.field === 'rules.global_exit';
     setStatusText('#default-exit-heading', t(global ? '选择全局出口' : '选择默认出口'));
     setStatusText('#default-exit-choice-label', t(global ? '全局出口' : '默认出口'));
-    select.disabled = locked || !records.some(exitCanConnect);
-    $('#confirm-default-exit').disabled = locked || !exitCanConnect(records.find((exit) => exit.id === select.value));
-    $('#confirm-default-exit').textContent = t(defaultExitBusy ? '正在应用…' : '确认并连接');
+    const chosen = records.find(exit => exit.id === select.value);
+    select.disabled = locked || !records.length;
+    $('#confirm-default-exit').disabled = locked || !chosen;
+    $('#confirm-default-exit').textContent = t(defaultExitBusy ? '正在应用…' : chosen && !exitCanConnect(chosen) ? '继续设置并连接' : '确认并连接');
+    setStatusText('#default-exit-description', t('请选择出口，完成必要的登录和节点选择后会继续连接。'));
     $('#cancel-default-exit').disabled = defaultExitBusy;
     $('#default-exit-manage').disabled = defaultExitBusy;
-    $('#default-exit-empty').hidden = records.some(exitCanConnect);
-    $('#default-exit-manage').hidden = records.some(exitCanConnect);
+    $('#default-exit-empty').hidden = records.length > 0;
+    $('#default-exit-manage').hidden = records.length > 0;
     window.TailSplitSelect?.sync();
   }
   function pickerDNSUpdate() {
@@ -916,6 +1070,7 @@
     // A device that signs out, disappears or changes identity invalidates itself.
     const previous = desktopLive?.exits || {};
     desktopLive = live;
+    sampleTraffic(live);
     // Saving the provisional profile or opening a browser is not a completed Add.
     // Only a fresh authenticated device status can confirm success.
     for (const id of pendingAddedExits) {
@@ -938,7 +1093,7 @@
     for (const [key] of pingResults) {
       if (!online.has(key)) pingResults.delete(key);
     }
-    if (pendingExitPicker && exitList().some(exit => exit.id === pendingExitPicker) && exitSignedIn(pendingExitPicker) && !exitDialog.open && state.page === 'connection' && !isDesktopBusy()) {
+    if (pendingExitPicker && connectionSetup?.exit !== pendingExitPicker && exitList().some(exit => exit.id === pendingExitPicker) && exitSignedIn(pendingExitPicker) && !exitDialog.open && state.page === 'connection' && !isDesktopBusy()) {
       const exit = pendingExitPicker;
       pendingExitPicker = '';
       if (openExitPicker($('#add-exit'), exit)) return;
@@ -947,6 +1102,7 @@
   }
   function renderConnectionCenter() {
     const live = desktopLive || {};
+    renderConnectionSetup();
     const connected = networkActive(live);
     const authenticated = signedIn(live);
     const discovering = live.active && !connected;
@@ -979,18 +1135,17 @@
     renderDefaultExitDialog();
     const needsDefaultChoice = defaultRequired && !connectionExitRecord();
     const activeExitReady = exitSignedIn(activeExit);
-    const activeExitNodes = exitNodes(activeExit);
     const chosenNode = pickerNodes.find((node) => node.id === chosen || node.name === chosen || selectedExit === null && node.configured);
     const savedRoutes = fieldValue(state.savedValues, 'rules.routes');
     const referencedExits = new Set([
       ...(defaultRequired ? [fieldValue(state.savedValues, 'rules.default_exit')] : []), fieldValue(state.savedValues, 'rules.final'),
       ...(Array.isArray(savedRoutes) ? savedRoutes : []).filter(route => route && (route.domains?.length || route.ips?.length)).map(route => route.exit),
     ]);
-    const requiredBlocked = mode === 'split' && records.some(exit => referencedExits.has(exit.id) && exit.exit_node && exitLive(exit.id).backend_state === 'NeedsLogin');
-    $('#desktop-controls').hidden = !live.desktop;
+    const requiredBlocked = mode === 'split' && records.some(exit => exit.id !== connectionExitRecord()?.id && referencedExits.has(exit.id) && exit.exit_node && exitLive(exit.id).backend_state === 'NeedsLogin');
+    $('#desktop-controls').hidden = !live.desktop || state.page === 'home';
     $('#desktop-connect').hidden = Boolean(live.active);
     $('#desktop-disconnect').hidden = !live.active;
-    $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || !needsDefaultChoice && (requiredBlocked || defaultRequired && (!activeExitReady || !savedExit(activeExit) || activeExitNodes.some((node) => node.configured && !node.online && !node.missing)));
+    $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || requiredBlocked || Boolean(connectionSetup && connectionSetup.stage !== 'failed');
     $('#desktop-disconnect').disabled = !live.desktop || isDesktopBusy() || quickBusy || connectionLost;
     $('#desktop-disconnect').setAttribute('aria-checked', String(connected));
     $('#desktop-disconnect').title = connected ? t('断开') : t('取消');
@@ -1003,22 +1158,23 @@
       button.disabled = !live.desktop || locked || discovering && !loginRecovery || button.dataset.desktopAction === 'login' && connected && !needsAuthentication(live);
     }
     $('#desktop-login').hidden = !hasPrimary || authenticated;
+    if (needsApproval(live)) $('#desktop-login').disabled = true;
     $('#startup-setting').hidden = !live.desktop;
     $('#desktop-startup').disabled = !live.desktop || locked;
     $('#desktop-startup').checked = live.startup === true;
     const transitioning = ['starting', 'stopping', 'authorizing', 'logging-out'].includes(live.state) || discovering;
-    const network = deviceSessionNote() || (live.state === 'logging-out' ? t('正在退出登录') : live.network ||
+    const network = deviceSessionNote() || (needsApproval(live) ? t('等待管理员批准设备') : live.state === 'logging-out' ? t('正在退出登录') : live.network ||
       (authenticated ? t('已登录（网络名称未提供）') : live.backend_state === 'NeedsLogin' ? t('未登录') : transitioning ? t('正在读取网络…') : t('尚未读取网络')));
     setStatusText('#desktop-network-name', network);
     $('#desktop-network-name').title = network;
-    const identity = authenticated ? live.hostname || t('已登录') :
+    const identity = needsApproval(live) ? t('等待管理员批准设备') : authenticated ? live.hostname || t('已登录') :
       needsAuthentication(live) ? t('未登录 Tailscale') : discovering ? t('正在读取设备') : t('未登录 Tailscale');
     const extra = exitLive(pickerExit);
-    const extraIdentity = !pickerExit ? '' : exitSignedIn(pickerExit) ? [extra.hostname, extra.network].filter(Boolean).join(' · ') || t('已登录') :
+    const extraIdentity = !pickerExit ? '' : needsApproval(extra) ? t('等待管理员批准设备') : exitSignedIn(pickerExit) ? [extra.hostname, extra.network].filter(Boolean).join(' · ') || t('已登录') :
       extra.backend_state === 'NeedsLogin' ? t('未登录 Tailscale') : t('尚未读取设备');
     setStatusText('#tailnet-identity', connectionLost ? t('页面连接中断') : deviceSessionNote(pickerExit) || (pickerExit ? extraIdentity : identity));
     $('#picker-login').hidden = exitSignedIn(pickerExit);
-    $('#picker-login').disabled = !live.desktop || locked || transitioning;
+    $('#picker-login').disabled = !live.desktop || locked || transitioning || needsApproval(extra);
     $('#exit-danger-zone').hidden = !records.some((record) => record.id === (pickerExit || 'main'));
     $('#exit-remove').disabled = !live.desktop || locked || transitioning || state.dirty || state.external;
     $('#exit-remove').textContent = removingExit ? t('正在删除…') : t('删除出口…');
@@ -1040,20 +1196,25 @@
     const hint = connectionLost ? t('请确认 TailSplit 仍在运行') : live.error ? message(backendError(live)) :
       desktopPending ? t('正在处理…') : quickBusy ? t('正在应用连接更改…') :
       !live.desktop ? t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。') :
+      live.state === 'authorizing' ? t('请在系统安装器中完成后台网络服务的安装或更新；完成后会继续当前操作。') :
+      sessionNeedsApproval(live) ? approvalHelp() :
       live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') :
       state.dirty ? t('请先保存配置，再连接。') : changing ? t('连接选项尚未应用，请先确认选择。') :
-      needsDefaultChoice ? t('未设置默认出口') : defaultRequired && !activeExitReady ? t('先登录 Tailscale，再选择出口并连接。') : defaultRequired && !savedExit(activeExit) ? t('尚未选择出口') : '';
-    setStatusText('#desktop-hint', hint);
-    $('#desktop-hint').hidden = !hint || state.dirty || changing;
+      requiredBlocked ? t('分流规则引用的其他出口需要登录；请打开该出口完成登录后再连接。') :
+      needsDefaultChoice ? t('开启连接后会引导添加出口、登录并选择节点。') : defaultRequired && !activeExitReady ? t('开启连接后会引导登录和选择节点。') : defaultRequired && !savedExit(activeExit) ? t('尚未选择出口') : '';
+    const setupVisible = !$('#connection-setup').hidden;
+    setStatusText('#desktop-hint', setupVisible && live.preview ? t('界面预览：操作仅模拟界面状态，不会创建网络连接。') : hint);
+    $('#desktop-hint').hidden = changing || (setupVisible ? !live.preview : !hint);
     $('#desktop-connect').title = hint || t('连接 TailSplit');
     $('#connection-apply').hidden = exitDialog.open || !changing && !quickBusy;
     const name = (pickerExit ? `${exitLabel(pickerExit)} · ` : '') + (chosenNode?.name || chosen || t('尚未选择出口'));
     const dnsUpdate = selectedExit === null || selectedExit === savedExit(pickerExit) ? pickerDNSUpdate() : null;
     const selection = dnsUpdate ? t('更新此出口的 DNS 信息：{suffix}', { suffix: dnsUpdate.magic_dns_suffix }) :
       t('已选：{name} · {mode}', { name, mode: mode === 'global' ? t('全局代理') : t('规则分流') });
-    const consequence = connected && (live.routing_mode || mode) === 'global' ? t('应用更改需先确认断开全局保护，保存后保持未连接。') :
+    const guidedNode = connectionSetup?.stage === 'node' && connectionSetup.exit === (pickerExit || 'main');
+    const consequence = guidedNode ? t('保存节点和默认出口，然后继续这次连接。') : connected && (live.routing_mode || mode) === 'global' ? t('应用更改需先确认断开全局保护，保存后保持未连接。') :
       connected ? t('确认后保存并重新连接，网络会短暂中断。') : t('仅保存选择，保持未连接。');
-    const applyLabel = quickBusy ? t('正在应用…') : dnsUpdate ? t('保存 DNS 信息') : connected ? t('切换出口') : t('保存选择');
+    const applyLabel = quickBusy ? t('正在应用…') : guidedNode ? t('保存并连接') : dnsUpdate ? t('保存 DNS 信息') : connected ? t('切换出口') : t('保存选择');
     const cannotApply = locked || discovering || state.dirty || state.external || !changing || selectedExit !== null && (!chosenNode || !chosenNode.online || chosenNode.missing === true);
     for (const prefix of ['connection', 'exit-dialog']) {
       setStatusText(`#${prefix}-selection`, selection);
@@ -1071,6 +1232,7 @@
     $('#exit-dialog-error').hidden = !pickerError;
     renderExitList(pickerNodes, locked || discovering);
     renderConnection(live);
+    renderHome(live);
   }
   function renderExitList(nodes, locked) {
     const visible = nodes;
@@ -1108,7 +1270,10 @@
     }
     $('#exit-count').textContent = t('可用出口数量', { count: nodes.filter((node) => node.online).length });
     renderExitEmpty(visible);
-    $('#picker-go-connection').hidden = Boolean(pickerExit) || signedIn();
+    const guidedRefresh = connectionSetup?.stage === 'node' && exitSignedIn(pickerExit) && !nodes.some(node => node.online);
+    $('#picker-go-connection').hidden = !guidedRefresh && (Boolean(pickerExit) || signedIn());
+    $('#picker-go-connection').textContent = t(guidedRefresh ? '重新读取节点' : '前往连接页面');
+    if (guidedRefresh) $('#picker-go-connection').disabled = locked || Boolean(desktopLive?.active);
   }
   // Primary first, then additional exits: green when its node is reachable.
   function exitStatus(exit) {
@@ -1147,7 +1312,7 @@
       const exitName = document.createElement('span'); exitName.className = 'exit-name';
       exitName.textContent = nodeName || configured || t('尚未选择出口');
       const detail = document.createElement('span'); detail.className = 'exit-network';
-      detail.textContent = pendingAddedExits.has(id) && !exitSignedIn(id) ? t('等待 Tailscale 登录') :
+      detail.textContent = backend === 'NeedsMachineAuth' ? t('等待管理员批准设备') : pendingAddedExits.has(id) && !exitSignedIn(id) ? t('等待 Tailscale 登录') :
         deviceSessionNote(id) || (backend === 'NeedsLogin' ? t('未登录') : network || (backend === 'Running' ? t('已登录（网络名称未提供）') : t('尚未读取网络')));
       address.append(exitName, detail);
       if (configured && !excludedDevice(exitLive(id)) && backend === 'Running' && !online) {
@@ -1179,10 +1344,12 @@
   }
   function renderExitEmpty(visible) {
     const discovering = desktopPending === 'refresh-exits' || desktopLive?.mode === 'discovery' && desktopLive.active;
-    $('#exit-empty').hidden = visible.length > 0;
+    const guidedEmpty = connectionSetup?.stage === 'node' && !visible.some(node => node.online);
+    $('#exit-empty').hidden = visible.length > 0 && !guidedEmpty;
     const ready = exitSignedIn(pickerExit);
-    setStatusText('#exit-empty-title', discovering ? t('正在读取出口') : ready ? t('未发现可用出口') : t('尚未读取出口'));
-    setStatusText('#exit-empty-detail', ready ? t('确认设备已在 Tailnet 中提供出口，并获准使用，然后刷新。') : t('登录 Tailscale 后，刷新可用出口。'));
+    const approval = needsApproval(exitLive(pickerExit));
+    setStatusText('#exit-empty-title', approval ? t('等待管理员批准设备') : discovering ? t('正在读取出口') : ready ? t('未发现可用出口') : t('尚未读取出口'));
+    setStatusText('#exit-empty-detail', approval ? approvalHelp() : ready ? t('确认设备已在 Tailnet 中提供出口，并获准使用，然后刷新。') : t('登录 Tailscale 后，刷新可用出口。'));
   }
   function nodeIcon(symbol) {
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1281,6 +1448,7 @@
     if (dismiss && !quickBusy) exitDialog.close();
   });
   exitDialog.addEventListener('close', () => {
+    if (!pickerCommitted && connectionSetup?.stage === 'node') connectionSetup = null;
     pickerBackdropPress = false;
     if (!pickerCommitted) selectedExit = pickerOriginalExit;
     // Additional exits never keep a staged choice outside their own picker.
@@ -1291,7 +1459,10 @@
     if (pickerOpener?.isConnected && !pickerOpener.disabled) pickerOpener.focus();
     else (state.savedValues.tailscale ? $('#choose-exit') : $('#add-exit')).focus();
   });
-  $('#picker-go-connection').addEventListener('click', () => { exitDialog.close(); showPage('connection'); });
+  $('#picker-go-connection').addEventListener('click', () => {
+    if (connectionSetup?.stage === 'node' && exitSignedIn(pickerExit)) return desktopAction('refresh-exits');
+    exitDialog.close(); showPage('connection');
+  });
   $('#picker-view-settings').addEventListener('click', () => { exitDialog.close(); showPage('settings'); });
   for (const button of document.querySelectorAll('[data-routing-mode]')) button.addEventListener('click', () => {
     if (isLocked() || draftRoutingMode() === button.dataset.routingMode) return;
@@ -1303,8 +1474,17 @@
     if (quickBusy || isDesktopBusy() || isLocked() || state.dirty || state.external || connectionLost || $('#apply-connection-change').disabled) return;
     const changes = connectionChanges();
     if (!Object.keys(changes).length) return;
-    const applied = await saveExitChanges(changes, '连接选项已保存', () => { selectedExit = null; });
-    if (applied && exitDialog.open) { pickerCommitted = true; exitDialog.close(); }
+    const setup = connectionSetup?.stage === 'node' && connectionSetup.exit === (pickerExit || 'main') ? connectionSetup : null;
+    if (setup) changes[setup.field] = setup.exit;
+    const applied = await saveExitChanges(changes, '连接选项已保存', doc => {
+      selectedExit = null;
+      if (setup && connectionSetup === setup) setup.revision = doc.revision;
+    });
+    if (applied) {
+      if (setup && connectionSetup === setup) setup.stage = 'ready';
+      if (exitDialog.open) { pickerCommitted = true; exitDialog.close(); }
+      if (setup) await advanceConnectionSetup();
+    }
   }
   $('#apply-connection-change').addEventListener('click', applyConnectionChanges);
   $('#apply-exit-picker').addEventListener('click', applyConnectionChanges);
@@ -1412,8 +1592,8 @@
     if (protectedSession() && !(await desktopAction('disconnect'))) return false;
     return current() && !connectionLost && desktopLive?.desktop && !desktopLive.active;
   }
-  $('#add-exit').addEventListener('click', async () => {
-    if (addingExit || !canManageExits() || exitList().length >= 8) return;
+  async function addExit(forConnection = false) {
+    if (addingExit || !canManageExits() || exitList().length >= 8) return false;
     const revision = state.revision;
     const consentRequired = networkActive() && savedMode() === 'global';
     addingExit = true; renderConnectionCenter();
@@ -1429,15 +1609,22 @@
       // is saved or rendered before it commits a successful device login.
       pendingAddedExits.add(id);
       pendingExitPicker = id;
+      if (forConnection && connectionSetup) {
+        Object.assign(connectionSetup, { exit: id, added: true, stage: 'login', loginRequested: true });
+      }
       if (!(await exitAction('add-exit', id))) {
         pendingAddedExits.delete(id); pendingExitPicker = '';
-      } else if (!exitSignedIn(id) && desktopLive?.active && desktopLive.mode === 'login') toast(t('等待 Tailscale 登录'));
+        return false;
+      }
+      if (!exitSignedIn(id) && desktopLive?.active && desktopLive.mode === 'login') toast(t('等待 Tailscale 登录'));
+      return true;
     } finally {
       addingExit = false;
       if (desktopLive) updateDesktop(desktopLive); else renderConnectionCenter();
       if (consentRequired && !exitDialog.open && !$('#add-exit').disabled) $('#add-exit').focus({ preventScroll: true });
     }
-  });
+  }
+  $('#add-exit').addEventListener('click', () => { connectionSetup = null; return addExit(); });
   $('#picker-login').addEventListener('click', async () => {
     const exit = pickerExit;
     exitDialog.close();
@@ -1512,8 +1699,15 @@
   }
   async function connectWithExit() {
     if ($('#desktop-connect').disabled || state.external || defaultExitDialog.open) return;
-    if (requiresDefaultExit(state.savedValues) && !connectionExitRecord()) {
-      return openDefaultExitDialog();
+    if (requiresDefaultExit(state.savedValues)) {
+      const records = configuredExits();
+      if (!records.length) return beginConnectionSetup();
+      const selected = records.find(exit => exit.id === String(fieldValue(state.savedValues, connectionExitField())));
+      if (selected && !exitCanConnect(selected)) return beginConnectionSetup(selected.id);
+      if (!connectionExitRecord()) {
+        if (records.length === 1 && !exitCanConnect(records[0])) return beginConnectionSetup(records[0].id);
+        return openDefaultExitDialog();
+      }
     }
     return desktopAction('connect');
   }
@@ -1526,7 +1720,8 @@
   });
   $('#default-exit-manage').addEventListener('click', () => {
     if (defaultExitBusy) return;
-    defaultExitDialog.close(); showPage('connection'); $('#add-exit').focus({ preventScroll: true });
+    defaultExitDialog.close();
+    return beginConnectionSetup();
   });
   $('#confirm-default-exit').addEventListener('click', async () => {
     if (!defaultExitDialog.open || !defaultExitContext || defaultExitBusy || isLocked() || isDesktopBusy() || state.dirty || connectionLost) return;
@@ -1534,7 +1729,9 @@
       defaultExitError(t('配置文件已更新，请取消后重新选择。')); return;
     }
     const id = $('#default-exit-choice').value;
-    if (!exitCanConnect(configuredExits().find((exit) => exit.id === id))) return;
+    const chosen = configuredExits().find(exit => exit.id === id);
+    if (!chosen) return;
+    if (!exitCanConnect(chosen)) { defaultExitDialog.close(); await beginConnectionSetup(id); return; }
     const { field } = defaultExitContext;
     defaultExitBusy = true; renderDefaultExitDialog();
     try {
@@ -1553,7 +1750,7 @@
     }
   });
   document.querySelectorAll('[data-desktop-action]').forEach((button) => button.addEventListener('click', () =>
-    button.dataset.desktopAction === 'connect' ? connectWithExit() : desktopAction(button.dataset.desktopAction)));
+    button.dataset.desktopAction === 'connect' ? connectWithExit() : button.dataset.desktopAction === 'disconnect' && connectionSetup ? cancelConnectionSetup() : desktopAction(button.dataset.desktopAction)));
   $('#desktop-startup').addEventListener('change', (event) => desktopAction(event.target.checked ? 'startup-on' : 'startup-off'));
   const logColors = ['muted', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'default'];
   function logRGBColor(red, green, blue) {
@@ -1753,19 +1950,300 @@
   $('#update-pill').addEventListener('click', () => appUpdateAction(updateLive?.updates?.available ? 'install' : 'check'));
   $('#update-automatic').addEventListener('change', (event) => appUpdateAction(event.target.checked ? 'automatic-on' : 'automatic-off'));
 
+  // Only new samples from the same engine session can establish a transfer rate.
+  let trafficSample = null;
+  let trafficRates = new Map();
+  let trafficExpiryTimer = null;
+  const mapRateControls = new Map();
+  function sampleTraffic(live) {
+    const traffic = live.traffic;
+    if (!traffic?.session_id || !Number.isFinite(Date.parse(traffic.sampled_at)) || !traffic.routes || live.state !== 'running' || !networkActive(live)) {
+      trafficSample = null; trafficRates.clear(); return;
+    }
+    const timestamp = Date.parse(traffic.sampled_at);
+    if (trafficSample?.session === traffic.session_id && timestamp <= trafficSample.timestamp) {
+      if (Date.now() - trafficSample.received > 10000) trafficRates.clear();
+      return;
+    }
+    const next = new Map();
+    for (const [id, counters] of Object.entries(traffic.routes)) {
+      const up = counters?.upload_bytes, down = counters?.download_bytes;
+      if ([up, down].every(value => Number.isSafeInteger(value) && value >= 0)) next.set(id, { up, down });
+    }
+    trafficRates.clear();
+    const elapsed = trafficSample ? (timestamp - trafficSample.timestamp) / 1000 : 0;
+    // A hidden tab or stale response must not present a long-term average as live speed.
+    if (trafficSample?.session === traffic.session_id && elapsed > 0 && elapsed <= 10) {
+      for (const [id, counters] of next) {
+        const previous = trafficSample.routes.get(id);
+        if (previous && counters.up >= previous.up && counters.down >= previous.down) trafficRates.set(id, {
+          up: (counters.up - previous.up) / elapsed, down: (counters.down - previous.down) / elapsed,
+        });
+      }
+    }
+    trafficSample = { session: traffic.session_id, timestamp, routes: next, received: Date.now() };
+  }
+  function transferRate(value) {
+    if (!Number.isFinite(value)) return '—';
+    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
+    const power = value > 0 ? Math.max(0, Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)))) : 0;
+    return `${(value / 1024 ** power).toFixed(power ? 1 : 0)} ${units[power]}`;
+  }
+  function syncRouteMotion() {
+    $('#split-map').dataset.flowPaused = String(document.hidden || state.page !== 'home');
+  }
+  function renderHomeRates(applied) {
+    syncRouteMotion();
+    clearTimeout(trafficExpiryTimer);
+    trafficExpiryTimer = null;
+    const remaining = trafficSample ? 10000 - (Date.now() - trafficSample.received) : 0;
+    for (const [id, controls] of mapRateControls) {
+      const rate = applied && controls.ready && remaining > 0 ? trafficRates.get(id) : null;
+      const up = transferRate(rate?.up), down = transferRate(rate?.down);
+      if (controls.up.textContent !== up) controls.up.textContent = up;
+      if (controls.down.textContent !== down) controls.down.textContent = down;
+      controls.root.title = t('上传 {up} · 下载 {down}', { up, down });
+      controls.root.setAttribute('aria-label', controls.root.title);
+      for (const direction of ['up', 'down']) {
+        if (controls.flow[direction]) controls.flow[direction].dataset.active = String(Boolean(rate && rate[direction] > 0));
+      }
+    }
+    // A stalled poll must not leave old data animating indefinitely.
+    if (applied && remaining > 0 && trafficRates.size) trafficExpiryTimer = setTimeout(() => {
+      trafficRates.clear(); renderHomeRates(false);
+    }, remaining);
+  }
+  // Destinations come only from saved routing. Tones describe confirmed state, never traffic.
+  function homeRoutes({ global, applied, blocked }) {
+    const values = state.savedValues;
+    const records = configuredExits(values);
+    const exitRoute = (id, roles) => {
+      const record = records.find(exit => exit.id === id);
+      const ready = Boolean(record?.exit_node);
+      const tone = blocked || applied && !(ready && exitSignedIn(id)) ? 'warn' : applied ? 'ok' : 'planned';
+      const detail = blocked ? t('出口不可用 · 已阻断') : !record ? t('出口已移除，请更改分流规则') : !ready ? t('尚未选择节点') :
+        applied && tone === 'warn' ? t('需要登录') : roles.join(' · ');
+      return { id, kind: 'exit', name: record ? exitLabel(id) : `${t('缺少出口')} · ${id}`, detail, tone };
+    };
+    const placeholder = { id: 'unconfigured', kind: 'exit', name: t('Tailscale 出口'), detail: t('尚未配置出口 · 点击开始设置'), tone: 'planned' };
+    if (global) {
+      const id = String(fieldValue(values, 'rules.global_exit')).trim() || 'main';
+      return [records.length ? exitRoute(id, [t('全部接管流量')]) : placeholder];
+    }
+    const final = String(fieldValue(values, 'rules.final') || 'direct');
+    const defaultID = String(fieldValue(values, 'rules.default_exit')).trim() || 'main';
+    const roles = new Map();
+    const add = (id, role) => (roles.get(id) || roles.set(id, []).get(id)).push(role);
+    if (requiresDefaultExit(values)) add(defaultID, t('默认代理出口'));
+    const groups = new Map();
+    const routes = fieldValue(values, 'rules.routes');
+    for (const route of Array.isArray(routes) ? routes : []) {
+      if (route?.domains?.length || route?.ips?.length) groups.set(String(route.exit || 'main'), (groups.get(String(route.exit || 'main')) || 0) + 1);
+    }
+    for (const [id, count] of groups) add(id, t('规则组数量', { count }));
+    if (final !== 'direct') add(final === 'proxy' ? defaultID : final, t('未匹配流量'));
+    const direct = { id: 'direct', kind: 'direct', name: t('直连'), detail: [t('直连规则'), ...(final === 'direct' ? [t('未匹配流量')] : [])].join(' · '), tone: applied ? 'ok' : 'planned' };
+    const exits = [...roles].map(([id, list]) => !records.length && id === defaultID && !groups.has(id) && ['direct', 'proxy'].includes(final) ? { ...placeholder, id } : exitRoute(id, list));
+    return [direct, ...exits];
+  }
+  let splitMapKey = '';
+  function routeWire(d, tone, index) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', `tone-${tone}`);
+    path.dataset.index = String(index);
+    return path;
+  }
+  function renderSplitMap(routes) {
+    const key = JSON.stringify(routes);
+    if (key === splitMapKey) return;
+    splitMapKey = key;
+    mapRateControls.clear();
+    const row = 44, gap = 4, height = Math.max(row, routes.length * (row + gap) - gap);
+    const status = { ok: t('已生效'), warn: t('需要处理'), planned: t('尚未生效') };
+    const wires = [], live = [], flows = [], items = [];
+    routes.forEach((route, index) => {
+      const y = index * (row + gap) + row / 2;
+      const d = `M0 ${height / 2} C 55 ${height / 2}, 45 ${y}, 100 ${y}`;
+      wires.push(routeWire(d, route.tone, index));
+      const flow = {};
+      if (route.tone === 'ok') {
+        live.push(routeWire(d, route.tone, index));
+        for (const [direction, label] of [['up', 'upload'], ['down', 'download']]) {
+          const path = routeWire(d, route.tone, index);
+          path.setAttribute('class', `map-flow map-flow-${label}`);
+          path.dataset.exit = route.id;
+          path.dataset.direction = direction;
+          path.dataset.active = 'false';
+          flow[direction] = path;
+          flows.push(path);
+        }
+      }
+      const item = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `map-route tone-${route.tone}`;
+      button.dataset.route = route.kind;
+      button.dataset.index = String(index);
+      const name = document.createElement('strong');
+      name.textContent = route.name;
+      name.title = route.name;
+      const detail = document.createElement('small');
+      detail.textContent = route.detail;
+      detail.title = route.detail;
+      const note = document.createElement('span');
+      note.className = 'visually-hidden';
+      note.textContent = `, ${status[route.tone]}`;
+      button.dataset.exit = route.id;
+      const rates = document.createElement('span');
+      rates.className = 'map-rates';
+      rates.setAttribute('role', 'group');
+      const readings = {};
+      for (const direction of ['up', 'down']) {
+        const reading = document.createElement('span');
+        reading.className = `map-rate map-rate-${direction}`;
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.setAttribute('class', 'icon');
+        icon.setAttribute('aria-hidden', 'true');
+        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        use.setAttribute('href', '#i-up');
+        icon.append(use);
+        const value = document.createElement('span');
+        value.textContent = '—';
+        reading.append(icon, value);
+        rates.append(reading);
+        readings[direction] = value;
+      }
+      mapRateControls.set(route.id, { root: rates, ready: route.tone === 'ok', flow, ...readings });
+      button.append(name, detail, note, rates);
+      item.append(button);
+      items.push(item);
+    });
+    for (const svg of [$('#home-wires'), $('#home-wires-live'), $('#home-wires-flow')]) {
+      svg.setAttribute('viewBox', `0 0 100 ${height}`);
+      svg.setAttribute('height', String(height));
+    }
+    $('#home-wires').replaceChildren(...wires);
+    $('#home-wires-live').replaceChildren(...live);
+    $('#home-wires-flow').replaceChildren(...flows);
+    $('#home-routes').replaceChildren(...items);
+  }
+  function renderHome(live = desktopLive || {}) {
+    const global = savedMode() === 'global';
+    const connected = !connectionLost && networkActive(live) && live.state === 'running';
+    const blocked = !connectionLost && live.active && global && live.state === 'blocked';
+    const setup = connectionSetup;
+    const working = Boolean(live.active || setup && setup.stage !== 'failed');
+    const error = connectionLost || live.state === 'failed' || setup?.stage === 'failed';
+    const records = configuredExits();
+    const first = records.length === 0 && requiresDefaultExit(state.savedValues);
+    const labels = {
+      authorizing: '等待安装后台服务', login: '等待 Tailscale 登录', authenticating: '正在登录',
+      starting: '正在连接', connecting: '正在连接', 'checking-exit': '正在检查出口',
+      discovering: '正在读取出口', stopping: '正在断开', 'logging-out': '正在退出登录',
+      'waiting-exit': '等待出口上线', 'missing-exit': '正在确认出口',
+    };
+    const title = connectionLost ? '页面连接中断' : !state.savedValid ? '配置需要修正' : blocked ? '出口不可用 · 已阻断' :
+      error ? '连接尚未完成' : connected ? '已连接' : sessionNeedsApproval(live) ? '等待管理员批准设备' :
+      setup?.stage === 'node' ? '选择节点后即可连接' : working ? labels[live.state] || '正在设置出口' :
+      first ? '准备好第一次连接' : '尚未连接';
+    setStatusText('#home-status', t(title));
+    let description = !state.savedValid ? t('请先修复配置，再开启连接。') : state.dirty ? t('请先保存配置，再连接。') : state.external ? t('配置已更改，请重新读取后再连接。') :
+      connectionLost ? t('请确认 TailSplit 仍在运行') : blocked ? t('全局模式正在阻断流量。手动断开会恢复系统网络。') :
+      error ? message(setup?.error || operationError?.detail || backendError(live)) || t('当前步骤未完成，请重试。') :
+      connected ? t(global ? '全局流量通过所选出口；出口不可用时阻断。' : '按已保存规则分流；直连与出口各走各的路径。') :
+      working ? message($('#connection-setup-detail').textContent || $('#desktop-hint').textContent) :
+      first ? t('点击“开始设置”，按提示完成系统授权、Tailscale 登录和节点选择。') : t('开启即可连接。需要登录或选择节点时，应用会带你完成。');
+    if (!live.desktop && !working) description = t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。');
+    setStatusText('#home-description', description);
+    const control = $('#home-connect');
+    control.disabled = !state.loaded || !live.desktop || (working ? $('#desktop-disconnect').disabled :
+      setup?.stage === 'failed' ? $('#connection-setup-retry').disabled : $('#desktop-connect').disabled);
+    control.setAttribute('aria-checked', String(connected));
+    control.setAttribute('aria-busy', String(working && !connected && !blocked));
+    const action = working ? (networkActive(live) ? '断开' : '取消连接') : error ? '重试连接' : '开启连接';
+    control.setAttribute('aria-label', t(action));
+    setStatusText('#home-action-label', t(action));
+    const setupButton = $('#home-setup');
+    const showSetup = first && !working;
+    setupButton.hidden = !showSetup;
+    setupButton.disabled = control.disabled || !showSetup;
+    setStatusText('#home-setup', t(error ? '重试设置' : '开始设置'));
+    $('#home-toggle-control').hidden = showSetup;
+
+    // Steps describe the current task, never invented installation/authorization results.
+    const showSteps = first || Boolean(setup) || working && !networkActive(live) || records.some(exit => !exit.exit_node);
+    $('#home-steps').hidden = !showSteps;
+    let step = -1;
+    if (working || setup) {
+      step = live.state === 'authorizing' ? 0 : setup?.stage === 'node' || setup?.stage === 'saving' ? 2 :
+        networkActive(live) || setup?.stage === 'connecting' ? 3 : 1;
+    }
+    for (const [index, name] of ['service', 'login', 'node', 'connect'].entries()) {
+      const item = $(`#home-step-${name}`);
+      item.classList.toggle('complete', connected || step >= 0 && index < step);
+      if (index === step && !error && !connected) item.setAttribute('aria-current', 'step');
+      else item.removeAttribute('aria-current');
+    }
+
+    const map = $('#split-map');
+    const matchingState = !live.revision || live.revision === state.revision;
+    const applied = connected && state.savedValid && !state.external && matchingState && (!live.routing_mode || live.routing_mode === savedMode());
+    map.dataset.connected = String(applied);
+    map.dataset.global = String(global);
+    map.dataset.blocked = String(blocked);
+    setStatusText('#home-mode', t(global ? '全局代理' : '规则分流'));
+    setStatusText('#home-capture', t(global || fieldValue(state.savedValues, 'tun.enabled') ? '整机流量接管' : '应用代理'));
+    renderSplitMap(homeRoutes({ global, applied, blocked }));
+    renderHomeRates(applied);
+    setStatusText('#home-routing-caption', t(!state.savedValid ? '配置尚未有效，图中路径未生效。' : blocked ? '出口不可用，接管流量已阻断；此图展示已保存路由。' :
+      applied ? '实线为已连接路由；上下行速度按实际转发字节计算，未取得数据时显示 —。' : '路由预览 · 虚线表示尚未生效的已保存路径。'));
+  }
+  async function homeConnectionAction() {
+    if ($('#home-connect').disabled) return;
+    if (desktopLive?.active || connectionSetup && connectionSetup.stage !== 'failed') {
+      if (connectionSetup) await cancelConnectionSetup(); else await desktopAction('disconnect');
+    } else if (connectionSetup?.stage === 'failed') {
+      const id = configuredExits().some(exit => exit.id === connectionSetup.exit) ? connectionSetup.exit : connectionExitRecord()?.id || '';
+      await beginConnectionSetup(id);
+    } else await connectWithExit();
+    renderConnectionCenter();
+  }
+  $('#home-connect').addEventListener('click', homeConnectionAction);
+  $('#home-setup').addEventListener('click', homeConnectionAction);
+  async function openRoutingRules() {
+    showPage('settings');
+    const nav = [...document.querySelectorAll('[data-section]')].find(item => item.dataset.section === 'routing');
+    await showSection(nav);
+  }
+  $('#home-edit-rules').addEventListener('click', openRoutingRules);
+  $('#home-routes').addEventListener('click', async (event) => {
+    const route = event.target.closest?.('[data-route]') || event.target;
+    if (route.dataset?.route === 'direct') await openRoutingRules();
+    else if (route.dataset?.route) showPage('connection');
+  });
+  // A destination row and its wire highlight together, like a port and its cable.
+  function highlightRoute(event) {
+    const leaving = event.type === 'pointerout' || event.type === 'focusout';
+    const index = leaving ? '' : event.target.closest?.('[data-index]')?.dataset.index ?? '';
+    for (const item of document.querySelectorAll('#split-map [data-index]')) item.classList.toggle('active', item.dataset.index === index);
+  }
+  for (const name of ['pointerover', 'pointerout', 'focusin', 'focusout']) $('#home-routes').addEventListener(name, highlightRoute);
+
   function renderConnection(live) {
     const labels = {
       starting: live.mode === 'discovery' ? t('正在读取设备') : t('正在连接'), connecting: t('正在连接'),
-      stopping: t('正在断开'), failed: t('连接异常'), authorizing: t('等待授权'), authenticated: t('已登录'),
+      stopping: t('正在断开'), failed: t('连接异常'), authorizing: t('等待安装后台服务'), authenticated: t('已登录'),
       blocked: t('出口不可用 · 已阻断'), 'checking-exit': t('正在检查出口'), 'waiting-exit': t('等待出口上线'),
       'missing-exit': t('正在确认出口'), login: t('等待 Tailscale 登录'), authenticating: t('正在登录'),
       discovering: t('正在读取出口'), 'logging-out': t('正在退出登录'),
     };
     const connected = !connectionLost && live.active && ['tun', 'proxy'].includes(live.mode) && live.state === 'running';
     $('#connection-status').classList.toggle('connected', connected);
-    $('#connection-status').classList.toggle('attention', !connectionLost && ['blocked', 'waiting-exit', 'missing-exit'].includes(live.state));
+    const approval = sessionNeedsApproval(live) && live.state !== 'blocked';
+    $('#connection-status').classList.toggle('attention', !connectionLost && (approval || ['blocked', 'waiting-exit', 'missing-exit'].includes(live.state)));
     $('#connection-status').classList.toggle('error', connectionLost || live.state === 'failed');
-    setStatusText('#connection-status span', connectionLost ? t('页面连接中断') : live.preview ? t('预览环境') : connected ? t('已连接') : labels[live.state] || t('未连接'));
+    setStatusText('#connection-status span', connectionLost ? t('页面连接中断') : live.preview ? t('预览环境') : connected ? t('已连接') : approval ? t('等待管理员批准设备') : labels[live.state] || t('未连接'));
     $('#connection-status').title = $('#connection-status span').textContent;
 
     $('#sidebar-status').classList.toggle('connected', connected);
@@ -1801,7 +2279,7 @@
       if (request !== stateRequest) return;
       connectionLost = true;
       renderConnectionCenter();
-    }
+    } finally { await consumeNativeConnect(); await advanceConnectionSetup(); }
   }
 
   let languagePreference = 'auto';
@@ -1863,8 +2341,8 @@
     await Promise.all([refreshState(), state.page === 'logs' && !document.hidden ? refreshDesktopLogs() : null]);
   }
   window.addEventListener('beforeunload', (event) => { if (state.dirty || Object.keys(connectionChanges()).length) { event.preventDefault(); event.returnValue = ''; } });
-  document.addEventListener('visibilitychange', refreshPage);
-  $('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('connection'); });
+  document.addEventListener('visibilitychange', () => { syncRouteMotion(); refreshPage(); });
+  $('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('home'); });
   if (!token) {
     $('#loading').hidden = true;
     notice(t('从 TailSplit 打开配置页面'), t('请点击菜单栏中的 TailSplit，再选择“设置与工具 → 配置面板…”。'));

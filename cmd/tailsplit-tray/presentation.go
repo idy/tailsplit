@@ -17,6 +17,17 @@ func connectionPresentationForLanguage(snapshot tray.Snapshot, language string) 
 
 // Retain the original presentation for callers that need the source strings.
 func connectionPresentation(snapshot tray.Snapshot) connectionView {
+	backend := snapshot.BackendState
+	if owner := snapshot.LoginExitID(); owner != tailsplit.MainExit {
+		backend = snapshot.Exits[owner].BackendState
+	}
+	if backend == "NeedsMachineAuth" && snapshot.State != "failed" && snapshot.State != "stopping" &&
+		(!snapshot.Active || snapshot.Mode == "login" || snapshot.Mode == "discovery") {
+		if snapshot.Active {
+			return connectionView{"等待管理员批准设备", "取消登录"}
+		}
+		return connectionView{"等待管理员批准设备", "连接"}
+	}
 	if !snapshot.Active {
 		if snapshot.BackendState == "NeedsLogin" {
 			return connectionView{"需要登录", "登录 Tailscale…"}
