@@ -13,6 +13,15 @@ const panelOrigin = "http://127.0.0.1"
 
 var errPanelURL = errors.New("configuration window URL must use http://127.0.0.1:<port> without credentials or a nonempty query")
 
+// ConfigurationWindowPort validates the capability-bearing local UI URL without
+// echoing it in errors. Desktop hosts share this policy with existing tests.
+func ConfigurationWindowPort(raw string) (uint16, error) { return configurationWindowPort(raw) }
+
+// ConfigurationWindowAllows confines WebView navigation to its original origin.
+func ConfigurationWindowAllows(port uint16, raw string) bool {
+	return configurationWindowAllows(port, raw)
+}
+
 // configurationWindowPort validates the URL the app opens in its window and
 // returns the only port the window may load. The error never repeats the URL:
 // its fragment carries the page capability.

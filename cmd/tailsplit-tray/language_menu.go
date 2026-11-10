@@ -2,7 +2,7 @@
 
 package main
 
-import "github.com/getlantern/systray"
+import systray "github.com/idy/tailsplit/internal/desktoptray"
 
 type menuText struct {
 	item           *systray.MenuItem

@@ -2,18 +2,16 @@
 """Portable unit tests for the Windows desktop packager (no native tools run)."""
 import argparse
 import base64
-import gzip
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
-import stat
+import re
 import struct
 import tempfile
 import unittest
 from unittest.mock import patch
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("windows_desktop_build", ROOT / "packaging/windows/build.py")
@@ -83,52 +81,31 @@ class PETests(unittest.TestCase):
 
 
 class DependencyTests(unittest.TestCase):
-    def test_vendor_json_handles_plain_and_gzip_registration_metadata(self):
-        expected = {"catalogEntry": {"version": "1.0.4314.35"}}
-        for compressed in (False, True):
-            data = json.dumps(expected).encode("utf-8")
-            if compressed:
-                data = gzip.compress(data)
+    def test_vendor_json_handles_release_metadata_and_utf8_bom(self):
+        expected = {"tag_name": "is-7_1_1", "assets": []}
+        for bom in (b"", b"\xef\xbb\xbf"):
             def download(_url, destination):
-                destination.write_bytes(data)
+                destination.write_bytes(bom + json.dumps(expected).encode("utf-8"))
                 return destination
-            with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as temporary, \
+            with self.subTest(bom=bom), tempfile.TemporaryDirectory() as temporary, \
                     patch.object(packager, "fetch", side_effect=download):
-                result = packager.fetch_json("https://api.nuget.org/registration.json", Path(temporary), "metadata.json")
+                result = packager.fetch_json("https://api.github.com/releases/test", Path(temporary), "metadata.json")
                 self.assertEqual(result, expected)
 
     def test_only_official_https_dependency_hosts(self):
-        allowed = ["https://api.nuget.org/v3-flatcontainer/package.nupkg",
+        allowed = ["https://api.github.com/repos/jrsoftware/issrc/releases/test",
                    "https://github.com/jrsoftware/issrc/releases/download/asset.exe",
                    "https://release-assets.githubusercontent.com/path",
                    "https://go.microsoft.com/fwlink/?linkid=2099616",
                    "https://msedge.sf.dl.delivery.mp.microsoft.com/installer.exe"]
-        denied = ["http://api.nuget.org/a", "https://nuget.org.attacker.example/a",
-                  "https://microsoft.com.attacker.example/a", "https://user:secret@api.nuget.org/a",
+        denied = ["http://api.github.com/a", "https://api.nuget.org/a", "https://globalcdn.nuget.org/a",
+                  "https://microsoft.com.attacker.example/a", "https://user:secret@api.github.com/a",
                   "file:///C:/installer.exe", "https://github.com:444/a", "https://attacker.example/a"]
         for url in allowed:
             packager.check_url(url)
         for url in denied:
             with self.subTest(url=url), self.assertRaises(packager.BuildError):
                 packager.check_url(url)
-
-    def test_nuget_hash_failure_prevents_extraction(self):
-        config = {"webview2_sdk": {"version": "1.0.4314.35", "package": "Microsoft.Web.WebView2",
-                                  "registration_url": "https://api.nuget.org/registration.json",
-                                  "package_url": "https://api.nuget.org/sdk.nupkg"}}
-        entry = {"catalogEntry": {"id": "Microsoft.Web.WebView2", "version": "1.0.4314.35",
-                                  "packageHashAlgorithm": "SHA512",
-                                  "packageHash": base64.b64encode(bytes(64)).decode()}}
-        def download(_url, destination):
-            destination.write_bytes(b"tampered")
-            return destination
-        with tempfile.TemporaryDirectory() as temporary, \
-                patch.object(packager, "fetch_json", return_value=entry), \
-                patch.object(packager, "fetch", side_effect=download), \
-                patch.object(packager, "extract_sdk") as extract:
-            with self.assertRaisesRegex(packager.BuildError, "SHA-512"):
-                packager.prepare_sdk(Path(temporary), config)
-            extract.assert_not_called()
 
     def test_inno_hash_failure_never_invokes_installer(self):
         config = {"inno": {"release_api": "https://api.github.com/releases/test", "tag": "is-7_1_1",
@@ -240,109 +217,37 @@ class DependencyTests(unittest.TestCase):
     def test_toolchain_pins_official_stable_versions(self):
         config = json.loads((ROOT / "packaging/windows/toolchain.json").read_text())
         self.assertEqual(config["inno"]["version"], "7.1.1")
-        self.assertEqual(config["webview2_sdk"]["version"], "1.0.4314.35")
-        self.assertNotIn("prerelease", config["webview2_sdk"]["version"])
-
-
-class ArchiveTests(unittest.TestCase):
-    def make_archive(self, directory, entries):
-        archive = directory / "sdk.nupkg"
-        with zipfile.ZipFile(archive, "w") as output:
-            for name, value in entries:
-                output.writestr(name, value)
-        return archive
-
-    def test_extracts_into_new_directory_only(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            archive = self.make_archive(directory, [("build/native/include/WebView2.h", b"header"), ("LICENSE.txt", b"license")])
-            extracted = packager.extract_sdk(archive, directory / "out")
-            self.assertEqual((extracted / "LICENSE.txt").read_bytes(), b"license")
-            with self.assertRaises(FileExistsError):
-                packager.extract_sdk(archive, extracted)
-
-    def test_rejects_traversal_windows_devices_ads_and_absolute_names(self):
-        names = ("../outside", "/outside", "C:/outside", "\\\\server\\outside", "a/../../outside",
-                 "a\\..\\outside", "a:stream", "a/CON.txt", "NUL", "LPT9.exe", "a./file", "a /file", "a//b", "./file")
-        for name in names:
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                archive = self.make_archive(directory, [("safe", b"first"), (name, b"malicious")])
-                with self.assertRaises(packager.BuildError):
-                    packager.extract_sdk(archive, directory / "out")
-                self.assertEqual(list((directory / "out").iterdir()), [])
-                self.assertFalse((directory / "outside").exists())
-
-    def test_rejects_symlink_and_case_insensitive_duplicate_before_writing(self):
-        for special in (True, False):
-            with self.subTest(special=special), tempfile.TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                archive = directory / "sdk.nupkg"
-                with zipfile.ZipFile(archive, "w") as output:
-                    output.writestr("safe", b"first")
-                    if special:
-                        entry = zipfile.ZipInfo("link")
-                        entry.create_system = 3
-                        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
-                        output.writestr(entry, b"../../outside")
-                    else:
-                        output.writestr("SAFE", b"duplicate")
-                with self.assertRaises(packager.BuildError):
-                    packager.extract_sdk(archive, directory / "out")
-                self.assertEqual(list((directory / "out").iterdir()), [])
-
-    def test_extraction_size_limit(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            archive = self.make_archive(directory, [("a", b"1234"), ("b", b"5678")])
-            with patch.object(packager, "MAX_EXTRACT", 7), self.assertRaisesRegex(packager.BuildError, "oversized"):
-                packager.extract_sdk(archive, directory / "out")
+        self.assertEqual(set(config), {"schema_version", "inno", "webview2_runtime"})
+        self.assertEqual(config["webview2_runtime"]["publisher"], "Microsoft Corporation")
 
 
 class NoticesTests(unittest.TestCase):
-    def make_sdk(self, directory, license_text=b"Original Microsoft license\r\n"):
-        (directory / "Microsoft.Web.WebView2.nuspec").write_text('''<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
- <metadata><id>Microsoft.Web.WebView2</id><version>1.0.4314.35</version>
- <license type="file">LICENSE.txt</license></metadata></package>''')
-        if license_text is not None:
-            (directory / "LICENSE.txt").write_bytes(license_text)
-
-    def test_original_license_bytes_required_and_preserved(self):
+    def test_staging_preserves_original_generated_notices(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            license_bytes = b"\xef\xbb\xbfMICROSOFT SOFTWARE LICENSE TERMS\r\nOriginal text\r\n"
-            self.make_sdk(directory, license_bytes)
-            original = directory / "notices.md"
-            original.write_bytes(b"Existing Go and Wintun notices\n")
-            destination = directory / "combined.md"
-            license_path = packager.sdk_license(directory, "1.0.4314.35")
-            packager.append_notices(original, destination, license_path, "1.0.4314.35")
-            result = destination.read_bytes()
-            self.assertTrue(result.startswith(original.read_bytes()))
-            self.assertTrue(result.endswith(license_bytes))
-            self.assertIn(b"Microsoft.Web.WebView2 1.0.4314.35", result)
+            notices = directory / "notices.md"
+            original = b"\xef\xbb\xbfOriginal Go, Wintun and MyGo license notices\r\n"
+            notices.write_bytes(original)
+            core = directory / "core.exe"
+            core.write_bytes(b"core")
+            stage = directory / "payload"
+            stage.mkdir()
+            packager.stage_metadata(stage, core, notices, packager.identity("amd64", "1.2.3", COMMIT))
+            self.assertEqual((stage / "THIRD_PARTY_NOTICES.md").read_bytes(), original)
 
-    def test_missing_empty_or_wrong_sdk_license_fails(self):
-        for text in (None, b"", b"   "):
-            with self.subTest(text=text), tempfile.TemporaryDirectory() as temporary:
+    def test_staging_rejects_missing_or_empty_dependency_notices(self):
+        for content in (None, b"", b" \r\n\t"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
-                self.make_sdk(directory, text)
-                with self.assertRaisesRegex(packager.BuildError, "license"):
-                    packager.sdk_license(directory, "1.0.4314.35")
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            self.make_sdk(directory)
-            with self.assertRaisesRegex(packager.BuildError, "pinned package"):
-                packager.sdk_license(directory, "1.0.1111.1")
-
-    def test_license_path_cannot_escape_sdk(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            self.make_sdk(directory)
-            manifest = directory / "Microsoft.Web.WebView2.nuspec"
-            manifest.write_text(manifest.read_text().replace("LICENSE.txt", "../LICENSE.txt"))
-            with self.assertRaises(packager.BuildError):
-                packager.sdk_license(directory, "1.0.4314.35")
+                notices = directory / "notices.md"
+                if content is not None:
+                    notices.write_bytes(content)
+                stage = directory / "payload"
+                stage.mkdir()
+                with self.assertRaises((FileNotFoundError, packager.BuildError)):
+                    packager.stage_metadata(stage, directory / "core.exe", notices,
+                                            packager.identity("amd64", "1.2.3", COMMIT))
+                self.assertEqual(list(stage.iterdir()), [])
 
 
 class CommandAndResourceTests(unittest.TestCase):
@@ -355,26 +260,6 @@ class CommandAndResourceTests(unittest.TestCase):
         self.assertIn("with_gvisor", command)
         self.assertIn("-H=windowsgui", command[command.index("-ldflags") + 1])
         self.assertIn("-X main.commit=" + COMMIT, command[command.index("-ldflags") + 1])
-
-    def test_native_dll_requires_matching_sdk_static_library(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            sdk = Path(temporary)
-            header = sdk / "build/native/include/WebView2.h"
-            header.parent.mkdir(parents=True)
-            header.write_text("header")
-            library = sdk / "build/native/x64/WebView2LoaderStatic.lib"
-            library.parent.mkdir(parents=True)
-            library.write_bytes(b"lib")
-            with self.assertRaisesRegex(packager.BuildError, "matching native"):
-                packager.dll_command("cl", "window.cpp", sdk, "TailSplit.Window.dll", "arm64")
-            library = sdk / "build/native/arm64/WebView2LoaderStatic.lib"
-            library.parent.mkdir()
-            library.write_bytes(b"lib")
-            command = packager.dll_command("cl", "window.cpp", sdk, "TailSplit.Window.dll", "arm64")
-            for flag in ("/std:c++17", "/MT", "/LD", "/MACHINE:ARM64", "ole32.lib", "user32.lib", "shlwapi.lib"):
-                self.assertIn(flag, command)
-            self.assertIn(str(library), command)
-            self.assertFalse(any("native/x64" in value for value in command))
 
     def test_gui_manifest_is_as_invoker_and_per_monitor_dpi_aware(self):
         manifest = packager.manifest_bytes().decode()
@@ -425,10 +310,84 @@ class CommandAndResourceTests(unittest.TestCase):
         self.assertEqual(environment, {"PATH": "system-tools"})
 
 
+class InstallerContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.script = (ROOT / "packaging/windows/setup.iss").read_text(encoding="utf-8")
+
+    def test_installer_keeps_identity_and_ships_only_the_two_native_executables(self):
+        expected = ("TailSplit.exe", "tailsplit-core.exe", "config.example.yaml", "LICENSE",
+                    "THIRD_PARTY_NOTICES.md", "build.json")
+        files = self.script.split("[Files]", 1)[1].split("[Icons]", 1)[0]
+        self.assertEqual(tuple(re.findall(r'Source: "\{#StageDir\}\\([^"\n]+)"', files)), expected)
+        self.assertEqual(packager.PAYLOAD, expected)
+        self.assertIn("AppId={{8ADFCBB5-3CF0-4E72-B173-706395019F21}", self.script)
+        self.assertIn(r"DefaultDirName={autopf}\TailSplit", self.script)
+        self.assertIn("ServiceName = 'TailSplitNetworkService';", self.script)
+        quit_gui = self.script.split("procedure QuitDesktopGUI;", 1)[1].split("procedure RemoveObsoleteWindowDLL;", 1)[0]
+        self.assertIn("Exec(GUI, '--quit', FixedAppDir, SW_HIDE, ewWaitUntilTerminated", quit_gui)
+        self.assertIn("(ExitCode <> 0)", quit_gui)
+
+    def test_recovery_journal_indices_stay_compatible_with_pre_mygo_installs(self):
+        expected = ["TailSplit.exe", "tailsplit-core.exe", "TailSplit.Window.dll", "config.example.yaml",
+                    "LICENSE", "THIRD_PARTY_NOTICES.md", "build.json", "unins000.exe", "unins000.dat", "unins000.msg"]
+        assignments = re.findall(r"PayloadNames\[(\d+)\] := '([^']+)';", self.script)
+        self.assertEqual(assignments, [(str(index), name) for index, name in enumerate(expected)])
+        self.assertIn(f"PayloadCount = {len(expected)};", self.script)
+        for array in ("PayloadNames", "PreviousFiles"):
+            self.assertRegex(self.script, rf"{array}: array\[0\.\.{len(expected) - 1}\]")
+        # The old DLL is still covered by snapshot creation, interrupted-install
+        # journal loading and failed-install recovery, even though it is retired.
+        for start, end in (("procedure CreateSnapshot;", "procedure LoadSnapshot;"),
+                           ("procedure LoadSnapshot;", "procedure RecoverPrevious;"),
+                           ("procedure RecoverPrevious;", "function InitializeSetup:")):
+            block = self.script.split(start, 1)[1].split(end, 1)[0]
+            self.assertIn("for Index := 0 to PayloadCount - 1 do begin", block)
+            self.assertIn("PayloadNames[Index]", block)
+
+    def test_legacy_dll_cleanup_is_transactional_and_does_not_delete_state(self):
+        prepare = self.script.split("function PrepareToInstall(", 1)[1].split("procedure CurStepChanged(", 1)[0]
+        operations = ["EnsureWebViewRuntime;", "QuitDesktopGUI;", "CreateSnapshot;",
+                      "RunCore('windows-stop-service');", "StopFixedService;", "RemoveObsoleteWindowDLL;"]
+        offsets = [prepare.index(operation) for operation in operations]
+        self.assertEqual(offsets, sorted(offsets))
+        self.assertIn("if SnapshotActive then begin", prepare)
+        self.assertIn("RecoverPrevious;", prepare)
+        cleanup = self.script.split("procedure RemoveObsoleteWindowDLL;", 1)[1].split("function ServiceHandle(", 1)[0]
+        self.assertIn(r"LegacyDLL := FixedAppDir + '\TailSplit.Window.dll';", cleanup)
+        self.assertIn("if FileExists(LegacyDLL) then", cleanup)
+        self.assertIn("if not DeleteFile(LegacyDLL) then", cleanup)
+        self.assertIn("RaiseException(", cleanup)
+        self.assertNotIn("DelTree", cleanup)
+        self.assertNotIn("[InstallDelete]", self.script)
+        self.assertNotIn("[UninstallDelete]", re.sub(r"(?m)^;.*$", "", self.script))
+        recovery = self.script.split("procedure RecoverPrevious;", 1)[1].split("function InitializeSetup:", 1)[0]
+        self.assertIn(r"FileCopy(BackupDir + '\' + PayloadNames[Index], FixedAppDir + '\' + PayloadNames[Index], False)", recovery)
+        self.assertIn("if PreviousService then begin", recovery)
+        self.assertIn("StartPreviousService;", recovery)
+
+
 class NativeUIContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.script = (ROOT / "tests/packaging/windows_desktop_ui.ps1").read_text(encoding="utf-8")
+
+    def test_mygo_window_discovery_requires_the_launched_pid_and_executable(self):
+        self.assertIn("$windowClasses = [string[]]@('MyGoWindow', ('TailSplit.Window.' + $accountSID))", self.script)
+        discovery = self.script.split("public static IntPtr FindAppWindow(", 1)[1].split("public static int Integrity(", 1)[0]
+        self.assertIn("OpenProcess(0x1000,false,pid)", discovery)
+        self.assertIn("QueryFullProcessImageName(process,0,image,ref size)", discovery)
+        self.assertIn("String.Equals(image.ToString(),System.IO.Path.GetFullPath(app),StringComparison.OrdinalIgnoreCase)", discovery)
+        self.assertLess(discovery.index("QueryFullProcessImageName"), discovery.index("EnumWindows(visit"))
+        self.assertIn("GetWindowThreadProcessId(window,out owner)", discovery)
+        self.assertIn("if(owner!=pid)return true;", discovery)
+        self.assertIn("String.Equals(name.ToString(),klass,StringComparison.Ordinal)", discovery)
+        self.assertIn("finally {CloseHandle(process);}", discovery)
+        self.assertNotIn("::FindWindow(", self.script)
+        self.assertEqual(self.script.count("::FindAppWindow($guiProcess,$Application,$windowClasses)"), 2)
+        self.assertIn("GetProp($handle,'TailSplit.WebView2.StartupStage')", self.script)
+        self.assertIn("GetProp($window,'TailSplit.WebView2.Ready')", self.script)
+        self.assertIn("GetProp($hiddenWindow,'TailSplit.WebView2.StartupStage')", self.script)
 
     def test_connect_action_is_distinct_from_navigation_with_legacy_fallback(self):
         html = (ROOT / "internal/configweb/assets/index.html").read_text(encoding="utf-8")
@@ -511,16 +470,7 @@ class BuildContractTests(unittest.TestCase):
                 core = directory / "tailsplit.exe"
                 write_pe(core, arch)
                 notices = directory / "notices.md"
-                notices.write_text("Go and Wintun notices\n")
-                sdk = directory / "sdk"
-                header = sdk / "build/native/include/WebView2.h"
-                header.parent.mkdir(parents=True)
-                header.write_text("header")
-                library = sdk / "build/native" / packager.NATIVE_NAMES[arch] / "WebView2LoaderStatic.lib"
-                library.parent.mkdir(parents=True)
-                library.write_bytes(b"library")
-                license_path = sdk / "LICENSE.txt"
-                license_path.write_bytes(b"Original WebView2 SDK license\r\n")
+                notices.write_bytes(b"Original Go, Wintun and MyGo notices\r\n")
                 runtime = directory / "runtime.exe"
                 runtime.write_bytes(b"Microsoft-signed runtime (mock)")
                 args = argparse.Namespace(arch=arch, version="1.2.3", commit=COMMIT, build_number=7,
@@ -530,11 +480,11 @@ class BuildContractTests(unittest.TestCase):
                     self.assertEqual(kwargs["cwd"], source)
                     if command[0] == "go":
                         self.assertEqual(kwargs["env"]["CGO_ENABLED"], "0")
+                        self.assertEqual(kwargs["env"]["GOOS"], "windows")
                         self.assertEqual(kwargs["env"]["GOARCH"], arch)
+                        self.assertEqual(kwargs["env"]["GOWORK"], "off")
+                        self.assertEqual(Path(command[command.index("-o") + 1]).name, "TailSplit.exe")
                         write_pe(command[command.index("-o") + 1], arch)
-                    elif command[0] == "cl.exe":
-                        target = next(value.removeprefix("/OUT:") for value in command if value.startswith("/OUT:"))
-                        write_pe(target, arch)
                     elif command[0] == "ISCC.exe":
                         definitions = dict(value[2:].split("=", 1) for value in command if value.startswith("/D"))
                         observed.update(definitions)
@@ -550,17 +500,18 @@ class BuildContractTests(unittest.TestCase):
                     icon.write_bytes(b"icon")
                 with patch.object(packager, "ROOT", source), \
                         patch.object(packager, "native_arch", return_value=arch), \
-                        patch.object(packager, "msvc_toolchain", side_effect=lambda _, env: ("cl.exe", env)), \
-                        patch.object(packager, "prepare_sdk", return_value=(sdk, license_path)), \
                         patch.object(packager, "prepare_inno", return_value="ISCC.exe"), \
                         patch.object(packager, "prepare_runtime", return_value=(runtime, "156.0.4314.50")), \
-                        patch.object(packager, "write_resources", side_effect=resources), \
-                        patch.object(packager.subprocess, "run", side_effect=execute):
+                        patch.object(packager, "write_resources", side_effect=resources) as resource_writer, \
+                        patch.object(packager.subprocess, "run", side_effect=execute) as run:
                     result = packager.build(args)
+                self.assertEqual([call.args[0][0] for call in run.call_args_list], ["go", "ISCC.exe"])
+                resource_writer.assert_called_once()
+                self.assertEqual(resource_writer.call_args.args[3], 7)
                 self.assertEqual(list(result["assets"]), [f"TailSplit_1.2.3_windows_{arch}_setup.exe"])
                 self.assertEqual(len(list(args.directory.iterdir())), 1)
                 self.assertEqual(observed["metadata"], packager.identity(arch, "1.2.3", COMMIT))
-                self.assertTrue(observed["notices"].endswith(license_path.read_bytes()))
+                self.assertEqual(observed["notices"], notices.read_bytes())
                 self.assertEqual(observed["RuntimeSHA256"], hashlib.sha256(runtime.read_bytes()).hexdigest())
                 self.assertEqual(observed["RuntimeVersion"], "156.0.4314.50")
                 self.assertEqual(observed["AppFileVersion"], "1.2.3.7")

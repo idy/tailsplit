@@ -18,18 +18,11 @@ void tailsplit_on_main(void (^action)(void)) {
 // Text can be requested by login-item operations off the AppKit main queue.
 // The preference is atomic; menu mutations still run only on the main queue.
 static atomic_bool tailsplitChinese = false;
-void tailsplit_panel_refresh_language(void);
 NSString *tailsplit_ui_text(NSString *chinese, NSString *english) {
     return atomic_load(&tailsplitChinese) ? chinese : english;
 }
 void tailsplit_set_ui_language(int chinese) {
     atomic_store(&tailsplitChinese, chinese != 0);
-    void (^update)(void) = ^{
-        tailsplit_panel_refresh_language();
-    };
-    // Initial setup can run before NSApplication's event loop starts.
-    if ([NSThread isMainThread]) update();
-    else dispatch_async(dispatch_get_main_queue(), update);
 }
 
 int tailsplit_login_item_status(void) {

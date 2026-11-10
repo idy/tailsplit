@@ -11,13 +11,18 @@ import (
 // ErrBusy means another check or download is already in progress.
 var ErrBusy = errors.New("an update operation is already in progress")
 
-// State is a copy of the updater's current status. Installing is reserved for
-// the desktop coordinator to set on its own snapshot copies.
+// State is a copy of the updater's current status. Busy, Confirming and Installing
+// are reserved for the desktop coordinator to set on its own snapshot copies.
+// Busy covers the coordinator's entire operation and any active updater check or
+// download; Confirming covers only the wait for the user's update decision.
+// Installing covers the install handoff after confirmation and verified download.
 type State struct {
 	CurrentVersion  string    `json:"current_version"`
 	LatestVersion   string    `json:"latest_version"`
 	Automatic       bool      `json:"automatic"`
+	Busy            bool      `json:"busy"`
 	Checking        bool      `json:"checking"`
+	Confirming      bool      `json:"confirming"`
 	Downloading     bool      `json:"downloading"`
 	Installing      bool      `json:"installing"`
 	Available       bool      `json:"available"`

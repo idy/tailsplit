@@ -87,41 +87,56 @@ colors:
   actionbar-dark: "#1c1c1ef0"
 typography:
   headline:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "1.25rem"
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: "-.01em"
   title:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Monda, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "0.9375rem"
     fontWeight: 600
     lineHeight: 1.4
   body:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 400
     lineHeight: 1.5
   label:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Monda, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 500
     lineHeight: 1.4
   note:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "0.75rem"
     fontWeight: 400
     lineHeight: 1.45
   button:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 500
     lineHeight: 1.4
   caption:
-    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI Variable Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", sans-serif"
+    fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "0.6875rem"
     fontWeight: 400
     lineHeight: 1.5
+  brand:
+    fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "0.875rem"
+    fontWeight: 600
+    lineHeight: 1.25
+  dialog-title:
+    fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "1rem"
+    fontWeight: 600
+    lineHeight: 1.4
+  touch-input:
+    fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "16px"
+    fontWeight: 400
+    lineHeight: 1.4
   code:
     fontFamily: "\"SF Mono\", \"SFMono-Regular\", \"Cascadia Mono\", Consolas, \"Liberation Mono\", monospace"
     fontSize: "0.75rem"
@@ -198,7 +213,7 @@ components:
 
 **Creative North Star: "The Desktop Configuration Panel"**
 
-TailSplit uses a compact, neutral desktop configuration panel with the platform UI typeface, magpie-like information density, blue actions, and semantic connection states. This system applies to the embedded configuration UI in macOS WKWebView and Windows WebView2. It preserves the incumbent desktop world selected by the user.
+TailSplit uses a compact, neutral desktop configuration panel with the website's Montserrat/Monda/Lato family roles, magpie-like information density, blue actions, and semantic connection states. This system applies to the embedded configuration UI in macOS WKWebView and Windows WebView2. It preserves the incumbent desktop world selected by the user.
 
 System appearance changes the surfaces, text, borders, and state treatments through CSS media queries. Density supports repeated local configuration tasks; clear labels, separate draft states, and explicit actions carry the hierarchy.
 
@@ -238,26 +253,30 @@ Green (`good`, `good-ink`) means connected/saved or direct routing; amber (`warn
 
 ## Typography
 
-The panel uses one platform UI face, following the user's magpie reference: SF Pro on macOS and Segoe UI Variable/Segoe UI on Windows, with PingFang SC and Microsoft YaHei for Chinese. At the root font size (100%), body, labels, navigation and buttons are 13px; notes, hints, latency and small buttons 12px; captions and the sidebar footer 11px; section titles 15px; dialog titles 16px; and the connection state 20px. Weight, not family, carries hierarchy: 500 for labels, selected navigation and the current page, 600 for titles and the connection state.
+The panel follows the user's website-family mapping: Montserrat for the wordmark, prominent headings and button labels; Monda for compact page/section titles and field labels; Lato for body copy, values, notes and metadata. PingFang SC and Microsoft YaHei UI provide Chinese fallback. At the root font size (100%), body, labels, navigation and buttons remain 13px; notes, hints, latency and small buttons 12px; captions and the sidebar footer 11px; the wordmark 14px; section titles 15px; and dialog titles 16px. Family and weight distinguish the roles without changing the established desktop density.
 
 - **Titlebar path:** the titlebar names the page as a muted parent, a faint slash and the current page (for example "Settings / Network"; top-level pages show only their name). Visible in-page h2 headings are removed and remain for assistive technology; the page's one-line description leads the content instead.
 - **Ping:** a text-only 12px action in `accent-ink`, underlined on hover, with muted disabled text.
 - **Latency:** 12px regular with tabular numbers and softened semantic colors.
 - **Code:** the existing mono stack at 12px for YAML, diagnostic logs, filenames and code-like inputs. YAML uses line height 1.65 and logs 1.7.
 
-The panel no longer loads Montserrat, Monda or Lato. Their WOFF2 files and OFL notices remain embedded and served under `internal/configweb/assets/fonts/` for compatibility with the existing server routes; the public website still uses them from `site/shared/`.
+All font files are bundled locally under `internal/configweb/assets/fonts/` and are byte-identical to the website assets in `site/shared/`. Montserrat supports weights 400–800 and Monda 400–700; Lato uses separate regular 400 and bold 700 faces. The three first-viewport families are preloaded, with Lato bold loaded on demand and `font-display: swap` retaining visible fallback text. No external font service is used. Compound exit buttons keep their Monda name and Lato description, while dropdown triggers retain Montserrat despite their font shorthand.
 
-**The Desktop Type Rule.** Use the platform face at the documented sizes; keep the mono stack for configuration and diagnostics. The user chose this over the earlier website pairing, so generic display-face advisories do not override it.
+**The Desktop Type Rule.** Use the approved website families by role at the documented compact sizes; keep the mono stack for configuration and diagnostics. The latest user direction restores the website-family pairing while retaining native chrome, layout, zoomable rem sizing and Chinese fallback.
 
 ## Layout
 
-A persistent sidebar and flexible workspace share a sticky titlebar. The default sidebar is (200px) and titlebar (44px); macOS reserves traffic-light space with a wider sidebar (216px), shorter titlebar (40px), and brand left inset (88px). Windows controls fill the titlebar height with square-edged buttons (44px wide). The source comment explicitly identifies this fixed-height native chrome; its flush control edges do not establish a general content-spacing rule.
+The experimental MyGo host uses the same embedded page and platform chrome selectors. Its hidden native titlebar preserves macOS traffic lights and the existing Windows HTML caption buttons; MyGo-only CSS drag regions exclude interactive controls. It introduces no replacement icon, type or spacing system.
 
-Workspace gutters, field gaps, and section gaps use the frontmatter spacing tokens. Pages have vertical padding (20px). The exit list fills the available workspace width between the page gutters. Exit Nodes and Logs occupy the upper sidebar; Settings is pinned below by the flexible sidebar layout. While Settings is the current page it expands in place into a second-level submenu of its categories, indented under a 1px guide line aligned with the Settings icon; there is no in-page category tab bar. The Form/YAML segmented control and an icon-only Reload action sit in the titlebar while Settings is open. A sidebar footer shows the saved local proxy listener with a dot that turns green while connected; its top divider follows the visible settings actionbar's measured height so both full-width dividers align.
+Keyboard focus on a saved exit outlines the complete rounded row, including its trailing chevron and space. The inner trigger has no separate square outline; pointer interactions do not add a row fill.
+
+A persistent sidebar and flexible workspace share a sticky titlebar. The default sidebar is (200px) and titlebar (44px); macOS reserves traffic-light space with a wider sidebar (216px), shorter titlebar (40px), and brand left inset (88px). Windows controls fill the titlebar height with square-edged buttons (44px wide). The brand link keeps its pointer home action but is excluded from sequential Tab navigation and has no focus outline; the Exit Nodes navigation button supplies the keyboard home action. Action controls and exit rows retain their visible keyboard focus. The source comment explicitly identifies this fixed-height native chrome; its flush control edges do not establish a general content-spacing rule.
+
+Workspace gutters, field gaps, and section gaps use the frontmatter spacing tokens. Pages have vertical padding (20px). Exit Nodes, Logs, Settings (including all form categories and the YAML editor), notices, and the settings actionbar share a centered content column capped at 1040px. Narrower windows use the available width between the page gutters. The actionbar background and divider span the full workspace; its controls align with the content column. The titlebar remains full-width. Only the workspace body below it scrolls; the save bar stays at the bottom. A stable scrollbar gutter keeps short and long pages aligned. Exit Nodes and Logs occupy the upper sidebar; Settings is pinned below by the flexible sidebar layout. While Settings is the current page it expands in place into a second-level submenu of its categories, indented under a 1px guide line aligned with the Settings icon; there is no in-page category tab bar. The Form/YAML segmented control sits to the left of the shared titlebar actions while Settings is open. Exit Nodes, Settings and Logs keep the same right-aligned order: connection status, routing mode, connection switch, the update action (when visible), and an icon-only refresh action at the far right. Check, download and install states share that update slot immediately to the left of Refresh, with equal visible gaps to the connection switch and the Refresh glyph; account for the glyph's inset inside its 32px button. At compact desktop widths, the sidebar already identifies the page, so the breadcrumb yields space to the actions; connection status keeps its visible dot and accessible text. That final slot refreshes exits, reloads configuration with draft confirmation, or refreshes logs according to the current page; no extra exit-name label shifts the shared controls. Logs has no duplicate in-page refresh button. A sidebar footer shows the saved local proxy listener with a dot that turns green while connected; its top divider follows the visible settings actionbar's measured height so both full-width dividers align.
 
 Exit Nodes opens directly to the **Exits** card: the optional legacy `tailscale` profile (`main`) first when present, followed by additional exits. A toolbar above the card places Add exit at the left and a compact shared text dropdown showing the saved Split default proxy exit or Global exit, or Not set, at the right. Clicking opens its menu directly, with no edit dialog. Choosing a gateway saves immediately; an idle app stays disconnected, while active traffic reconnects. Keeping the same selection does not write or reconnect. Drafts and revision conflicts block changes; a failed save restores the saved selection. There is no saved-exit count. The titlebar orders connection status, an unboxed routing-mode text dropdown, the master connection switch, and Refresh at the far right, with no default-exit summary. The shared dropdown offers Rule-based / Global (Kill-Switch), or 规则分流 / 全局（Kill-Switch） in Chinese. Peer discovery during connection preflight remains in a checking state until ready, rather than prematurely prompting for a new exit. The routing shortcut has no separate protection toggle or extra confirmation dialog. It edits the existing Global/TUN mode, saves immediately and reconnects an active session; turning it off returns to Split while retaining policy. Drafts, busy state and an unconfigured target gateway during active traffic disable the shortcut. Its tooltip explains that manual disconnect restores system networking. The list's default display keeps its caption visible and truncates long names with a full-value title on narrow windows. Turning on without a default opens a compact dialog with a shared custom select and no preselected option. Confirm saves the user's choice before connecting; Cancel/Escape changes nothing. The dialog preserves failed choices for retry, rejects revision conflicts and prevents dismissal while saving. With no ready exits it offers a link back to Exit Nodes. Settings drafts block connection. A configured offline choice is retained, never silently replaced. No connection card appears above the list. The document scrolls with the list, never inside its card. A short list fits the viewport without a scrollbar; visually hidden live regions use a negative margin so their one-pixel boxes cannot overflow the document. Each two-line row shows a status dot (green when its node is reachable, amber when signed in without a usable node, hollow when signed out), the exit name and its node · Tailnet. The Default badge follows `rules.default_exit` in Split; the Global exit badge follows `rules.global_exit` in Global. Neither is fixed to `main`. Signed-out additional exits show an inline Sign in button instead of the chevron. Rows open that exit's picker.
 
-The picker's device bar names the device and shows Sign in only when needed. There are no standalone switch-network or sign-out controls. The picker has no toolbar, search, manual entry or bulk Ping action; every node retains its own Ping action. Remove exit sits in a separate section at the very bottom for every saved profile, including `main` and the last exit. Its confirmation explains that removal disconnects and restores system networking, logs out only that client, removes its local profile, and retains both its explicit rule references and the remote Tailnet device record. Revision checks protect the operation; removed default/global selections become explicitly unset and require a new confirmed choice. Explicit final and route-group references remain as dormant policy and block Split reconnection until their missing targets are replaced or edited. The app stays stopped. Removing `main` retains its private DNS ownership and former custom domains as unresolved policy, without promoting another profile or changing remaining IDs/state paths. Split remains blocked until those references are explicitly resolved. Removing the last exit preserves the remaining routing policy as a dormant draft. Add exit creates a new additional profile and, if no profiles remain, leaves both traffic exit selectors unset for explicit confirmation. Add requires desktop action capability and a valid saved document. In active Global mode it first requests consent to disconnect protection and restore system networking; Cancel/Escape preserves the session and configuration, and a later save or sign-in failure leaves the app disconnected until manual reconnection. Otherwise Add opens authorization directly without a name dialog. Network choice occurs during browser authorization; confirming the first node binds the Tailnet guard and saves the label `<exit-device-name>@<network name>`. Before a node is chosen, an unnamed row shows the known network or New exit. Automatic labels follow later node choices without changing the profile ID; existing custom names are retained. Backdrop clicks and Escape cancel a staged node choice, except while a save is in progress; saving successfully closes the picker.
+The picker's device bar names the device and shows Sign in only when needed. There are no standalone switch-network or sign-out controls. The picker has no toolbar, search, manual entry or bulk Ping action; every node retains its own Ping action. Remove exit sits in a separate section at the very bottom for every saved profile, including `main` and the last exit. Its confirmation explains that removal disconnects and restores system networking, logs out only that client, removes its local profile, and retains both its explicit rule references and the remote Tailnet device record. Revision checks protect the operation; removed default/global selections become explicitly unset and require a new confirmed choice. Explicit final and route-group references remain as dormant policy and block Split reconnection until their missing targets are replaced or edited. The app stays stopped. Removing `main` retains its private DNS ownership and former custom domains as unresolved policy, without promoting another profile or changing remaining IDs/state paths. Split remains blocked until those references are explicitly resolved. Removing the last exit preserves the remaining routing policy as a dormant draft. Add exit creates a new additional profile and, if no profiles remain, leaves both traffic exit selectors unset for explicit confirmation. Add requires desktop action capability and a valid saved document. In active Global mode it first requests consent to disconnect protection and restore system networking; Cancel/Escape preserves the session and configuration, and a later save or sign-in failure leaves the app disconnected until manual reconnection. Otherwise Add opens authorization directly without a name dialog. Authorization uses a private staged configuration. No provisional profile or row is saved or shown while waiting; only a terminal authenticated result followed by helper cleanup commits the profile. Cancellation, failure or a configuration revision conflict leaves no new row. Add remains retryable, and success is announced only once after authentication. Network choice occurs during browser authorization; confirming the first node binds the Tailnet guard and saves the label `<exit-device-name>@<network name>`. Before a node is chosen, an unnamed row shows the known network or New exit. Automatic labels follow later node choices without changing the profile ID; existing custom names are retained. Backdrop clicks and Escape cancel a staged node choice, except while a save is in progress; saving successfully closes the picker.
 
 Settings › Routing rules groups the Split/Global segments and routing controls into one card. Its visible rows share equal grid tracks, at least 56px high, growing together when descriptions wrap. Builtin/custom rule-source help and validation messages sit below the card, rather than increasing a single row's height. Global shows one exit selector and runs only that device. Split shows an independent default proxy exit, the unmatched-traffic choice and rule groups. `rules.default_exit` carries proxy matches from builtin/custom rule sources, `proxy_domains`, `proxy_ips`, `final: proxy`, and bare Tailnet addresses without a more specific route. `rules.final` chooses direct, the default proxy exit, or any configured exit, including `main`, for unmatched traffic. Split configuration remains saved while hidden in Global. Mode and exit target changes use the settings Save & apply action. Rule groups are bordered surfaces, each with an exit select, Domains/CIDR fields and Remove.
 

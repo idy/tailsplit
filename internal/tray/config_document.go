@@ -2,6 +2,7 @@ package tray
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -764,7 +765,9 @@ func configCandidate(path string, data []byte) (string, tailsplit.Config, error)
 	if len(data) > MaxConfigBytes {
 		return "", tailsplit.Config{}, errors.New("configuration exceeds 1 MiB")
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tailsplit-config-")
+	// os.CreateTemp's mode does not establish a private Windows ACL. Create
+	// an exclusive random name with the same private-file helper as CLI init.
+	tmp, err := privatefs.CreateFile(filepath.Join(filepath.Dir(path), ".tailsplit-config-"+rand.Text()))
 	if err != nil {
 		return "", tailsplit.Config{}, err
 	}
@@ -779,6 +782,9 @@ func configCandidate(path string, data []byte) (string, tailsplit.Config, error)
 		return "", tailsplit.Config{}, err
 	}
 	if err := errors.Join(tmp.Sync(), tmp.Close()); err != nil {
+		return "", tailsplit.Config{}, err
+	}
+	if err := privatefs.CheckFile(tmp.Name()); err != nil {
 		return "", tailsplit.Config{}, err
 	}
 	config, err := tailsplit.LoadDraft(tmp.Name())

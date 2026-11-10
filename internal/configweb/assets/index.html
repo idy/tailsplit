@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>TailSplit</title>
+  <link rel="preload" href="/fonts/montserrat-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/monda-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/lato-regular-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
   <script src="/i18n.js" defer></script>
   <script src="/select.js" defer></script>
@@ -36,19 +39,21 @@
   <symbol id="i-spinner" data-phosphor="circle-notch" viewBox="0 0 256 256"><path d="M232,128a104,104,0,0,1-208,0c0-41,23.81-78.36,60.66-95.27a8,8,0,0,1,6.68,14.54C60.15,61.59,40,93.27,40,128a88,88,0,0,0,176,0c0-34.73-20.15-66.41-51.34-80.73a8,8,0,0,1,6.68-14.54C208.19,49.64,232,87,232,128Z" /></symbol>
 </defs></svg>
 <header class="titlebar" id="titlebar" data-peetty="avoid">
-  <a class="brand" href="/" aria-label="TailSplit 首页">
+  <a class="brand" href="/" tabindex="-1" aria-label="TailSplit 首页">
     <span class="brand-mark"><svg viewBox="7.5 9.2 48 48" aria-hidden="true"><path d="M53.4 21.68C52.9 22.65 51.94 23.25 50.89 23.49C46.01 24.6 43.48 20.21 39.58 18.56C36.94 17.45 34.01 17.28 31.18 17.37C28.78 17.45 26.27 18.1 24.6 19.93C19.47 25.57 30.86 27.54 34.03 28.41C39.04 29.8 45.05 32.06 47.15 37.29C48.15 39.81 47.99 42.69 47.04 45.2C45.28 49.83 40.8 52.56 36.03 53.12C34.32 53.32 32.58 53.24 30.87 53.33C28.75 53.44 26.64 53.64 24.54 53.9C19.38 54.53 14.28 55.52 9.22 56.66C15.21 53.26 21.56 51.11 28.22 49.44C21.03 46.73 14.91 42.28 9.22 37.19C14.49 39.48 19.52 42.29 24.98 44.12C28.28 45.23 32.2 46.35 35.7 45.67C37.15 45.38 38.65 44.68 39.42 43.36C44.7 34.38 14.31 38.99 15.03 22.36C15.19 18.56 17.15 15.03 20.16 12.74C25.74 8.52 33.87 9.15 40.21 11.26C41.74 11.77 43.13 12.62 44.64 13.13C46.06 13.61 47.58 13.49 49 13.95C51.97 14.92 55.06 18.45 53.4 21.68ZM46.8 16.7a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-linejoin="round"/></svg></span>
     <span class="brand-name">TailSplit</span>
   </a>
   <div class="titlebar-content">
     <div class="crumbs"><span class="crumb-parent" id="crumb-parent" hidden>设置</span><span class="crumb-sep" id="crumb-sep" aria-hidden="true" hidden>/</span><h1 id="crumb-section">出口节点列表</h1></div>
     <div class="header-actions">
-      <div class="settings-tools" id="settings-tools" hidden><div class="editor-tabs" role="tablist" aria-label="编辑方式"><button id="form-tab" role="tab" aria-selected="true" aria-controls="form-editor" class="selected">表单编辑</button><button id="yaml-tab" role="tab" aria-selected="false" aria-controls="yaml-editor" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>YAML 原文</button></div><button class="icon-button" id="reload" title="重新读取" aria-label="重新读取"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button></div>
-      <div class="connection-status" role="status"><span class="exit-label" id="exit-label"></span><span class="status-pill" id="connection-status"><i aria-hidden="true"></i><span>正在读取</span></span></div>
-      <button class="update-pill" id="update-pill" hidden><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span id="update-pill-version" aria-live="polite" aria-atomic="true">检查更新</span></button>
+      <div class="settings-tools" id="settings-tools" hidden><div class="editor-tabs" role="tablist" aria-label="编辑方式"><button id="form-tab" role="tab" aria-selected="true" aria-controls="form-editor" class="selected">表单编辑</button><button id="yaml-tab" role="tab" aria-selected="false" aria-controls="yaml-editor" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>YAML 原文</button></div></div>
+      <div class="connection-status" role="status"><span class="status-pill" id="connection-status"><i aria-hidden="true"></i><span>正在读取</span></span></div>
       <div class="kill-switch-control" id="kill-switch-control" hidden><select id="kill-switch" data-select-variant="text" aria-label="连接模式"><option value="split">Rule-based</option><option value="global">Global (Kill-Switch)</option></select></div>
       <div class="connection-switches" id="desktop-controls" hidden><button class="connection-switch" role="switch" aria-checked="false" data-desktop-action="connect" id="desktop-connect" aria-label="连接 TailSplit" title="连接 TailSplit" aria-describedby="desktop-hint"></button><button class="connection-switch" role="switch" aria-checked="true" data-desktop-action="disconnect" id="desktop-disconnect" aria-label="断开" title="断开" hidden></button></div>
+      <button class="update-pill" id="update-pill" hidden><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span id="update-pill-version" aria-live="polite" aria-atomic="true">检查更新</span></button>
       <button class="icon-button" data-desktop-action="refresh-exits" id="refresh-exits" title="刷新出口" aria-label="刷新"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button>
+      <button class="icon-button" id="reload" title="重新读取" aria-label="重新读取" hidden><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button>
+      <button class="icon-button" id="desktop-log-refresh" title="刷新日志" aria-label="刷新日志" hidden><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button>
     </div>
     <div class="window-controls" id="window-controls" hidden>
       <button data-window-action="minimize" aria-label="最小化" title="最小化"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button>
@@ -70,6 +75,7 @@
     <div class="sidebar-bottom" id="sidebar-status" title="HTTP 与 SOCKS 共用此入口。"><i aria-hidden="true"></i><span class="sidebar-status-label">本地代理</span><span class="sidebar-proxy" id="sidebar-proxy">127.0.0.1:17890</span></div>
   </aside>
   <main class="workspace">
+    <div class="workspace-body" id="workspace-body">
     <div class="notice" id="notice" role="alert" hidden><div><strong id="notice-title"></strong><p id="notice-detail"></p></div><button class="button small" id="notice-reload" hidden>重新读取</button></div>
     <div class="loading" id="loading"><svg class="icon spinner" aria-hidden="true"><use href="#i-spinner"/></svg>正在读取本机配置…</div>
 
@@ -90,7 +96,7 @@
     </section>
 
     <section class="app-page logs-page" id="page-logs" aria-labelledby="heading-logs" hidden>
-      <div class="page-heading"><div><h2 id="heading-logs">诊断日志</h2><p>最近的本机日志；设备授权链接和认证密钥会被隐藏。</p></div><button class="button" id="desktop-log-refresh"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg><span>刷新日志</span></button></div>
+      <div class="page-heading"><div><h2 id="heading-logs">诊断日志</h2><p>最近的本机日志；设备授权链接和认证密钥会被隐藏。</p></div></div>
       <div class="log-level-row"><label for="log-level">日志级别</label><select id="log-level" data-field="log_level" data-select-variant="text"><option value="info">普通（Info）</option><option value="debug">详细（Debug）</option><option value="trace">完整跟踪（Trace）</option><option value="warn">仅警告（Warn）</option><option value="error">仅错误（Error）</option><option value="fatal">严重错误（Fatal）</option><option value="panic">致命错误（Panic）</option></select><span class="field-hint">更改后需保存并应用。</span></div>
       <p class="log-error" id="desktop-log-error" role="status" hidden></p>
       <pre class="log-output" id="desktop-log-text" tabindex="0" aria-label="诊断日志"></pre>
@@ -173,7 +179,8 @@
       </div>
       <div class="settings-file"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><strong>config.yaml</strong><span id="file-location">本机配置文件</span><span class="local-only"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>仅此设备可访问</span></div>
     </section>
-    <footer class="actionbar" id="actionbar" hidden><div class="save-state" id="save-state"><span class="save-dot"></span><span>所有更改已保存</span></div><div class="action-buttons"><button class="button subtle" id="discard" disabled>放弃更改</button><button class="button" id="validate"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>校验配置</button><button class="button primary" id="save" disabled>保存并应用</button></div></footer>
+    </div>
+    <footer class="actionbar" id="actionbar" hidden><div class="actionbar-content"><div class="save-state" id="save-state"><span class="save-dot"></span><span>所有更改已保存</span></div><div class="action-buttons"><button class="button subtle" id="discard" disabled>放弃更改</button><button class="button" id="validate"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>校验配置</button><button class="button primary" id="save" disabled>保存并应用</button></div></div></footer>
   </main>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>

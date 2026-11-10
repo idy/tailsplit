@@ -49,10 +49,10 @@ type desktopExitLoginController interface {
 	Stop() error
 }
 
-// splitExitAction reads "login-exit:<id>" and "logout-exit:<id>" actions.
+// splitExitAction reads per-device add, login and logout actions.
 func splitExitAction(action string) (string, string) {
 	name, id, ok := strings.Cut(action, ":")
-	if !ok || name != "login-exit" && name != "logout-exit" {
+	if !ok || name != "login-exit" && name != "logout-exit" && name != "add-exit" {
 		return action, ""
 	}
 	return name, id
@@ -96,6 +96,10 @@ func finishDesktopExitLogin(flow *tray.LoginFlow, err error) error {
 		if errors.Is(err, errDesktopGlobalLogin) {
 			flow.Fail(err.Error())
 			return err
+		}
+		if errors.Is(err, tray.ErrConfigChanged) {
+			flow.Fail("配置文件已更新，请重新读取后重试。")
+			return tray.ErrConfigChanged
 		}
 		flow.Fail("无法准备登录，请查看日志")
 		return errors.New(tr("无法准备登录，请查看日志"))

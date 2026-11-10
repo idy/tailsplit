@@ -8,6 +8,8 @@ const vm = require('node:vm');
 const source = readFileSync(process.argv[2] || join(__dirname, '../assets/app.js'), 'utf8');
 const i18nSource = readFileSync(join(__dirname, '../assets/i18n.js'), 'utf8');
 const yaml = 'log_level: info\ntun:\n  mtu: 1400\n';
+const firstAddedID = `exit-${'01'.repeat(12)}`;
+const secondAddedID = `exit-${'02'.repeat(12)}`;
 const doc = (text = yaml, revision = 'original') => ({
   yaml: text, revision, valid: true, parsed: true,
   values: { log_level: text.match(/log_level: (\w+)/)?.[1] || 'info', tun: { mtu: 1400 } },
@@ -100,10 +102,18 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   let timer = 0;
   let poll;
   const window = new Element();
+  let nonce = 0;
+  window.crypto = { getRandomValues: (bytes) => { bytes.fill(++nonce); return bytes; } };
   const messages = [];
-  const host = { postMessage: (value) => messages.push(value) };
-  if (native === 'macos') window.webkit = { messageHandlers: { tailsplitWindow: host } };
-  if (native === 'windows') window.chrome = { webview: host };
+  if (native.startsWith('mygo-')) {
+    window.mygo = { platform: native === 'mygo-macos' ? 'darwin' : 'win32', window: {
+      minimize: async () => messages.push('minimize'),
+      toggleMaximize: async () => messages.push('zoom'),
+      close: async () => messages.push('close'),
+    } };
+    // WebView2 exists in MyGo too; it must not receive the legacy string bridge.
+    if (native === 'mygo-windows') window.chrome = { webview: { postMessage: () => assert.fail('legacy bridge used in MyGo') } };
+  }
   const windowButtons = ['minimize', 'zoom', 'close'].map((action) => {
     const button = $(`[data-window-action="${action}"]`);
     button.dataset.windowAction = action;
@@ -486,40 +496,36 @@ test('unsupported terminal commands and control strings leave no visible fragmen
   }
 });
 
-test('native titlebar gestures exclude controls and keep platform window buttons separate', async () => {
-  for (const platform of ['macos', 'windows']) {
-    const app = await page({}, platform);
-    assert.equal(app.$('#window-controls').hidden, platform !== 'windows');
-    const blank = { closest: () => null };
-    const control = { closest: () => ({}) };
-    await app.$('#titlebar').emit('mousedown', { button: 0, detail: 1, target: blank, clientX: 200, clientY: 20 });
-    await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 202, clientY: 20 });
-    assert.deepEqual(app.messages, []); // Small motion must still allow double-click.
-    await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 205, clientY: 20 });
-    await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 210, clientY: 20 });
-    assert.deepEqual(app.messages, ['drag']); // Only one native move loop per drag.
-    for (const input of [
-      { button: 0, detail: 2, target: blank },
-      { button: 2, detail: 1, target: blank },
-      { button: 0, detail: 1, target: control },
-    ]) {
-      await app.$('#titlebar').emit('mousedown', { ...input, clientX: 200, clientY: 20 });
-      await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 210, clientY: 20 });
-    }
-    await app.$('#titlebar').emit('mousedown', { button: 0, detail: 1, target: blank, clientX: 200, clientY: 20 });
-    await app.windowEvents.emit('mouseup');
-    await app.windowEvents.emit('mousemove', { buttons: 0, clientX: 210, clientY: 20 });
-    await app.$('#titlebar').emit('dblclick', { button: 0, target: blank });
-    await app.$('#titlebar').emit('dblclick', { button: 0, target: control });
-    assert.deepEqual(app.messages, ['drag', 'zoom']);
-    if (platform === 'windows') {
-      for (const action of ['minimize', 'zoom', 'close']) await app.$(`[data-window-action="${action}"]`).emit('click');
-      assert.deepEqual(app.messages, ['drag', 'zoom', 'minimize', 'zoom', 'close']);
+test('every page exposes its own refresh in the shared titlebar slot without a separate exit label', async () => {
+  const app = await page({ desktop: true, logs_available: true });
+  for (const [name, refresh] of [['connection', '#refresh-exits'], ['settings', '#reload'], ['logs', '#desktop-log-refresh']]) {
+    await app.$(`[data-page="${name}"]`).emit('click');
+    for (const id of ['#refresh-exits', '#reload', '#desktop-log-refresh']) assert.equal(app.$(id).hidden, id !== refresh);
+    assert.equal(app.$('#settings-tools').hidden, name !== 'settings');
+    if (name === 'settings') {
+      const reads = app.requests.filter(request => request.path === '/api/config').length;
+      await app.$(refresh).emit('click');
+      assert.equal(app.requests.filter(request => request.path === '/api/config').length, reads + 1);
     }
   }
-  const browser = await page();
-  assert.equal(browser.$('#window-controls').hidden, true);
-  assert.deepEqual(browser.messages, []);
+});
+
+test('MyGo uses the existing platform chrome and its own window controls without duplicate drag handlers', async () => {
+  for (const platform of ['macos', 'windows']) {
+    const app = await page({}, `mygo-${platform}`);
+    assert.equal(app.document.documentElement.dataset.windowChrome, platform);
+    assert.equal(app.document.documentElement.dataset.windowEngine, 'mygo');
+    assert.equal(app.$('#window-controls').hidden, platform !== 'windows');
+    const blank = { closest: () => null };
+    await app.$('#titlebar').emit('mousedown', { button: 0, detail: 1, target: blank, clientX: 200, clientY: 20 });
+    await app.windowEvents.emit('mousemove', { buttons: 1, clientX: 220, clientY: 20 });
+    await app.$('#titlebar').emit('dblclick', { button: 0, target: blank });
+    assert.deepEqual(app.messages, [], 'CSS/native drag regions must own titlebar gestures');
+    if (platform === 'windows') {
+      for (const action of ['minimize', 'zoom', 'close']) await app.$(`[data-window-action="${action}"]`).emit('click');
+      assert.deepEqual(app.messages, ['minimize', 'zoom', 'close']);
+    }
+  }
 });
 
 test('titlebar updates preserve the current YAML draft and do not switch pages', async () => {
@@ -728,7 +734,7 @@ test('pending update requests block duplicates while leaving draft controls usab
 
 test('backend update phases disable actions and show bounded download progress', async () => {
   const app = await page({ updates: updateState() });
-  for (const phase of ['checking', 'downloading', 'installing']) {
+  for (const phase of ['checking', 'confirming', 'downloading', 'installing', 'busy']) {
     app.snapshot.updates = updateState({
       [phase]: true, available: true, latest_version: '0.6.2', downloaded_bytes: 524288, total_bytes: 1048576,
     });
@@ -757,6 +763,7 @@ test('backend update phases disable actions and show bounded download progress',
     }
     if (phase === 'installing') assert.equal(app.$('#update-pill-version').textContent, '安装中…');
     if (phase === 'checking') assert.equal(app.$('#update-pill-version').textContent, '检查中…');
+    if (phase === 'confirming') assert.equal(app.$('#update-pill-version').textContent, '等待确认…');
   }
   assert.equal(app.requests.some((request) => request.path === '/api/update-action'), false);
 });
@@ -775,6 +782,25 @@ test('install requests go directly to native confirmation and follow installing 
   assert.equal(app.$('#update-pill-version').textContent, '安装中…');
   assert.match(app.$('#update-pill').title, /系统确认或安装向导/);
   assert.equal(app.$('#notice').hidden, true);
+});
+
+test('server confirmation keeps update controls locked after POST has returned', async () => {
+  const app = await page({ updates: updateState({ available: true, latest_version: '0.8.0' }) });
+  app.override = request => {
+    if (request.path !== '/api/update-action') return undefined;
+    app.snapshot.updates = { ...app.snapshot.updates, busy: true, confirming: true };
+    return response({ ok: true });
+  };
+  await app.$('#update-pill').emit('click');
+  await app.poll();
+  for (const selector of ['#update-check', '#update-pill', '#update-automatic']) assert.equal(app.$(selector).disabled, true);
+  assert.equal(app.$('#update-pill-version').textContent, '等待确认…');
+  await app.$('#update-pill').emit('click');
+  await app.$('#update-automatic').emit('change');
+  assert.equal(app.requests.filter(request => request.path === '/api/update-action').length, 1);
+  app.snapshot.updates = { ...app.snapshot.updates, busy: false, confirming: false };
+  await app.poll();
+  assert.equal(app.$('#update-pill').disabled, false);
 });
 
 test('release notes are bounded plain text and background errors stay inline', async () => {
@@ -1345,23 +1371,20 @@ test('backend-normalized scalar exit IDs remain selectable and survive Add', asy
     assert.equal(app.$('#exit-picker-dialog').open, true);
     assert.ok(exitChoice(app, '100.101.0.11'), 'picker must use this device rather than the primary');
     await app.$('#cancel-exit-picker').emit('click');
-    let saved = false;
+    let started = false;
     app.override = request => {
-      if (request.path === '/api/config' && request.method === 'POST') {
-        assert.deepEqual(request.data.changes, { exits: [original, { id: 'exit-1', auto_name: true, exit_node: '' }] });
-        saved = true;
-        app.config = { ...app.config, revision: 'added', values: { ...app.config.values, exits: request.data.changes.exits } };
-        app.snapshot.revision = 'added';
-        return response(app.config);
-      }
       if (request.path === '/api/action') {
-        assert.deepEqual(request.data, { action: 'login-exit', exit: 'exit-1' });
+        assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+        started = true;
+        app.snapshot = { ...app.snapshot, active: true, mode: 'login', state: 'login', focus: firstAddedID };
         return response({ ok: true });
       }
       return undefined;
     };
     await app.$('#add-exit').emit('click');
-    assert.equal(saved, true);
+    assert.equal(started, true);
+    assert.deepEqual(app.config.values.exits, [original]);
+    assert.equal(app.requests.some(r => r.path === '/api/config' && r.method === 'POST'), false);
     assert.ok(extraRow(app, id), 'Add must preserve the saved identity');
     assert.equal(app.$('#connection-exit').value, id);
   }
@@ -1433,17 +1456,17 @@ test('Add signs in and names the first exit without assigning a traffic default'
   app.override = request => {
     if (request.path === '/api/config' && request.method === 'POST') {
       saves++;
-      assert.deepEqual(request.data.changes, { ...(saves === 1 ? { 'rules.default_exit': '-', 'rules.global_exit': '-' } : {}), exits: [saves === 1
-        ? { id: 'exit-1', auto_name: true, exit_node: '' }
-        : { id: 'exit-1', auto_name: true, exit_node: '100.101.0.11', tailnet: 'example.com', magic_dns_suffix: 'tail123.ts.net', name: 'hk-gateway@example.com' }] });
+      assert.deepEqual(request.data.changes, { exits: [{ id: firstAddedID, auto_name: true, exit_node: '100.101.0.11', tailnet: 'example.com', magic_dns_suffix: 'tail123.ts.net', name: 'hk-gateway@example.com' }] });
       app.config = { ...app.config, revision: `saved-${saves}`,
         values: { ...app.config.values, exits: request.data.changes.exits } };
       app.snapshot.revision = app.config.revision;
       return response(app.config);
     }
     if (request.path === '/api/action') {
-      assert.deepEqual(request.data, { action: 'login-exit', exit: 'exit-1' });
-      app.snapshot = exitsSnapshot({ revision: app.config.revision, exits: { 'exit-1': officeSnapshot({ network: 'example.com', magic_dns_suffix: 'tail123.ts.net' }).exits.office } });
+      assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+      assert.equal(extraRow(app, firstAddedID), undefined, 'no row exists before successful authorization');
+      app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: [{ id: firstAddedID, auto_name: true, exit_node: '' }] } };
+      app.snapshot = exitsSnapshot({ state: 'authenticated', mode: 'login', revision: 'added', exits: { [firstAddedID]: officeSnapshot({ network: 'example.com', magic_dns_suffix: 'tail123.ts.net' }).exits.office } });
       return response({ ok: true });
     }
     return undefined;
@@ -1454,12 +1477,107 @@ test('Add signs in and names the first exit without assigning a traffic default'
   assert.equal(app.$('#heading-exits').textContent, 'example.com');
   await exitChoice(app, '100.101.0.11').emit('click');
   await app.$('#apply-exit-picker').emit('click');
-  assert.equal(saves, 2);
+  assert.equal(saves, 1);
   assert.equal(app.$('#exit-picker-dialog').open, false);
-  await extraRow(app, 'exit-1').emit('click');
+  await extraRow(app, firstAddedID).emit('click');
   assert.equal(app.$('#heading-exits').textContent, 'hk-gateway@example.com');
   assert.equal(app.config.values.rules.default_exit, '-');
   assert.equal(app.config.values.rules.global_exit, '-');
+});
+
+test('Add remains pending until real authenticated device status arrives and can recover from failed authorization', async () => {
+  const initial = exitDocument(); initial.values.tailscale = null;
+  const app = await page(exitsSnapshot(), '', {}, initial);
+  let authenticated = false;
+  app.override = request => {
+    if (request.path === '/api/action') {
+      const id = authenticated ? secondAddedID : firstAddedID;
+      assert.deepEqual(request.data, { action: 'add-exit', exit: id, revision: app.config.revision });
+      if (authenticated) app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: [{ id, auto_name: true, exit_node: '' }] } };
+      app.snapshot = exitsSnapshot({ revision: app.config.revision, state: authenticated ? 'authenticated' : 'login', active: !authenticated,
+        mode: 'login', focus: authenticated ? '' : id, exits: { [id]: authenticated ? officeSnapshot().exits.office : { backend_state: 'NeedsLogin' } } });
+      return response({ ok: true });
+    }
+    return undefined;
+  };
+  await app.$('#add-exit').emit('click');
+  assert.equal(app.$('#toast').textContent, '等待 Tailscale 登录');
+  assert.ok(!app.$('#exit-picker-dialog').open, 'opening authorization is not a successful Add');
+  assert.equal(extraRow(app, firstAddedID), undefined, 'pending devices must not appear in the list');
+  assert.equal(app.config, initial, 'pending authentication must not save a provisional profile');
+  await app.poll();
+  assert.notEqual(app.$('#toast').textContent, '出口已添加', 'waiting or closing the browser cannot confirm success');
+  app.snapshot = { ...app.snapshot, state: 'failed', active: false, mode: '', focus: '', error: 'authorization failed' };
+  await app.poll();
+  assert.notEqual(app.$('#toast').textContent, '出口已添加');
+  assert.ok(!app.$('#exit-picker-dialog').open);
+  authenticated = true;
+  assert.equal(extraRow(app, firstAddedID), undefined, 'failed authorization must not leave a list item');
+  const retry = app.$('#add-exit');
+  assert.equal(retry.disabled, false, 'failed authorization must remain retryable');
+  await retry.emit('click');
+  assert.deepEqual(app.requests.filter(request => request.path === '/api/action' && request.data.action === 'add-exit').map(request => request.data.exit), [firstAddedID, secondAddedID]);
+  assert.equal(app.$('#toast').textContent, '出口已添加');
+  assert.equal(app.$('#exit-picker-dialog').open, true);
+  app.$('#toast').textContent = 'unchanged'; await app.poll();
+  assert.equal(app.$('#toast').textContent, 'unchanged', 'authenticated polling must not announce Add repeatedly');
+});
+
+test('a polled Add completion opens its picker when the committed row first appears', async () => {
+  const initial = exitDocument(); initial.values.tailscale = null;
+  const app = await page(exitsSnapshot(), '', {}, initial);
+  app.override = request => {
+    if (request.path !== '/api/action') return undefined;
+    app.snapshot = exitsSnapshot({ active: true, state: 'login', mode: 'login', focus: firstAddedID,
+      exits: { [firstAddedID]: { backend_state: 'NeedsLogin' } } });
+    return response({ ok: true });
+  };
+  await app.$('#add-exit').emit('click');
+  assert.equal(extraRow(app, firstAddedID), undefined);
+  assert.ok(!app.$('#exit-picker-dialog').open);
+  app.config = { ...initial, revision: 'committed', values: { ...initial.values,
+    exits: [{ id: firstAddedID, auto_name: true, exit_node: '' }] } };
+  app.snapshot = exitsSnapshot({ active: false, state: 'authenticated', mode: 'login', revision: 'committed',
+    exits: { [firstAddedID]: officeSnapshot().exits.office } });
+  await app.poll();
+  assert.ok(extraRow(app, firstAddedID), 'the committed profile must be visible');
+  assert.equal(app.$('#toast').textContent, '出口已添加', 'success must not wait for another poll');
+  assert.equal(app.$('#exit-picker-dialog').open, true, 'the first committed render must open the picker');
+  await app.$('#cancel-exit-picker').emit('click');
+  app.$('#toast').textContent = 'no-repeat';
+  await app.poll();
+  assert.equal(app.$('#toast').textContent, 'no-repeat');
+  assert.equal(app.$('#exit-picker-dialog').open, false);
+});
+
+test('a config reload from a superseded state poll cannot overwrite the latest view', async () => {
+  const app = await page();
+  const pending = deferred();
+  app.snapshot = { state: 'stopped', revision: 'external' };
+  app.override = request => request.path === '/api/config' ? pending.promise : undefined;
+  const oldPoll = app.poll(); await settle();
+  app.snapshot = { state: 'failed', revision: 'original', error: 'latest failure' };
+  await app.poll();
+  pending.resolve(response(doc('log_level: debug\n', 'external')));
+  await oldPoll;
+  assert.equal(app.$('#level').value, 'info');
+  assert.equal(app.$('#connection-status').classList.contains('error'), true);
+});
+
+test('failed Add login request never announces a successful Add', async () => {
+  const app = await page(exitsSnapshot(), '', {}, exitDocument());
+  app.override = request => {
+    if (request.path === '/api/config' && request.method === 'POST') {
+      app.config = { ...app.config, revision: 'pending', values: { ...app.config.values, exits: request.data.changes.exits } };
+      app.snapshot.revision = 'pending'; return response(app.config);
+    }
+    if (request.path === '/api/action') return response({ error: 'login could not start' }, false);
+    return undefined;
+  };
+  await app.$('#add-exit').emit('click');
+  assert.notEqual(app.$('#toast').textContent, '出口已添加');
+  assert.equal(app.$('#notice').hidden, false);
+  assert.ok(!app.$('#exit-picker-dialog').open);
 });
 
 const activeGlobalDocument = () => {
@@ -1500,8 +1618,8 @@ test('Global Add cancellation and Escape preserve protection and configuration w
   }
 });
 
-test('confirmed Global Add stops before saving and sign-in, and never reconnects after success or failure', async () => {
-  for (const failure of ['', 'disconnect', 'save', 'login-exit']) {
+test('confirmed Global Add disconnects before staged authorization and never saves a provisional profile', async () => {
+  for (const failure of ['', 'disconnect', 'add-exit']) {
     const initial = activeGlobalDocument();
     const app = await page(activeGlobalSnapshot(), '', {}, initial);
     app.override = request => {
@@ -1512,7 +1630,7 @@ test('confirmed Global Add stops before saving and sign-in, and never reconnects
       }
       if (request.path === '/api/config' && request.method === 'POST') {
         assert.equal(app.snapshot.active, false);
-        assert.deepEqual(request.data.changes, { exits: [{ id: 'exit-1', auto_name: true, exit_node: '' }] });
+        assert.deepEqual(request.data.changes, { exits: [{ id: firstAddedID, auto_name: true, exit_node: '' }] });
         if (failure === 'save') return response({ error: 'save failed' }, false);
         app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: request.data.changes.exits } };
         app.snapshot.revision = 'added';
@@ -1525,9 +1643,9 @@ test('confirmed Global Add stops before saving and sign-in, and never reconnects
     assert.deepEqual(mutations(app), []);
     answerAddConsent(app, 'add'); await adding;
     const steps = mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action);
-    assert.deepEqual(steps, failure === 'disconnect' ? ['disconnect'] : failure === 'save' ? ['disconnect', 'save'] : ['disconnect', 'save', 'login-exit']);
+    assert.deepEqual(steps, failure === 'disconnect' ? ['disconnect'] : ['disconnect', 'add-exit']);
     assert.equal(app.snapshot.active, failure === 'disconnect');
-    if (failure === 'disconnect' || failure === 'save') assert.equal(app.config, initial);
+    assert.equal(app.config, initial, 'the browser must never save a provisional profile');
     assert.equal(app.$('#notice').hidden, !failure);
     assert.equal(app.$('#add-exit').disabled, false);
   }
@@ -1569,13 +1687,13 @@ test('valid dormant references still permit adding a replacement without changin
   assert.equal(app.$('#add-exit').disabled, false);
   app.override = request => {
     if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
-    assert.deepEqual(request.data.changes, { exits: [{ id: 'exit-1', auto_name: true, exit_node: '' }] });
+    assert.deepEqual(request.data.changes, { exits: [{ id: firstAddedID, auto_name: true, exit_node: '' }] });
     app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: request.data.changes.exits } };
     app.snapshot.revision = 'added';
     return response(app.config);
   };
   await invokeAdd(app);
-  assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action), ['save', 'login-exit']);
+  assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action), ['add-exit']);
   assert.deepEqual(app.config.values.rules, initial.values.rules);
 });
 
@@ -1652,18 +1770,23 @@ test('Add cannot save after disconnect when state is stale, unavailable or still
   }
 });
 
-test('Add cannot authorize after its saved profile is superseded or desktop capability is lost', async () => {
+test('a rejected or superseded staged Add never leaves a browser-saved profile', async () => {
   for (const condition of ['revision', 'unsupported']) {
-    const app = await page(exitsSnapshot(), '', {}, exitDocument());
+    const initial = exitDocument();
+    const app = await page(exitsSnapshot(), '', {}, initial);
     app.override = request => {
-      if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
-      const saved = { ...app.config, revision: 'added', values: { ...app.config.values, exits: request.data.changes.exits } };
-      app.config = condition === 'revision' ? { ...saved, revision: 'newer' } : saved;
-      app.snapshot = { ...app.snapshot, revision: app.config.revision, desktop: condition !== 'unsupported' };
-      return response(saved);
+      if (request.path !== '/api/action') return undefined;
+      assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+      if (condition === 'revision') {
+        app.config = { ...initial, revision: 'newer' };
+        app.snapshot = { ...app.snapshot, revision: 'newer', state: 'failed', error: 'configuration changed' };
+      } else app.snapshot.desktop = false;
+      return response({ error: 'staged Add rejected' }, false);
     };
     await invokeAdd(app);
-    assert.deepEqual(mutations(app).map(request => request.path), ['/api/config']);
+    assert.deepEqual(mutations(app).map(request => request.path), ['/api/action']);
+    assert.equal(extraRow(app, firstAddedID), undefined);
+    assert.deepEqual(app.config.values.exits, initial.values.exits);
   }
 });
 
@@ -2027,7 +2150,6 @@ test('Global connection uses its selected extra while unrelated primary and exit
   assert.equal(app.$('#desktop-disconnect').hidden, false);
   assert.equal(app.$('#desktop-disconnect').disabled, false);
   assert.equal(app.$('#connection-status span').textContent, '已连接');
-  assert.equal(app.$('#exit-label').textContent, 'hk-gateway');
 });
 
 
@@ -2572,15 +2694,12 @@ test('retained final, route groups and gateway selectors reserve new device IDs'
     routes: [{ exit: 'exit-5', domains: ['private.example'] }, { exit: 'exit-6' }] };
   const app = await page(exitsSnapshot(), '', {}, initial);
   app.override = request => {
-    if (request.path !== '/api/config' || request.method !== 'POST') return undefined;
-    assert.equal(request.data.changes.exits.at(-1).id, 'exit-7');
-    assert.equal(Object.hasOwn(request.data.changes, 'rules.routes'), false);
-    app.config = { ...initial, revision: 'added', values: { ...initial.values, exits: request.data.changes.exits } };
-    app.snapshot.revision = 'added';
-    return response(app.config);
+    if (request.path !== '/api/action') return undefined;
+    assert.deepEqual(request.data, { action: 'add-exit', exit: firstAddedID, revision: app.config.revision });
+    return response({ ok: true });
   };
   await invokeAdd(app);
-  assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action), ['save', 'login-exit']);
+  assert.deepEqual(mutations(app).map(request => request.path === '/api/config' ? 'save' : request.data.action), ['add-exit']);
   assert.deepEqual(app.config.values.rules, initial.values.rules);
 });
 

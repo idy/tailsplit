@@ -15,6 +15,7 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class TailSplitDesktopFixture {
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct Startup { public int cb; public string reserved,desktop,title; public int x,y,xsize,ysize,xchars,ychars,fill,flags; public short show,reserved2; public IntPtr reservedptr,input,output,error; }
  [StructLayout(LayoutKind.Sequential)] public struct ProcessInfo { public IntPtr process,thread; public int pid,tid; }
@@ -35,7 +36,11 @@ public static class TailSplitDesktopFixture {
  [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr pointer);
- [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string klass,string title);
+ delegate bool EnumWindowProc(IntPtr window,IntPtr data);
+ [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowProc callback,IntPtr data);
+ [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out int pid);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder name,int size);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr process,uint flags,StringBuilder name,ref int size);
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect result);
@@ -60,6 +65,30 @@ public static class TailSplitDesktopFixture {
    Check(WaitForSingleObject(info.process,30000)==0,"Wait for second instance");
    uint code;Check(GetExitCodeProcess(info.process,out code),"Get second instance exit code");return (int)code;
   } finally {CloseHandle(info.process);}
+ }
+ public static IntPtr FindAppWindow(int pid,string app,string[] classes) {
+  // MyGo's class is shared by other apps. Only accept a top-level window of
+  // the process this fixture launched, after checking its executable path.
+  IntPtr process=OpenProcess(0x1000,false,pid);
+  if(process==IntPtr.Zero)return IntPtr.Zero;
+  try {
+   var image=new StringBuilder(32768);int size=image.Capacity;
+   if(!QueryFullProcessImageName(process,0,image,ref size) ||
+      !String.Equals(image.ToString(),System.IO.Path.GetFullPath(app),StringComparison.OrdinalIgnoreCase))return IntPtr.Zero;
+   IntPtr found=IntPtr.Zero;
+   EnumWindowProc visit=delegate(IntPtr window,IntPtr data) {
+    int owner;GetWindowThreadProcessId(window,out owner);
+    if(owner!=pid)return true;
+    var name=new StringBuilder(256);
+    if(GetClassName(window,name,name.Capacity)==0)return true;
+    foreach(string klass in classes) {
+     if(String.Equals(name.ToString(),klass,StringComparison.Ordinal)) {found=window;return false;}
+    }
+    return true;
+   };
+   EnumWindows(visit,IntPtr.Zero);
+   return found;
+  } finally {CloseHandle(process);}
  }
  public static int Integrity(int pid) {
   IntPtr process=OpenProcess(0x1000,false,pid),token=IntPtr.Zero,buffer=IntPtr.Zero;
@@ -193,7 +222,9 @@ function Invoke-Button([System.Windows.Automation.AutomationElement]$Root, [stri
 
 $credential = Get-Content -LiteralPath $Credentials -Raw | ConvertFrom-Json
 $accountSID = $credential.sid
-$className = 'TailSplit.Window.' + $accountSID
+# Retain the old class for archived upgrade fixtures; production MyGo windows
+# use a generic class, so discovery also requires this GUI's PID and image path.
+$windowClasses = [string[]]@('MyGoWindow', ('TailSplit.Window.' + $accountSID))
 $arguments = '--no-connect --config "' + $Config + '" --log "' + $Log + '"'
 $guiProcess = [TailSplitDesktopFixture]::LaunchStandard($credential.username,$credential.password,$Application,$arguments,$false)
 $primaryFailure = $null
@@ -208,7 +239,7 @@ try {
     # A brand-new CI profile also starts the browser processes for the first
     # time. Give that one cold start a bounded budget and retain phase timings.
     $window = Wait-Until {
-        $handle=[TailSplitDesktopFixture]::FindWindow($className,'TailSplit')
+        $handle=[TailSplitDesktopFixture]::FindAppWindow($guiProcess,$Application,$windowClasses)
         if ($handle -ne [IntPtr]::Zero) {
             $phase = [TailSplitDesktopFixture]::GetProp($handle,'TailSplit.WebView2.StartupStage').ToInt64()
             if (($nativePhases.Count -eq 0) -or ($nativePhases[$nativePhases.Count-1].phase -ne $phase)) {
@@ -415,7 +446,7 @@ try {
                 } finally { $reader.Dispose(); $stream.Dispose() }
             } catch { $failure['log_inspection_error'] = $_.Exception.Message }
         }
-        $hiddenWindow = [TailSplitDesktopFixture]::FindWindow($className,'TailSplit')
+        $hiddenWindow = [TailSplitDesktopFixture]::FindAppWindow($guiProcess,$Application,$windowClasses)
         $failure['native_window_handle'] = $hiddenWindow.ToInt64()
         if ($hiddenWindow -ne [IntPtr]::Zero) { $failure['native_startup_phase'] = [TailSplitDesktopFixture]::GetProp($hiddenWindow,'TailSplit.WebView2.StartupStage').ToInt64() }
         $failure['browser_processes'] = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Select-Object ProcessId,ParentProcessId,SessionId)

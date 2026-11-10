@@ -267,6 +267,9 @@ def main():
     program_files = Path(os.environ.get("ProgramW6432", os.environ["ProgramFiles"]))
     installed = program_files / "TailSplit"
     core, gui = installed / "tailsplit-core.exe", installed / "TailSplit.exe"
+    payloads = (core, gui)
+    legacy_dll = installed / "TailSplit.Window.dll"
+    legacy_dll_fixture = b"Obsolete pre-MyGo window DLL fixture (never loaded).\n"
     before = routes()
     report = {"arch": args.arch, "version": version, "commit": expected_commit, "checks": {}}
     temporary = Path(tempfile.mkdtemp(prefix="tailsplit-desktop-native-"))
@@ -291,8 +294,10 @@ def main():
     credential_file = temporary / "standard-user.json"
     try:
         install(installer, sid, args.evidence / "install.log")
-        for path in (core, gui, installed / "TailSplit.Window.dll"):
+        for path in payloads:
             architecture(path, args.arch)
+        if legacy_dll.exists():
+            raise RuntimeError("Fresh MyGo installation shipped the obsolete window DLL")
         build = json.loads((installed / "build.json").read_text(encoding="utf-8"))
         if any(build.get(key) != value for key, value in {"version": version, "commit": expected_commit, "os": "windows", "arch": args.arch}.items()):
             raise RuntimeError("Installed desktop source metadata differs")
@@ -302,7 +307,7 @@ def main():
             raise RuntimeError("Installed service is not an idle SYSTEM service")
         if routes() != before:
             raise RuntimeError("Installing the desktop changed default routes")
-        report["checks"].update(native_payloads=True, source_metadata=True, system_service=True, install_disconnected=True)
+        report["checks"].update(native_payloads=True, no_legacy_window_dll=True, source_metadata=True, system_service=True, install_disconnected=True)
         process = broker(core, config)
         conflict = run(core, "run", "-c", config, check=False, timeout=20)
         if conflict.returncode == 0 or "already in use" not in conflict.stderr:
@@ -338,10 +343,17 @@ def main():
         if routes() != before:
             raise RuntimeError("Service disconnect/crash did not preserve default routes")
         report["checks"].update(authenticated_broker=True, legacy_lock=True, service_owned_identity_preserved=True, graceful_stop=True, broker_crash_cleanup=True)
-        hashes = {path.name: digest(path) for path in (core, gui, installed / "TailSplit.Window.dll")}
+        hashes = {path.name: digest(path) for path in payloads}
+        # Model an older installation's retired DLL without loading native code.
+        # Only Setup may delete it; user configuration and identity must survive.
+        legacy_dll.write_bytes(legacy_dll_fixture)
+        configuration = config.read_bytes()
         install(installer, sid, args.evidence / "upgrade.log")
-        if {path.name: digest(path) for path in (core, gui, installed / "TailSplit.Window.dll")} != hashes:
+        if {path.name: digest(path) for path in payloads} != hashes:
             raise RuntimeError("Repair changed verified payloads")
+        if legacy_dll.exists() or config.read_bytes() != configuration:
+            raise RuntimeError("Repair did not remove only the obsolete window DLL")
+        report["checks"]["upgrade_removes_legacy_window_dll"] = True
         if (runtime / "tailscale/tailscaled.state").read_bytes() != sentinel:
             raise RuntimeError("Repair discarded the device identity")
         report["checks"]["repair_retains_identity"] = True
@@ -364,18 +376,27 @@ def main():
             "-ldflags", f"-s -w -X main.version={newer_version} -X main.commit={expected_commit}",
             "-o", upgrade_core, "./cmd/tailsplit", timeout=600, extra={"CGO_ENABLED": "0", "GOWORK": "off"})
         upgrade_installer = fixture_installer("desktop-upgrade-fixture", args.arch, newer_version, expected_commit, upgrade_core, notices)
+        legacy_dll.write_bytes(legacy_dll_fixture)
         rejected = run(failed_installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
                        "/UserSID="+sid, "/LOG="+str(args.evidence / "failed-upgrade.log"), check=False, timeout=180)
         if rejected.returncode == 0:
             raise RuntimeError("Failed service installation was reported as a successful upgrade")
-        if {path.name: digest(path) for path in (core, gui, installed / "TailSplit.Window.dll")} != hashes:
+        if {path.name: digest(path) for path in payloads} != hashes:
             raise RuntimeError("Failed upgrade did not restore the working desktop payload")
+        if legacy_dll.read_bytes() != legacy_dll_fixture or config.read_bytes() != configuration:
+            raise RuntimeError("Failed upgrade did not restore the legacy DLL and retain configuration")
         process = broker(core, config)
         stop_broker(process)
         process = None
         if (runtime / "tailscale/tailscaled.state").read_bytes() != sentinel:
             raise RuntimeError("Failed upgrade recovery lost the device identity")
-        report["checks"]["failed_upgrade_restores_service"] = True
+        report["checks"].update(failed_upgrade_restores_service=True, failed_upgrade_restores_legacy_window_dll=True)
+        # Complete the migration after proving rollback can restore older files.
+        install(installer, sid, args.evidence / "migration-retry.log")
+        if legacy_dll.exists() or {path.name: digest(path) for path in payloads} != hashes:
+            raise RuntimeError("Retry did not retire the legacy DLL and preserve the working desktop")
+        if config.read_bytes() != configuration or (runtime / "tailscale/tailscaled.state").read_bytes() != sentinel:
+            raise RuntimeError("Migration retry discarded configuration or identity")
         uninstallers = list(installed.glob("unins*.exe"))
         if len(uninstallers) != 1:
             raise RuntimeError("Expected one supported desktop uninstall mechanism")

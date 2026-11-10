@@ -62,8 +62,13 @@ automatic checks; prereleases and older versions are never offered.
 
 `app.check_for_updates` defaults to `true` when omitted. The menu and panel can
 change it immediately without reconnecting the proxy. Checks only discover new
-versions: installation always asks for confirmation. Downloads use the matching
-architecture's desktop package and must match the release's `SHA256SUMS` and size.
+versions: installation always asks for confirmation. Before that confirmation,
+the app refreshes the latest stable release so an older cached offer does not
+force an intermediate upgrade. Any supported older version can jump directly to
+the latest stable version. If that recheck fails, installation stops instead of
+using a stale offer. After confirmation, the download stays pinned to that exact
+version. Downloads use the matching architecture's desktop package and must match
+the release's `SHA256SUMS` and size.
 Network failures or failed verification leave the existing app running.
 
 On Windows, the verified Setup EXE requests UAC and uses its existing graceful
@@ -77,22 +82,43 @@ bundle on the destination filesystem, then disconnects, replaces and relaunches
 the app. A signed installation requires the same signing team. Non-writable app
 directories request administrator authorization before shutdown. Failed activation
 or launch handoff restores the previous bundle. Configuration and saved device
-identity are retained; the restarted app stays disconnected. The next macOS
-connection may ask to install the bundled matching network service.
+identity are retained; the restarted app stays disconnected. On startup, macOS
+checks an already installed network service before restoring device status. A
+matching live service is reused; an outdated or unreachable installed service
+opens the bundled Installer at restart, including after a `--no-connect` update
+relaunch. While preparation waits, its authorization state and Cancel connection
+control remain visible; canceling releases the operation gate for offline edits
+and a repair retry. Automatic connection uses the helper's existing readiness
+check instead of repeating the parent's checksum and probe. macOS administrator
+approval remains required. First installation is
+still requested only by an explicit connection; unbundled development binaries
+do not start service installation.
 
 ## Windows desktop
 
 Download the Windows desktop Setup EXE for x64 (`amd64`) or ARM64 from
 [GitHub Releases](https://github.com/idy/tailsplit/releases). It provides a native
-application window and notification-area controls. The installer puts
-`TailSplit.exe`, `tailsplit-core.exe` and `TailSplit.Window.dll` in protected
-`Program Files\\TailSplit` and installs an idle SYSTEM network service. The UI
-runs as a normal user; only installation and service maintenance request UAC.
+application window and notification-area controls through MyGo v0.8.3. The installer
+puts `TailSplit.exe` and `tailsplit-core.exe` in protected `Program Files\\TailSplit`
+and installs an idle SYSTEM network service. The UI runs as a normal user; only
+installation and service maintenance request UAC.
 
 The window contains saved exit devices, connection controls, configuration and
 bounded diagnostic logs. On both macOS and Windows, **Add exit** creates a separate
-embedded device and opens browser authorization to choose its Tailnet. Choose its
-exit node afterward; the profile is named `<exit-device-name>@<network name>`.
+embedded device and opens browser authorization to choose its Tailnet. The login
+uses a private staged configuration: the new profile appears in the saved list
+only after successful authentication. Canceling or failed authorization leaves no
+provisional row; retry Add exit when ready. Each attempt proposes a fresh ID, and
+the state owner exclusively reserves its new namespace before authentication.
+A failed attempt keeps that namespace claimed so a retry cannot adopt an
+unpublished authorization or overwrite another configuration's identity. Remote
+administrative device records are not deleted by this mechanism. The page's
+configuration revision is checked before staging and again before publication,
+so conflicting edits cannot silently change the authorization target or replace
+newer edits. Choose its exit
+node afterward; the profile is named `<exit-device-name>@<network name>`.
+Existing valid saved logins are restored automatically during device discovery;
+explicit sign-out or expired/revoked authorization requires signing in again.
 To use another network, add another exit. **Remove exit** at the bottom of each
 picker disconnects, logs out only that client, removes its local profile, and
 leaves the app stopped. Explicit final and route-group references remain; choose
@@ -200,8 +226,9 @@ may require an explicit launch approval.
 ### Configuration panel and logging
 
 Choose **Open** (`打开`), the first item in the menu bar app's menu, to open the
-configuration panel. The panel opens in TailSplit's own window, which uses the
-system web view (WKWebView). A single integrated title row contains the app
+configuration panel. The panel opens in TailSplit's MyGo v0.8.3 window, which
+uses the system web view: WKWebView on macOS and WebView2 on Windows. A single
+integrated title row contains the app
 identity, current section, connection state and update button. Downloads show
 their percentage inside that button; installation shows its current phase in
 the same place. The title row supports window dragging and double-click zoom,
@@ -400,9 +427,12 @@ hostnames cannot be recovered this way.
 
 ## Build and test
 
-Go 1.26.2 or later and Python 3.11 or later are required. macOS app builds need
-Xcode Command Line Tools, Swift and the standard macOS packaging tools. Build
-commands run at this repository root; no sibling monorepo is needed:
+Go 1.27.3 or later and Python 3.11 or later are required. macOS app builds need
+Xcode Command Line Tools, Swift and the standard macOS packaging tools. The
+production desktop uses MyGo v0.8.3 in the root Go module: `cmd/tailsplit-tray` is
+the entry point, `internal/desktopwindow` hosts the local configuration panel,
+and `internal/desktoptray` adapts its tray menus. Build commands run at this
+repository root; no sibling monorepo is needed:
 
 ```sh
 make test check
@@ -411,6 +441,22 @@ python3 -B -m unittest discover -s tests/installer
 python3 -B -m unittest discover -s tests/packaging
 make app
 ```
+
+To build and open the production desktop from source on macOS:
+
+```sh
+make build build-tray
+./bin/tailsplit-tray --template "$(pwd)/config.default.yaml" --helper "$(pwd)/bin/tailsplit" --open --no-connect
+```
+
+`make run-tray` runs those build and launch steps. It uses your normal TailSplit
+configuration and log paths; `--template` initializes only a missing configuration.
+`--open` shows the window and `--no-connect` disables automatic connection for that
+launch. Pass `--config` and `--log` to the binary to use separate files. The
+compatibility targets `make build-mygo` and `make run-mygo` call the production
+build and launch targets; desktop tests run with the root `make test` target.
+Windows uses different desktop flags and helper names; use the
+[Windows release build](#windows-desktop) to assemble its installer and prerequisites.
 
 The core uses the `with_gvisor` build tag; the Makefile supplies it. `make app`
 creates a local ad-hoc app, ZIP, DMG, checksums and verification receipt. Linux

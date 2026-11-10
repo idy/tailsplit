@@ -173,6 +173,9 @@ func migrationIDs(config tailsplit.Config, operation, target string) ([]string, 
 		return nil, err
 	}
 	focus := config.Focus
+	if operation == "login-new" && !tailsplit.ValidExitID(focus) {
+		return nil, errors.New("new device authentication requires a configured additional exit")
+	}
 	if operation == "ping" {
 		if exit, _ := tailsplit.SplitPingTarget(target); exit != "" {
 			focus = exit
@@ -191,6 +194,9 @@ func migrationIDs(config tailsplit.Config, operation, target string) ([]string, 
 	if focus != "" {
 		for _, id := range config.ExitIDs() {
 			if id == focus {
+				if operation == "login-new" {
+					return nil, nil // A fresh device never imports any identity or cache.
+				}
 				return []string{id}, nil
 			}
 		}
@@ -269,13 +275,23 @@ func openLeasedSession(ctx context.Context, operation string, config tailsplit.C
 			_ = unlock()
 		}
 	}()
+	if operation == "login-new" {
+		// Claim the ordinary-user namespace too, under its lease. This rejects
+		// existing CLI/fallback identities and blocks a later fallback or import
+		// from reusing an unpublished device if the service attempt fails.
+		if err := tailsplit.ReserveNewExitState(config); err != nil {
+			return nil, err
+		}
+		// Device-only authentication never reads or transfers routing inputs.
+		config.Rules.GFWList, config.Rules.Source = "", nil
+	}
 	if operation == "start" {
 		if err := tailsplit.EnsureRules(ctx, config, nil); err != nil {
 			return nil, err
 		}
 	}
 	var files Files
-	if !activeOnly {
+	if !activeOnly && operation != "login-new" {
 		plan, err := queryImports(ctx, ids, dial)
 		if err != nil {
 			return nil, err

@@ -19,45 +19,29 @@
   const controls = [...document.querySelectorAll('[data-field]')];
   // Keep both footer dividers level when translated actions wrap or resize.
   if (window.ResizeObserver) {
-    const actionbar = $('#actionbar');
-    new window.ResizeObserver(() => {
+    const actionbar = $('#actionbar'), workspaceBody = $('#workspace-body');
+    const observer = new window.ResizeObserver(() => {
       const height = actionbar.getBoundingClientRect().height;
       if (height > 0) document.documentElement.style.setProperty('--actionbar-height', `${height}px`);
       else document.documentElement.style.removeProperty('--actionbar-height');
-    }).observe(actionbar);
+      // Hidden-overflow gutters can use a different native width than styled
+      // scrollbars. Match the body's actual gutter to keep centered edges aligned.
+      const gutter = workspaceBody.offsetWidth - workspaceBody.clientWidth;
+      document.documentElement.style.setProperty('--workspace-scrollbar-width', `${gutter}px`);
+    });
+    observer.observe(actionbar);
+    observer.observe(workspaceBody);
   }
-  const macWindow = window.webkit?.messageHandlers?.tailsplitWindow;
-  const windowsWindow = window.chrome?.webview;
-  const windowHost = macWindow || windowsWindow;
-  if (windowHost) {
-    document.documentElement.dataset.windowChrome = macWindow ? 'macos' : 'windows';
-    $('#window-controls').hidden = !windowsWindow;
-    const isTitlebarBackground = (event) => !event.target.closest('button, a, input, select, textarea, [role="button"]');
-    let titlebarPress = null;
-    $('#titlebar').addEventListener('mousedown', (event) => {
-      titlebarPress = null;
-      if (event.button !== 0 || event.detail > 1 || !isTitlebarBackground(event)) return;
-      event.preventDefault();
-      titlebarPress = { x: event.clientX, y: event.clientY };
-    });
-    // Hand off only an actual drag. Entering a native move loop on mouse-down
-    // would consume the click sequence needed for double-click zoom.
-    window.addEventListener('mousemove', (event) => {
-      if (!(event.buttons & 1)) titlebarPress = null;
-      if (!titlebarPress || Math.hypot(event.clientX - titlebarPress.x, event.clientY - titlebarPress.y) < 4) return;
-      titlebarPress = null;
-      windowHost.postMessage('drag');
-    });
-    window.addEventListener('mouseup', () => { titlebarPress = null; });
-    window.addEventListener('blur', () => { titlebarPress = null; });
-    $('#titlebar').addEventListener('dblclick', (event) => {
-      if (event.button !== 0 || !isTitlebarBackground(event)) return;
-      event.preventDefault();
-      windowHost.postMessage('zoom');
-    });
+  const mygoWindow = window.mygo?.window;
+  if (mygoWindow) {
+    document.documentElement.dataset.windowChrome = window.mygo.platform === 'darwin' ? 'macos' : 'windows';
+    document.documentElement.dataset.windowEngine = 'mygo';
+    $('#window-controls').hidden = window.mygo.platform !== 'win32';
+    const actions = { minimize: () => mygoWindow.minimize(), zoom: () => mygoWindow.toggleMaximize(), close: () => mygoWindow.close() };
     document.querySelectorAll('[data-window-action]').forEach((button) => {
-      button.addEventListener('click', () => windowHost.postMessage(button.dataset.windowAction));
+      button.addEventListener('click', () => actions[button.dataset.windowAction]?.().catch((error) => console.error(error)));
     });
+    // MyGo's native drag regions handle background dragging and double-clicks.
   }
   const defaults = {
     listen: '127.0.0.1:17890', interface: '', log_level: 'info',
@@ -317,7 +301,9 @@
     for (const button of document.querySelectorAll('.editor-tabs button, [data-section]')) button.disabled = locked;
     $('#settings-section-select').disabled = locked;
     $('#settings-tools').hidden = state.page !== 'settings';
+    $('#reload').hidden = state.page !== 'settings';
     $('#refresh-exits').hidden = state.page !== 'connection';
+    $('#desktop-log-refresh').hidden = state.page !== 'logs';
     setStatusText('#sidebar-proxy', String(fieldValue(state.savedValues, 'listen') || '127.0.0.1:17890'));
     $('#settings-draft').hidden = !state.dirty;
     $('#actionbar').hidden = !state.loaded || (state.page !== 'settings' && !state.dirty);
@@ -665,6 +651,7 @@
   // The picker edits one exit at a time: '' is the primary device.
   let pickerExit = '';
   let pendingExitPicker = '';
+  const pendingAddedExits = new Set();
   let extraExitsSignature = '';
   let exitListSignature = '';
   let pickerOriginalExit = null;
@@ -766,7 +753,6 @@
     select.disabled = !desktopLive?.desktop || isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || Boolean(desktopLive?.active && !networkActive()) || !records.some(gatewaySelectable);
     select.title = t(networkActive() ? savedMode() === 'global' ? '切换设备需先确认断开全局保护，保存后保持未连接。' : '选择后保存并重新连接，网络会短暂中断。' : '仅保存选择，保持未连接。');
     $('#connection-exit-control').hidden = state.page !== 'connection';
-    $('#exit-label').hidden = state.page === 'connection';
     setStatusText('#connection-exit-label', t(savedMode() === 'global' ? '全局出口' : '默认出口'));
     window.TailSplitSelect?.sync();
   }
@@ -880,6 +866,19 @@
     // A device that signs out, disappears or changes identity invalidates itself.
     const previous = desktopLive?.exits || {};
     desktopLive = live;
+    // Saving the provisional profile or opening a browser is not a completed Add.
+    // Only a fresh authenticated device status can confirm success.
+    for (const id of pendingAddedExits) {
+      if (!exitList().some(exit => exit.id === id)) {
+        if (!live.active && live.state !== 'authenticated' && !isDesktopBusy()) {
+          pendingAddedExits.delete(id);
+          if (pendingExitPicker === id) pendingExitPicker = '';
+        }
+      } else if (exitSignedIn(id) && !live.active && live.state === 'authenticated') {
+        pendingAddedExits.delete(id);
+        toast(t('出口已添加'));
+      }
+    }
     for (const [id, exit] of Object.entries(previous)) {
       const current = exitLive(id);
       if (current.network !== exit.network || current.hostname !== exit.hostname || current.backend_state !== exit.backend_state || current.phase !== exit.phase) clearPingResults(id);
@@ -889,7 +888,7 @@
     for (const [key] of pingResults) {
       if (!online.has(key)) pingResults.delete(key);
     }
-    if (pendingExitPicker && exitSignedIn(pendingExitPicker) && !exitDialog.open && state.page === 'connection' && !isDesktopBusy()) {
+    if (pendingExitPicker && exitList().some(exit => exit.id === pendingExitPicker) && exitSignedIn(pendingExitPicker) && !exitDialog.open && state.page === 'connection' && !isDesktopBusy()) {
       const exit = pendingExitPicker;
       pendingExitPicker = '';
       if (openExitPicker($('#add-exit'), exit)) return;
@@ -1098,7 +1097,8 @@
       const exitName = document.createElement('span'); exitName.className = 'exit-name';
       exitName.textContent = nodeName || configured || t('尚未选择出口');
       const detail = document.createElement('span'); detail.className = 'exit-network';
-      detail.textContent = deviceSessionNote(id) || (backend === 'NeedsLogin' ? t('未登录') : network || (backend === 'Running' ? t('已登录（网络名称未提供）') : t('尚未读取网络')));
+      detail.textContent = pendingAddedExits.has(id) && !exitSignedIn(id) ? t('等待 Tailscale 登录') :
+        deviceSessionNote(id) || (backend === 'NeedsLogin' ? t('未登录') : network || (backend === 'Running' ? t('已登录（网络名称未提供）') : t('尚未读取网络')));
       address.append(exitName, detail);
       if (configured && !excludedDevice(exitLive(id)) && backend === 'Running' && !online) {
         const unavailable = document.createElement('span'); unavailable.textContent = t(nodeName ? '已选 · 不可用' : '已保存 · 未发现');
@@ -1274,9 +1274,13 @@
     desktopPending = action;
     renderConnectionCenter();
     try {
-      await api('action', { action, ...(exit ? { exit } : {}) });
+      await api('action', { action, ...(exit ? { exit } : {}), ...(action === 'add-exit' ? { revision: state.revision } : {}) });
       return true;
-    } catch (error) { operationError = { title: '操作未完成', detail: error }; clearNotice(); return false; }
+    } catch (error) {
+      if (error.code === 'conflict') state.external = true;
+      operationError = { title: error.code === 'conflict' ? '配置文件已更新' : '操作未完成', detail: error, canReload: error.code === 'conflict' };
+      clearNotice(); return false;
+    }
     finally { desktopPending = ''; await refreshState(); renderConnectionCenter(); }
   }
   // Additional exits require a concrete device ID before sharing the action flow.
@@ -1302,7 +1306,7 @@
       const doc = await api('config', { yaml: state.saved, changes, revision: state.revision });
       onSaved?.(doc);
       useDocument(doc);
-      toast(t(success));
+      if (success) toast(t(success));
       return true;
     } catch (error) {
       if (error.code === 'conflict') state.external = true;
@@ -1318,8 +1322,9 @@
       ...['rules.final', 'rules.default_exit', 'rules.global_exit'].map((field) => String(fieldValue(state.savedValues, field))),
       ...(Array.isArray(routes) ? routes : []).map((route) => String(route?.exit || 'main')),
     ]);
-    for (let index = 1; ; index++) {
-      const id = `exit-${index}`;
+    for (;;) {
+      const bytes = window.crypto.getRandomValues(new Uint8Array(12));
+      const id = `exit-${Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')}`;
       if (!taken.has(id)) return id;
     }
   }
@@ -1370,16 +1375,16 @@
       if (networkActive() && !(await desktopAction('disconnect'))) return;
       if (!canManageExits() || state.revision !== revision || desktopLive.active || exitList().length >= 8) return;
       const id = newExitID();
-      const exits = [...exitList(), { id, auto_name: true, exit_node: '' }];
-      const changes = { exits };
-      if (!configuredExits().length) { changes['rules.default_exit'] = '-'; changes['rules.global_exit'] = '-'; }
-      let addedRevision;
-      if (!(await saveExitChanges(changes, '出口已添加', (doc) => { addedRevision = doc.revision; }))) return;
-      if (!canManageExits() || desktopLive.active || state.revision !== addedRevision || !exitList().some((exit) => exit.id === id)) return;
+      // The controller stages authentication privately. No provisional profile
+      // is saved or rendered before it commits a successful device login.
+      pendingAddedExits.add(id);
       pendingExitPicker = id;
-      if (!(await exitAction('login-exit', id))) pendingExitPicker = '';
+      if (!(await exitAction('add-exit', id))) {
+        pendingAddedExits.delete(id); pendingExitPicker = '';
+      } else if (!exitSignedIn(id) && desktopLive?.active && desktopLive.mode === 'login') toast(t('等待 Tailscale 登录'));
     } finally {
-      addingExit = false; renderConnectionCenter();
+      addingExit = false;
+      if (desktopLive) updateDesktop(desktopLive); else renderConnectionCenter();
       if (consentRequired && !exitDialog.open && !$('#add-exit').disabled) $('#add-exit').focus({ preventScroll: true });
     }
   });
@@ -1622,7 +1627,7 @@
   let updatePending = '';
   let updateError = '';
   let updateGeneration = 0;
-  const updatesBusy = () => updatePending || updateLive?.updates?.checking || updateLive?.updates?.downloading || updateLive?.updates?.installing;
+  const updatesBusy = () => updatePending || updateLive?.updates?.busy || updateLive?.updates?.confirming || updateLive?.updates?.checking || updateLive?.updates?.downloading || updateLive?.updates?.installing;
 
   function updateBytes(bytes) {
     if (bytes < 1024) return `${Math.floor(bytes)} B`;
@@ -1662,7 +1667,7 @@
     const percent = total > 0 ? Math.min(100, Math.floor(downloaded / total * 100)) : null;
     const pendingLabels = { check: t('检查中…'), install: t('等待确认…'), 'automatic-on': t('保存中…'), 'automatic-off': t('保存中…') };
     const label = updates.downloading ? (percent === null ? t('下载中…') : t('下载中 {percent}%', { percent })) :
-      updates.installing ? t('安装中…') : updates.checking ? t('检查中…') : updatePending ? pendingLabels[updatePending] :
+      updates.installing ? t('安装中…') : updates.confirming ? t('等待确认…') : updates.checking ? t('检查中…') : updatePending ? pendingLabels[updatePending] :
       failed ? t('重试更新') : updates.available ? (live.preview ? t('模拟更新') : t('更新')) :
       current ? t('已是最新') : t('检查更新');
     setStatusText('#update-pill-version', label);
@@ -1714,10 +1719,6 @@
     $('#connection-status').title = $('#connection-status span').textContent;
 
     $('#sidebar-status').classList.toggle('connected', connected);
-    const selected = connectionExit();
-    const selectedLabel = selected === null ? (requiresDefaultExit(state.savedValues) ? t('未设置默认出口') : '') : exitLive(selected).exit || savedExit(selected);
-    setStatusText('#exit-label', connectionLost ? t('请确认 TailSplit 仍在运行') : selectedLabel || (live.preview ? t('更改仅保存到预览副本') : t('本机配置')));
-    $('#exit-label').title = $('#exit-label').textContent;
   }
 
   async function refreshState() {
@@ -1734,8 +1735,12 @@
         const generation = state.generation;
         if (!state.dirty) {
           const doc = await api('config');
+          if (request !== stateRequest) return;
           if (generation === state.generation && !state.dirty && !isLocked()) {
             useDocument(doc);
+            // Resolve Add completion against the committed inventory now,
+            // without applying an older status to a newer configuration.
+            if (doc.revision === live.revision) updateDesktop(live);
             return;
           }
           if (doc.revision === state.revision) return;

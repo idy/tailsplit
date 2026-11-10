@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.26.2'
+          go-version: '1.27.3'
           cache-dependency-path: go.sum
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -78,7 +78,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.26.2'
+          go-version: '1.27.3'
           architecture: ${{ matrix.python_arch }}
           cache-dependency-path: go.sum
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -102,11 +102,11 @@ jobs:
       - name: Validate desktop capability, pipe identity, updater and native Go UI entry point
         shell: pwsh
         run: |
-          go test -mod=readonly -tags with_gvisor -run '^(TestDesktop|TestWindows)' -timeout 3m ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./cmd/tailsplit-tray
+          go test -mod=readonly -tags with_gvisor -run '^(TestDesktop|TestWindows)' -timeout 3m ./internal/appservice ./internal/configweb ./internal/tray ./cmd/tailsplit-tray
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -mod=readonly -tags with_gvisor -timeout 3m ./internal/appupdate
+          go test -mod=readonly -tags with_gvisor -timeout 3m ./internal/desktopwindow ./internal/desktoptray ./internal/appupdate
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet -mod=readonly -tags with_gvisor ./internal/appservice ./internal/configweb ./internal/tray ./internal/winui ./internal/appupdate ./cmd/tailsplit-tray
+          go vet -mod=readonly -tags with_gvisor ./internal/appservice ./internal/configweb ./internal/tray ./internal/desktopwindow ./internal/desktoptray ./internal/appupdate ./cmd/tailsplit-tray
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build native Windows archive
         shell: pwsh

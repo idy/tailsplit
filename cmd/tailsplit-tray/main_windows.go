@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,14 +19,15 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/egoist/mygo"
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/configweb"
+	"github.com/idy/tailsplit/internal/desktopwindow"
 	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/privatefs"
 	"github.com/idy/tailsplit/internal/tray"
-	"github.com/idy/tailsplit/internal/winui"
 
-	"github.com/getlantern/systray"
+	systray "github.com/idy/tailsplit/internal/desktoptray"
 	"github.com/tailscale/go-winio"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -47,7 +47,7 @@ type windowsApp struct {
 	cancel      context.CancelFunc
 	controller  *tray.Controller
 	configPath  string
-	window      *winui.Window
+	window      *desktopwindow.Window
 	operations  chan windowsOperation
 	login       tray.LoginFlow
 	browserDone chan error
@@ -101,7 +101,12 @@ func runWindowsDesktop() (runErr error) {
 	noConnect := flags.Bool("no-connect", false, "start disconnected after installation")
 	config := flags.String("config", filepath.Join(root, "config.yaml"), "user configuration")
 	logPath := flags.String("log", filepath.Join(root, "logs", "tailsplit.log"), "private log")
+	uiListen := flags.String("ui-listen", "", "optional local panel address")
+	proofDirectory := flags.String("proof-dir", "", "isolated native UI verification output")
 	if err := flags.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	if err := configureDesktopProof(*proofDirectory); err != nil {
 		return err
 	}
 	uiLanguage = locale.NewStore(*config)
@@ -164,6 +169,10 @@ func runWindowsDesktop() (runErr error) {
 	if err := privatefs.CheckFile(*config); err != nil {
 		return err
 	}
+	// SetLocale persists framework preferences. The protected user root must
+	// already exist, and control-only --quit must never initialize GUI state.
+	mygo.App.SetName("TailSplit")
+	desktopwindow.ConfigureApplication(currentLanguage(), tray.ShowAbout)
 	controller, err := tray.New(tray.Options{Helper: filepath.Join(filepath.Dir(executable), "tailsplit-core.exe"), ConfigPath: *config, LogPath: *logPath})
 	if err != nil {
 		return err
@@ -191,8 +200,14 @@ func runWindowsDesktop() (runErr error) {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
 		}, launchWindowsUpdate)
 	page, err := configweb.Start(configweb.Options{
-		Language: uiLanguage, ConfigPath: *config, Snapshot: controller.Snapshot,
+		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode,
+		AddExit: func(ctx context.Context, id, revision string) error {
+			return app.do(ctx, func() error {
+				app.login.Cancel()
+				return finishDesktopExitLogin(&app.login, controller.AddExit(id, revision))
+			})
+		},
 		RemoveExit: func(ctx context.Context, id, revision string) error {
 			return app.do(ctx, func() error {
 				app.login.Cancel()
@@ -216,13 +231,13 @@ func runWindowsDesktop() (runErr error) {
 		return err
 	}
 	defer page.Close()
-	app.window, err = winui.New(filepath.Join(filepath.Dir(executable), "TailSplit.Window.dll"), page.URL(), browser, "TailSplit.Window."+sid)
+	app.window, err = desktopwindow.New(page.URL(), *background)
 	if err != nil {
 		return err
 	}
 	windowDone := make(chan error, 1)
 	go func() {
-		controller.RecordDesktopEvent("Native window host loaded; starting WebView2.")
+		controller.RecordDesktopEvent("MyGo native window starting with the system WebView.")
 		windowDone <- app.window.Run()
 	}()
 	go func() {
@@ -237,9 +252,9 @@ func runWindowsDesktop() (runErr error) {
 		}
 	}()
 	go app.serveDesktop(listener)
-	systray.Run(func() {
-		systray.SetIcon(windowsTrayIcon(false))
-		systray.SetTooltip("TailSplit")
+	systray.SetIcon(windowsTrayIcon(false))
+	systray.SetTooltip("TailSplit")
+	return systray.Run(func() {
 		open := addMenu(nil, "打开 TailSplit", "连接、账号、分流与日志")
 		status := addMenu(nil, "未连接", "")
 		status.Disable()
@@ -256,13 +271,10 @@ func runWindowsDesktop() (runErr error) {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		var connected bool
-		if *background {
-			go hideInitialWindowsWindow("TailSplit.Window."+sid, ctx)
-		}
 		preferences, _ := tray.ReadPreferences(*config)
 		// Load the saved device's login and exits even when startup must stay disconnected.
 		go func() {
-			if action := desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect); action != "" {
+			if action := desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect); action != "" && !desktopProofMode() {
 				_ = app.action(ctx, action)
 			}
 		}()
@@ -316,15 +328,18 @@ func runWindowsDesktop() (runErr error) {
 				languageChanged := language != tray.UILanguage()
 				if languageChanged {
 					tray.SetUILanguage(language)
+					desktopwindow.ConfigureApplication(language, tray.ShowAbout)
 					refreshMenuLanguage()
 				}
 				updateState := app.updates.snapshot()
 				checkUpdate.SetTitle(updateMenuTitleForLanguage(updateState, currentLanguage()))
 				checkUpdate.SetTooltip(tr(updateState.Error))
-				if updateState.Checking || updateState.Downloading || updateState.Installing {
+				if updateState.Busy || updateState.Confirming || updateState.Checking || updateState.Downloading || updateState.Installing {
 					checkUpdate.Disable()
+					autoUpdates.Disable()
 				} else {
 					checkUpdate.Enable()
+					autoUpdates.Enable()
 				}
 				if updateState.Automatic {
 					autoUpdates.Check()
@@ -347,7 +362,6 @@ func runWindowsDesktop() (runErr error) {
 			}
 		}
 	}, func() { cancel(); _ = controller.Close(); _ = page.Close() })
-	return nil
 }
 
 func (a *windowsApp) do(ctx context.Context, apply func() error) error {
@@ -411,6 +425,9 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 	return a.do(ctx, func() error {
 		action, exit := splitExitAction(action)
 		switch action {
+		case "add-exit":
+			a.login.Cancel()
+			return finishDesktopExitLogin(&a.login, a.controller.AddExit(exit))
 		case "login-exit":
 			return requestDesktopExitLogin(a.controller, &a.login, exit)
 		case "logout-exit":
@@ -573,51 +590,16 @@ func initializeWindowsConfig(path string) error {
 	return errors.Join(writeErr, file.Sync(), file.Close())
 }
 
-func hideInitialWindowsWindow(class string, ctx context.Context) {
-	name, _ := windows.UTF16PtrFromString(class)
-	user32 := windows.NewLazySystemDLL("user32.dll")
-	for attempt := 0; attempt < 100; attempt++ {
-		handle, _, _ := user32.NewProc("FindWindowW").Call(uintptr(unsafe.Pointer(name)), 0)
-		if handle != 0 {
-			user32.NewProc("PostMessageW").Call(handle, 0x10, 0, 0)
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-}
-
 func windowsError(message string) {
 	text, _ := windows.UTF16PtrFromString(tr(message))
 	title, _ := windows.UTF16PtrFromString("TailSplit")
 	windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
 }
 
-// windowsTrayIconSizes cover the system icon metric from 100% to 200% scaling;
-// LoadImage picks the closest one instead of scaling a single image.
-var windowsTrayIconSizes = []int{16, 20, 24, 32, 40, 48, 64}
-
+// MyGo consumes the same 64px PNG that the migrated adapter selected from the
+// former ICO. Executable icon resources keep their separate multi-size artwork.
 func windowsTrayIcon(connected bool) []byte {
-	pictures := make([][]byte, len(windowsTrayIconSizes))
-	for i, size := range windowsTrayIconSizes {
-		var picture bytes.Buffer
-		_ = png.Encode(&picture, markImage(size, true, connected))
-		pictures[i] = picture.Bytes()
-	}
 	var icon bytes.Buffer
-	_ = binary.Write(&icon, binary.LittleEndian, [3]uint16{0, 1, uint16(len(pictures))})
-	offset := 6 + 16*len(pictures)
-	for i, size := range windowsTrayIconSizes {
-		icon.Write([]byte{byte(size), byte(size), 0, 0})
-		_ = binary.Write(&icon, binary.LittleEndian, [2]uint16{1, 32})
-		_ = binary.Write(&icon, binary.LittleEndian, [2]uint32{uint32(len(pictures[i])), uint32(offset)})
-		offset += len(pictures[i])
-	}
-	for _, picture := range pictures {
-		icon.Write(picture)
-	}
+	_ = png.Encode(&icon, markImage(64, true, connected))
 	return icon.Bytes()
 }
