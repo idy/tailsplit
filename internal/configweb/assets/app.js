@@ -88,6 +88,11 @@
     return value;
   }
 
+  window.TailSplitCompanionPreferences = {
+    load: () => api('companion'),
+    save: (enabled) => api('companion', { enabled }),
+  };
+
   let activeNotice = null;
   // Operation failures survive automatic document reloads until a retry or explicit reload.
   let operationError = null;

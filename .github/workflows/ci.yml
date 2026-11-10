@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths-ignore: ['site/**', '.github/workflows/pages.yml']
+  # Required checks must also run for website-only pull requests.
   pull_request:
-    paths-ignore: ['site/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:

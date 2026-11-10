@@ -12,6 +12,8 @@
   <script src="/i18n.js" defer></script>
   <script src="/select.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/vendor/peetty/peetty.global.js" defer></script>
+  <script src="/companion.js" defer></script>
 </head>
 <body>
 <!-- Phosphor Icons 2.1.1, regular, MIT. See THIRD_PARTY_NOTICES.md. -->
@@ -36,7 +38,7 @@
   <symbol id="i-square" data-phosphor="square" viewBox="0 0 256 256"><path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,176H48V48H208V208Z" /></symbol>
   <symbol id="i-spinner" data-phosphor="circle-notch" viewBox="0 0 256 256"><path d="M232,128a104,104,0,0,1-208,0c0-41,23.81-78.36,60.66-95.27a8,8,0,0,1,6.68,14.54C60.15,61.59,40,93.27,40,128a88,88,0,0,0,176,0c0-34.73-20.15-66.41-51.34-80.73a8,8,0,0,1,6.68-14.54C208.19,49.64,232,87,232,128Z" /></symbol>
 </defs></svg>
-<header class="titlebar" id="titlebar">
+<header class="titlebar" id="titlebar" data-peetty="avoid">
   <a class="brand" href="/" tabindex="-1" aria-label="TailSplit 首页">
     <span class="brand-mark"><svg viewBox="7.5 9.2 48 48" aria-hidden="true"><path d="M53.4 21.68C52.9 22.65 51.94 23.25 50.89 23.49C46.01 24.6 43.48 20.21 39.58 18.56C36.94 17.45 34.01 17.28 31.18 17.37C28.78 17.45 26.27 18.1 24.6 19.93C19.47 25.57 30.86 27.54 34.03 28.41C39.04 29.8 45.05 32.06 47.15 37.29C48.15 39.81 47.99 42.69 47.04 45.2C45.28 49.83 40.8 52.56 36.03 53.12C34.32 53.32 32.58 53.24 30.87 53.33C28.75 53.44 26.64 53.64 24.54 53.9C19.38 54.53 14.28 55.52 9.22 56.66C15.21 53.26 21.56 51.11 28.22 49.44C21.03 46.73 14.91 42.28 9.22 37.19C14.49 39.48 19.52 42.29 24.98 44.12C28.28 45.23 32.2 46.35 35.7 45.67C37.15 45.38 38.65 44.68 39.42 43.36C44.7 34.38 14.31 38.99 15.03 22.36C15.19 18.56 17.15 15.03 20.16 12.74C25.74 8.52 33.87 9.15 40.21 11.26C41.74 11.77 43.13 12.62 44.64 13.13C46.06 13.61 47.58 13.49 49 13.95C51.97 14.92 55.06 18.45 53.4 21.68ZM46.8 16.7a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-linejoin="round"/></svg></span>
     <span class="brand-name">TailSplit</span>
@@ -108,6 +110,7 @@
             <div class="section-heading"><div><h2 id="heading-general">通用</h2><p>界面语言与启动偏好。</p></div></div>
             <div class="settings-group">
               <div class="field-row"><div class="field-label"><label for="ui-language">语言</label><p>立即生效，不会中断连接。</p></div><div class="field-control"><select id="ui-language" aria-label="界面语言"><option value="auto">跟随系统</option><option value="zh">简体中文</option><option value="en">English</option></select></div></div>
+              <div class="field-row toggle-row"><div class="field-label"><label for="page-companion">页面小人</label><p>在页面里走动和跳跃；可拖动，悬停查看更多动作。</p><p class="field-hint update-error" id="page-companion-error" role="status" hidden></p><button class="link-button" id="page-companion-retry" type="button" hidden>重试</button></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="page-companion" disabled><span class="switch-track"></span></label></div></div>
               <div class="field-row toggle-row" id="startup-setting" hidden><div class="field-label"><label for="desktop-startup">登录系统后启动</label><p>登录这台电脑时打开 TailSplit。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="desktop-startup"><span class="switch-track"></span></label></div></div>
               <div class="field-row toggle-row"><div class="field-label"><label for="connect-on-start">打开后自动连接</label><p>仅在打开 TailSplit 时自动连接。</p></div><div class="field-control toggle-control"><label class="switch"><input type="checkbox" id="connect-on-start" data-field="app.connect_on_start"><span class="switch-track"></span></label></div></div>
             </div>

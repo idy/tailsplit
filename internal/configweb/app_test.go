@@ -17,7 +17,7 @@ func TestEditorAsyncState(t *testing.T) {
 	if err != nil || parseErr != nil || major < 18 {
 		t.Skip("Node.js 18 or later is required for editor state regression tests")
 	}
-	if output, err := exec.Command(node, "--test", "testdata/app_test.cjs", "testdata/i18n_test.cjs").CombinedOutput(); err != nil {
+	if output, err := exec.Command(node, "--test", "testdata/app_test.cjs", "testdata/i18n_test.cjs", "testdata/companion_test.cjs", "testdata/peetty_sdk_test.cjs").CombinedOutput(); err != nil {
 		t.Fatalf("editor state regression tests failed: %v\n%s", err, output)
 	}
 }
