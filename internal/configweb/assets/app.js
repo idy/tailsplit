@@ -869,9 +869,10 @@
       const result = await api('connect-request', { request });
       if (!result.claimed) { forgetBrowserConnect(request); return; }
     } catch (error) {
-      notice('操作未完成', message(error));
+      if (request !== lastNativeConnect) notice('操作未完成', message(error));
       return;
     }
+    if (request === lastNativeConnect) return; // Cancellation may finish while the claim is in flight.
     markNativeConnectHandled(request);
     if (connectionSetup || networkActive()) return;
     showPage('connection');
@@ -925,16 +926,14 @@
   }
   async function cancelConnectionSetup() {
     const request = desktopLive?.connect_request;
-    if (request && (mygoWindow || browserConnectRequest === request)) {
-      try {
-        await api('connect-request', { request });
-        markNativeConnectHandled(request);
-      } catch (error) { notice('操作未完成', message(error)); return; }
-    }
+    const canceledRequest = request && (mygoWindow || browserConnectRequest === request) ? request : '';
+    // Suppress this page's intent immediately. Disconnect also acknowledges the
+    // exact ID on the server, without depending on a separate claim HTTP call.
+    if (canceledRequest) markNativeConnectHandled(canceledRequest);
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
     if (exitDialog.open) exitDialog.close();
-    if (desktopLive?.active) await desktopAction('disconnect');
+    if (desktopLive?.active || canceledRequest) await desktopAction('disconnect', '', canceledRequest);
     renderConnectionCenter();
   }
   async function beginConnectionSetup(exit = '') {
@@ -1557,7 +1556,7 @@
   }
   $('#apply-connection-change').addEventListener('click', applyConnectionChanges);
   $('#apply-exit-picker').addEventListener('click', applyConnectionChanges);
-  async function desktopAction(action, exit = '') {
+  async function desktopAction(action, exit = '', connectRequest = '') {
     if (isDesktopBusy() || quickBusy || connectionLost || !desktopLive?.desktop) return false;
     const login = action === 'login' || action === 'login-exit';
     const owner = desktopLive.focus || (networkActive() ? connectionExitRecord()?.id : '') || 'main';
@@ -1573,7 +1572,7 @@
     desktopPending = action;
     renderConnectionCenter();
     try {
-      await api('action', { action, ...(exit ? { exit } : {}), ...(['add-exit', 'connect'].includes(action) ? { revision: state.revision } : {}) });
+      await api('action', { action, ...(exit ? { exit } : {}), ...(connectRequest ? { connect_request: connectRequest } : {}), ...(['add-exit', 'connect'].includes(action) ? { revision: state.revision } : {}) });
       return true;
     } catch (error) {
       if (error.code === 'conflict') state.external = true;

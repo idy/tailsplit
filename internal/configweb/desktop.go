@@ -39,9 +39,10 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Action   string `json:"action"`
-		Exit     string `json:"exit,omitempty"`
-		Revision string `json:"revision,omitempty"`
+		Action         string `json:"action"`
+		Exit           string `json:"exit,omitempty"`
+		Revision       string `json:"revision,omitempty"`
+		ConnectRequest string `json:"connect_request,omitempty"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 	decoder.DisallowUnknownFields()
@@ -51,7 +52,8 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := request.Action
-	if request.Action != "add-exit" && request.Action != "connect" && request.Revision != "" {
+	if (request.Action != "add-exit" && request.Action != "connect" && request.Revision != "") ||
+		(request.ConnectRequest != "" && request.Action != "disconnect") {
 		fail(w, http.StatusBadRequest, "action", "未知操作。")
 		return
 	}
@@ -147,6 +149,12 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		operation = func() error { return s.options.Action(r.Context(), action) }
+	}
+	// Cancel the exact intent within the disconnect request, so a failed or
+	// stalled claim endpoint cannot delay stopping a helper or replay the intent.
+	// A stale ID must neither consume a newer click nor prevent disconnection.
+	if request.Action == "disconnect" && request.ConnectRequest != "" && s.options.ClaimConnectRequest != nil {
+		s.options.ClaimConnectRequest(request.ConnectRequest)
 	}
 	if err := operation(); err != nil {
 		if errors.Is(err, tray.ErrConfigChanged) {

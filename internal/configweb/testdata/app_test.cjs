@@ -3364,21 +3364,62 @@ test('browser fallback persistence is scoped to the current panel capability', a
   assert.equal(mutations(app).length, 0);
 });
 
-test('canceling an unclaimed fallback consumes it before stopping the busy helper', async () => {
-  const storage = new Map();
-  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', connect_request: 'cancel-before-claim' }, '',
-    { page: 'home', hash: '#token=fixture&connect=cancel-before-claim', storage }, guidedDocument());
-  app.override = request => {
-    if (request.path !== '/api/action') return undefined;
-    assert.equal(request.data.action, 'disconnect');
-    Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
-    return response({ ok: true });
-  };
-  await app.$('#connection-setup-cancel').emit('click');
-  assert.equal(app.snapshot.connect_request, '');
-  assert.equal(storage.has('tailsplit-browser-connect'), false);
-  const reloaded = await page(app.snapshot, '', { page: 'home', storage }, app.config);
-  assert.equal(mutations(reloaded).length, 0, 'cancel cannot replay after a reload');
+test('cancellation stops the helper despite a failed or stalled claim endpoint and cannot replay', async () => {
+  for (const native of ['', 'mygo-windows']) {
+    for (const stalled of [false, true]) {
+      const storage = new Map();
+      const id = 'cancel-before-claim';
+      const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', connect_request: id }, native,
+        { page: 'home', hash: `#token=fixture&connect=${id}`, storage }, guidedDocument());
+      app.override = request => {
+        if (request.path === '/api/connect-request') return stalled ? deferred().promise : response({ error: 'claim failed' }, false);
+        if (request.path !== '/api/action') return undefined;
+        assert.deepEqual(request.data, { action: 'disconnect', connect_request: id });
+        // Model the server's exact-ID acknowledgment inside disconnect.
+        if (app.snapshot.connect_request === request.data.connect_request) app.snapshot.connect_request = '';
+        Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+        return response({ ok: true });
+      };
+      const cancel = app.$('#connection-setup-cancel').emit('click');
+      await settle();
+      assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1, 'disconnect must start without waiting for a claim');
+      await cancel;
+      assert.equal(app.requests.some(r => r.path === '/api/connect-request'), false);
+      assert.equal(app.snapshot.connect_request, '');
+      assert.equal(storage.has('tailsplit-browser-connect'), false);
+      const reloaded = await page(app.snapshot, native, { page: 'home', storage }, app.config);
+      const other = await page(app.snapshot, 'mygo-windows', { page: 'home', storage: new Map() }, app.config);
+      assert.equal(mutations(reloaded).length + mutations(other).length, 0, 'cancel cannot replay in this tab or another native panel');
+    }
+  }
+});
+
+test('an in-flight native claim cannot resume setup after cancellation', async () => {
+  for (const succeeds of [false, true]) {
+    const app = await page({ desktop: true }, 'mygo-windows', { page: 'home' }, guidedDocument());
+    guidedBackend(app, { deferAdd: true });
+    await app.$('#home-setup').emit('click');
+    const backend = app.override;
+    const claim = deferred();
+    app.snapshot.connect_request = 'in-flight-cancel';
+    app.override = request => {
+      if (request.path === '/api/connect-request') return claim.promise;
+      if (request.path === '/api/action' && request.data.action === 'disconnect') app.snapshot.connect_request = '';
+      return backend(request);
+    };
+    const poll = app.poll();
+    await settle();
+    assert.equal(app.requests.filter(r => r.path === '/api/connect-request').length, 1);
+    const cancel = app.$('#connection-setup-cancel').emit('click');
+    await settle();
+    assert.equal(mutations(app).filter(r => r.data.action === 'disconnect').length, 1);
+    await cancel;
+    claim.resolve(succeeds ? response({ claimed: true }) : response({ error: 'late claim failure' }, false));
+    await poll;
+    assert.deepEqual(mutations(app).map(r => r.data.action), ['add-exit', 'disconnect']);
+    assert.equal(app.$('#connection-setup').hidden, true);
+    assert.equal(app.$('#notice').hidden, true, 'a late canceled claim failure cannot replace the cancellation result');
+  }
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {

@@ -120,6 +120,67 @@ func TestConnectRequestClaimsRequireCapabilityOriginAndStrictJSON(t *testing.T) 
 	}
 }
 
+func TestDisconnectCancelsExactConnectRequestWithoutClaimRoundTrip(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		stale      bool
+		failStop   bool
+		noClaim    bool
+		action     string
+		headers    map[string]string
+		wantStatus int
+	}{
+		{name: "matching request", wantStatus: http.StatusOK},
+		{name: "stale request still stops", stale: true, wantStatus: http.StatusOK},
+		{name: "stop failure still cancels intent", failStop: true, wantStatus: http.StatusBadRequest},
+		{name: "standalone stop needs no claim callback", noClaim: true, wantStatus: http.StatusOK},
+		{name: "missing capability", headers: map[string]string{"Authorization": ""}, wantStatus: http.StatusUnauthorized},
+		{name: "foreign origin", headers: map[string]string{"Origin": "https://foreign.example"}, wantStatus: http.StatusForbidden},
+		{name: "claim field rejected for connect", action: "connect", wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, path, _ := testServer(t)
+			controller, err := tray.New(tray.Options{Helper: "unused", ConfigPath: path, LogPath: filepath.Join(t.TempDir(), "core.log")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = controller.Close() })
+			if !test.noClaim {
+				server.options.ClaimConnectRequest = controller.ClaimConnectRequest
+			}
+			controller.RequestConnectionSetup()
+			id := controller.Snapshot().ConnectRequest
+			if test.stale {
+				controller.RequestConnectionSetup()
+			}
+			wantRequest := controller.Snapshot().ConnectRequest
+			allowed := test.wantStatus == http.StatusOK || test.failStop
+			if allowed && !test.stale && !test.noClaim {
+				wantRequest = ""
+			}
+			calls := 0
+			server.options.Action = func(_ context.Context, action string) error {
+				calls++
+				if action != "disconnect" || controller.Snapshot().ConnectRequest != wantRequest {
+					t.Fatal("stop did not receive the exact canceled intent")
+				}
+				if test.failStop {
+					return errors.New("cleanup still in progress")
+				}
+				return nil
+			}
+			action := test.action
+			if action == "" {
+				action = "disconnect"
+			}
+			status, body := request(t, server, "POST", "/api/action", map[string]string{"action": action, "connect_request": id}, test.headers)
+			if status != test.wantStatus || (calls == 1) != allowed || controller.Snapshot().ConnectRequest != wantRequest {
+				t.Fatalf("disconnect returned %d %s, calls=%d, pending=%q", status, body, calls, controller.Snapshot().ConnectRequest)
+			}
+		})
+	}
+}
+
 func TestConcurrentConnectRequestClaimsHaveOnlyOneWinner(t *testing.T) {
 	server, path, _ := testServer(t)
 	controller, err := tray.New(tray.Options{Helper: "unused", ConfigPath: path, LogPath: filepath.Join(t.TempDir(), "core.log")})
