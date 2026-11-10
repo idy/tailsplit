@@ -775,12 +775,16 @@ func PatchConfigDocument(original []byte, changes ...ConfigChange) ([]byte, erro
 // The temporary file remains beside the real config so relative paths retain
 // their meaning. Load applies the same schema checks as the native menu.
 func configCandidate(path string, data []byte) (string, tailsplit.Config, error) {
+	return configCandidatePrefix(path, data, ".tailsplit-config-")
+}
+
+func configCandidatePrefix(path string, data []byte, prefix string) (string, tailsplit.Config, error) {
 	if len(data) > MaxConfigBytes {
 		return "", tailsplit.Config{}, errors.New("configuration exceeds 1 MiB")
 	}
 	// os.CreateTemp's mode does not establish a private Windows ACL. Create
 	// an exclusive random name with the same private-file helper as CLI init.
-	tmp, err := privatefs.CreateFile(filepath.Join(filepath.Dir(path), ".tailsplit-config-"+rand.Text()))
+	tmp, err := privatefs.CreateFile(filepath.Join(filepath.Dir(path), prefix+rand.Text()))
 	if err != nil {
 		return "", tailsplit.Config{}, err
 	}

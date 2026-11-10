@@ -337,6 +337,12 @@ func main() {
 		status := addMenu("TailSplit · 未连接", "")
 		status.Disable()
 		connect := addMenu("连接", "连接或断开 TailSplit")
+		var removeService *systray.MenuItem
+		var removeServiceClicks <-chan struct{}
+		if _, err := os.Stat(uninstallerPath); err == nil {
+			removeService = addMenu("卸载后台服务…", "停止代理并打开卸载包；保留登录和配置")
+			removeServiceClicks = removeService.ClickedCh
+		}
 		systray.AddSeparator()
 		quit := addMenu("退出 TailSplit", "同时停止此 App 启动的代理")
 		if *openImmediately || desktopProofMode() && os.Getenv("TAILSPLIT_TRAY_PROOF_DIR") == "" {
@@ -560,6 +566,8 @@ func main() {
 					}
 				case <-configuration.ClickedCh:
 					showConfiguration()
+				case <-removeServiceClicks:
+					uninstallService()
 				case <-quit.ClickedCh:
 					systray.Quit()
 					return
@@ -587,6 +595,9 @@ func main() {
 					systray.SetTooltip("TailSplit · " + presentation.Summary)
 					busy := editing || loggingOut || snapshot.State == "stopping" || snapshot.State == "logging-out"
 					setEnabled(connect, (!busy || snapshot.PreparingService()) && !flow.Opening())
+					if removeService != nil {
+						setEnabled(removeService, !busy && !flow.Opening() && snapshot.State != "authorizing")
+					}
 				}
 			}
 		}()

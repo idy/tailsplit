@@ -92,7 +92,7 @@ func TestStartRevisionRejectsStaleIntentAndCleansFailedLaunch(t *testing.T) {
 	if err := controller.StartRevision(revision); err == nil {
 		t.Fatal("missing helper accepted")
 	}
-	files, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".tailsplit-config-*"))
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(path), connectionSnapshotPrefix+"*"))
 	if err != nil || len(files) != 0 {
 		t.Fatal("failed launch leaked a private snapshot", files, err)
 	}

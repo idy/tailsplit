@@ -131,7 +131,11 @@ func New(options Options) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}, nil
+	controller := &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}
+	if err := cleanupConnectionSnapshots(options.ConfigPath); err != nil {
+		controller.RecordDesktopEvent("Could not clean orphaned connection snapshots: " + err.Error())
+	}
+	return controller, nil
 }
 
 func (c *Controller) Snapshot() Snapshot {
@@ -188,7 +192,7 @@ func (c *Controller) StartRevision(expected string) error {
 	if expected == "" || expected != revision {
 		return ErrConfigChanged
 	}
-	path, _, err := configCandidate(c.options.ConfigPath, data)
+	path, _, err := configCandidatePrefix(c.options.ConfigPath, data, fmt.Sprintf("%s%d-", connectionSnapshotPrefix, os.Getpid()))
 	if err != nil {
 		return err
 	}

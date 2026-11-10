@@ -17,7 +17,9 @@
   allow valid direct-only policies, and keep optional signed-out identities from
   forcing a separate login. Preserve recovery actions when configuration reads
   fail, native configuration editing when the panel cannot start, and the macOS
-  network-service uninstaller in the application menu.
+  network-service uninstaller in both the application and native fallback menus.
+  Reclaim orphaned private connection snapshots on the next launch after an
+  abrupt exit, without deleting snapshots belonging to live processes.
 
 ## 0.9.0
 

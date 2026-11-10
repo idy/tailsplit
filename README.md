@@ -82,8 +82,11 @@ helper waiting through any required browser authorization and continues after
 sign-in; automatic startup never opens that browser. Valid direct-only Split
 policies can connect without a default gateway or signing in to optional devices. On macOS, if the local panel cannot start,
 the native menu offers **Edit Configuration**. The full window's **TailSplit**
-application menu retains **Uninstall Network Service**, which finishes connection
-cleanup before opening the bundled removal installer.
+application menu and native fallback menu retain **Uninstall Network Service**,
+which finishes connection cleanup before opening the bundled removal installer,
+even when the panel cannot open. On the next app launch, connection snapshots left
+by an abruptly exited owner are removed; live owners, unrecognized files and links
+are preserved.
 
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
