@@ -143,15 +143,17 @@ type Controller struct {
 	pendingAdd    *pendingExitAddition
 	preparation   *servicePreparation
 
-	activeRevision     string            // Source document held by the current traffic helper.
-	connectRequest     string            // Unconsumed native intent, independent of status restores.
-	operationID        string            // Logical owner survives helper exit and internal restarts.
-	canceledOperations map[string]bool   // Lifetime tombstones also cover pre-admission cancellation.
-	requestOperations  map[string]string // Retained native request -> operation binding.
-	revokedRequests    map[string]bool
-	revokedOperations  map[string]bool // Revoked native bindings reject future admission.
-	stopGeneration     uint64
-	stopCompletion     *stopCompletion
+	activeRevision      string            // Source document held by the current traffic helper.
+	connectRequest      string            // Unconsumed native intent, independent of status restores.
+	operationID         string            // Logical owner survives helper exit and internal restarts.
+	canceledOperations  map[string]bool   // Lifetime tombstones also cover pre-admission cancellation.
+	requestOperations   map[string]string // Retained native request -> operation binding.
+	nativeOffers        map[string]bool   // Exact pending intents exposed in a live native panel.
+	interruptedRequests map[string]bool
+	revokedRequests     map[string]bool
+	revokedOperations   map[string]bool // Revoked native bindings reject future admission.
+	stopGeneration      uint64
+	stopCompletion      *stopCompletion
 }
 
 func New(options Options) (*Controller, error) {
@@ -205,11 +207,15 @@ func (c *Controller) ClaimConnectRequest(request string) bool {
 // Preserve the binding after consumption so a delayed claim cannot rebind a
 // revoked native request to a fresh operation and revive canceled setup.
 func (c *Controller) ClaimConnectOperation(request, operation string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.claimConnectOperationLocked(request, operation)
+}
+
+func (c *Controller) claimConnectOperationLocked(request, operation string) bool {
 	if operation == "" {
 		operation = request
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if request == "" || operation == "" || request != c.connectRequest || c.revokedRequests[request] || c.canceledOperations[request] || c.operationAllowedLocked(operation) != nil {
 		return false
 	}
@@ -219,6 +225,79 @@ func (c *Controller) ClaimConnectOperation(request, operation string) bool {
 	c.requestOperations[request] = operation
 	c.connectRequest = ""
 	return true
+}
+
+// OfferNativeConnectRequest runs immediately before exposing the interactive
+// native panel. Cold load failures and dead windows never make this offer.
+// Optional predicates run under the controller lock and must only read bounded
+// lifecycle state, so a queued offer cannot survive its renderer's death.
+func (c *Controller) OfferNativeConnectRequest(live ...func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	for _, predicate := range live {
+		if predicate != nil && !predicate() {
+			return
+		}
+	}
+	c.offerNativeConnectRequestLocked(c.connectRequest)
+}
+
+// Observing a native state response may offer only its exact snapshot request;
+// an old response must not reserve a newer click for a failed native window.
+func (c *Controller) ObserveNativeConnectRequest(request string, live ...func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	for _, predicate := range live {
+		if predicate != nil && !predicate() {
+			return
+		}
+	}
+	c.offerNativeConnectRequestLocked(request)
+}
+
+func (c *Controller) offerNativeConnectRequestLocked(request string) {
+	if request == "" || request != c.connectRequest {
+		return
+	}
+	if c.nativeOffers == nil {
+		c.nativeOffers = make(map[string]bool)
+	}
+	c.nativeOffers[request] = true
+}
+
+// An unclaimed request exposed natively cannot silently resume in independent
+// browser storage after both cancellation transports fail. Retire only that
+// pending offer; this never stops a helper or revokes an unrelated supplied ID.
+func (c *Controller) ClaimPanelConnectOperation(request, operation string, native bool) (bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if request != "" && c.interruptedRequests[request] {
+		return false, true
+	}
+	if request == "" || request != c.connectRequest {
+		return false, false
+	}
+	if !native && c.nativeOffers[request] {
+		if c.interruptedRequests == nil {
+			c.interruptedRequests = make(map[string]bool)
+		}
+		if c.revokedRequests == nil {
+			c.revokedRequests = make(map[string]bool)
+		}
+		if c.revokedOperations == nil {
+			c.revokedOperations = make(map[string]bool)
+		}
+		c.interruptedRequests[request], c.revokedRequests[request], c.revokedOperations[request] = true, true, true
+		c.connectRequest = ""
+		return false, true
+	}
+	return c.claimConnectOperationLocked(request, operation), false
 }
 
 func (c *Controller) RecordLoginBrowserResult(err error) {

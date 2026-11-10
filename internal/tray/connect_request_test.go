@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,5 +122,151 @@ func TestNativeConnectRequestHasOnlyOneConcurrentConsumer(t *testing.T) {
 	consumers.Wait()
 	if claimed.Load() != 1 || c.Snapshot().ConnectRequest != "" {
 		t.Fatal("native request did not have exactly one consumer", claimed.Load())
+	}
+}
+
+func TestNativeOfferedRequestCannotAutoResumeInIndependentBrowser(t *testing.T) {
+	c := testController(t, "normal")
+	if err := c.ForOperation("unrelated-traffic").Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, c, "running")
+	c.RequestConnectionSetup()
+	request := c.Snapshot().ConnectRequest
+	c.OfferNativeConnectRequest()
+	// Neither IPC nor HTTP cancellation ever reaches the host. A browser with
+	// independent storage must still stop at the native-offer boundary.
+	if claimed, interrupted := c.ClaimPanelConnectOperation(request, "unrelated-traffic", false); claimed || !interrupted {
+		t.Fatal(claimed, interrupted)
+	}
+	if got := c.Snapshot(); !got.Active || got.OperationID != "unrelated-traffic" || got.ConnectRequest != "" {
+		t.Fatal("interruption touched unrelated running traffic", got)
+	}
+	if err := c.ForOperation("unrelated-traffic").Check(); err != nil {
+		t.Fatal("interruption poisoned caller-supplied unrelated ID", err)
+	}
+	if err := c.ForOperation(request).Check(); !errors.Is(err, ErrOperationCanceled) {
+		t.Fatal("interrupted request remained admissible", err)
+	}
+	if claimed, interrupted := c.ClaimPanelConnectOperation(request, request, true); claimed || !interrupted {
+		t.Fatal("native reload revived retired offer", claimed, interrupted)
+	}
+	c.RequestConnectionSetup()
+	fresh := c.Snapshot().ConnectRequest
+	c.ObserveNativeConnectRequest(request)
+	if claimed, interrupted := c.ClaimPanelConnectOperation(fresh, fresh, false); !claimed || interrupted {
+		t.Fatal("dead-window retry inherited an old offer", claimed, interrupted)
+	}
+}
+
+func TestColdNativeFailureAndNativeClaimKeepTheirDesignatedPaths(t *testing.T) {
+	c := preparationController(t)
+	c.RequestConnectionSetup()
+	request := c.Snapshot().ConnectRequest
+	// A cold native load failure never calls Offer, so designated fallback works.
+	if claimed, interrupted := c.ClaimPanelConnectOperation(request, request, false); !claimed || interrupted {
+		t.Fatal(claimed, interrupted)
+	}
+	c.RequestConnectionSetup()
+	request = c.Snapshot().ConnectRequest
+	c.ObserveNativeConnectRequest(request)
+	if claimed, interrupted := c.ClaimPanelConnectOperation(request, request, true); !claimed || interrupted {
+		t.Fatal("live native claim was blocked", claimed, interrupted)
+	}
+	c.RequestConnectionSetup()
+	legacy := c.Snapshot().ConnectRequest
+	c.OfferNativeConnectRequest()
+	if !c.ClaimConnectOperation(legacy, legacy) {
+		t.Fatal("legacy controller claim changed semantics")
+	}
+}
+
+func TestNativeSnapshotOfferAndOldClaimCannotReserveOrRetireNewerRequest(t *testing.T) {
+	c := preparationController(t)
+	c.RequestConnectionSetup()
+	old := c.Snapshot().ConnectRequest
+	c.RequestConnectionSetup()
+	newer := c.Snapshot().ConnectRequest
+	c.ObserveNativeConnectRequest(old)
+	if claimed, interrupted := c.ClaimPanelConnectOperation(old, old, false); claimed || interrupted || c.Snapshot().ConnectRequest != newer {
+		t.Fatal("old response affected newer pending request", claimed, interrupted, c.Snapshot())
+	}
+	if claimed, interrupted := c.ClaimPanelConnectOperation(newer, newer, false); !claimed || interrupted {
+		t.Fatal("stale native observation offered a newer request", claimed, interrupted)
+	}
+}
+
+func TestNativeAndBrowserClaimsLinearizeAtTheOfferedRequest(t *testing.T) {
+	c := preparationController(t)
+	for range 32 {
+		c.RequestConnectionSetup()
+		request := c.Snapshot().ConnectRequest
+		c.OfferNativeConnectRequest()
+		type result struct{ claimed, interrupted bool }
+		native, browser := make(chan result, 1), make(chan result, 1)
+		ready := make(chan struct{})
+		go func() {
+			<-ready
+			claimed, interrupted := c.ClaimPanelConnectOperation(request, request, true)
+			native <- result{claimed, interrupted}
+		}()
+		go func() {
+			<-ready
+			claimed, interrupted := c.ClaimPanelConnectOperation(request, request, false)
+			browser <- result{claimed, interrupted}
+		}()
+		close(ready)
+		n, b := <-native, <-browser
+		if b.claimed || c.Snapshot().ConnectRequest != "" || !n.claimed && (!n.interrupted || !b.interrupted) {
+			t.Fatal("claim race escaped native offer policy", n, b, c.Snapshot())
+		}
+		if n.claimed {
+			if err := c.ForOperation(request).Check(); err != nil {
+				t.Fatal("losing fallback retired an already-claimed native request", err)
+			}
+		}
+	}
+}
+
+func TestQueuedNativeOfferChecksRendererLifeAtAtomicCommit(t *testing.T) {
+	for _, observe := range []bool{false, true} {
+		t.Run(map[bool]string{false: "show-offer", true: "state-observation"}[observe], func(t *testing.T) {
+			c := preparationController(t)
+			c.RequestConnectionSetup()
+			old := c.Snapshot().ConnectRequest
+			var live atomic.Bool
+			live.Store(true)
+			entered, evaluated, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			markEvaluated := sync.OnceFunc(func() { close(evaluated) })
+			predicate := func() bool { markEvaluated(); return live.Load() }
+			c.mu.Lock()
+			unlock := sync.OnceFunc(c.mu.Unlock)
+			defer unlock()
+			go func() {
+				close(entered)
+				if observe {
+					c.ObserveNativeConnectRequest(old, predicate)
+				} else {
+					c.OfferNativeConnectRequest(predicate)
+				}
+				close(done)
+			}()
+			<-entered
+			select {
+			case <-evaluated:
+				t.Fatal("renderer predicate was checked before acquiring controller ownership")
+			case <-time.After(20 * time.Millisecond):
+			}
+			live.Store(false)
+			// Install the later request while the queued callback still waits on
+			// the ownership lock, as RequestConnectionSetup itself would do.
+			c.connectRequest = "fresh-after-renderer-death"
+			c.requestOperations[c.connectRequest] = c.connectRequest
+			unlock()
+			<-done
+			if claimed, interrupted := c.ClaimPanelConnectOperation("fresh-after-renderer-death", "fresh-after-renderer-death", false); !claimed || interrupted {
+				t.Fatal("dead queued callback reserved newer fallback request", claimed, interrupted)
+			}
+		})
 	}
 }

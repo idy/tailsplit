@@ -5,11 +5,51 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/idy/tailsplit/internal/tray"
 )
+
+func TestDesktopNativeOfferPollingRequiresPublishedLivePresentation(t *testing.T) {
+	directory := t.TempDir()
+	controller, err := tray.New(tray.Options{Helper: "unused", ConfigPath: filepath.Join(directory, "config.yaml"), LogPath: filepath.Join(directory, "core.log")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = controller.Close() })
+	ready := make(chan struct{})
+	var live atomic.Bool
+	var predicates atomic.Int32
+	observe := observeLiveNativeConnectRequests(controller, ready, func() bool { predicates.Add(1); return live.Load() })
+	controller.RequestConnectionSetup()
+	cold := controller.Snapshot().ConnectRequest
+	observe(cold)
+	if predicates.Load() != 0 {
+		t.Fatal("observer read window state before pointer publication")
+	}
+	close(ready)
+	observe(cold)
+	if claimed, interrupted := controller.ClaimPanelConnectOperation(cold, cold, false); !claimed || interrupted {
+		t.Fatal("pre-exposure native boot poll blocked cold fallback", claimed, interrupted)
+	}
+	live.Store(true)
+	controller.OfferNativeConnectRequest(live.Load) // First live Show may have no pending request.
+	controller.RequestConnectionSetup()
+	visible := controller.Snapshot().ConnectRequest
+	observe(visible)
+	if claimed, interrupted := controller.ClaimPanelConnectOperation(visible, visible, false); claimed || !interrupted {
+		t.Fatal("visible native polling did not reserve exact request", claimed, interrupted)
+	}
+	live.Store(false)
+	controller.RequestConnectionSetup()
+	fresh := controller.Snapshot().ConnectRequest
+	observe(fresh)
+	if claimed, interrupted := controller.ClaimPanelConnectOperation(fresh, fresh, false); !claimed || interrupted {
+		t.Fatal("late dead-page poll blocked fresh explicit fallback", claimed, interrupted)
+	}
+}
 
 func TestDesktopBoundCancelRevokesLoginOnEventLoopBeforeWorkerCompletion(t *testing.T) {
 	directory := t.TempDir()

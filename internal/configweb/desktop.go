@@ -14,7 +14,7 @@ import (
 // Claiming consumes the intent before guided setup begins, even when that flow
 // later cancels. The controller callback compares and clears the ID atomically.
 func (s *Server) claimConnectRequest(w http.ResponseWriter, r *http.Request) {
-	if s.options.ClaimConnectRequest == nil && s.options.ClaimConnectOperation == nil {
+	if s.options.ClaimConnectRequest == nil && s.options.ClaimConnectOperation == nil && s.options.ClaimPanelConnectOperation == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -27,6 +27,11 @@ func (s *Server) claimConnectRequest(w http.ResponseWriter, r *http.Request) {
 	var extra any
 	if decoder.Decode(&request) != nil || decoder.Decode(&extra) != io.EOF {
 		fail(w, http.StatusBadRequest, "request", "无法读取操作请求。")
+		return
+	}
+	if s.options.ClaimPanelConnectOperation != nil {
+		claimed, interrupted := s.options.ClaimPanelConnectOperation(request.Request, request.OperationID, r.Header.Get("X-TailSplit-Panel") == "native")
+		writeJSON(w, http.StatusOK, map[string]bool{"claimed": claimed, "interrupted": interrupted})
 		return
 	}
 	claimed := false

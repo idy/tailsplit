@@ -261,6 +261,7 @@ func main() {
 			})
 		})
 	var showConfiguration func()
+	var configurationWindow *desktopwindow.Window
 	panelReady := make(chan struct{})
 	loginCancellations := newDesktopLoginCancellations()
 	cancelConnection := loginCancellations.callback(controller)
@@ -268,7 +269,11 @@ func main() {
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
 		ClaimConnectOperation: controller.ClaimConnectOperation,
-		Cancel:                cancelConnection,
+		ObserveNativeConnectRequest: observeLiveNativeConnectRequests(controller, panelReady, func() bool {
+			return configurationWindow != nil && configurationWindow.CanReceiveConnectRequest()
+		}),
+		ClaimPanelConnectOperation: controller.ClaimPanelConnectOperation,
+		Cancel:                     cancelConnection,
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return submit(configurationApply{ctx: ctx, action: "add-exit:" + id, revision: revision})
 		},
@@ -298,7 +303,6 @@ func main() {
 		},
 		Quit: systray.Quit,
 	})
-	var configurationWindow *desktopwindow.Window
 	fallback := configurationFallback{launch: func() {
 		if configurationPage != nil {
 			openPath(tray.ConfigurationWindowConnectURL(configurationPage.URL(), controller.Snapshot().ConnectRequest))
@@ -311,6 +315,7 @@ func main() {
 		}
 		if configurationWindow != nil {
 			configurationWindow.SetCancelHandler(cancelConnection)
+			configurationWindow.SetConnectRequestHandler(func() { controller.OfferNativeConnectRequest(configurationWindow.CanPresentConnectRequest) })
 			go func() {
 				if err := configurationWindow.Run(); err != nil {
 					controller.RecordDesktopEvent("MyGo window stopped: " + err.Error())
@@ -445,12 +450,14 @@ func main() {
 				if editing || loggingOut {
 					return
 				}
-				if value := flow.Next(snapshot); value != "" {
-					go func() {
+				if request := flow.NextBrowserRequest(snapshot); request.URL != "" {
+					go func(request tray.LoginBrowserRequest) {
 						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 						defer cancel()
-						browserDone <- tray.OpenLoginPage(ctx, value)
-					}()
+						browserDone <- tray.OpenLoginPageGuarded(ctx, request.URL, func(start func() error) error {
+							return controller.AuthorizeLoginBrowserStart(request, start)
+						})
+					}(request)
 				}
 			}
 			for {

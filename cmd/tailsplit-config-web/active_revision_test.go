@@ -140,6 +140,32 @@ func TestDesktopPreviewNativeBindingCancelUsesBoundOwnerDespiteStaleSnapshot(t *
 	}
 }
 
+func TestDesktopPreviewNativeOfferFailsClosedWithoutAffectingTrafficOrFreshRequests(t *testing.T) {
+	operations := newPreviewOperations()
+	snapshot := tray.Snapshot{ConnectRequest: "offered", OperationID: "unrelated-traffic", Active: true, ActiveRevision: "running-revision"}
+	operations.offer(&snapshot, "offered")
+	if claimed, interrupted := operations.claimPanel(&snapshot, "offered", "unrelated-traffic", false); claimed || !interrupted {
+		t.Fatal(claimed, interrupted)
+	}
+	if !snapshot.Active || snapshot.ActiveRevision != "running-revision" || !operations.allowed("unrelated-traffic") || operations.allowed("offered") {
+		t.Fatal("preview fallback touched unrelated traffic or retained an interrupted admission", snapshot)
+	}
+	snapshot.ConnectRequest = "cold-failure"
+	if claimed, interrupted := operations.claimPanel(&snapshot, "cold-failure", "cold-failure", false); !claimed || interrupted {
+		t.Fatal("cold fallback was blocked", claimed, interrupted)
+	}
+	snapshot.ConnectRequest = "fresh-after-dead-window"
+	operations.offer(&snapshot, "offered")
+	if claimed, interrupted := operations.claimPanel(&snapshot, "fresh-after-dead-window", "fresh-after-dead-window", false); !claimed || interrupted {
+		t.Fatal("old native observation reserved fresh retry", claimed, interrupted)
+	}
+	snapshot.ConnectRequest = "live-native"
+	operations.offer(&snapshot, "live-native")
+	if claimed, interrupted := operations.claimPanel(&snapshot, "live-native", "live-native", true); !claimed || interrupted {
+		t.Fatal("preview native claim was blocked", claimed, interrupted)
+	}
+}
+
 func TestDesktopPreviewApplyAdvancesActiveRevision(t *testing.T) {
 	options := testDesktopPreview(t)
 	previewAction(t, options, "login")

@@ -582,8 +582,13 @@ func TestDiscoveryNeverUsesTUNStartupAndKeepsPickerAfterCompletion(t *testing.T)
 	}
 	select {
 	case <-controller.done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("discovery waited for an interactive login")
+	case <-time.After(5 * time.Second):
+		// Match the other helper lifecycle waits under race instrumentation and
+		// loaded builders, while keeping interactive discovery waits bounded.
+		snapshot := controller.Snapshot()
+		snapshot.LoginURL = ""
+		log, _ := os.ReadFile(controller.options.LogPath)
+		t.Fatalf("discovery did not complete without interactive login: %+v; fixture log: %s", snapshot, RedactLog(string(log)))
 	}
 	selected, _ := os.ReadFile(filepath.Join(directory, "selected-command"))
 	snapshot := controller.Snapshot()

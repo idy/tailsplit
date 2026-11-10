@@ -21,21 +21,22 @@ var ErrNotReady = errors.New("TailSplit window is not ready")
 // Window keeps its page alive while hidden, preserving unsaved settings drafts.
 // MyGo owns the sole native event loop; Run only waits for this window's lifetime.
 type Window struct {
-	url           string
-	port          uint16
-	native        *mygo.Window // UI thread only.
-	loaded        bool         // UI thread only.
-	load          *pageLoad    // UI thread only.
-	visible       atomic.Bool
-	quitting      atomic.Bool
-	everShown     atomic.Bool
-	start         sync.Once
-	create        sync.Once
-	finish        sync.Once
-	done          chan struct{}
-	mu            sync.Mutex
-	err           error
-	cancelHandler func(context.Context, string, string) error
+	url                   string
+	port                  uint16
+	native                *mygo.Window // UI thread only.
+	loaded                bool         // UI thread only.
+	load                  *pageLoad    // UI thread only.
+	visible               atomic.Bool
+	quitting              atomic.Bool
+	everShown             atomic.Bool
+	start                 sync.Once
+	create                sync.Once
+	finish                sync.Once
+	done                  chan struct{}
+	mu                    sync.Mutex
+	err                   error
+	cancelHandler         func(context.Context, string, string) error
+	connectRequestHandler func()
 }
 
 func New(rawURL string, background bool) (*Window, error) {
@@ -221,6 +222,7 @@ func (w *Window) showWindow() {
 	if runtime.GOOS == "darwin" {
 		mygo.App.Dock.Show()
 	}
+	w.offerConnectRequest()
 	w.everShown.Store(true)
 	w.native.Show()
 	w.native.Restore()
@@ -255,6 +257,9 @@ func (w *Window) Show() error {
 		}
 		return ErrNotReady
 	}
+	// An already-interactive page can act before its asynchronous Show wakeup.
+	// Reserve its request in the host before exposing another click to that page.
+	w.offerConnectRequestIfShown()
 	w.visible.Store(true)
 	w.schedule()
 	if !mygo.App.IsReady() {

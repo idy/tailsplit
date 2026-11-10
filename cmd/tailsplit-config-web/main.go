@@ -123,6 +123,16 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 			defer mutex.Unlock()
 			return operations.claim(&snapshot, request, operation)
 		}
+		options.ObserveNativeConnectRequest = func(request string) {
+			mutex.Lock()
+			defer mutex.Unlock()
+			operations.offer(&snapshot, request)
+		}
+		options.ClaimPanelConnectOperation = func(request, operation string, native bool) (bool, bool) {
+			mutex.Lock()
+			defer mutex.Unlock()
+			return operations.claimPanel(&snapshot, request, operation, native)
+		}
 		// A broken configuration must remain editable in the preview.
 		if config, err := tailsplit.Load(configPath); err == nil {
 			updatePreviewSnapshot(&snapshot, config)
@@ -404,10 +414,11 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 type previewOperations struct {
 	canceled, revokedRequests, revokedOperations map[string]bool
 	requests                                     map[string]string
+	nativeOffers, interruptedRequests            map[string]bool
 }
 
 func newPreviewOperations() *previewOperations {
-	return &previewOperations{canceled: make(map[string]bool), revokedRequests: make(map[string]bool), revokedOperations: make(map[string]bool), requests: make(map[string]string)}
+	return &previewOperations{canceled: make(map[string]bool), revokedRequests: make(map[string]bool), revokedOperations: make(map[string]bool), requests: make(map[string]string), nativeOffers: make(map[string]bool), interruptedRequests: make(map[string]bool)}
 }
 
 func (o *previewOperations) allowed(id string) bool {
@@ -434,6 +445,27 @@ func (o *previewOperations) claim(snapshot *tray.Snapshot, request, operation st
 	o.requests[request] = operation
 	snapshot.ConnectRequest = ""
 	return true
+}
+
+func (o *previewOperations) offer(snapshot *tray.Snapshot, request string) {
+	if request != "" && request == snapshot.ConnectRequest {
+		o.nativeOffers[request] = true
+	}
+}
+
+func (o *previewOperations) claimPanel(snapshot *tray.Snapshot, request, operation string, native bool) (bool, bool) {
+	if request != "" && o.interruptedRequests[request] {
+		return false, true
+	}
+	if request == "" || request != snapshot.ConnectRequest {
+		return false, false
+	}
+	if !native && o.nativeOffers[request] {
+		o.interruptedRequests[request], o.revokedRequests[request], o.revokedOperations[request] = true, true, true
+		snapshot.ConnectRequest = ""
+		return false, true
+	}
+	return o.claim(snapshot, request, operation), false
 }
 
 func (o *previewOperations) cancel(snapshot *tray.Snapshot, request, operation string) {

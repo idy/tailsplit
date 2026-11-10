@@ -207,7 +207,11 @@ func runWindowsDesktop() (runErr error) {
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
 		ClaimConnectOperation: controller.ClaimConnectOperation,
-		Cancel:                cancelConnection,
+		ObserveNativeConnectRequest: observeLiveNativeConnectRequests(controller, panelReady, func() bool {
+			return app.window != nil && app.window.CanReceiveConnectRequest()
+		}),
+		ClaimPanelConnectOperation: controller.ClaimPanelConnectOperation,
+		Cancel:                     cancelConnection,
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return app.do(ctx, func() error {
 				app.login.Cancel()
@@ -268,6 +272,7 @@ func runWindowsDesktop() (runErr error) {
 		return err
 	}
 	app.window.SetCancelHandler(cancelConnection)
+	app.window.SetConnectRequestHandler(func() { controller.OfferNativeConnectRequest(app.window.CanPresentConnectRequest) })
 	showConfiguration = func() {
 		if err := app.window.Show(); err != nil {
 			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
@@ -409,17 +414,19 @@ func (a *windowsApp) operate() {
 			a.login.Complete(err)
 		case <-ticker.C:
 			a.loginCancellations.apply(&a.login)
-			if link := a.login.Next(a.controller.Snapshot()); link != "" {
-				go func() {
+			if request := a.login.NextBrowserRequest(a.controller.Snapshot()); request.URL != "" {
+				go func(request tray.LoginBrowserRequest) {
 					ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 					defer cancel()
-					err := tray.OpenLoginPage(ctx, link)
+					err := tray.OpenLoginPageGuarded(ctx, request.URL, func(start func() error) error {
+						return a.controller.AuthorizeLoginBrowserStart(request, start)
+					})
 					a.controller.RecordLoginBrowserResult(err)
 					select {
 					case a.browserDone <- err:
 					case <-a.ctx.Done():
 					}
-				}()
+				}(request)
 			}
 		}
 	}

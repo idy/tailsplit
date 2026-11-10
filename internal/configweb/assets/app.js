@@ -94,7 +94,7 @@
   async function api(path, data) {
     const response = await fetch(`/api/${path}`, {
       method: data === undefined ? 'GET' : 'POST',
-      headers: { Authorization: `Bearer ${token || ''}`, 'Accept-Language': locale.language, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: { Authorization: `Bearer ${token || ''}`, 'Accept-Language': locale.language, ...(mygoWindow && ['state', 'connect-request'].includes(path) ? { 'X-TailSplit-Panel': 'native' } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
       body: data === undefined ? undefined : JSON.stringify(data),
       cache: 'no-store',
     });
@@ -946,7 +946,12 @@
     try {
       const result = await api('connect-request', { request, operation_id: request });
       if (generation !== setupCancelGeneration || adoptSharedSetupCancel() || !sharedCancelReadable) return;
-      if (!result.claimed) { forgetBrowserConnect(request); return; }
+      if (!result.claimed) {
+        const currentFallback = browserConnectRequest === request;
+        forgetBrowserConnect(request);
+        if (result.interrupted && currentFallback) notice('操作未完成', t('原生窗口的连接请求未能确认，请在当前面板重新开启或取消连接。'));
+        return;
+      }
     } catch (error) {
       if (generation === setupCancelGeneration && !adoptSharedSetupCancel() && request !== lastNativeConnect) notice('操作未完成', message(error));
       return;
@@ -1016,7 +1021,14 @@
       if (mygoWindow) {
         // WebView storage is isolated from the browser fallback. Deliver the
         // revocation directly to the shared native host, even when HTTP fails.
-        await window.mygo.call('TailSplitPanel.Cancel', cancel.request, cancel.operation_id || '');
+        let timer;
+        try {
+          await Promise.race([
+            window.mygo.call('TailSplitPanel.Cancel', cancel.request, cancel.operation_id || ''),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(t('请求未完成，请重试。'))), 1000); }),
+          ]);
+        } catch (_) { await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' }); }
+        finally { clearTimeout(timer); }
       } else await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
       if (cancel.request) markNativeConnectHandled(cancel.request);
       rememberSetupCancel(null);

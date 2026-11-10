@@ -57,13 +57,16 @@ type Options struct {
 	// all tabs and WebViews. Only one consumer may enter guided setup for an ID.
 	ClaimConnectRequest   func(string) bool
 	ClaimConnectOperation func(string, string) bool
-	AddExit               func(context.Context, string, string) error
-	RemoveExit            func(context.Context, string, string) error
-	PingExit              func(context.Context, string) (tailsplit.ExitPingResult, error)
-	Logs                  func() (string, error)
-	Startup               func() bool
-	UpdateState           func() appupdate.State
-	UpdateAction          func(context.Context, string) error
+	// Native offer policy is independent of HTTP/IPC cancellation delivery.
+	ObserveNativeConnectRequest func(string)
+	ClaimPanelConnectOperation  func(string, string, bool) (bool, bool)
+	AddExit                     func(context.Context, string, string) error
+	RemoveExit                  func(context.Context, string, string) error
+	PingExit                    func(context.Context, string) (tailsplit.ExitPingResult, error)
+	Logs                        func() (string, error)
+	Startup                     func() bool
+	UpdateState                 func() appupdate.State
+	UpdateAction                func(context.Context, string) error
 	// Popup actions only reveal the retained window or request normal app cleanup.
 	OpenPanel func()
 	Quit      func()
@@ -302,10 +305,13 @@ func (s *Server) readConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) readState(w http.ResponseWriter, r *http.Request) {
 	var snapshot tray.Snapshot
 	if s.options.Snapshot != nil {
 		snapshot = s.options.Snapshot()
+	}
+	if r.Header.Get("X-TailSplit-Panel") == "native" && s.options.ObserveNativeConnectRequest != nil {
+		s.options.ObserveNativeConnectRequest(snapshot.ConnectRequest)
 	}
 	_, revision, _ := tray.ReadConfigDocument(s.options.ConfigPath)
 	// LoginURL and other authentication state never enter the browser API.

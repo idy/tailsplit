@@ -305,6 +305,7 @@
     '安装服务并继续连接': 'Install service & continue connecting',
     '重试连接': 'Retry connection',
     '操作已取消或被新的操作替代': 'The operation was canceled or replaced.',
+    '原生窗口的连接请求未能确认，请在当前面板重新开启或取消连接。': 'The native window’s connection request could not be confirmed. Turn on or cancel the connection again in this panel.',
     '取消连接': 'Cancel connection',
     '正在取消连接': 'Canceling connection',
     '重试取消': 'Retry cancellation',

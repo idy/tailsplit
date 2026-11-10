@@ -7,6 +7,19 @@ import (
 	"github.com/idy/tailsplit/internal/tray"
 )
 
+// Polling may offer a request only after safe window-pointer publication and
+// while that window can actually receive it. Initial load and late dead-page
+// requests cannot reserve an otherwise eligible browser fallback.
+func observeLiveNativeConnectRequests(controller *tray.Controller, ready <-chan struct{}, live func() bool) func(string) {
+	return func(request string) {
+		select {
+		case <-ready:
+			controller.ObserveNativeConnectRequest(request, live)
+		default:
+		}
+	}
+}
+
 // Cancellation records identities without touching the event-loop-owned flow or
 // waiting for its action worker. The wakeup is coalesced and never blocks Stop.
 type desktopLoginCancellations struct {

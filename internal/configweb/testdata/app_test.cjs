@@ -121,7 +121,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     return button;
   });
   $('#window-controls').hidden = true;
-  const app = { $, requests, messages, nativeCalls: [], nativeOverride: () => undefined, canceledOperations: new Set(), windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', operation_id: snapshot.active ? 'existing-operation' : '', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
+  const app = { $, requests, messages, nativeCalls: [], nativeOverride: () => undefined, canceledOperations: new Set(), nativeRequests: localeOptions.nativeRequests || new Set(), windowEvents: window, config: initialDocument, snapshot: { state: 'stopped', revision: 'original', operation_id: snapshot.active ? 'existing-operation' : '', active_revision: snapshot.active && ['proxy', 'tun'].includes(snapshot.mode) ? snapshot.revision || 'original' : '', ...snapshot },
     language: { preference: localeOptions.preference || 'auto', language: localeOptions.language || 'zh' }, override: localeOptions.override || (() => undefined) };
   const document = {
     documentElement: new Element(), hidden: false, querySelector: $, createElement: (tag) => { const element = new Element(); element.tagName = tag; return element; },
@@ -168,8 +168,16 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
         if (request.method === 'POST') app.language = { preference: request.data.preference, language: request.data.preference === 'auto' ? localeOptions.language || 'zh' : request.data.preference };
         return response(app.language);
       }
-      if (path === '/api/state') return response(app.snapshot);
+      if (path === '/api/state') {
+        if (request.headers['X-TailSplit-Panel'] === 'native' && app.snapshot.connect_request) app.nativeRequests.add(app.snapshot.connect_request);
+        return response(app.snapshot);
+      }
       if (path === '/api/connect-request') {
+        if (request.data.request && request.data.request === app.snapshot.connect_request && app.nativeRequests.has(request.data.request) && request.headers['X-TailSplit-Panel'] !== 'native') {
+          app.canceledOperations.add(request.data.request);
+          app.snapshot.connect_request = '';
+          return response({ claimed: false, interrupted: true });
+        }
         const claimed = Boolean(request.data.request) && !app.canceledOperations.has(request.data.operation_id || request.data.request) && request.data.request === app.snapshot.connect_request;
         if (claimed) app.snapshot.connect_request = '';
         return response({ claimed });
@@ -3821,6 +3829,95 @@ test('Global edits that disconnect first save with a fresh operation ID', async 
   assert.equal(app.config.revision, 'global-edited');
   assert.equal(app.snapshot.active, false);
   assert.equal(app.$('#connection-exit').value, 'spare');
+});
+
+test('undelivered native IPC and HTTP cancellation cannot replay in an isolated fallback', async () => {
+  const id = 'undelivered-native-cancel';
+  const nativeRequests = new Set();
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'busy-native-owner', connect_request: id }, 'mygo-macos', { page: 'home', nativeRequests, localStorage: new Map() }, guidedDocument());
+  assert.equal(nativeRequests.has(id), true, 'host boundary is established before cancellation can be requested');
+  native.nativeOverride = () => response({ error: 'IPC was not delivered' }, false);
+  native.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP was not delivered' }, false) : undefined;
+  await native.$('#connection-setup-cancel').emit('click');
+  assert.equal(native.snapshot.connect_request, id, 'neither cancellation transport reached the controller');
+  assert.equal(native.storage.has('tailsplit-setup-cancel'), true);
+  const fallback = await page({ ...native.snapshot, active: false, state: 'stopped', mode: '' }, '', {
+    page: 'home', hash: `#token=fixture&connect=${id}`, storage: new Map(), localStorage: new Map(), nativeRequests,
+  }, guidedDocument());
+  assert.equal(fallback.requests.filter(request => request.path === '/api/connect-request').length, 1);
+  assert.equal(mutations(fallback).length, 0, 'fallback cannot interpret uncertain native intent as another Connect');
+  assert.equal(fallback.snapshot.connect_request, '');
+  assert.equal(fallback.storage.has('tailsplit-browser-connect'), false);
+  assert.match(fallback.$('#notice-detail').textContent, /原生窗口.*重新开启或取消/);
+  guidedBackend(fallback, { deferAdd: true });
+  await fallback.$('#home-setup').emit('click');
+  assert.equal(mutations(fallback).filter(request => request.data.action === 'add-exit').length, 1, 'a fresh explicit browser action remains available');
+});
+
+test('native IPC rejection retries the guarded HTTP cancellation before clearing markers', async () => {
+  const id = 'ipc-rejected-http-accepted';
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: id, connect_request: id }, 'mygo-windows', { page: 'home' }, guidedDocument());
+  native.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
+  await native.$('#connection-setup-cancel').emit('click');
+  assert.equal(native.nativeCalls.length, 1);
+  const http = native.requests.filter(request => request.path === '/api/cancel' && request.method === 'POST');
+  assert.equal(http.length, 1);
+  assert.deepEqual(http[0].data, { request: id, operation_id: id });
+  assert.equal(native.snapshot.active, false);
+  assert.equal(native.snapshot.connect_request, '');
+  assert.equal(native.storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('cold native failures and fresh browser requests do not inherit an earlier native offer', async () => {
+  const nativeRequests = new Set(['old-offered-native-request']);
+  for (const id of ['cold-request-not-presented', 'fresh-request-after-native-failure']) {
+    const fallback = await page({ desktop: true, connect_request: id }, '', {
+      page: 'home', hash: `#token=fixture&connect=${id}`, nativeRequests, storage: new Map(), localStorage: new Map(),
+    }, guidedDocument());
+    assert.equal(fallback.snapshot.connect_request, '');
+    assert.equal(mutations(fallback).filter(request => request.data.action === 'add-exit').length, 1);
+  }
+});
+
+test('interrupted fallback explains explicit recovery in English', async () => {
+  const id = 'native-uncertain-en';
+  const app = await page({ desktop: true, connect_request: id }, '', {
+    page: 'home', hash: `#token=fixture&connect=${id}`, nativeRequests: new Set([id]), language: 'en', preference: 'en',
+  }, guidedDocument());
+  assert.equal(mutations(app).length, 0);
+  assert.match(app.$('#notice-detail').textContent, /native window.*could not be confirmed.*Turn on or cancel/);
+});
+
+test('an old interrupted reply cannot replace a newer fallback intent or its notice', async () => {
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', connect_request: 'old-interrupted-reply' }, '', { page: 'home', hash: '#token=fixture&connect=old-interrupted-reply' }, guidedDocument());
+  const claim = deferred();
+  app.override = request => request.path === '/api/connect-request' ? claim.promise : undefined;
+  Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+  const oldPoll = app.poll();
+  await settle();
+  Object.assign(app.snapshot, { active: true, state: 'authorizing', mode: 'login', connect_request: 'new-fallback-intent' });
+  app.location.hash = '#token=fixture&connect=new-fallback-intent';
+  await app.windowEvents.emit('hashchange');
+  claim.resolve(response({ claimed: false, interrupted: true }));
+  await oldPoll;
+  assert.equal(JSON.parse(app.storage.get('tailsplit-browser-connect')).request, 'new-fallback-intent');
+  assert.equal(app.$('#notice').hidden, true);
+  assert.equal(mutations(app).length, 0);
+});
+
+test('a stalled native cancellation retries guarded HTTP without waiting forever for IPC', async () => {
+  const id = 'stalled-native-cancel';
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: id, connect_request: id }, 'mygo-windows', { page: 'home' }, guidedDocument());
+  native.nativeOverride = () => deferred().promise;
+  const cancel = native.$('#connection-setup-cancel').emit('click');
+  await settle();
+  assert.equal(native.requests.filter(request => request.path === '/api/cancel' && request.method === 'POST').length, 0);
+  await native.flushTimers();
+  await cancel;
+  assert.equal(native.requests.filter(request => request.path === '/api/cancel' && request.method === 'POST').length, 1);
+  assert.equal(native.snapshot.active, false);
+  assert.equal(native.snapshot.connect_request, '');
+  assert.equal(native.storage.has('tailsplit-setup-cancel'), false);
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {
