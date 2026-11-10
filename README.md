@@ -69,6 +69,14 @@ exit and confirm to save it and connect; Cancel or Escape changes nothing. A
 failed or stale save never starts traffic. Settings drafts must be resolved
 first. An existing offline default is retained rather than silently replaced.
 
+Click the menu-bar or tray icon for a compact popup with connection status,
+a connect/disconnect switch, and read-only routing mode and traffic exit details. Open
+TailSplit from the popup to manage exits and settings; clicking outside, pressing
+Escape or clicking the tray icon again dismisses it. Right-click the icon for a
+minimal native menu with Open, connection status, Connect/Disconnect and Quit.
+The popup follows the app's language and system appearance. It shows the actual
+running traffic device, including an additional exit when the primary is signed out.
+
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
 traffic if its exit goes offline; Rule-based restores Split without deleting

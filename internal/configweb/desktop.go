@@ -14,7 +14,7 @@ import (
 // Desktop controls use the same capability and origin policy as configuration
 // saves. A fixed action vocabulary cannot become a command/path execution API.
 func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
-	if s.options.Action == nil && s.options.AddExit == nil {
+	if s.options.Action == nil && s.options.AddExit == nil && s.options.OpenPanel == nil && s.options.Quit == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -37,6 +37,25 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request) {
 	}
 	var operation func() error
 	switch request.Action {
+	case "open-panel", "quit":
+		if request.Exit != "" {
+			fail(w, http.StatusBadRequest, "action", "未知操作。")
+			return
+		}
+		callback := s.options.OpenPanel
+		if request.Action == "quit" {
+			callback = s.options.Quit
+		}
+		if callback == nil {
+			http.NotFound(w, r)
+			return
+		}
+		// Acknowledge before native activation dismisses the popup or quitting
+		// shuts the server down. The callback uses the normal desktop lifecycle.
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		_ = http.NewResponseController(w).Flush()
+		go callback()
+		return
 	case "connect", "disconnect", "login", "logout", "switch-network", "refresh-exits", "startup-on", "startup-off":
 		if request.Exit != "" {
 			fail(w, http.StatusBadRequest, "action", "未知操作。")

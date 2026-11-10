@@ -9,12 +9,9 @@ import (
 	"flag"
 	"image/png"
 	"io"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -28,7 +25,6 @@ import (
 	"github.com/idy/tailsplit/internal/tray"
 
 	systray "github.com/idy/tailsplit/internal/desktoptray"
-	"gopkg.in/yaml.v3"
 )
 
 type configurationApply struct {
@@ -63,7 +59,7 @@ func (request configurationApply) blocked(editing, loggingOut, browserOpening bo
 	return desktopConfigurationBusy(request.action, snapshot, editing, loggingOut, browserOpening)
 }
 
-// LoginFlow and action preparation belong to the menu's event loop. Only the
+// LoginFlow and action preparation belong to the desktop event loop. Only the
 // returned controller or login-item operation may run on the settings worker.
 func desktopActionOperation(action string, controller desktopActionController, flow *tray.LoginFlow, startup func(bool) error, revision ...string) (func() error, error) {
 	action, exit := splitExitAction(action)
@@ -128,7 +124,7 @@ func setDesktopStartup(enabled bool, set func(bool) error, status func() tray.Lo
 	if enabled && status() == tray.LoginItemNeedsApproval {
 		finishPanelStartup("startup-on", tray.LoginItemNeedsApproval, openSettings)
 		// Startup is a boolean in the window API: pending approval must not be
-		// presented as enabled. The native menu also shows the pending status.
+		// presented as enabled.
 		if currentLanguage() == "zh" {
 			return errors.New("请在“系统设置 → 通用 → 登录项”中允许 TailSplit，完成登录时启动设置。")
 		}
@@ -257,6 +253,8 @@ func main() {
 				}
 			})
 		})
+	var showConfiguration func()
+	panelReady := make(chan struct{})
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode,
@@ -277,6 +275,14 @@ func main() {
 		// Read the event loop's cached status from browser requests. A login
 		// item awaiting system approval must not be reported as enabled.
 		Startup: startupEnabled.Load,
+		OpenPanel: func() {
+			select {
+			case <-panelReady:
+				showConfiguration()
+			case <-ctx.Done():
+			}
+		},
+		Quit: systray.Quit,
 	})
 	var configurationWindow *desktopwindow.Window
 	if configurationPage != nil {
@@ -292,7 +298,7 @@ func main() {
 			}()
 		}
 	}
-	showConfiguration := func() {
+	showConfiguration = func() {
 		if configurationPage != nil {
 			if configurationWindow == nil {
 				openPath(configurationPage.URL())
@@ -304,63 +310,23 @@ func main() {
 			}
 		}
 	}
+	close(panelReady)
+	if configurationPage != nil {
+		systray.SetPopupURL(configurationPage.PopupURL())
+	}
 	setTrayIcon(false)
 	systray.SetTooltip("TailSplit")
 	runErr := systray.Run(func() {
-		configuration := addMenu(nil, "打开", "打开 TailSplit 配置面板")
+		configuration := addMenu("打开 TailSplit", "打开 TailSplit 配置面板")
 		if configurationErr != nil {
 			configuration.Disable()
-			configuration.SetTooltip(tr("无法启动本地配置页面，请使用“设置与工具 → 编辑配置…”"))
 		}
-		systray.AddSeparator()
-		status := addMenu(nil, "TailSplit · 未连接", "")
+		status := addMenu("TailSplit · 未连接", "")
 		status.Disable()
-		connect := addMenu(nil, "连接", "连接或断开 TailSplit")
-		routing := addMenu(nil, "模式：规则分流", "选择分流策略；已连接时会重新连接")
-		splitMode := addMenu(routing, "规则分流", "按规则列表和自定义规则决定直连或出口", preferences.RoutingMode != tailsplit.RoutingGlobal)
-		globalMode := addMenu(routing, "全局代理（Kill Switch）", "启用 TUN，忽略直连例外；出口断开后阻断，手动断开后恢复系统网络", preferences.RoutingMode == tailsplit.RoutingGlobal)
-		exitMenu := addMenu(nil, "出口节点", "自动读取当前 Tailnet 的可用出口；选择后重新连接")
-		picker := newExitPicker(exitMenu)
-		refreshExits := addMenu(exitMenu, "刷新列表", "不创建 TUN、不接管流量、不打开登录浏览器")
+		connect := addMenu("连接", "连接或断开 TailSplit")
 		systray.AddSeparator()
-		account := addMenu(nil, "账号与设备", "")
-		device := addMenu(account, "设备名称", "")
-		autoName := addMenu(device, "跟随本机 hostname", "自动使用 tailsplit-<本机 hostname>", preferences.DeviceName == "")
-		customName := addMenu(device, "自定义名称…", "已有登录会保留；正在运行的代理会重新连接")
-		network := addMenu(account, "Tailnet：正在读取", "")
-		network.Disable()
-		loginStatus := addMenu(account, "授权页面：未打开", "")
-		loginStatus.Disable()
-		loginStatus.Hide()
-		login := addMenu(account, "登录 Tailscale…", "打开当前设备的登录页面")
-		copyLogin := addMenu(account, "复制登录链接", "复制当前有效的设备授权链接")
-		copyLogin.Hide()
-		startup := addMenu(nil, "启动设置", "")
-		startAtLogin := addMenu(startup, "登录 macOS 时打开", "通过系统登录项启动 .app", false)
-		connectOnStart := addMenu(startup, "打开 App 后自动连接", "只影响下次打开；需要登录时仍由你主动点击登录", preferences.ConnectOnStart)
-		loginItemSettings := addMenu(startup, "系统登录项设置…", "")
-		tools := addMenu(nil, "设置与工具", "")
-		restart := addMenu(tools, "重新连接", "停止后使用当前配置重新连接")
-		dnsMenu := addMenu(tools, "直连 DNS", "")
-		systemDNS := addMenu(dnsMenu, "跟随当前网络", "使用物理网卡的系统 DNS；代理域名仍使用出口侧 DNS", preferences.DirectDNS == "system")
-		dnsInfo := addMenu(dnsMenu, "当前上游", "")
-		dnsInfo.Disable()
-		editDNS := addMenu(dnsMenu, "编辑固定 DNS…", "在配置中设置 dns.direct；保存后重新连接")
-		edit := addMenu(tools, "编辑配置…", "")
-		reveal := addMenu(tools, "显示配置位置", "")
-		copyAddress := addMenu(tools, "复制本机 SOCKS 地址", "")
-		logs := addMenu(tools, "查看日志…", "")
-		debugLogging := addMenu(tools, "详细日志（Debug）", "记录 DNS、分流规则和连接诊断；切换后自动重连，关闭后恢复普通日志", preferences.DebugLogging)
-		service := addMenu(tools, "后台网络服务", "")
-		installService := addMenu(service, "更新或修复…", "打开系统安装器")
-		removeService := addMenu(service, "卸载后台服务…", "停止代理并打开卸载包；保留登录和配置")
-		checkUpdate := addMenu(tools, "检查更新…", "检查 GitHub 正式版；安装前会确认")
-		autoUpdates := addMenu(tools, "自动检查更新", "启动后和每六小时检查；安装始终由你确认", preferences.CheckForUpdates)
-		about := addMenu(tools, "关于 TailSplit…", "查看当前 App 的版本号和构建号")
-		restart.Disable()
-		systray.AddSeparator()
-		quit := addMenu(nil, "退出 TailSplit", "同时停止此 App 启动的代理")
-		if *openImmediately || desktopProofMode() {
+		quit := addMenu("退出 TailSplit", "同时停止此 App 启动的代理")
+		if *openImmediately || desktopProofMode() && os.Getenv("TAILSPLIT_TRAY_PROOF_DIR") == "" {
 			showConfiguration()
 		}
 		startupAction := desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect)
@@ -373,11 +339,8 @@ func main() {
 			startupAction = ""
 		}
 		go func() {
-			defer close(picker.done)
 			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
-			var previous tray.Snapshot
-			var previousLoginMessage string
 			var connected bool
 			var flow tray.LoginFlow
 			if *loginImmediately {
@@ -438,37 +401,9 @@ func main() {
 					preferences = updated
 					updates.updater.SetAutomatic(updated.CheckForUpdates)
 				}
-				previous = tray.Snapshot{}
 			}
-			reconfigure := func(update func() error) {
-				editing = true
-				flow.Cancel()
-				go func() { settingsDone <- controller.Reconfigure(update) }()
-			}
-			requestLogin := func() error {
-				return nativePrimarySignIn(*config,
-					func() error { showConfiguration(); return nil },
-					func() error {
-						operation, err := desktopActionOperation("login", controller, &flow, nil)
-						if err != nil || operation == nil {
-							return err
-						}
-						editing, pendingAction = true, "login"
-						go func() { settingsDone <- operation() }()
-						return nil
-					})
-			}
-			loginItemStatus := tray.LoginItemUnavailable
 			refreshLoginItem := func() {
-				loginItemStatus = tray.LoginItem()
-				startupEnabled.Store(finishPanelStartup("", loginItemStatus, tray.OpenLoginItemSettings))
-				setChecked(startAtLogin, loginItemStatus == tray.LoginItemEnabled || loginItemStatus == tray.LoginItemNeedsApproval)
-				setEnabled(startAtLogin, loginItemStatus != tray.LoginItemUnavailable)
-				if loginItemStatus == tray.LoginItemNeedsApproval {
-					startAtLogin.SetTitle(tr("登录时打开（等待系统允许）"))
-				} else {
-					startAtLogin.SetTitle(tr("登录 macOS 时打开"))
-				}
+				startupEnabled.Store(finishPanelStartup("", tray.LoginItem(), tray.OpenLoginItemSettings))
 			}
 			refreshLoginItem()
 			ticks := 0
@@ -477,7 +412,6 @@ func main() {
 					return
 				}
 				if value := flow.Next(snapshot); value != "" {
-					login.Disable()
 					go func() {
 						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 						defer cancel()
@@ -487,6 +421,8 @@ func main() {
 			}
 			for {
 				select {
+				case <-ctx.Done():
+					return
 				case <-connect.ClickedCh:
 					if controller.CancelServicePreparation() {
 						flow.Cancel()
@@ -501,48 +437,21 @@ func main() {
 						editing = true
 						go func() { settingsDone <- controller.Stop() }()
 					} else {
-						operation, _ := desktopActionOperation("connect", controller, &flow, nil)
-						if operation != nil {
-							_ = operation()
+						operation, err := desktopActionOperation("connect", controller, &flow, nil)
+						if err != nil {
+							showError(tr("无法应用设置，请检查配置和后台服务"))
+							continue
 						}
-						openReadyLogin(controller.Snapshot())
+						if operation != nil {
+							editing = true
+							go func() { settingsDone <- operation() }()
+						} else {
+							openReadyLogin(controller.Snapshot())
+						}
 					}
-				case <-restart.ClickedCh:
-					if editing || loggingOut || flow.Opening() || !canReconnect(controller.Snapshot()) {
-						continue
-					}
-					flow.Cancel()
-					editing = true
-					go func() { settingsDone <- controller.Restart() }()
-				case <-splitMode.ClickedCh:
-					previous = tray.Snapshot{} // Repaint even when the selected mode is clicked again.
-					if !editing && !loggingOut && !flow.Opening() && preferences.RoutingMode != tailsplit.RoutingSplit {
-						reconfigure(func() error { return tray.SetRoutingMode(*config, tailsplit.RoutingSplit) })
-					}
-				case <-globalMode.ClickedCh:
-					previous = tray.Snapshot{}
-					if !editing && !loggingOut && !flow.Opening() && preferences.RoutingMode != tailsplit.RoutingGlobal {
-						reconfigure(func() error { return tray.SetRoutingMode(*config, tailsplit.RoutingGlobal) })
-					}
-				case <-login.ClickedCh:
-					if loggingOut || editing || flow.Opening() {
-						continue
-					}
-					requestLogin()
-					openReadyLogin(controller.Snapshot())
 				case err := <-browserDone:
 					controller.RecordLoginBrowserResult(err)
 					flow.Complete(err)
-				case <-copyLogin.ClickedCh:
-					if value := controller.Snapshot().LoginURL; value != "" {
-						command := exec.Command("/usr/bin/pbcopy")
-						command.Stdin = strings.NewReader(value)
-						if err := command.Run(); err != nil {
-							loginStatus.SetTitle(tr("登录页面：复制失败"))
-						} else {
-							loginStatus.SetTitle(tr("登录页面：链接已复制"))
-						}
-					}
 				case err := <-logoutDone:
 					loggingOut = false
 					if err == nil && switchingNetwork {
@@ -553,50 +462,8 @@ func main() {
 						flow.Fail("无法重新登录，请查看日志")
 					}
 					switchingNetwork = false
-					previous = tray.Snapshot{}
 					if !completeRequest(err) && err != nil {
 						showError(tr("无法重新登录，请查看日志"))
-					}
-				case <-customName.ClickedCh:
-					if editing || loggingOut || flow.Opening() {
-						continue
-					}
-					value, saved := tray.EditDeviceName(preferences.DeviceName)
-					if !saved {
-						continue
-					}
-					if _, err := tray.DeviceName(value); err != nil {
-						showError(tr("设备名称须为 1–63 位英文字母、数字或连字符，或留空跟随本机 hostname"))
-						continue
-					}
-					reconfigure(func() error { return tray.SetDeviceName(*config, value) })
-				case <-autoName.ClickedCh:
-					previous = tray.Snapshot{}
-					if !editing && !loggingOut && !flow.Opening() && preferences.DeviceName != "" {
-						reconfigure(func() error { return tray.SetDeviceName(*config, "") })
-					}
-				case <-systemDNS.ClickedCh:
-					previous = tray.Snapshot{}
-					if !editing && !loggingOut && !flow.Opening() && preferences.DirectDNS != "system" {
-						reconfigure(func() error { return tray.SetSystemDNS(*config) })
-					}
-				case <-editDNS.ClickedCh:
-					openPath("-t", *config)
-				case id := <-picker.clicks:
-					if editing || loggingOut || flow.Opening() {
-						continue
-					}
-					for _, node := range controller.Snapshot().ExitNodes {
-						if node.ID == id && node.Online {
-							reconfigure(func() error { return tray.SetExitNode(*config, id) })
-							break
-						}
-					}
-				case <-refreshExits.ClickedCh:
-					if !editing && !loggingOut && !flow.Opening() {
-						if err := controller.RefreshExitNodes(); err != nil {
-							showError(tr("无法刷新出口列表，请检查网络和后台服务"))
-						}
 					}
 				case request := <-configurationRequests:
 					if err := request.ctx.Err(); err != nil {
@@ -666,95 +533,10 @@ func main() {
 					if !completeRequest(err) && err != nil {
 						showError(tr("无法应用设置，请检查配置和后台服务"))
 					}
-				case <-startAtLogin.ClickedCh:
-					if editing || loggingOut || flow.Opening() {
-						continue
-					}
-					enable := loginItemStatus != tray.LoginItemEnabled && loginItemStatus != tray.LoginItemNeedsApproval
-					if err := tray.SetLoginItem(enable); err != nil {
-						showError(tr("无法更新登录项，请从打包的 TailSplit.app 操作或检查系统登录项设置"))
-					}
-					refreshLoginItem()
-					if enable && loginItemStatus == tray.LoginItemNeedsApproval {
-						tray.OpenLoginItemSettings()
-					}
-				case <-connectOnStart.ClickedCh:
-					if editing || loggingOut || flow.Opening() {
-						continue
-					}
-					value := !preferences.ConnectOnStart
-					if err := tray.SetConnectOnStart(*config, value); err != nil {
-						showError(tr("无法保存自动连接设置，请检查配置文件"))
-					} else {
-						preferences.ConnectOnStart = value
-						setChecked(connectOnStart, value)
-					}
-				case <-loginItemSettings.ClickedCh:
-					tray.OpenLoginItemSettings()
 				case <-configuration.ClickedCh:
 					showConfiguration()
-				case <-edit.ClickedCh:
-					openPath("-t", *config)
-				case <-reveal.ClickedCh:
-					openPath("-R", *config)
-				case <-logs.ClickedCh:
-					openPath("-t", *logPath)
-				case <-debugLogging.ClickedCh:
-					if !editing && !loggingOut && !flow.Opening() {
-						enabled := !preferences.DebugLogging
-						reconfigure(func() error { return tray.SetDebugLogging(*config, enabled) })
-					}
-				case <-checkUpdate.ClickedCh:
-					action := "check"
-					if updates.snapshot().Available {
-						action = "install"
-					}
-					go func() { _ = updates.action(ctx, action) }()
-				case <-autoUpdates.ClickedCh:
-					action := "automatic-on"
-					if updates.snapshot().Automatic {
-						action = "automatic-off"
-					}
-					go func() { _ = updates.action(ctx, action) }()
-				case <-about.ClickedCh:
-					tray.ShowAbout()
-				case <-installService.ClickedCh:
-					if editing || loggingOut || flow.Opening() || controller.Snapshot().State == "authorizing" {
-						continue
-					}
-					editing = true
-					flow.Cancel()
-					go func() {
-						err := controller.Stop()
-						if err == nil {
-							openPath("-a", "Installer", filepath.Join(directory, "..", "Resources", "TailSplit Network Service.pkg"))
-						}
-						settingsDone <- err
-					}()
-				case <-removeService.ClickedCh:
-					if editing || loggingOut || flow.Opening() || controller.Snapshot().State == "authorizing" {
-						continue
-					}
-					editing = true
-					flow.Cancel()
-					go func() {
-						err := controller.Stop()
-						if err == nil {
-							openPath("-a", "Installer", filepath.Join(directory, "..", "Resources", "Remove TailSplit Network Service.pkg"))
-						}
-						settingsDone <- err
-					}()
-				case <-copyAddress.ClickedCh:
-					if value := proxyAddress(*config); value != "" {
-						command := exec.Command("/usr/bin/pbcopy")
-						command.Stdin = strings.NewReader("socks5h://" + value)
-						_ = command.Run()
-					}
 				case <-quit.ClickedCh:
-					go func() {
-						_ = controller.Close()
-						systray.Quit()
-					}()
+					systray.Quit()
 					return
 				case <-ticker.C:
 					language := currentLanguage()
@@ -763,20 +545,6 @@ func main() {
 						tray.SetUILanguage(language)
 						desktopwindow.ConfigureApplication(language, tray.ShowAbout)
 						refreshMenuLanguage()
-						if configurationErr != nil {
-							configuration.SetTooltip(tr("无法启动本地配置页面，请使用“设置与工具 → 编辑配置…”"))
-						}
-					}
-					updateState := updates.snapshot()
-					checkUpdate.SetTitle(updateMenuTitleForLanguage(updateState, currentLanguage()))
-					checkUpdate.SetTooltip(tr(updateState.Error))
-					setEnabled(checkUpdate, !updateState.Busy && !updateState.Confirming && !updateState.Checking && !updateState.Downloading && !updateState.Installing && !editing && !loggingOut)
-					setChecked(autoUpdates, updateState.Automatic)
-					setEnabled(autoUpdates, !updateState.Busy && !updateState.Confirming && !updateState.Checking && !updateState.Downloading && !updateState.Installing && !editing && !loggingOut)
-					if updateState.Available {
-						tools.SetTitle(tr("设置与工具 · 有更新"))
-					} else {
-						tools.SetTitle(tr("设置与工具"))
 					}
 					ticks++
 					if ticks%10 == 0 || languageChanged {
@@ -784,18 +552,6 @@ func main() {
 					}
 					snapshot := controller.Snapshot()
 					openReadyLogin(snapshot)
-					loginMessage := flow.Message()
-					if !languageChanged && reflect.DeepEqual(snapshot, previous) && loginMessage == previousLoginMessage && !editing {
-						continue
-					}
-					previous = snapshot
-					previousLoginMessage = loginMessage
-					loginStatus.SetTitle(tr("授权页面：") + tr(loginMessage))
-					if flow.ShowMessage() {
-						loginStatus.Show()
-					} else {
-						loginStatus.Hide()
-					}
 					if now := isConnected(snapshot); now != connected {
 						connected = now
 						setTrayIcon(connected)
@@ -804,64 +560,8 @@ func main() {
 					status.SetTitle("TailSplit · " + presentation.Summary)
 					connect.SetTitle(presentation.Action)
 					systray.SetTooltip("TailSplit · " + presentation.Summary)
-					name, _ := tray.DeviceName(preferences.DeviceName)
-					device.SetTitle(tr("设备名称：") + shortMenuTitle(name))
-					setChecked(autoName, preferences.DeviceName == "")
-					setChecked(splitMode, preferences.RoutingMode != tailsplit.RoutingGlobal)
-					setChecked(globalMode, preferences.RoutingMode == tailsplit.RoutingGlobal)
-					if preferences.RoutingMode == tailsplit.RoutingGlobal {
-						routing.SetTitle(tr("模式：全局代理 · Kill Switch"))
-					} else {
-						routing.SetTitle(tr("模式：规则分流"))
-					}
-					setChecked(systemDNS, preferences.DirectDNS == "system")
-					setChecked(debugLogging, preferences.DebugLogging)
-					if preferences.DirectDNS == "system" {
-						dnsMenu.SetTitle(tr("直连 DNS：跟随系统"))
-						dnsInfo.SetTitle(tr("物理网卡的原始 DNS"))
-					} else {
-						dnsMenu.SetTitle(tr("直连 DNS：") + preferences.DirectDNS)
-						dnsInfo.SetTitle(tr("固定：") + preferences.DirectDNS)
-					}
-					autoHostname, _ := tray.DeviceName("")
-					autoName.SetTooltip(autoHostname)
-					if preferences.DeviceName != "" {
-						customName.SetTitle(tr("自定义：") + shortMenuTitle(preferences.DeviceName) + "…")
-					} else {
-						customName.SetTitle(tr("自定义名称…"))
-					}
-					if snapshot.NetworkName != "" {
-						network.SetTitle(tr("Tailnet：") + snapshot.NetworkName)
-					} else {
-						network.SetTitle(tr("Tailnet：等待连接"))
-					}
-					if snapshot.ExitNode != "" {
-						exitMenu.SetTitle(tr("出口：") + shortMenuTitle(snapshot.ExitNode))
-					} else {
-						exitMenu.SetTitle(tr("选择出口节点"))
-					}
 					busy := editing || loggingOut || snapshot.State == "stopping" || snapshot.State == "logging-out"
 					setEnabled(connect, (!busy || snapshot.PreparingService()) && !flow.Opening())
-					setEnabled(restart, canReconnect(snapshot) && !busy && !flow.Opening())
-					setEnabled(login, !busy && !flow.Opening() &&
-						snapshot.Mode != "discovery" &&
-						snapshot.BackendState != "Running" && snapshot.BackendState != "Direct")
-					if snapshot.LoginURL != "" {
-						copyLogin.Show()
-					} else {
-						copyLogin.Hide()
-					}
-					setEnabled(copyLogin, !busy)
-					setEnabled(device, !busy && !flow.Opening())
-					setEnabled(routing, !busy && !flow.Opening())
-					setEnabled(connectOnStart, !busy && !flow.Opening())
-					setEnabled(startAtLogin, loginItemStatus != tray.LoginItemUnavailable && !busy && !flow.Opening())
-					setEnabled(systemDNS, !busy && !flow.Opening())
-					setEnabled(debugLogging, !busy && !flow.Opening())
-					setEnabled(refreshExits, !busy && !flow.Opening())
-					setEnabled(installService, !busy && snapshot.State != "authorizing")
-					setEnabled(removeService, !busy && snapshot.State != "authorizing")
-					picker.update(snapshot, preferences.ExitNode, !busy && !flow.Opening())
 				}
 			}
 		}()
@@ -924,27 +624,6 @@ func initializeConfig(path, template string) error {
 		return err
 	}
 	return closeErr
-}
-
-func proxyAddress(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) > 1<<20 {
-		return ""
-	}
-	var config struct {
-		Listen string `yaml:"listen"`
-	}
-	if yaml.Unmarshal(data, &config) != nil {
-		return ""
-	}
-	if config.Listen == "" {
-		config.Listen = "127.0.0.1:17890"
-	}
-	value, err := netip.ParseAddrPort(config.Listen)
-	if err != nil || !value.Addr().IsLoopback() || value.Port() == 0 {
-		return ""
-	}
-	return value.String()
 }
 
 func showError(message string) {

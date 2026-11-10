@@ -83,8 +83,8 @@ func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	if err := initializeConfig(path, template); err != nil {
 		t.Fatal(err)
 	}
-	if proxyAddress(path) != "127.0.0.1:17890" {
-		t.Fatal("proxy address could not be copied")
+	if data, err := os.ReadFile(path); err != nil || string(data) != "listen: 127.0.0.1:17890\n" {
+		t.Fatal("app did not initialize the requested template", err)
 	}
 	if err := os.WriteFile(path, []byte("listen: 127.0.0.1:19999\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -92,8 +92,8 @@ func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	if err := initializeConfig(path, template); err != nil {
 		t.Fatal(err)
 	}
-	if proxyAddress(path) != "127.0.0.1:19999" {
-		t.Fatal("app overwrote user configuration")
+	if data, err := os.ReadFile(path); err != nil || string(data) != "listen: 127.0.0.1:19999\n" {
+		t.Fatal("app overwrote user configuration", err)
 	}
 	stat, _ := os.Stat(path)
 	if stat.Mode().Perm() != 0o600 {

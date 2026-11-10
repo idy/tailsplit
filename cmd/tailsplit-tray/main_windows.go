@@ -199,6 +199,8 @@ func runWindowsDesktop() (runErr error) {
 		func(ctx context.Context, enabled bool) error {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
 		}, launchWindowsUpdate)
+	var showConfiguration func()
+	panelReady := make(chan struct{})
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
 		PingExit: controller.PingExitNode,
@@ -226,6 +228,14 @@ func runWindowsDesktop() (runErr error) {
 		UpdateState: app.updates.snapshot, UpdateAction: app.updates.action,
 		Action: app.action, Logs: func() (string, error) { return desktopLogTail(*logPath) },
 		Startup: func() bool { return tray.LoginItem() == tray.LoginItemEnabled },
+		OpenPanel: func() {
+			select {
+			case <-panelReady:
+				showConfiguration()
+			case <-ctx.Done():
+			}
+		},
+		Quit: systray.Quit,
 	})
 	if err != nil {
 		return err
@@ -235,6 +245,15 @@ func runWindowsDesktop() (runErr error) {
 	if err != nil {
 		return err
 	}
+	showConfiguration = func() {
+		if err := app.window.Show(); err != nil {
+			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
+			if err := mygo.Shell.OpenExternal(page.URL()); err != nil {
+				windowsError(err.Error())
+			}
+		}
+	}
+	close(panelReady)
 	windowDone := make(chan error, 1)
 	go func() {
 		controller.RecordDesktopEvent("MyGo native window starting with the system WebView.")
@@ -252,22 +271,16 @@ func runWindowsDesktop() (runErr error) {
 		}
 	}()
 	go app.serveDesktop(listener)
+	systray.SetPopupURL(page.PopupURL())
 	systray.SetIcon(windowsTrayIcon(false))
 	systray.SetTooltip("TailSplit")
 	return systray.Run(func() {
-		open := addMenu(nil, "打开 TailSplit", "连接、账号、分流与日志")
-		status := addMenu(nil, "未连接", "")
+		open := addMenu("打开 TailSplit", "连接、账号、分流与日志")
+		status := addMenu("TailSplit · 未连接", "")
 		status.Disable()
-		connect := addMenu(nil, "连接", "使用当前配置连接")
-		disconnect := addMenu(nil, "断开", "停止网络会话并恢复受管理的网络")
-		login := addMenu(nil, "登录 Tailnet…", "在默认浏览器中授权本机设备")
-		refresh := addMenu(nil, "刷新出口节点", "只读取设备，不创建 TUN")
-		startup := addMenu(nil, "登录 Windows 后启动", "只启动界面；自动连接另行设置", tray.LoginItem() == tray.LoginItemEnabled)
+		connect := addMenu("连接", "连接或断开 TailSplit")
 		systray.AddSeparator()
-		checkUpdate := addMenu(nil, "检查更新…", "检查 GitHub 正式版；安装前会确认")
-		autoUpdates := addMenu(nil, "自动检查更新", "启动后和每六小时检查", preferences.CheckForUpdates)
-		about := addMenu(nil, "关于 TailSplit", "版本与源代码信息")
-		exit := addMenu(nil, "退出 TailSplit", "先断开网络，再退出")
+		exit := addMenu("退出 TailSplit", "先断开网络，再退出")
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		var connected bool
@@ -283,45 +296,15 @@ func runWindowsDesktop() (runErr error) {
 			case <-ctx.Done():
 				return
 			case <-open.ClickedCh:
-				_ = app.window.Show()
+				showConfiguration()
 			case <-connect.ClickedCh:
-				go app.menuAction("connect")
-			case <-disconnect.ClickedCh:
-				go app.menuAction("disconnect")
-			case <-login.ClickedCh:
-				go app.menuAction("login")
-			case <-refresh.ClickedCh:
-				go app.menuAction("refresh-exits")
-			case <-startup.ClickedCh:
-				action := "startup-on"
-				if tray.LoginItem() == tray.LoginItemEnabled {
-					action = "startup-off"
+				action := "connect"
+				if controller.Snapshot().Active {
+					action = "disconnect"
 				}
 				go app.menuAction(action)
-			case <-checkUpdate.ClickedCh:
-				action := "check"
-				if app.updates.snapshot().Available {
-					action = "install"
-				}
-				go func() {
-					if err := app.updates.action(ctx, action); err != nil {
-						windowsError(err.Error())
-					}
-				}()
-			case <-autoUpdates.ClickedCh:
-				action := "automatic-on"
-				if app.updates.snapshot().Automatic {
-					action = "automatic-off"
-				}
-				go func() {
-					if err := app.updates.action(ctx, action); err != nil {
-						windowsError(err.Error())
-					}
-				}()
-			case <-about.ClickedCh:
-				windowsError(fmt.Sprintf("TailSplit %s\n%s%s\nhttps://github.com/idy/tailsplit", version, tr("源代码："), commit))
 			case <-exit.ClickedCh:
-				app.shutdown()
+				systray.Quit()
 				return
 			case <-ticker.C:
 				language := currentLanguage()
@@ -331,33 +314,19 @@ func runWindowsDesktop() (runErr error) {
 					desktopwindow.ConfigureApplication(language, tray.ShowAbout)
 					refreshMenuLanguage()
 				}
-				updateState := app.updates.snapshot()
-				checkUpdate.SetTitle(updateMenuTitleForLanguage(updateState, currentLanguage()))
-				checkUpdate.SetTooltip(tr(updateState.Error))
-				if updateState.Busy || updateState.Confirming || updateState.Checking || updateState.Downloading || updateState.Installing {
-					checkUpdate.Disable()
-					autoUpdates.Disable()
-				} else {
-					checkUpdate.Enable()
-					autoUpdates.Enable()
-				}
-				if updateState.Automatic {
-					autoUpdates.Check()
-				} else {
-					autoUpdates.Uncheck()
-				}
 				snapshot := controller.Snapshot()
 				presentation := connectionPresentationForLanguage(snapshot, language)
 				status.SetTitle("TailSplit · " + presentation.Summary)
+				connect.SetTitle(presentation.Action)
+				if snapshot.State == "stopping" || snapshot.State == "logging-out" {
+					connect.Disable()
+				} else {
+					connect.Enable()
+				}
 				systray.SetTooltip("TailSplit · " + presentation.Summary)
 				if now := isConnected(snapshot); now != connected {
 					connected = now
 					systray.SetIcon(windowsTrayIcon(connected))
-				}
-				if tray.LoginItem() == tray.LoginItemEnabled {
-					startup.Check()
-				} else {
-					startup.Uncheck()
 				}
 			}
 		}
