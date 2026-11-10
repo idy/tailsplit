@@ -136,6 +136,19 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     addEventListener: (...args) => events.addEventListener(...args),
   };
   app.document = document;
+  const cookies = localeOptions.cookies || new Map();
+  app.cookies = cookies;
+  Object.defineProperty(document, 'cookie', {
+    get: () => [...cookies].map(([name, value]) => `${name}=${value}`).join('; '),
+    set: raw => {
+      const [pair, ...attributes] = raw.split(';');
+      const separator = pair.indexOf('=');
+      if (separator < 0) return;
+      const name = pair.slice(0, separator).trim();
+      if (attributes.some(attribute => /^\s*max-age=0\s*$/i.test(attribute))) cookies.delete(name);
+      else cookies.set(name, pair.slice(separator + 1));
+    },
+  });
   const applyCancellation = data => {
     const { request: id, operation_id: operation } = data;
     if (id && id === app.snapshot.connect_request) app.snapshot.connect_request = '';
@@ -3918,6 +3931,78 @@ test('a stalled native cancellation retries guarded HTTP without waiting forever
   assert.equal(native.snapshot.active, false);
   assert.equal(native.snapshot.connect_request, '');
   assert.equal(native.storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('already-claimed native cancellation is journaled without credentials before both transports fail', async () => {
+  const cookies = new Map();
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'already-claimed-owner', connect_request: '' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-journal-scope', cookies }, guidedDocument());
+  native.nativeOverride = () => response({ error: 'IPC never delivered' }, false);
+  native.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP never delivered' }, false) : undefined;
+  await native.$('#connection-setup-cancel').emit('click');
+  assert.equal(native.snapshot.active, true, 'neither original transport delivered cancellation');
+  assert.equal(cookies.size, 1);
+  const [name, value] = [...cookies][0];
+  assert.match(name, /^tailsplit-native-cancel-native-journal-scope-/);
+  const record = JSON.parse(decodeURIComponent(value));
+  assert.deepEqual(record, { scope: 'native-journal-scope', request: '', operation_id: 'already-claimed-owner' });
+  assert.equal(decodeURIComponent(value).includes('fixture'), false, 'panel capability must never enter recovery cookies');
+  assert.equal(native.storage.has('tailsplit-setup-cancel'), true);
+});
+
+test('a replacement native context recovers a claimed-owner cancellation from its cookie journal alone', async () => {
+  const record = { scope: 'native-journal-scope', request: '', operation_id: 'claimed-reload-owner' };
+  const cookies = new Map([['tailsplit-native-cancel-native-journal-scope-before-crash', encodeURIComponent(JSON.stringify(record))]]);
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: record.operation_id, connect_request: '' }, 'mygo-windows',
+    { page: 'home', hash: '#token=fixture&journal=native-journal-scope', cookies, storage: new Map(), localStorage: new Map() }, guidedDocument());
+  assert.equal(native.snapshot.active, false);
+  assert.equal(native.nativeCalls.length, 1);
+  assert.deepEqual(native.nativeCalls[0].data, { request: '', operation_id: 'claimed-reload-owner' });
+  assert.equal(cookies.size, 0, 'only acknowledged delivery removes the recovery record');
+  assert.equal(native.storage.has('tailsplit-setup-cancel'), false);
+  assert.ok(mutations(native).every(request => request.path === '/api/cancel'));
+});
+
+test('a native cancellation acknowledgment preserves a newer cookie journal entry', async () => {
+  const cookies = new Map();
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'old-cookie-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-journal-scope', cookies }, guidedDocument());
+  const ack = deferred();
+  native.nativeOverride = () => ack.promise;
+  const cancel = native.$('#connection-setup-cancel').emit('click');
+  await settle();
+  assert.equal(cookies.size, 1);
+  const newer = { scope: 'native-journal-scope', request: 'new-request', operation_id: 'new-cookie-owner' };
+  const newerName = 'tailsplit-native-cancel-native-journal-scope-new-entry';
+  cookies.set(newerName, encodeURIComponent(JSON.stringify(newer)));
+  Object.assign(native.snapshot, { active: false, state: 'stopped', mode: '' });
+  ack.resolve(response({ ok: true }));
+  await cancel;
+  assert.equal(cookies.size, 1);
+  assert.deepEqual(JSON.parse(decodeURIComponent(cookies.get(newerName))), newer);
+});
+
+test('ordinary browser panels do not read or write native recovery cookies', async () => {
+  const cookies = new Map();
+  const browser = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'browser-owner' }, '',
+    { page: 'home', hash: '#token=fixture&journal=native-journal-scope', cookies }, guidedDocument());
+  browser.override = request => request.path === '/api/cancel' ? response({ error: 'not delivered' }, false) : undefined;
+  await browser.$('#connection-setup-cancel').emit('click');
+  assert.equal(cookies.size, 0);
+  assert.equal(browser.nativeCalls.length, 0);
+  assert.equal(browser.storage.has('tailsplit-setup-cancel'), true);
+});
+
+test('native cookie journal survives unavailable tab and origin storage', async () => {
+  const unavailable = { get() { throw new Error('storage unavailable'); }, set() { throw new Error('storage unavailable'); }, delete() { throw new Error('storage unavailable'); } };
+  const cookies = new Map();
+  const native = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'cookie-only-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-journal-scope', cookies, storage: unavailable, localStorage: unavailable }, guidedDocument());
+  native.nativeOverride = () => response({ error: 'IPC never delivered' }, false);
+  native.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP never delivered' }, false) : undefined;
+  await native.$('#connection-setup-cancel').emit('click');
+  assert.equal(cookies.size, 1);
+  assert.equal(JSON.parse(decodeURIComponent([...cookies.values()][0])).operation_id, 'cookie-only-owner');
 });
 
 test('active private ownership is pinned to compilation instead of later SDK suffix changes', async () => {

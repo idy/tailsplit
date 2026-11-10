@@ -85,10 +85,9 @@ func (w *Window) failLoad(load *pageLoad, destroyed bool, err error, destroy fun
 		return
 	}
 	w.stopLoadProbe()
-	// Destroy emits OnClosed synchronously. Publish the failure first so its nil
-	// completion cannot win and silently discard the startup error.
-	w.complete(err)
-	destroy()
+	// Read renderer-independent cancellation intent before destroying the last
+	// ephemeral page. Slow recovery retains its hidden session across fallback.
+	w.failAfterCancellationRecovery(err, destroy)
 }
 
 func createWindowOnRun(platform string, visible, proof bool) bool {

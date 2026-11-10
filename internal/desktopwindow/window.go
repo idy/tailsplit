@@ -29,6 +29,7 @@ type Window struct {
 	visible               atomic.Bool
 	quitting              atomic.Bool
 	everShown             atomic.Bool
+	rendererUnavailable   atomic.Bool
 	start                 sync.Once
 	create                sync.Once
 	finish                sync.Once
@@ -37,6 +38,13 @@ type Window struct {
 	err                   error
 	cancelHandler         func(context.Context, string, string) error
 	connectRequestHandler func()
+	journalScope          string
+	journal               *cancellationJournal // UI thread setup; immutable after creation.
+	journalContext        context.Context
+	stopJournal           context.CancelFunc
+	recoveryDispatch      func(func()) // Test UI dispatcher; nil uses MyGo's main thread.
+	releaseJournalSession func()       // UI thread: releases the non-scriptable private-session keeper.
+	journalRelease        sync.Once
 }
 
 func New(rawURL string, background bool) (*Window, error) {
@@ -44,15 +52,19 @@ func New(rawURL string, background bool) (*Window, error) {
 	if err != nil {
 		return nil, err
 	}
-	w := &Window{url: rawURL, port: port, done: make(chan struct{})}
+	journalURL, scope := cancellationJournalURL(rawURL)
+	journalContext, stopJournal := context.WithCancel(context.Background())
+	w := &Window{url: journalURL, port: port, done: make(chan struct{}), journalScope: scope, journalContext: journalContext, stopJournal: stopJournal}
 	w.visible.Store(!background)
 	// Register application handlers even when a background macOS launch defers
 	// its native window until Show (including a second-instance request).
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
 		w.quitting.Store(true)
+		w.stopCancellationRecovery()
 		w.stopLoadProbe()
 	})
 	mygo.App.OnQuit(func() {
+		w.stopCancellationRecovery()
 		w.stopLoadProbe()
 		w.complete(nil)
 	})
@@ -108,6 +120,9 @@ func (w *Window) createWindow() {
 				if w.native != nil && !w.native.IsDestroyed() {
 					w.native.Destroy()
 				}
+				if w.releaseJournalSession != nil {
+					w.journalRelease.Do(w.releaseJournalSession)
+				}
 			}
 		}()
 		if w.quitting.Load() || w.isDone() {
@@ -125,14 +140,24 @@ func (w *Window) createWindow() {
 		origin := "http://127.0.0.1:" + strconv.Itoa(int(w.port))
 		// Leave URL empty: no page may load before all policies and lifecycle
 		// handlers are registered, including permission and download denial.
+		session := mygo.NewEphemeralSession()
 		w.native = mygo.NewWindow(mygo.WindowOptions{
 			Title: "TailSplit", Hidden: true,
 			Width: 1120, Height: 780, MinWidth: 760, MinHeight: 560, UseContentSize: true,
 			TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: height,
 			HideWindowButtons: runtime.GOOS == "windows", DisableFullScreen: runtime.GOOS == "darwin",
-			Page: mygo.PageOptions{Session: mygo.NewEphemeralSession(), TrustedOrigins: []string{origin}, DevTools: mygo.DevToolsDisabled},
+			Page: mygo.PageOptions{Session: session, TrustedOrigins: []string{origin}, DevTools: mygo.DevToolsDisabled},
 		})
 		frame := w.native
+		// Keep the ephemeral store independently of the renderer. The failed
+		// main page can be destroyed before replay, freezing further JS writes.
+		keeper := mygo.NewWindow(mygo.WindowOptions{
+			Title: "Recovery Store", Hidden: true, Width: 1, Height: 1,
+			TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true,
+			Page: mygo.PageOptions{Session: session, Untrusted: true, DevTools: mygo.DevToolsDisabled},
+		})
+		w.releaseJournalSession = keeper.Destroy
+		w.journal = newCancellationJournal(session, w.journalScope, origin)
 		panelCancellation.register(frame, frame.Page(), w)
 		if os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR") == "" {
 			restoreNativeFrame(frame.NativeHandle())
@@ -144,7 +169,16 @@ func (w *Window) createWindow() {
 		})
 		frame.Page().OnRenderProcessGone(func(string) {
 			if !w.quitting.Load() && !w.isDone() && !frame.IsDestroyed() {
-				w.loadPage(frame, origin)
+				if w.rendererUnavailable.Swap(true) {
+					return
+				}
+				w.loaded = false
+				w.stopLoadProbe()
+				w.afterCancellationRecovery(func(_ *journalRecovery, _ bool) {
+					if !w.quitting.Load() && !w.isDone() && !frame.IsDestroyed() {
+						w.loadPage(frame, origin)
+					}
+				})
 			}
 		})
 		frame.Page().OnDidFinishLoad(func() {
@@ -157,11 +191,17 @@ func (w *Window) createWindow() {
 				event.PreventDefault()
 				w.visible.Store(false)
 				w.hideWindow()
+				w.beginCancellationRecovery()
 			}
 		})
 		frame.OnClosed(func() {
+			knownFailure := w.isDone()
 			w.stopLoadProbe()
+			w.rendererUnavailable.Store(true)
 			w.complete(nil)
+			if !knownFailure && !w.quitting.Load() && w.journal != nil {
+				w.releaseJournalAfterRecovery(w.beginCancellationRecovery())
+			}
 		})
 		w.loadPage(frame, origin)
 		// The tray proof owns focus while exercising transient dismissal. Keep
@@ -209,6 +249,7 @@ func (w *Window) loadPage(frame *mygo.Window, origin string) {
 func (w *Window) pageLoaded(frame *mygo.Window) {
 	w.stopLoadProbe()
 	w.loaded = true
+	w.rendererUnavailable.Store(false)
 	setStartupStage(frame.NativeHandle(), 4, true)
 	if w.visible.Load() {
 		w.showWindow()
@@ -287,6 +328,7 @@ func (w *Window) Hide() error {
 
 func (w *Window) Quit() error {
 	w.quitting.Store(true)
+	w.stopCancellationRecovery()
 	mygo.App.Quit()
 	return nil
 }

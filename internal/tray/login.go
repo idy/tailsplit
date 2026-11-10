@@ -9,11 +9,16 @@ import (
 	"github.com/idy/tailsplit"
 )
 
+// ErrLoginURLChanged rejects only a stale browser selection. The same live
+// operation may retry its latest authorization URL without losing ownership.
+var ErrLoginURLChanged = errors.New("登录链接已更新")
+
 // LoginFlow is owned by the UI event loop. A click can precede the new auth
 // URL after logout; queue that intent instead of silently discarding it.
 type LoginFlow struct {
 	pending            bool
 	opening            bool
+	abandoned          bool // UI intent ended; distinct from revoking its helper owner.
 	message            string
 	showMessage        bool
 	operationID        string
@@ -75,11 +80,13 @@ func (f *LoginFlow) request() {
 		return
 	}
 	f.pending = true
+	f.abandoned = false
 	f.showMessage = true
 	f.message = "正在准备新授权链接"
 }
 
 func (f *LoginFlow) Cancel() {
+	f.abandoned = true
 	f.pending = false
 	f.showMessage = false
 	f.message = "未打开"
@@ -151,12 +158,20 @@ func (f *LoginFlow) NextBrowserRequest(snapshot Snapshot) LoginBrowserRequest {
 func (f *LoginFlow) Complete(err error) {
 	f.opening = false
 	if errors.Is(err, ErrOperationCanceled) {
-		f.CancelOperation(f.operationID)
+		// A launch can also be rejected during an internal helper transition.
+		// Only explicit CancelOperation notifications revoke owner identities.
 		f.Cancel()
 		return
 	}
-	if f.operationID != "" && f.canceledOperations[f.operationID] {
+	if f.operationID != "" && (f.canceledOperations[f.operationID] || f.canceledOperations[f.ownerID]) {
 		f.Cancel()
+		return
+	}
+	if f.abandoned {
+		return
+	}
+	if errors.Is(err, ErrLoginURLChanged) {
+		f.request()
 		return
 	}
 	if err != nil {
@@ -241,9 +256,11 @@ func (c *Controller) AuthorizeLoginBrowserStart(request LoginBrowserRequest, sta
 	if request.OperationID == "" || request.OwnerID == "" || start == nil ||
 		c.operationAllowedLocked(request.OperationID) != nil || c.operationAllowedLocked(request.OwnerID) != nil ||
 		c.closed || c.stopping || c.reconfiguring || c.loggingOut || c.preparation != nil || c.command == nil ||
-		c.operationID != request.OwnerID || c.snapshot.State == "failed" ||
-		request.URL != c.snapshot.LoginURL || !validLoginURL(request.URL) {
+		c.operationID != request.OwnerID || c.snapshot.State == "failed" {
 		return ErrOperationCanceled
+	}
+	if request.URL != c.snapshot.LoginURL || !validLoginURL(request.URL) {
+		return ErrLoginURLChanged
 	}
 	return start()
 }
@@ -282,7 +299,7 @@ func openLoginPage(ctx context.Context, value, browserID string, run browserComm
 		args = []string{"-n", "-b", browserID, "--args", "--new-window", value}
 	}
 	if err := run(ctx, "/usr/bin/open", args...); err != nil {
-		if errors.Is(err, ErrOperationCanceled) {
+		if errors.Is(err, ErrOperationCanceled) || errors.Is(err, ErrLoginURLChanged) {
 			return err
 		}
 		return errors.New("could not open the default browser; copy the login link from the menu")

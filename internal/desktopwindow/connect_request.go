@@ -24,7 +24,7 @@ func (w *Window) offerConnectRequest() {
 // CanPresentConnectRequest is checked under the controller's request lock at
 // first presentation, so a queued Show cannot reserve requests after teardown.
 func (w *Window) CanPresentConnectRequest() bool {
-	return !w.isDone() && !w.quitting.Load()
+	return !w.isDone() && !w.quitting.Load() && !w.rendererUnavailable.Load()
 }
 
 // CanReceiveConnectRequest also rejects late HTTP reads from a dead renderer;

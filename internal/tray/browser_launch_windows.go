@@ -30,7 +30,7 @@ func openWindowsLoginGuarded(ctx context.Context, value string, guard BrowserSta
 	// handlers may then wait for DDE/browser completion without holding ownership.
 	command := exec.CommandContext(ctx, filepath.Join(systemDirectory, "rundll32.exe"), "url.dll,FileProtocolHandler", value)
 	if err := runBrowserCommand(ctx, command, guard); err != nil {
-		if errors.Is(err, ErrOperationCanceled) {
+		if errors.Is(err, ErrOperationCanceled) || errors.Is(err, ErrLoginURLChanged) {
 			return err
 		}
 		return errors.New("could not open the default browser for device login")

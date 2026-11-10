@@ -48,6 +48,8 @@ type windowsApp struct {
 	controller         *tray.Controller
 	configPath         string
 	window             *desktopwindow.Window
+	panelReady         <-chan struct{}
+	showPanel          func() error // Published by closing panelReady.
 	operations         chan windowsOperation
 	login              tray.LoginFlow
 	loginCancellations *desktopLoginCancellations
@@ -187,9 +189,14 @@ func runWindowsDesktop() (runErr error) {
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// The tray owns application lifetime, independently of the settings frame,
+	// its recovery keeper and any transient popup. Explicit Quit still exits.
+	offAllClosed := mygo.App.OnWindowAllClosed(func() {})
+	defer offAllClosed()
 	// Keep one bounded pending request while the dispatcher handles its status
 	// tick. An unbuffered nonblocking send can reject a click while idle.
-	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1), loginCancellations: newDesktopLoginCancellations()}
+	panelReady := make(chan struct{})
+	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1), loginCancellations: newDesktopLoginCancellations(), panelReady: panelReady}
 	go app.operate()
 	preferences, err := tray.ReadPreferences(*config)
 	if err != nil {
@@ -201,7 +208,6 @@ func runWindowsDesktop() (runErr error) {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
 		}, launchWindowsUpdate)
 	var showConfiguration func()
-	panelReady := make(chan struct{})
 	cancelConnection := app.loginCancellations.callback(controller)
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
@@ -273,29 +279,28 @@ func runWindowsDesktop() (runErr error) {
 	}
 	app.window.SetCancelHandler(cancelConnection)
 	app.window.SetConnectRequestHandler(func() { controller.OfferNativeConnectRequest(app.window.CanPresentConnectRequest) })
-	showConfiguration = func() {
-		if err := app.window.Show(); err != nil {
-			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-			if err := mygo.Shell.OpenExternal(tray.ConfigurationWindowConnectURL(page.URL(), controller.Snapshot().ConnectRequest)); err != nil {
-				windowsError(err.Error())
-			}
+	fallback := configurationFallback{ctx: ctx, launch: func() {
+		if err := mygo.Shell.OpenExternal(tray.ConfigurationWindowConnectURL(page.URL(), controller.Snapshot().ConnectRequest)); err != nil {
+			windowsError(err.Error())
 		}
+	}}
+	reportWindowFailure := func(err error) {
+		controller.RecordDesktopEvent("Native configuration window unavailable: " + err.Error())
 	}
+	app.showPanel = func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		fallback.beginShow()
+		fallback.nativeFailure(app.window.Show(), true, reportWindowFailure)
+		return nil
+	}
+	showConfiguration = func() { _ = app.showConfiguration() }
 	close(panelReady)
-	windowDone := make(chan error, 1)
 	go func() {
 		controller.RecordDesktopEvent("MyGo native window starting with the system WebView.")
-		windowDone <- app.window.Run()
-	}()
-	go func() {
-		select {
-		case err := <-windowDone:
-			if err != nil {
-				controller.RecordDesktopEvent("Native window initialization failed: " + err.Error())
-				windowsError("Could not open the TailSplit window. Repair TailSplit and its Microsoft Edge WebView2 runtime.\n\n" + err.Error())
-			}
-			app.shutdown()
-		case <-ctx.Done():
+		if err := app.window.Run(); err != nil {
+			fallback.nativeFailure(err, app.window.WantsVisible(), reportWindowFailure)
 		}
 	}()
 	go app.serveDesktop(listener)
@@ -364,6 +369,24 @@ func runWindowsDesktop() (runErr error) {
 			}
 		}
 	}, func() { cancel(); _ = controller.Close(); _ = page.Close() })
+}
+
+func (a *windowsApp) showConfiguration() error {
+	if a.panelReady == nil {
+		return desktopwindow.ErrNotReady
+	}
+	select {
+	case <-a.panelReady:
+		if err := a.ctx.Err(); err != nil {
+			return err
+		}
+		if a.showPanel == nil {
+			return desktopwindow.ErrNotReady
+		}
+		return a.showPanel()
+	case <-a.ctx.Done():
+		return a.ctx.Err()
+	}
 }
 
 func (a *windowsApp) do(ctx context.Context, apply func() error) error {
@@ -462,7 +485,7 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 			a.login.Cancel()
 			return a.controller.Stop()
 		case "login":
-			return nativePrimarySignIn(a.configPath, a.window.Show,
+			return nativePrimarySignIn(a.configPath, a.showConfiguration,
 				func() error { return requestDesktopLogin(controller, &a.login) })
 		case "logout":
 			a.login.Cancel()
@@ -489,7 +512,7 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 func (a *windowsApp) menuAction(action string) {
 	if action == "connect" && !a.controller.Snapshot().Active {
 		a.controller.RequestConnectionSetup()
-		if err := a.window.Show(); err != nil {
+		if err := a.showConfiguration(); err != nil {
 			windowsError(err.Error())
 		}
 		return
@@ -530,7 +553,7 @@ func (a *windowsApp) serveDesktop(listener net.Listener) {
 			}
 			switch command {
 			case "show\n":
-				if a.window.Show() != nil {
+				if a.showConfiguration() != nil {
 					return
 				}
 				_, _ = io.WriteString(connection, "ok\n")

@@ -301,6 +301,9 @@ func (c *Controller) ClaimPanelConnectOperation(request, operation string, nativ
 }
 
 func (c *Controller) RecordLoginBrowserResult(err error) {
+	if errors.Is(err, ErrLoginURLChanged) {
+		return
+	}
 	message := "Requested a new default-browser window for Tailscale login.\n"
 	if err != nil {
 		message = "Could not open the Tailscale login browser; use Copy login link.\n"
