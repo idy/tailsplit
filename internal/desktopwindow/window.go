@@ -38,6 +38,7 @@ type Window struct {
 	mu                    sync.Mutex
 	err                   error
 	cancelHandler         func(context.Context, string, string) error
+	navigationInbox       *nativeCancellationInbox // Protected by mu; survives renderer destruction.
 	connectRequestHandler func()
 	journalScope          string
 	journal               *cancellationJournal // UI thread setup; immutable after creation.
@@ -175,6 +176,7 @@ func (w *Window) createWindow() {
 			}
 		})
 		panelCancellation.register(frame, frame.Page(), w)
+		w.registerCancellationNavigation(frame, frame.Page(), origin)
 		if os.Getenv("TAILSPLIT_DESKTOP_PROOF_DIR") == "" {
 			restoreNativeFrame(frame.NativeHandle())
 		}

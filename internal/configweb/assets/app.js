@@ -75,16 +75,18 @@
   const validJournalScope = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(value);
   let nativeJournalScope = validJournalScope(fragment.get('journal')) ? fragment.get('journal') : '';
   let nativeJournalBackup = fragment.get('journal_backup') === '1';
+  let nativeCancelHost = fragment.get('cancel_host') === '1';
   if (mygoWindow) {
     try {
       if (fragment.has('journal')) {
-        if (nativeJournalScope) sessionStorage.setItem(nativeJournalScopeKey, JSON.stringify({ token, scope: nativeJournalScope, backup: nativeJournalBackup }));
+        if (nativeJournalScope) sessionStorage.setItem(nativeJournalScopeKey, JSON.stringify({ token, scope: nativeJournalScope, backup: nativeJournalBackup, host: nativeCancelHost }));
         else sessionStorage.removeItem(nativeJournalScopeKey);
       } else {
         const remembered = JSON.parse(sessionStorage.getItem(nativeJournalScopeKey) || 'null');
         if (remembered?.token === token && validJournalScope(remembered.scope)) {
           nativeJournalScope = remembered.scope;
           nativeJournalBackup = remembered.backup === true;
+          nativeCancelHost = remembered.host === true;
         } else sessionStorage.removeItem(nativeJournalScopeKey);
       }
     } catch (_) { /* The fragment still supplies this native load's scope and negotiated store. */ }
@@ -1139,6 +1141,46 @@
     $('#connection-setup-cancel').disabled = !live.desktop || setupCancelSending;
     setStatusText('#connection-setup-cancel', t(pendingSetupCancel && !setupCancelSending ? '重试取消' : failed && !live.active ? '关闭' : '取消连接'));
   }
+  let nativeCancelConfirmation = null;
+  window.addEventListener('tailsplit-native-cancel-ack', event => {
+    const confirmation = nativeCancelConfirmation;
+    const ack = event.detail;
+    if (!mygoWindow || !confirmation || ack?.scope !== nativeJournalScope ||
+        ack.request !== confirmation.cancel.request || ack.operation_id !== (confirmation.cancel.operation_id || '')) return;
+    confirmation.resolve();
+  });
+  async function deliverNativeCancel(cancel) {
+    let confirmed = false, resolveAck;
+    const ack = new Promise(resolve => { resolveAck = () => { confirmed = true; resolve(); }; });
+    const confirmation = { cancel, resolve: resolveAck };
+    const host = nativeCancelHost && Boolean(nativeJournalScope);
+    if (host) nativeCancelConfirmation = confirmation;
+    try {
+      // The host intercepts this route before navigation or HTTP, retaining the
+      // intent outside the renderer even when both journal stores are denied.
+      if (host) {
+        const fragment = new URLSearchParams({ scope: nativeJournalScope, request: cancel.request, operation_id: cancel.operation_id || '' });
+        try { location.assign(`/native-cancel#${fragment}`); } catch (_) { /* The original transports remain available. */ }
+      }
+      const legacy = (async () => {
+        let timer;
+        try {
+          await Promise.race([
+            window.mygo.call('TailSplitPanel.Cancel', cancel.request, cancel.operation_id || ''),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(t('请求未完成，请重试。'))), 1000); }),
+          ]);
+        } catch (error) { if (!confirmed) await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' }); }
+        finally { clearTimeout(timer); }
+      })();
+      if (!host) { await legacy; return; }
+      try { await Promise.race([legacy, ack]); }
+      catch (error) {
+        let timer;
+        try { await Promise.race([ack, new Promise((_, reject) => { timer = setTimeout(() => reject(error), 1000); })]); }
+        finally { clearTimeout(timer); }
+      }
+    } finally { if (nativeCancelConfirmation === confirmation) nativeCancelConfirmation = null; }
+  }
   async function dispatchSetupCancel() {
     if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
     const cancel = pendingSetupCancel;
@@ -1151,18 +1193,8 @@
     try {
       // The controller revokes this exact operation, including commands still
       // awaiting admission. A retry must never stop a different, newer session.
-      if (mygoWindow) {
-        // WebView storage is isolated from the browser fallback. Deliver the
-        // revocation directly to the shared native host, even when HTTP fails.
-        let timer;
-        try {
-          await Promise.race([
-            window.mygo.call('TailSplitPanel.Cancel', cancel.request, cancel.operation_id || ''),
-            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(t('请求未完成，请重试。'))), 1000); }),
-          ]);
-        } catch (_) { await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' }); }
-        finally { clearTimeout(timer); }
-      } else await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
+      if (mygoWindow) await deliverNativeCancel(cancel);
+      else await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
       if (cancel.request) markNativeConnectHandled(cancel.request);
       rememberSetupCancel(null);
       return !pendingSetupCancel;
@@ -1842,6 +1874,7 @@
       if (state.dirty) { operationError = { title: '操作未完成', detail: t('请先保存或放弃更改，再添加出口。') }; clearNotice(); }
       return false;
     }
+    if (!canStartNativeOperation()) return false;
     const revision = state.revision;
     const candidateMode = changes['rules.mode'] ?? savedMode();
     if (!(await disconnectForGlobalApply(candidateMode,
@@ -1908,6 +1941,7 @@
     // Switching explicitly to Split already expresses the change of protection.
     if (!protectedSession() || candidateMode !== 'global') return true;
     if (!(await confirmGlobalLoss('apply')) || !current() || connectionLost || !desktopLive?.desktop || isDesktopBusy()) return false;
+    if (!canStartNativeOperation()) return false;
     if (protectedSession() && !(await desktopAction('disconnect'))) return false;
     return current() && !connectionLost && desktopLive?.desktop && !desktopLive.active;
   }
@@ -1995,10 +2029,12 @@
     if (select.disabled || !gatewaySelectable(exit) || state.external) { renderConnectionExit(); return; }
     const field = connectionExitField();
     if (id === String(fieldValue(state.savedValues, field))) return;
+    if (!canStartNativeOperation()) { renderConnectionExit(); return; }
     if (networkActive() && savedMode() === 'global') {
       const revision = state.revision;
       if (!canManageExits() || !(await confirmGlobalLoss('gateway'))) { renderConnectionExit(); return; }
       if (!canManageExits() || state.revision !== revision || connectionExitField() !== field) { renderConnectionExit(); return; }
+      if (!canStartNativeOperation()) { renderConnectionExit(); return; }
       if (networkActive() && !(await desktopAction('disconnect'))) return;
       if (!canManageExits() || state.revision !== revision || desktopLive.active || connectionExitField() !== field) return;
     }

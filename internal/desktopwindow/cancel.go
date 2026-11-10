@@ -36,7 +36,11 @@ func (panelCancelService) Cancel(ctx context.Context, request, operation string)
 func (w *Window) SetCancelHandler(handler func(context.Context, string, string) error) {
 	w.mu.Lock()
 	w.cancelHandler = handler
+	inbox := w.navigationInbox
 	w.mu.Unlock()
+	if inbox != nil {
+		inbox.retry()
+	}
 	bindPanelCancellation.Do(func() { mygo.BindAs("TailSplitPanel", panelCancelService{}) })
 }
 

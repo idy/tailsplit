@@ -210,6 +210,7 @@ func journalSourceURL(raw string, enabled bool) (string, error) {
 		mode = "1"
 	}
 	fragment.Set("journal_backup", mode)
+	fragment.Set("cancel_host", "1") // Main navigation inbox is installed before this URL is loaded.
 	parsed.Fragment, parsed.RawFragment = fragment.Encode(), ""
 	return parsed.String(), nil
 }

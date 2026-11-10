@@ -268,23 +268,38 @@ func (w *Window) releaseJournalAfterRecovery(job *journalRecovery) {
 	if w.releaseJournalSession == nil {
 		return
 	}
-	if job == nil {
-		w.journalRelease.Do(w.releaseJournalSession)
-		return
-	}
 	go func() {
-		<-job.done
-		if job.err != nil {
-			return
-		}
-		w.dispatchRecovery(func() {
-			w.journal.mu.Lock()
-			next := w.journal.pending
-			w.journal.mu.Unlock()
-			if next != nil {
-				w.releaseJournalAfterRecovery(next)
+		if job != nil {
+			<-job.done
+			if job.err != nil {
 				return
 			}
+		}
+		if memory := w.pendingNativeCancellation(); memory != nil {
+			<-memory.done
+			if memory.err != nil {
+				return
+			}
+		}
+		w.dispatchRecovery(func() {
+			if w.journalContext != nil && w.journalContext.Err() != nil {
+				return
+			}
+			if w.journal != nil {
+				w.journal.mu.Lock()
+				next := w.journal.pending
+				w.journal.mu.Unlock()
+				if next != nil {
+					w.releaseJournalAfterRecovery(next)
+					return
+				}
+			}
+			if w.pendingNativeCancellation() != nil {
+				w.releaseJournalAfterRecovery(nil)
+				return
+			}
+			// The source is already destroyed. Navigation admission and this final
+			// release run on the UI thread, so no source message can interleave.
 			w.journalRelease.Do(w.releaseJournalSession)
 		})
 	}()

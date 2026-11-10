@@ -333,7 +333,7 @@ func TestInitialDeniedBackupDisablesScopeBeforeSourceLoadAndCookieRecovery(t *te
 			t.Fatal("source failed initial negotiation", err, parseErr)
 		}
 		fragment, _ := url.ParseQuery(parsed.Fragment)
-		if fragment.Get("journal_backup") != "0" || fragment.Get("journal") != "scope" || fragment.Get("token") != "fixture" || fragment.Get("connect") != "request" {
+		if fragment.Get("cancel_host") != "1" || fragment.Get("journal_backup") != "0" || fragment.Get("journal") != "scope" || fragment.Get("token") != "fixture" || fragment.Get("connect") != "request" {
 			t.Fatal("negotiation changed source identity or enabled denied backup", source)
 		}
 	}
