@@ -1,6 +1,6 @@
 ---
 name: "TailSplit Desktop Configuration Panel"
-description: "Compact desktop controls that follow system appearance."
+description: "The shared Magpie system in a native desktop connection center."
 colors:
   canvas: "#f5f5f7"
   sidebar: "#ededf0"
@@ -10,34 +10,104 @@ colors:
   code: "#f0f0f4"
   line: "#00000014"
   line-strong: "#85858f"
+  ink-strong: "#1c1c1e"
   ink: "#1c1c1e"
+  ink-secondary: "#42424a"
+  ink-soft: "#4e4e56"
+  ink-subtle: "#55555f"
   muted: "#62626c"
   faint: "#6c6c76"
-  secondary-ink: "#42424a"
-  soft-ink: "#4e4e56"
-  emphasis-ink: "#1c1c1e"
-  subtle-ink: "#55555f"
   accent: "#2f62d5"
   accent-hover: "#2856c1"
   accent-ink: "#2459c4"
+  on-accent: "#fff"
+  selection: "#d7e5ff"
   good: "#167536"
   good-ink: "#16652f"
   warn: "#855700"
+  warn-detail: "#785216"
+  warn-line: "#85570059"
+  warn-bg: "#8557000d"
   error: "#b42318"
+  error-detail: "#922b23"
+  error-line: "#b4231859"
+  error-bg: "#b423180a"
+  error-hover: "#b4231814"
+  info-line: "#2459c459"
+  info-bg: "#2f62d50d"
+  info-hover: "#2f62d51a"
+  danger: "#c42b1c"
+  hover: "#00000006"
+  selected: "#0000000e"
+  wash: "#00000003"
+  subtle-hover: "#00000008"
+  icon-hover: "#0000000c"
+  button-hover: "#dedee6"
+  field-hover: "#62626c"
+  inline-code: "#00000008"
+  scroll-thumb: "#00000030"
+  scroll-thumb-hover: "#00000048"
+  switch-off: "#85858f"
+  switch-knob: "#f5f5f7"
+  code-key: "#2459b8"
+  code-value: "#25673b"
+  actionbar: "#f5f5f7f0"
+  canvas-dark: "#1c1c1e"
+  sidebar-dark: "#18181a"
+  surface-dark: "#232326"
+  raised-dark: "#2c2c30"
+  field-dark: "#2a2a2e"
+  code-dark: "#161618"
+  line-dark: "#ffffff12"
+  line-strong-dark: "#ffffff1f"
+  ink-strong-dark: "#fff"
+  ink-dark: "#ececf0"
+  ink-secondary-dark: "#d1d1d6"
+  ink-soft-dark: "#c7c7cc"
+  ink-subtle-dark: "#aeaeb2"
+  muted-dark: "#9a9aa2"
+  faint-dark: "#92929c"
+  accent-dark: "#2f62d5"
+  accent-hover-dark: "#366bdd"
+  accent-ink-dark: "#8ab4ff"
+  on-accent-dark: "#fff"
+  selection-dark: "#294f91"
+  good-dark: "#30d158"
+  good-ink-dark: "#d7f7df"
+  warn-dark: "#f0c46b"
+  warn-detail-dark: "#e8d3a6"
+  warn-line-dark: "#f0c46b40"
+  warn-bg-dark: "#f0c46b12"
+  error-dark: "#ff8a80"
+  error-detail-dark: "#f3c2bd"
+  error-line-dark: "#ff8a8059"
+  error-bg-dark: "#ff8a8012"
+  error-hover-dark: "#ff8a8024"
+  info-line-dark: "#5b8cff59"
+  info-bg-dark: "#3b78f61f"
+  info-hover-dark: "#3b78f633"
+  danger-dark: "#c42b1c"
+  hover-dark: "#ffffff0a"
+  selected-dark: "#ffffff14"
+  wash-dark: "#ffffff06"
+  subtle-hover-dark: "#ffffff0d"
+  icon-hover-dark: "#ffffff12"
+  button-hover-dark: "#34343a"
+  field-hover-dark: "#ffffff33"
+  inline-code-dark: "#ffffff0d"
+  scroll-thumb-dark: "#ffffff1c"
+  scroll-thumb-hover-dark: "#ffffff2e"
+  switch-off-dark: "#3a3a3f"
+  switch-knob-dark: "#f5f5f7"
+  code-key-dark: "#8eb4ff"
+  code-value-dark: "#b8e3c4"
+  actionbar-dark: "#1c1c1ef0"
   latency-fast: "#3a8154"
   latency-medium: "#906d29"
   latency-slow: "#bd524b"
-  selected: "#0000000e"
-  hover: "#00000006"
-  wash: "#00000003"
-  button-hover: "#dedee6"
-  field-hover: "#62626c"
-  subtle-hover: "#00000008"
-  update-bg: "#2f62d50d"
-  switch-off: "#85858f"
-  code-key: "#2459b8"
-  code-value: "#25673b"
-  raw-ink: "#28282e"
+  latency-fast-dark: "#7ab58b"
+  latency-medium-dark: "#c9b17c"
+  latency-slow-dark: "#d49a94"
   log-background: "#272a32"
   log-ink: "#e5e5ea"
   log-muted: "#aeb4c0"
@@ -47,165 +117,131 @@ colors:
   log-line: "#ffffff1f"
   log-scroll-thumb: "#ffffff66"
   log-scroll-thumb-hover: "#ffffff88"
-  actionbar: "#f5f5f7f0"
-  on-accent: "#fff"
-  canvas-dark: "#1c1c1e"
-  sidebar-dark: "#18181a"
-  surface-dark: "#232326"
-  raised-dark: "#2c2c30"
-  field-dark: "#2a2a2e"
-  code-dark: "#161618"
-  line-dark: "#ffffff12"
-  line-strong-dark: "#ffffff1f"
-  ink-dark: "#ececf0"
-  muted-dark: "#9a9aa2"
-  faint-dark: "#92929c"
-  secondary-ink-dark: "#d1d1d6"
-  soft-ink-dark: "#c7c7cc"
-  emphasis-ink-dark: "#fff"
-  subtle-ink-dark: "#aeaeb2"
-  accent-hover-dark: "#366bdd"
-  accent-ink-dark: "#8ab4ff"
-  good-dark: "#30d158"
-  good-ink-dark: "#d7f7df"
-  warn-dark: "#f0c46b"
-  error-dark: "#ff8a80"
-  latency-fast-dark: "#7ab58b"
-  latency-medium-dark: "#c9b17c"
-  latency-slow-dark: "#d49a94"
-  selected-dark: "#ffffff14"
-  hover-dark: "#ffffff0a"
-  wash-dark: "#ffffff06"
-  button-hover-dark: "#34343a"
-  field-hover-dark: "#ffffff33"
-  subtle-hover-dark: "#ffffff0d"
-  update-bg-dark: "#3b78f61f"
-  switch-off-dark: "#3a3a3f"
-  code-key-dark: "#8eb4ff"
-  code-value-dark: "#b8e3c4"
-  raw-ink-dark: "#e5e5ea"
-  actionbar-dark: "#1c1c1ef0"
 typography:
   headline:
     fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "1.25rem"
     fontWeight: 600
-    lineHeight: 1.3
-    letterSpacing: "-.01em"
+    lineHeight: 1.4
   title:
     fontFamily: "Monda, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "0.9375rem"
-    fontWeight: 600
-    lineHeight: 1.4
+    fontSize: "1rem"
+    fontWeight: 400
+    lineHeight: 1.5
   body:
     fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "0.8125rem"
+    fontSize: "0.875rem"
     fontWeight: 400
     lineHeight: 1.5
   label:
-    fontFamily: "Monda, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "0.8125rem"
-    fontWeight: 500
-    lineHeight: 1.4
+    fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "0.875rem"
+    fontWeight: 400
+    lineHeight: 1.5
   note:
     fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "0.75rem"
+    fontSize: "0.8125rem"
     fontWeight: 400
-    lineHeight: 1.45
+    lineHeight: 1.55
   button:
     fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 500
-    lineHeight: 1.4
+    lineHeight: 1.5
   caption:
     fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "0.6875rem"
-    fontWeight: 400
-    lineHeight: 1.5
-  brand:
-    fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "0.875rem"
-    fontWeight: 600
-    lineHeight: 1.25
-  dialog-title:
-    fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "1rem"
-    fontWeight: 600
-    lineHeight: 1.4
-  touch-input:
-    fontFamily: "Lato, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
-    fontSize: "16px"
-    fontWeight: 400
-    lineHeight: 1.4
-  code:
-    fontFamily: "\"SF Mono\", \"SFMono-Regular\", \"Cascadia Mono\", Consolas, \"Liberation Mono\", monospace"
     fontSize: "0.75rem"
     fontWeight: 400
+    lineHeight: 1.5
+  code:
+    fontFamily: "\"SF Mono\", \"SFMono-Regular\", \"Cascadia Mono\", Consolas, \"Liberation Mono\", monospace"
+    fontSize: "0.8125rem"
+    fontWeight: 400
     lineHeight: 1.65
+  brand:
+    fontFamily: "Montserrat, \"PingFang SC\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "0.9375rem"
+    fontWeight: 650
+    lineHeight: 1.25
+    letterSpacing: "-0.013em"
 rounded:
-  inline: "4px"
-  segment: "5px"
-  control: "6px"
-  container: "8px"
-  panel: "16px"
-  dialog: "20px"
+  xs: "4px"
+  sm: "8px"
+  md: "10px"
+  lg: "12px"
+  xl: "14px"
   pill: "999px"
 spacing:
   compact: "4px"
   control-gap: "8px"
-  row-gap: "12px"
-  inset: "16px"
-  field-gap: "16px"
-  section-gap: "16px"
-  workspace-gutter: "24px"
+  row-inset: "12px 16px"
+  gap: "20px"
+  section-gap: "20px"
+  gutter: "24px"
 components:
   button-primary:
     backgroundColor: "{colors.accent}"
     textColor: "{colors.on-accent}"
     typography: "{typography.button}"
-    rounded: "{rounded.control}"
-    padding: "3px 14px"
+    rounded: "{rounded.sm}"
+    padding: "6px 16px"
+    height: "34px"
   button-primary-hover:
     backgroundColor: "{colors.accent-hover}"
   button-secondary:
     backgroundColor: "{colors.raised}"
     textColor: "{colors.ink}"
     typography: "{typography.button}"
-    rounded: "{rounded.control}"
-    padding: "3px 12px"
+    rounded: "{rounded.sm}"
+    padding: "6px 12px"
+    height: "34px"
   button-subtle:
     backgroundColor: "transparent"
-    textColor: "{colors.subtle-ink}"
+    textColor: "{colors.ink-subtle}"
     typography: "{typography.button}"
-    rounded: "{rounded.control}"
-    padding: "3px 12px"
+    rounded: "{rounded.sm}"
+    padding: "6px 12px"
+    height: "34px"
   input:
     backgroundColor: "{colors.field}"
     textColor: "{colors.ink}"
-    rounded: "{rounded.control}"
-    padding: "3px 8px"
+    typography: "{typography.body}"
+    rounded: "{rounded.sm}"
+    padding: "6px 10px"
+    height: "34px"
   nav-item:
     backgroundColor: "transparent"
-    textColor: "{colors.soft-ink}"
-    rounded: "{rounded.control}"
-    padding: "4px 8px"
+    textColor: "{colors.ink-soft}"
+    rounded: "{rounded.sm}"
+    padding: "8px 10px"
+    height: "36px"
   nav-item-active:
     backgroundColor: "{colors.selected}"
-    textColor: "{colors.emphasis-ink}"
+    textColor: "{colors.ink-strong}"
   settings-group:
     backgroundColor: "{colors.surface}"
-    rounded: "{rounded.panel}"
+    rounded: "{rounded.lg}"
+  dialog:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.xl}"
+    padding: "24px"
   mode-option:
     backgroundColor: "transparent"
     textColor: "{colors.muted}"
-    rounded: "{rounded.segment}"
-    padding: "2px 12px"
+    rounded: "{rounded.sm}"
+    padding: "6px 12px"
+    height: "32px"
   mode-option-selected:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.emphasis-ink}"
+    backgroundColor: "{colors.selected}"
+    textColor: "{colors.ink-strong}"
   status:
-    textColor: "{colors.soft-ink}"
+    textColor: "{colors.ink-soft}"
     typography: "{typography.caption}"
+  exit-badge:
+    textColor: "{colors.muted}"
+    typography: "{typography.caption}"
+    rounded: "{rounded.xs}"
+    padding: "0 6px"
 ---
 # Design System: TailSplit Desktop Configuration Panel
 
@@ -213,123 +249,129 @@ components:
 
 **Creative North Star: "The Desktop Configuration Panel"**
 
-TailSplit uses a compact, neutral desktop configuration panel with the website's Montserrat/Monda/Lato family roles, magpie-like information density, blue actions, and semantic connection states. This system applies to the embedded configuration UI in macOS WKWebView and Windows WebView2. It preserves the incumbent desktop world selected by the user.
+TailSplit uses the user-approved idy/magpie-design-system for its embedded desktop configuration panel: neutral system appearances, blue actions, Lato body copy, Montserrat actions and Monda headings. This shared system serves the local macOS and Windows panel; PRODUCT.md remains authoritative for networking, identity and authorization behavior.
 
-System appearance changes the surfaces, text, borders, and state treatments through CSS media queries. Density supports repeated local configuration tasks; clear labels, separate draft states, and explicit actions carry the hierarchy.
+The build vendors unmodified Magpie source at commit 46ba098239979506a4ccc14721aac044483c66bc (v0.4.3), including the extracted text-dropdown and preference-row variants. Shared tokens, fonts, document defaults, components and layout load before TailSplit’s product stylesheet. TailSplit owns native-host geometry, the centered workspace, exit selection, diagnostics and responsive integration. Preserve these incumbent decisions when extending the panel.
 
 **Key Characteristics:**
 
 - Neutral surfaces that follow system appearance.
-- Compact controls with visible keyboard focus.
-- Text-backed semantic state colors.
-- Native window chrome and practical configuration density.
+- Shared typography, controls and radius scale from pinned Magpie assets.
+- Text-backed connection states and explicit draft confirmation.
+- Native window chrome and a centered, compact workspace.
 
-Source of truth: `internal/configweb/assets/style.css`, `index.html`, and the exit-row renderer in `app.js`. The surface brief records the selected world and connection-center composition. Tokens and layout rules are derived from the implemented source. This document does not establish accessibility or native-runtime conformance.
+Evidence: `internal/configweb/assets/vendor/magpie/css/{tokens,base,components,layout}.css`, `index.html`, `style.css`, `select.js`, `ui.js` and sampled render/update paths in `app.js`. The surface contract records the approved migration. Review screenshots under `.impeccable/review/` cover light/dark desktop settings and mobile settings/pickers; they are visual samples, not native-runtime or accessibility certification.
 
 ## Colors
 
-Neutral gray surfaces carry the interface; blue identifies primary actions and keyboard focus, while a plain green check identifies the selected node. The frontmatter preserves source CSS color strings. A `-dark` entry is the corresponding media-query override; absent overrides retain their base value. These are documentation keys, while the implementation uses the unsuffixed CSS custom properties inside each appearance.
+Neutral gray layers carry configuration density. The frontmatter preserves literal Magpie color strings; a `-dark` key is the dark-theme counterpart, not a separate implementation property. Shared CSS uses the `--mds-` prefix; latency and terminal colors are product exceptions from `style.css`.
 
 ### Primary
 
-- **Action blue:** `accent` fills primary buttons and checked switches; `on-accent` provides their button text. Node rows reserve an empty checkmark slot when unselected and show a plain `good`-green check when selected; no radio control is rendered.
-- **Action blue hover and ink:** `accent-hover` handles primary hover; `accent-ink` handles keyboard focus outlines, links, current exit labels, and proxy-route markers. Pointer selection of a node leaves no blue focus box.
-- **Selection treatment:** node rows have no selected or hover fill. Navigation and active dropdown options retain their neutral selection surfaces; `update-bg` serves update indicators.
+- **Action blue:** accent fills primary buttons and shared checked form switches. Accent ink supplies links, focus rings, carets and Ping; on-accent provides button text.
+- **Semantic tones:** good and good-ink indicate connected/saved/direct states; warn marks attention or drafts; error marks failure. Dropdown selection uses a product-specific green check.
+- **Shared switches:** checkbox settings and the titlebar controlled button use the shared track and light knob token; checked tracks use the action blue.
 
 ### Neutral
 
-- **Canvas and sidebar:** `canvas` and `sidebar` separate workspace from persistent navigation.
-- **Surface, raised, field, code:** grouped settings and exit lists, buttons, editable fields, and diagnostic/configuration regions respectively.
-- **Ink family:** `ink` is primary text; `secondary-ink`, `soft-ink`, `subtle-ink`, `muted`, and `faint` serve subordinate text and controls. `emphasis-ink` highlights active navigation.
-- **Line family:** `line` divides groups and rows; `line-strong` defines editable controls and secondary buttons.
-- **Interaction neutrals:** `hover`, `selected`, `wash`, `button-hover`, `field-hover`, and `subtle-hover` support existing interaction states. `actionbar` is the translucent settings footer surface.
-- **Configuration syntax:** `code-key`, `code-value`, and `raw-ink` distinguish YAML syntax from ordinary interface text.
+- **Canvas and sidebar:** persistent shell layers; surface contains cards and dialogs, raised contains secondary buttons, field contains editable values, and code contains YAML.
+- **Ink family:** strong, ordinary, secondary, soft, subtle, muted and faint roles preserve hierarchy across appearances.
+- **Lines and interaction overlays:** line divides rows; line-strong bounds controls. Hover, selected and wash provide restrained state surfaces for navigation, tabs and dropdowns. Node rows retain their unfilled selection treatment.
+- **Diagnostics exception:** log-background, log-ink, log-muted and terminal syntax/selection colors stay dark in both app appearances. Latency uses separate softened light/dark colors.
 
-Green (`good`, `good-ink`) means connected/saved or direct routing; amber (`warn`) marks attention, pending choices, or unsaved work; red (`error`) marks failure. These are functional states rather than additional brand accents.
+**The Appearance Rule.** Use Magpie semantic properties so surfaces, text, controls and focus change together across appearances; keep the diagnostic terminal’s scoped dark palette.
 
-**The Appearance Rule.** Use the existing semantic CSS properties so light and dark appearance change together. The accent fill remains shared; accent text and hover colors adapt.
-
-**The State Rule.** Pair semantic color with a readable state label; selected, pending, current, connected, warning, and error are distinct.
+**The State Rule.** Pair semantic color with a readable label; saved, pending, selected, connected and unavailable are distinct states.
 
 ## Typography
 
-The panel follows the user's website-family mapping: Montserrat for the wordmark, prominent headings and button labels; Monda for compact page/section titles and field labels; Lato for body copy, values, notes and metadata. PingFang SC and Microsoft YaHei UI provide Chinese fallback. At the root font size (100%), body, labels, navigation and buttons remain 13px; notes, hints, latency and small buttons 12px; captions and the sidebar footer 11px; the wordmark 14px; section titles 15px; and dialog titles 16px. Family and weight distinguish the roles without changing the established desktop density.
+**Display and action font:** bundled Montserrat with Chinese and system fallbacks.
+**Body font:** bundled Lato with the same fallbacks.
+**Heading font:** bundled Monda; code uses the documented mono stack.
 
-- **Titlebar path:** the titlebar names the page as a muted parent, a faint slash and the current page (for example "Settings / Network"; top-level pages show only their name). Visible in-page h2 headings are removed and remain for assistive technology; the page's one-line description leads the content instead.
-- **Ping:** a text-only 12px action in `accent-ink`, underlined on hover, with muted disabled text.
-- **Latency:** 12px regular with tabular numbers and softened semantic colors.
-- **Code:** the existing mono stack at 12px for YAML, diagnostic logs, filenames and code-like inputs. YAML uses line height 1.65 and logs 1.7.
+The normal root remains 100%, so body text is (14px), headings (16px), dialog titles (20px), notes/buttons/code (13px), captions (12px), and the brand (15px). Type remains zoomable through rem values. The three first-viewport fonts are preloaded from `vendor/magpie/fonts/`; no external font service is used.
 
-All font files are bundled locally under `internal/configweb/assets/fonts/` and are byte-identical to the website assets in `site/shared/`. Montserrat supports weights 400–800 and Monda 400–700; Lato uses separate regular 400 and bold 700 faces. The three first-viewport families are preloaded, with Lato bold loaded on demand and `font-display: swap` retaining visible fallback text. No external font service is used. Compound exit buttons keep their Monda name and Lato description, while dropdown triggers retain Montserrat despite their font shorthand.
+- **Headline:** Montserrat (600), used by dialog titles.
+- **Title:** Monda (400), the shared heading role. TailSplit’s generic h2 rule uses (600) and line height (1.4); shared section-heading and dialog selectors retain their more specific roles. Hidden in-page headings remain available to assistive technology.
+- **Body and field labels:** Lato (400); field labels keep regular weight. Exit names can use (500).
+- **Actions and navigation:** Montserrat (500). The titlebar breadcrumb inherits the action family.
+- **Notes, latency and Ping:** supporting scale (13px); latency stays regular (400) with tabular numbers. Ping is a separate text action, underlined on hover.
+- **Code:** mono (13px), YAML line height (1.65), diagnostic logs (1.7). Coarse-pointer fields use (16px) text and larger targets.
 
-**The Desktop Type Rule.** Use the approved website families by role at the documented compact sizes; keep the mono stack for configuration and diagnostics. The latest user direction restores the website-family pairing while retaining native chrome, layout, zoomable rem sizing and Chinese fallback.
+**The Shared Type Rule.** Use the bundled Magpie families and rem scale by role; reserve monospace for configuration and diagnostics.
 
 ## Layout
 
-The experimental MyGo host uses the same embedded page and platform chrome selectors. Its hidden native titlebar preserves macOS traffic lights and the existing Windows HTML caption buttons; MyGo-only CSS drag regions exclude interactive controls. It introduces no replacement icon, type or spacing system.
+Native chrome remains part of the product. The shared default sidebar is (200px) and titlebar (48px); macOS uses a sidebar (240px), titlebar (40px) and brand inset (88px) to clear traffic lights. Windows caption buttons are (44px) wide and fill the titlebar. MyGo drag regions exclude interactive controls. Branding remains outside sequential Tab order; the Home navigation button supplies keyboard navigation home. These fixed-height chrome rules do not establish spacing for content panels.
 
-Keyboard focus on a saved exit outlines the complete rounded row, including its trailing chevron and space. The inner trigger has no separate square outline; pointer interactions do not add a row fill.
+The shell fills the window. Only the workspace body below chrome scrolls; the save bar is a separate sibling and remains at the bottom. Notices, pages and save controls share a centered column capped at (1040px), with shared gutters (24px) and page padding (20px) vertically. Stable scrollbar space and a measured scrollbar correction keep the actionbar aligned. The sidebar footer divider follows the measured actionbar height, whose minimum is (58px).
 
-A persistent sidebar and flexible workspace share a sticky titlebar. The default sidebar is (200px) and titlebar (44px); macOS reserves traffic-light space with a wider sidebar (216px), shorter titlebar (40px), and brand left inset (88px). Windows controls fill the titlebar height with square-edged buttons (44px wide). The brand link keeps its pointer home action but is excluded from sequential Tab navigation and has no focus outline; the Home navigation button supplies the keyboard home action. Action controls and exit rows retain their visible keyboard focus. The source comment explicitly identifies this fixed-height native chrome; its flush control edges do not establish a general content-spacing rule.
-
-Home is the default destination. With no saved exits and a policy needing an exit, a primary Set up button replaces the connection switch. It starts the shared guided setup flow and becomes Retry setup after an incomplete attempt. During setup the cancel control remains available; once an exit is configured, the normal switch returns. Starting setup or connecting uses the existing busy, revision, draft, valid-config and desktop-capability guards. Cancel remains available while another action is busy or state polling has failed. Duplicate clicks are disabled in flight; native controls are also disabled when cancellation cannot be durably journaled, with a native-menu recovery explanation. Four compact steps show when setup is needed. Below it, a GizMoth-style topology places the computer at the left, cubic fan-out wires in the middle and one 44px row per used destination at the right. Split includes Direct and each exit referenced by saved policy; Global shows only its selected exit. Hollow endpoints and dashed wires indicate planned routes; confirmed routes use solid green wires and filled endpoints. Row hover and keyboard focus highlight the corresponding wire. The first line names the node. The second line starts at the same left edge with upload, download and smaller muted policy detail, separated by 8px gaps. Each arrow sits 4px from its rate, and adjacent destination rows have a 4px gap. The row takes its intrinsic width instead of stretching to the page edge. Rates use tabular numerals and ordinary secondary ink. Narrow layouts retain this two-line structure and truncate long labels with their full text available in titles. Native Connect intents are consumed by the native MyGo panel, or by the specific browser fallback tagged with that request in its fragment, and claimed once at the controller boundary; ordinary browser panels cannot drain them. Showing the native window explicitly wakes its retained page. An asynchronously failed visible window opens the same designated browser fallback, deduplicated with direct Show failures; an unrequested background failure opens nothing. Unclaimed fallback markers are scoped to the panel capability in tab-session storage until claim or confirmed cancellation, preserving intent across reloads while busy. Browser panels share pending cancellations in origin storage, and acknowledged request tombstones prevent late claim responses from restarting setup after the originating panel closes. Native WebView storage is isolated, so its cancellation uses the registered main-page MyGo IPC binding to reach the shared app controller directly, independently of the HTTP channel. Before the first source load, the host negotiates backup-store usability through the keeper. A definitively unavailable store stays disabled for that scope and is excluded from recovery; a store enabled before source admission is never downgraded after a later read failure. Before removing the URL fragment, the native page caches its validated scope and negotiated backup mode in capability-matched tab storage and restores both on ordinary reload. Native helper admission, connection-request claims and configuration writes require exact live write/readback of a non-cancellation probe at least as large as the actual target journal entry. If neither Cookie nor an enabled backup confirms persistence, the operation remains unstarted and the panel explains how to retry. Cookie-only and backup-only recovery both remain usable; native Cancel and Disconnect require a confirmed journal for the exact existing owner. Before delivery, it writes window-scoped cancellation records containing only request and operation IDs, never the panel capability or an authorization URL. Exact readback confirms Cookie or native-origin localStorage persistence; silent rejection never counts as a saved journal. The host reads this renderer-independent in-memory journal before reload or destruction, including when the request has already been claimed. A hidden untrusted recovery page keeps the ephemeral session alive independently of the main renderer. It serves a static same-origin marker with no application scripts or capability; the host can inspect only the current scope's backup keys through this separate page if Cookie writes were rejected. Failure destroys the source renderer before a fresh replay generation, then drains newly observed records to an empty unacknowledged pass before releasing the keeper. Slow or failed recovery uses one coalesced retry worker; a newer recovery delays final release, and failure alone never invents a cancellation. Cookie names distinguish intents, so an old acknowledgment cannot erase a newer record. Closing or losing the renderer therefore does not discard a committed cancellation journal. The host also records which pending Connect request was offered before native interaction; native state reads cover a visible page polling before its Show wakeup. If neither IPC nor HTTP cancellation arrives, a designated browser fallback retires that unconfirmed offered request instead of replaying it, and explains the explicit turn-on/cancel recovery. Cold failures before request delivery and fresh explicit Connect requests after the window has failed can still continue in the browser. One operation ID is assigned before dispatch and retained through preparation, login, saving and connection; controller cancellation and retries target that owner or the admitted owner bound to the canceled native request, leaving unrelated later connections intact. Disconnected quick saves receive a fresh operation identity instead of reusing a canceled connection owner. Until acknowledgment, the banner shows Canceling connection with a retry action. Native browser-login workers capture intent and helper-owner identities on the UI loop, then revalidate both identities and the current authorization URL under the controller cancellation lock at the actual launcher process Start boundary. Process completion and browser timeouts run outside that lock. Cancellation winning first prevents a launcher from starting; a dispatch committed first may complete afterward. A URL replaced on the same live, uncanceled owner is retryable: the pending browser intent keeps both identities and selects the latest valid URL without tombstoning the owner. An already-abandoned browser intent does not rearm on that result; ordinary launch rejection also does not fabricate helper-owner revocation. Only explicit scoped cancellation notifications retain those revocations. Pending device approval never relaunches sign-in. If no helper is monitoring, Check approval performs one bounded read-only refresh; polling does not start repeated checks. Confirming a recovered, unchanged node can continue setup without a redundant configuration write. The map compares the saved document with the immutable running revision; externally edited routes remain planned until applied. Offline secondary nodes use unavailable styling even while the default stays connected, and implicit private-domain owners appear in the topology. Active owner IDs come from the immutable compiled session, including preflight-discovered metadata and blocked namespace reservations; later SDK suffix changes cannot reassign ownership. Saved-only previews normalize wildcard prefixes, dots, case and IDNA like the compiler. Rates update without replacing focused rows, and use successive byte samples from the same engine session. Missing, stale, reset and disconnected samples show an em dash; a measured idle interval may show zero. Directional pulses appear only on a confirmed route with positive measured upload or download: outward for upload, inward for download. Idle, unavailable, reset, blocked and expired samples stop the pulses. Motion pauses away from Home or when the document is hidden; reduced motion retains static activity marks. The topology has no visible footer, unmatched-traffic summary or explanatory paragraph. Screen readers retain the route-state description, and interface previews identify themselves in the header preview badge.
+Home is the default destination. With no saved exits and a policy needing an exit, a Set up button using `mds-button mds-button--primary` and the shared (8px) radius replaces the connection switch. It starts the shared guided setup flow and becomes Retry setup after an incomplete attempt. During setup the cancel control remains available; once an exit is configured, the normal switch returns using `mds-switch` and `mds-switch-track`, with the shared (34px by 20px) track and thumb inside a product (56px by 44px) hit area. Starting setup or connecting uses the existing busy, revision, draft, valid-config and desktop-capability guards. Cancel remains available while another action is busy or state polling has failed. Duplicate clicks are disabled in flight; native controls are also disabled when cancellation cannot be durably journaled, with a native-menu recovery explanation. Four compact steps show when setup is needed. Below it, a GizMoth-style topology places the computer at the left, cubic fan-out wires in the middle and one 44px row per used destination at the right. Split includes Direct and each exit referenced by saved policy; Global shows only its selected exit. Hollow endpoints and dashed wires indicate planned routes; confirmed routes use solid green wires and filled endpoints. Row hover and keyboard focus highlight the corresponding wire. The first line names the node. The second line starts at the same left edge with upload, download and smaller muted policy detail, separated by 8px gaps. Each arrow sits 4px from its rate, and adjacent destination rows have a 4px gap. The row takes its intrinsic width instead of stretching to the page edge. Rates use tabular numerals and ordinary secondary ink. Narrow layouts retain this two-line structure and truncate long labels with their full text available in titles. Native Connect intents are consumed by the native MyGo panel, or by the specific browser fallback tagged with that request in its fragment, and claimed once at the controller boundary; ordinary browser panels cannot drain them. Showing the native window explicitly wakes its retained page. An asynchronously failed visible window opens the same designated browser fallback, deduplicated with direct Show failures; an unrequested background failure opens nothing. Unclaimed fallback markers are scoped to the panel capability in tab-session storage until claim or confirmed cancellation, preserving intent across reloads while busy. Browser panels share pending cancellations in origin storage, and acknowledged request tombstones prevent late claim responses from restarting setup after the originating panel closes. Native WebView storage is isolated, so its cancellation uses the registered main-page MyGo IPC binding to reach the shared app controller directly, independently of the HTTP channel. Before the first source load, the host negotiates backup-store usability through the keeper. A definitively unavailable store stays disabled for that scope and is excluded from recovery; a store enabled before source admission is never downgraded after a later read failure. Before removing the URL fragment, the native page caches its validated scope and negotiated backup mode in capability-matched tab storage and restores both on ordinary reload. Native helper admission, connection-request claims and configuration writes require exact live write/readback of a non-cancellation probe at least as large as the actual target journal entry. If neither Cookie nor an enabled backup confirms persistence, the operation remains unstarted and the panel explains how to retry. Cookie-only and backup-only recovery both remain usable; native Cancel and Disconnect require a confirmed journal for the exact existing owner. Before delivery, it writes window-scoped cancellation records containing only request and operation IDs, never the panel capability or an authorization URL. Exact readback confirms Cookie or native-origin localStorage persistence; silent rejection never counts as a saved journal. The host reads this renderer-independent in-memory journal before reload or destruction, including when the request has already been claimed. A hidden untrusted recovery page keeps the ephemeral session alive independently of the main renderer. It serves a static same-origin marker with no application scripts or capability; the host can inspect only the current scope's backup keys through this separate page if Cookie writes were rejected. Failure destroys the source renderer before a fresh replay generation, then drains newly observed records to an empty unacknowledged pass before releasing the keeper. Slow or failed recovery uses one coalesced retry worker; a newer recovery delays final release, and failure alone never invents a cancellation. Cookie names distinguish intents, so an old acknowledgment cannot erase a newer record. Closing or losing the renderer therefore does not discard a committed cancellation journal. The host also records which pending Connect request was offered before native interaction; native state reads cover a visible page polling before its Show wakeup. If neither IPC nor HTTP cancellation arrives, a designated browser fallback retires that unconfirmed offered request instead of replaying it, and explains the explicit turn-on/cancel recovery. Cold failures before request delivery and fresh explicit Connect requests after the window has failed can still continue in the browser. One operation ID is assigned before dispatch and retained through preparation, login, saving and connection; controller cancellation and retries target that owner or the admitted owner bound to the canceled native request, leaving unrelated later connections intact. Disconnected quick saves receive a fresh operation identity instead of reusing a canceled connection owner. Until acknowledgment, the banner shows Canceling connection with a retry action. Native browser-login workers capture intent and helper-owner identities on the UI loop, then revalidate both identities and the current authorization URL under the controller cancellation lock at the actual launcher process Start boundary. Process completion and browser timeouts run outside that lock. Cancellation winning first prevents a launcher from starting; a dispatch committed first may complete afterward. A URL replaced on the same live, uncanceled owner is retryable: the pending browser intent keeps both identities and selects the latest valid URL without tombstoning the owner. An already-abandoned browser intent does not rearm on that result; ordinary launch rejection also does not fabricate helper-owner revocation. Only explicit scoped cancellation notifications retain those revocations. Pending device approval never relaunches sign-in. If no helper is monitoring, Check approval performs one bounded read-only refresh; polling does not start repeated checks. Confirming a recovered, unchanged node can continue setup without a redundant configuration write. The map compares the saved document with the immutable running revision; externally edited routes remain planned until applied. Offline secondary nodes use unavailable styling even while the default stays connected, and implicit private-domain owners appear in the topology. Active owner IDs come from the immutable compiled session, including preflight-discovered metadata and blocked namespace reservations; later SDK suffix changes cannot reassign ownership. Saved-only previews normalize wildcard prefixes, dots, case and IDNA like the compiler. Rates update without replacing focused rows, and use successive byte samples from the same engine session. Missing, stale, reset and disconnected samples show an em dash; a measured idle interval may show zero. Directional pulses appear only on a confirmed route with positive measured upload or download: outward for upload, inward for download. Idle, unavailable, reset, blocked and expired samples stop the pulses. Motion pauses away from Home or when the document is hidden; reduced motion retains static activity marks. The topology has no visible footer, unmatched-traffic summary or explanatory paragraph. Screen readers retain the route-state description, and interface previews identify themselves in the header preview badge.
 
 Native cancellation also uses a main-page navigation intercepted before any document load or HTTP request. The exact origin, route, random window scope and request/operation pair are validated before the host commits a memory-owned inbox entry. This independent delivery worker retains and retries explicit cancellation intent across renderer destruction, including for an existing owner or after both stores become unavailable; it does not wait behind a blocked storage-reader worker. Keeper release joins pending inbox work and journal recovery. Once an explicit user cancellation is confirmed in the journal, the panel records and displays its unconfirmed pending state before asynchronous retention or delivery and pauses setup. The registered main-page host service stores the exact intent in its root-owned inbox before returning a RetainCancel receipt; cleanup need not have finished yet. Rejected, malformed or missing receipts keep the pending marker and explanation visible because the journal or a late IPC call may still cancel. Only completion acknowledgment clears that uncertainty. RetainCancel also reports exact completion for an already acknowledged target, allowing a retry to resolve a missed asynchronous completion event without relying on another transport. If both stores are unavailable, or authentication survives a reload without its scope/host metadata, the panel refuses unprotected cancellation regardless of cached capability flags and directs the user to the native menu's Disconnect or Quit command. Rendering and losing a panel never arm cancellation or stop an established session; retired arm navigation is blocked. After RetainCancel confirms host ownership, IPC/HTTP delivery runs without waiting for native navigation admission, so failed or delayed navigation cannot starve working fallback channels. Tab storage retains only the history that the exact pending intent was once committed, bound to capability, target and native scope; a missing/mismatched scope or fresh target cannot inherit that history. Every retry attempts host retention. A receipt failure permits IPC/HTTP fallback only after re-confirming the exact journal now; no historical receipt grants that fallback. If neither host retention nor current journal protection can be confirmed, no legacy delivery starts and the uncertainty remains visibly pending. The original host-retained copy, when obtained, exists independently of retry navigation or renderer records. A timed-out retention call may still arrive later; the UI therefore stays pending until its exact outcome is acknowledged. Historical commitment is never treated as proof of recovery. Successful completion clears the history. Completion acknowledgment releases the UI even when legacy HTTP is stuck; unrelated acknowledgments and late failures cannot clear a newer intent. The host capability is restored with the capability-matched scope on ordinary reload; missing or failed scope restoration never enables an unprotected cancellation. Native quick saves verify recovery before any Global disconnect or consent prompt and recheck after consent, preserving the running protection when storage availability changes.
 
-Workspace gutters, field gaps, and section gaps use the frontmatter spacing tokens. Pages have vertical padding (20px). Exit Nodes, Logs, Settings (including all form categories and the YAML editor), notices, and the settings actionbar share a centered content column capped at 1040px. Narrower windows use the available width between the page gutters. The actionbar background and divider span the full workspace; its controls align with the content column. The titlebar remains full-width. Only the workspace body below it scrolls; the save bar stays at the bottom. A stable scrollbar gutter keeps short and long pages aligned. Exit Nodes and Logs occupy the upper sidebar; Settings is pinned below by the flexible sidebar layout. While Settings is the current page it expands in place into a second-level submenu of its categories, indented under a 1px guide line aligned with the Settings icon; there is no in-page category tab bar. The Form/YAML segmented control sits to the left of the shared titlebar actions while Settings is open. Exit Nodes, Settings and Logs keep the same right-aligned order: connection status, routing mode, connection switch, the update action (when visible), and an icon-only refresh action at the far right. Check, download and install states share that update slot immediately to the left of Refresh, with equal visible gaps to the connection switch and the Refresh glyph; account for the glyph's inset inside its 32px button. At compact desktop widths, the sidebar already identifies the page, so the breadcrumb yields space to the actions; connection status keeps its visible dot and accessible text. That final slot refreshes exits, reloads configuration with draft confirmation, or refreshes logs according to the current page; no extra exit-name label shifts the shared controls. Logs has no duplicate in-page refresh button. A sidebar footer shows the saved local proxy listener with a dot that turns green while connected; its top divider follows the visible settings actionbar's measured height so both full-width dividers align.
+Home, Exit Nodes and Logs occupy the upper sidebar; Settings stays at the bottom and expands an indented submenu under a fine guide line. The titlebar stays a single row. Settings opens full YAML editing from the file-information row, with a return action inside the source editor. Shared header actions retain connection status, routing dropdown, master switch, optional update action and Refresh at the far right. Dense titlebar Refresh uses a (24px) horizontal target and a (20px) painted face; coarse pointers retain (44px) target height. Shared header regions use equal (8px) visible gaps through mds-titlebar-actions--balanced. Optical insets account for text-select carets, switch tracks, update faces and refresh ink; transparent native targets remain non-overlapping.
+
+The 360px tray popup loads the same pinned Magpie stylesheet, semantic tokens, fonts, buttons and controlled switch track. Its product stylesheet retains the compact native-popover layout; mode and gateway remain read-only, and the native host owns placement and dismissal.
 
 Exit Nodes opens directly to the **Exits** card: the optional legacy `tailscale` profile (`main`) first when present, followed by additional exits. A toolbar above the card places Add exit at the left and a compact shared text dropdown showing the saved Split default proxy exit or Global exit, or Not set, at the right. Clicking opens its menu directly, with no edit dialog. Choosing a gateway saves immediately; an idle app stays disconnected, while active traffic reconnects. Keeping the same selection does not write or reconnect. Drafts and revision conflicts block changes; a failed save restores the saved selection. There is no saved-exit count. The titlebar orders connection status, an unboxed routing-mode text dropdown, the master connection switch, and Refresh at the far right, with no default-exit summary. The shared dropdown offers Rule-based / Global (Kill-Switch), or 规则分流 / 全局（Kill-Switch） in Chinese. Peer discovery during connection preflight remains in a checking state until ready, rather than prematurely prompting for a new exit. The routing shortcut has no separate protection toggle or extra confirmation dialog. It edits the existing Global/TUN mode, saves immediately and reconnects an active session; turning it off returns to Split while retaining policy. Drafts, busy state and an unconfigured target gateway during active traffic disable the shortcut. Its tooltip explains that manual disconnect restores system networking. The list's default display keeps its caption visible and truncates long names with a full-value title on narrow windows. Turning on with no saved devices starts guided Add exit and sign-in, then opens the node picker. Its Save & connect action saves the confirmed node and this mode's default exit together before continuing the requested connection. A saved device missing login or a usable node enters that step. Multiple saved devices without a default use the shared custom select with no preselected option; unready choices continue into setup rather than remaining disabled. A temporary status notice explains installation, sign-in, node selection and errors, with Cancel and explicit Retry. Cancel/Escape drops the pending connection; failed saves and unrelated configuration revisions never start traffic. No provisional device row appears while authorization is pending. A guided empty picker offers Reload nodes when the device is signed in but its peer list has not arrived. Settings drafts block connection. A configured offline choice is retained, never silently replaced. No connection card appears above the list. The document scrolls with the list, never inside its card. A short list fits the viewport without a scrollbar; visually hidden live regions use a negative margin so their one-pixel boxes cannot overflow the document. Each two-line row shows a status dot (green when its node is reachable, amber when signed in without a usable node, hollow when signed out), the exit name and its node · Tailnet. The Default badge follows `rules.default_exit` in Split; the Global exit badge follows `rules.global_exit` in Global. Neither is fixed to `main`. Signed-out additional exits show an inline Sign in button instead of the chevron. Rows open that exit's picker.
 
-The picker's device bar names the device and shows Sign in only when needed. There are no standalone switch-network or sign-out controls. The picker has no toolbar, search, manual entry or bulk Ping action; every node retains its own Ping action. Remove exit sits in a separate section at the very bottom for every saved profile, including `main` and the last exit. Its confirmation explains that removal disconnects and restores system networking, logs out only that client, removes its local profile, and retains both its explicit rule references and the remote Tailnet device record. Revision checks protect the operation; removed default/global selections become explicitly unset and require a new confirmed choice. Explicit final and route-group references remain as dormant policy and block Split reconnection until their missing targets are replaced or edited. The app stays stopped. Removing `main` retains its private DNS ownership and former custom domains as unresolved policy, without promoting another profile or changing remaining IDs/state paths. Split remains blocked until those references are explicitly resolved. Removing the last exit preserves the remaining routing policy as a dormant draft. Add exit creates a new additional profile and, if no profiles remain, leaves both traffic exit selectors unset for explicit confirmation. Add requires desktop action capability and a valid saved document. In active Global mode it first requests consent to disconnect protection and restore system networking; Cancel/Escape preserves the session and configuration, and a later save or sign-in failure leaves the app disconnected until manual reconnection. Otherwise Add opens authorization directly without a name dialog. Authorization uses a private staged configuration. No provisional profile or row is saved or shown while waiting; only a terminal authenticated result followed by helper cleanup commits the profile. Cancellation, failure or a configuration revision conflict leaves no new row. Add remains retryable, and success is announced only once after authentication. Network choice occurs during browser authorization; confirming the first node binds the Tailnet guard and saves the label `<exit-device-name>@<network name>`. Before a node is chosen, an unnamed row shows the known network or New exit. Automatic labels follow later node choices without changing the profile ID; existing custom names are retained. Backdrop clicks and Escape cancel a staged node choice, except while a save is in progress; saving successfully closes the picker.
+Settings uses a form/preview grid (2fr/1fr), preview minimum (300px), shared gap (20px). Shared mds-row--preference rows have equal tracks at least (64px) high, padding (12px 16px), left labels/notes and a compact right control column (160–220px). The mds-row--stacked variant places multiline editors below their labels. Multiline and update rows remain content-sized. Routing groups retain paired domain/CIDR fields; MTU’s unit sits outside the numeric input.
 
-Settings › Routing rules groups the Split/Global segments and routing controls into one card. Its visible rows share equal grid tracks, at least 56px high, growing together when descriptions wrap. Builtin/custom rule-source help and validation messages sit below the card, rather than increasing a single row's height. Global shows one exit selector and runs only that device. Split shows an independent default proxy exit, the unmatched-traffic choice and rule groups. `rules.default_exit` carries proxy matches from builtin/custom rule sources, `proxy_domains`, `proxy_ips`, `final: proxy`, and bare Tailnet addresses without a more specific route. `rules.final` chooses direct, the default proxy exit, or any configured exit, including `main`, for unmatched traffic. Split configuration remains saved while hidden in Global. Mode and exit target changes use the settings Save & apply action. Rule groups are bordered surfaces, each with an exit select, Domains/CIDR fields and Remove.
+Exit Nodes opens to the saved-exit list, with Add exit at left and the current default/Global gateway text dropdown at right. List rows are at least (52px) high and contain a status dot, two-line identity and trailing action. The page owns scrolling. The whole picker scrolls, with a maximum width (640px) and viewport clearance (16px); its node list has no separate scroller.
 
-Settings use a form/preview grid (2fr/1fr, preview minimum 300px). Ordinary settings use equal-height rows within each card (56px minimum, 8px by 14px padding), growing together when notes wrap. Mixed cards group their ordinary rows separately from multiline lists. Labels and notes sit on the left; the compact control column is 160–220px, with toggles right-aligned. Exit selects show names without appended IP addresses. MTU uses a short numeric input with its unit outside the field so native steppers cannot overlap it; its range hint sits below the card. Multiline lists and the update panel remain content-sized. The exit picker is at most 640px wide with 16px viewport clearance and one dialog scrollbar when needed; its node card has no independent scroller. The picker's card list uses compact 34px minimum rows and keeps every item on a single line: a leading plain green checkmark only on the selected node, the node name, an 80px right-aligned latency column, and a dedicated Ping text button at the far right, with no border or background. IP addresses, server icons, separate status/path columns, and radio controls are omitted. Names truncate with native titles instead of wrapping, so both lists fit narrow windows without horizontal scrolling. The dedicated Ping button tests or retries independently; clicking the name or leading checkmark selects the node through the existing confirmation flow. Relay details and error reasons remain available in native titles and accessible descriptions. Confirmation stays inside the picker; mode changes use the settings actionbar. Node rows have no hover or selected background fill, including the latency and Ping columns. Pointer selection moves focus to the dialog heading so no blue box remains around the choice; keyboard navigation retains the visible focus outline.
-
-- At (1199px) and below, hide the live YAML preview while retaining the full-width form and YAML editor tab.
-- At (960px) and below, hide the header exit label.
-- At (860px) and below, use a sidebar (184px; macOS 212px), gutters (20px), and a narrower settings control column (160–200px).
-- At (640px) and below, use an icon sidebar (52px), gutters (16px), stacked field rows (toggles keep a label/control arrangement), wrapping actions, full-width mode segments, and one-column rule pairs. The Settings submenu is replaced by an in-page category picker, and the sidebar footer shows only its status dot. Navigation text remains available to assistive technology.
-- At heights (680px) and below with width at least (641px), compact connection-page vertical spacing.
-- Coarse pointers increase listed action targets, node rows and fields to at least (44px); inputs use text (16px). This is an input-mode adjustment rather than a new desktop density.
-
-These responsive rules describe the stylesheet; their presence does not guarantee behavior across all window sizes, input modes, or native runtimes.
-
-### Shared Dropdowns
-
-`assets/select.js` upgrades every single-select field through `TailSplitSelect.sync()` after form renders. The native select remains hidden as the value/event model; a shared ARIA combobox and listbox provide the visible UI. Dynamic option lists, disabled fields, localization and existing input/change handlers stay connected. Document click/focus changes and Escape close the menu; arrows and Home/End move through enabled options, Enter selects, and Tab keeps normal focus order.
-
-Fields use the existing field, line, ink and selection tokens. `data-select-variant="text"` gives Log level an unboxed text trigger with a caret. Menus use the app's surface, 12px radius, overlay shadow and a green plain check for the selected option. They are positioned within the viewport and scroll only when their option list requires it. No operating-system select popup is shown after upgrade.
+- At (1199px) and below, hide the live YAML preview; the form and YAML editor remain available.
+- At (860px) and below, shared sidebar width becomes (172px), or (212px) on macOS; gutters become (20px). Hide the breadcrumb and visible connection-status text while retaining its accessible label, and narrow controls to (160–200px).
+- At (640px) and below, TailSplit retains a vertical icon sidebar (52px), overriding the shared library’s horizontal narrow navigation. Navigation explicitly uses a column direction. Gutters become (16px), field rows stack except toggles, rule pairs become one column, and Settings categories move to an in-page picker. The titlebar keeps its normal single-row height, and the file-row YAML editing action remains available. Footer labels and brand text are visually hidden.
+- Coarse pointers enlarge listed actions, fields, navigation and node rows to at least (44px); the master switch keeps its visible track within a (44px) target, and the footer minimum becomes (64px).
 
 ## Elevation & Depth
 
-Panels are flat, separated by tone and fine borders. The settings actionbar layers a translucent canvas and blur (12px). Shared dropdown menus use the surface fill and an overlay shadow. Toasts, dialogs, and switch thumbs use the small shadow vocabulary in the sidecar. Modal backdrops use explicit light/dark black scrims and blur (2px); the source avoids inherited custom properties there for Chromium 120 compatibility.
+Ordinary panels are flat, separated by surface tone and fine borders. Shared dropdowns, toasts and dialogs use ambient overlay shadows; switch thumbs have a small separation shadow. Exact shadow and motion values live in the sidecar. The save bar uses a translucent canvas and blur (12px). Modal backdrops use literal light/dark black scrims and blur (2px) for Chromium 120 compatibility.
 
-**The Flat Surface Rule.** Use tonal surfaces and hairline separators for ordinary panels; reserve ambient shadows for overlays and the small switch thumb.
+**The Flat Surface Rule.** Use tone and fine borders for ordinary panels; reserve ambient shadows for overlays and small control details.
 
-Field border/shadow transitions last (.12s); switch background and thumb transitions last (.15s). Loading and update indicators rotate linearly (.8s and 1s respectively). Reduced-motion preference disables animations, transitions, and smooth scrolling.
+Shared fast state transitions last (120ms); switches/toasts use (150ms). Loading and update indicators rotate at (.8s) and (1s). Reduced-motion preference disables transitions, animations and smooth scrolling.
 
 ## Shapes
 
-Controls and navigation use modest rounded corners; grouped panels are gently rounder. The frontmatter records the reused radius steps. Mode segments use their tighter radius inside a rounded container. Pills, dots, and switch tracks remain fully rounded. Borders are ordinarily (1px). Titlebar window controls retain square edges. Functional interface icons use vendored Phosphor Icons 2.1.1 regular SVG paths, normally (16px); compact actions and window controls use (14px), and node selection marks use (16px). The paths encode their own regular stroke geometry and render with `fill: currentColor; stroke: none`. Side navigation, search, refresh, close, disclosure, select, loading, and custom window-control icons share this family. The TailSplit brand mark remains its own artwork. Source names are recorded on the inline symbols, with the upstream MIT notice in THIRD_PARTY_NOTICES.md.
+Magpie owns the shared radius scale: inline details (4px), controls/navigation/tab segments (8px), dropdowns/tab tracks/notices/toasts (10px), groups/cards (12px), dialogs (14px), and pills (999px). These replace the previous local panel/dialog radii. Borders are ordinarily (1px).
+
+The active picker node card uses the shared group radius (12px). TailSplit retains local compact shapes: device bars and the diagnostic terminal use (8px); the raw editor uses (10px); exit badges use (4px). Supported grouped surfaces and dialogs add `corner-shape: superellipse(1.6)` with normal rounded fallback. Dots and switch tracks remain round; native caption buttons retain square edges.
+
+Functional icons use vendored Phosphor regular SVG geometry, normally (16px), with compact action variants (14px). Paths render with currentColor fill and no stroke. The TailSplit mark remains its own artwork.
 
 ## Components
 
 ### Buttons
 
-Primary actions use blue fill and white text; secondary actions use raised neutral fill and a strong border; subtle actions use transparent fill. Normal buttons have a minimum height (28px), small buttons (26px). Hover changes fill; global focus is a visible accent outline (2px, offset 2px). Disabled buttons reduce opacity (.45). No transform-based hover elevation is present.
+Shared primary buttons use blue fill and white text with padding (6px 16px). Secondary buttons use raised fill and a strong border, and subtle buttons use transparent fill; both use padding (6px 12px). Normal minimum height is (34px), small buttons (32px), and icon buttons (32px square). Keyboard focus uses an accent outline (2px, offset 2px); disabled shared buttons use opacity (.45). There is no transform-based hover lift.
 
 ### Inputs / Fields
 
-Fields use a strong border, field surface, control radius, and minimum height (28px). Focus changes the border and adds the accent outline. Placeholder text uses faint ink; disabled fields use opacity (.6). Multiline fields resize vertically.
+Shared fields use the field surface, strong border, control radius, padding (6px 10px) and minimum height (34px). Hover strengthens the border; focus uses accent ink and an outline. Invalid state uses the error border; disabled fields use opacity (.6). Multiline values resize vertically.
 
-### Navigation
+### Navigation and Tabs
 
-Primary navigation items are 28px high with 15px icons, neutral hover and selected fills, medium active text, and a current-page attribute. Settings submenu items (26px) use muted text and the same selected fill; in YAML mode none is highlighted. Editor tabs and routing segments sit inside low-contrast rounded tracks; the selected segment is lifted with a light surface and a small shadow (a translucent white lift in dark appearance) rather than tinted as a primary action.
+Main navigation uses Montserrat and minimum height (36px), neutral hover and selected fills, and a current-page attribute. The Settings submenu remains indented; no category is highlighted in YAML mode. Full YAML editing uses a contextual file-row action and an in-editor return button; keyboard focus moves into the source textarea and returns to the opening action. Routing choices preserve pressed semantics inside a neutral track; selected segments use the shared selected surface and stronger text, without primary-action tint.
 
 ### Cards / Containers
 
-Grouped settings and exit lists share a 16px panel radius, with internal row dividers. Settings rows use 8px by 14px padding. Dialogs use a 20px radius. Where supported, `corner-shape: superellipse(1.6)` smooths the transition from straight edges into corners; older WebKit keeps the same radius as a rounded fallback. YAML regions follow the app's code surface. Cards do not acquire shadows on hover.
+Shared settings groups and cards use surface fill, fine borders and the large shared radius; no hover shadow is introduced. Product rows grow together when notes wrap. Shared dialogs use the extra-large radius, surface fill, strong border and ambient shadow; the exit picker uses the canvas fill to separate its inner node card.
+
+### Home Controls and Routing Map
+
+Home's Set up / Retry setup action uses `mds-button mds-button--primary` and the shared control radius (8px). Its connection switch uses `mds-switch` with a `mds-switch-track`; TailSplit supplies a (56px by 44px) hit area around the unchanged shared (34px by 20px) track and shared thumb. The product stylesheet does not clone the knob or replace the shared switch geometry.
+
+Home and routing-map styles use `--mds-*` tokens. The `.map-host` and `.map-route` title labels use `--mds-font-heading`. Preserve the two-line destination rows (44px), rate-group gap (8px), arrow-to-rate gap (4px) and row gap (4px). Rate arrows use `mds-icon` with the vendored Up glyph; the download arrow rotates it (180deg). Measured activity and motion eligibility retain the routing-map contract above.
+
+Setup and notice feedback writes `dataset.tone` for shared state styling. Neutral setup variables are scoped to `#connection-setup`, and successful-notice variables are scoped to `#notice`; these product exceptions do not override shared notice variables globally. Awaiting device approval uses `data-tone="warn"`. The main Magpie shell and components, `ui.js` dependency loader and single Form/YAML control set remain in place.
+
+### Shared Dropdowns
+
+The ES-module adapter in `select.js` delegates rendering, keyboard navigation, positioning and teardown to Magpie’s `initSelect`. Native selects remain the value and input/change event model. `TailSplitSelect.sync()` initializes single selects, destroys removed controls and refreshes silent value-label changes. Magpie observes option and disabled-state mutations. The app's `updateSelect` helper maintains this shared lifecycle while the default-exit dialog retains Continue setup & connect for a selected device that still needs setup. The shared mds-select--text variant keeps the titlebar, gateway and Log level triggers unboxed, without a product-specific presentation adapter. `ui.js` loads localization, the adapter, the app and companion in dependency order.
+
+The app’s no-op polling guard assigns a select value when changed or when no option is selected, keeping localized empty placeholders selected; disabled and title change only when needed. Option signatures avoid rebuilding unchanged lists. Tab dismisses without committing, and unrelated scrolling keeps a menu open while its trigger stays in place. This preserves open menus and keyboard/pointer interaction during state polls. Shared menus are viewport-positioned, bounded and scrollable; active options use neutral selection and selected options a green check. Dynamic options, localization, draft protections and existing handlers remain connected.
 
 ### Page Companion
 
@@ -425,7 +467,7 @@ Unchanged output keeps its existing DOM nodes to preserve reading and selection.
 
 ### Status and Exit Selection
 
-Header connection state pairs a small colored dot (7px) with text. Each row of the Exit Nodes page's Exits card shows its exit's selected node and Tailnet and opens that exit's picker dialog; node rows never appear on the home page.
+Header connection state pairs a small colored dot (7px) with text. Each row of the Exit Nodes page's Exits card shows its exit's selected node and Tailnet and opens that exit's picker dialog. The node-selection list stays in the picker; Home shows the routing-map destinations.
 
 The picker uses the reference's **card list**: one rounded surface, internal hairline dividers, a leading checkmark and name, then right-aligned latency and a separate Ping button. Native buttons with pressed state expose the selection to assistive technology; no radio is rendered. Unselected rows reserve an empty icon slot; selected rows show the `good`-green plain Phosphor Check and medium-weight name, with no selected or hover row fill. Pointer selection leaves no blue focus box; keyboard selection retains visible focus. Its canvas is subtly distinct from the card surface. Unavailable exits remain visible with disabled selection. The modal footer identifies the staged choice and reconnect consequence; Cancel and Escape discard that choice. Settings drafts block applying and have their own warning and navigation action inside the dialog. Remove exit remains below the confirmation footer for every saved exit.
 
@@ -433,21 +475,22 @@ The fixed-width latency readout uses right-aligned tabular numbers; the adjacent
 
 ### Switches and Overlays
 
-Switches use a track (34px by 20px), thumb (14px), neutral off fill, and blue on fill. The invisible native input retains focus and checked semantics. Dialogs use the surface fill, dialog radius, strong border, and ambient shadow; toast and modal geometry remain separate from ordinary grouped panels.
+Checkbox and controlled button switches share the Magpie track (34px by 20px), light thumb (14px), neutral off fill and blue on fill. The titlebar button keeps native button interaction and application-owned aria-checked state; both forms share focus and disabled treatment. On coarse pointers the track sits inside a (44px) target. The update action uses mds-pill--responsive and Refresh uses mds-icon-button--compact. Both draw a (20px) capsule face with fully rounded ends aligned with the switch track through --mds-compact-control-height. The larger (32px) native target, or (44px) coarse-pointer target, stays transparent; the compact icon is (16px). Desktop update labels remain visible. Labels remain accessible and live; idle/update uses Up, progress uses Spinner, failure uses Alert, and only refresh uses Reload. Busy/error states do not stretch the compact button. Dialogs and toasts follow the shared overlay vocabulary.
 
 ## Do's and Don'ts
 
 ### Do:
 
-- Do use semantic CSS properties for both system appearances.
-- Do retain visible keyboard focus and reduced-motion behavior.
-- Do allow English and Chinese labels, long addresses, and helper text to wrap where the source provides for it.
-- Do keep current and pending selections visibly distinct and provide explicit confirmation.
+- Do use Magpie semantic CSS properties for both system appearances.
+- Do retain visible keyboard focus, reduced-motion behavior and accessible announcements.
+- Do allow English/Chinese labels and helper text to wrap while truncating node names with full-value titles.
+- Do preserve current and pending selections, draft protections and explicit confirmation.
+- Do keep shared dropdown interaction stable through unchanged state polls.
 
 ### Don't:
 
-- Don't apply this desktop panel system to the public website without inspecting that surface's own implementation.
-- Don't replace the chosen neutral desktop world with a new visual identity or illustration.
-- Don't imply a connection or saved configuration from selection styling alone.
+- Don't edit vendored Magpie assets to create local variants; keep product geometry and states in the product stylesheet.
+- Don't imply connection or saved configuration from selection styling alone.
+- Don't apply this panel system to the public website without inspecting that surface’s implementation.
 
-Not canonized or repaired: the reported detector warning about titlebar children flush against the bottom border is limited to existing fixed-height native chrome, as explained by the source comment. It does not justify copying flush content spacing into ordinary panels.
+Not canonized or repaired: existing fixed-height native chrome can place children flush to its border and does not establish content-panel spacing. No craft-floor defect is promoted into a token.

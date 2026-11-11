@@ -18,6 +18,13 @@
     if (element.textContent !== text) element.textContent = text;
   }
   const controls = [...document.querySelectorAll('[data-field]')];
+  // Magpie observes native select attributes. Avoid no-op mutations during live
+  // polling so an open menu keeps its keyboard/pointer interaction intact.
+  function updateSelect(select, value, disabled, title) {
+    if (select.value !== value || select.selectedIndex === -1) select.value = value;
+    if (select.disabled !== disabled) select.disabled = disabled;
+    if (title !== undefined && select.title !== title) select.title = title;
+  }
   // Keep both footer dividers level when translated actions wrap or resize.
   if (window.ResizeObserver) {
     const actionbar = $('#actionbar'), workspaceBody = $('#workspace-body');
@@ -151,8 +158,7 @@
     activeNotice = { title, detail };
     $('#notice-title').textContent = t(title);
     $('#notice-detail').textContent = message(detail);
-    $('#notice').classList.toggle('error', kind === 'error');
-    $('#notice').classList.toggle('success', kind === 'success');
+    $('#notice').dataset.tone = kind === 'error' ? 'error' : kind === 'success' ? 'good' : 'warn';
     $('#notice-reload').hidden = !canReload;
     $('#notice').hidden = false;
   }
@@ -240,7 +246,7 @@
     const choices = configuredExits(values).map((exit) => [exit.id, exitLabel(exit.id, values)]);
     const fragment = document.createDocumentFragment();
     routesDraft.forEach((route, index) => {
-      const group = document.createElement('div'); group.className = 'route-group';
+      const group = document.createElement('div'); group.className = 'route-group mds-card';
       const header = document.createElement('div'); header.className = 'route-group-header';
       const label = document.createElement('label'); label.setAttribute('for', `route-${index}-exit`); label.textContent = t('出口');
       const select = document.createElement('select'); select.id = `route-${index}-exit`;
@@ -250,7 +256,7 @@
       }));
       select.value = route.exit;
       select.addEventListener('change', () => { route.exit = select.value; editRoutes(); });
-      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'link-button danger'; remove.textContent = t('删除');
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'link-button mds-link-button danger'; remove.textContent = t('删除');
       remove.setAttribute('aria-label', t('删除规则组 {index}', { index: index + 1 }));
       remove.addEventListener('click', () => { routesDraft.splice(index, 1); paintRoutes(); editRoutes(); });
       header.append(label, select, remove);
@@ -258,7 +264,7 @@
       for (const [key, title, placeholder] of [['domains', t('域名'), 'example.com'], ['ips', 'CIDR', '203.0.113.0/24']]) {
         const cell = document.createElement('div');
         const caption = document.createElement('label'); caption.setAttribute('for', `route-${index}-${key}`); caption.textContent = title;
-        const area = document.createElement('textarea'); area.id = `route-${index}-${key}`; area.className = 'mono'; area.rows = 3;
+        const area = document.createElement('textarea'); area.id = `route-${index}-${key}`; area.className = 'mono mds-mono mds-textarea'; area.rows = 3;
         area.spellcheck = false; area.placeholder = placeholder; area.value = route[key].join('\n');
         area.addEventListener('input', () => { route[key] = lines(area.value); editRoutes(); });
         cell.append(caption, area); pair.append(cell);
@@ -325,7 +331,6 @@
     $('#split-routing-notes').hidden = global;
     for (const button of document.querySelectorAll('[data-routing-mode]')) {
       const selected = button.dataset.routingMode === mode;
-      button.classList.toggle('selected', selected);
       button.setAttribute('aria-pressed', String(selected));
       button.disabled = isLocked() || !state.loaded;
     }
@@ -353,14 +358,15 @@
       state.dirty ? t('有未保存的更改') : t('所有更改已保存');
     $('#preview-draft').textContent = state.dirty ? t('草稿') : t('已保存');
     $('#preview-draft').classList.toggle('dirty', state.dirty);
-    for (const control of controls) control.disabled = locked;
+    for (const control of controls) if (control.disabled !== locked) control.disabled = locked;
     $('#add-route').disabled = locked || state.mode !== 'form' || draftRoutingMode() === 'global' || configuredExits(state.values).length === 0;
-    for (const control of document.querySelectorAll('#route-groups select, #route-groups textarea, #route-groups button')) control.disabled = locked;
+    for (const control of document.querySelectorAll('#route-groups select, #route-groups textarea, #route-groups button')) if (control.disabled !== locked) control.disabled = locked;
     $('#log-level').disabled = locked || state.mode === 'yaml' && (!state.parsed || state.previewing);
     $('#raw-yaml').disabled = locked;
-    for (const button of document.querySelectorAll('.editor-tabs button, [data-section]')) button.disabled = locked;
+    for (const button of document.querySelectorAll('[data-section]')) button.disabled = locked;
+    $('#form-tab').disabled = locked;
+    $('#yaml-tab').disabled = locked;
     $('#settings-section-select').disabled = locked;
-    $('#settings-tools').hidden = state.page !== 'settings';
     $('#reload').hidden = state.page !== 'settings';
     $('#refresh-exits').hidden = !['home', 'connection'].includes(state.page);
     $('#desktop-log-refresh').hidden = state.page !== 'logs';
@@ -378,16 +384,16 @@
     const fragment = document.createDocumentFragment();
     for (const line of lines) {
       const row = document.createElement('span');
-      row.className = 'code-line';
+      row.className = 'mds-code-line';
       if (line.trimStart().startsWith('#')) {
         const comment = document.createElement('span');
-        comment.className = 'code-comment'; comment.textContent = line; row.append(comment);
+        comment.className = 'mds-code-comment'; comment.textContent = line; row.append(comment);
       } else {
         const match = line.match(/^(\s*)([\w.-]+:)(.*)$/);
         if (match) {
           row.append(document.createTextNode(match[1]));
-          const key = document.createElement('span'); key.className = 'code-key'; key.textContent = match[2];
-          const value = document.createElement('span'); value.className = 'code-value'; value.textContent = match[3];
+          const key = document.createElement('span'); key.className = 'mds-code-key'; key.textContent = match[2];
+          const value = document.createElement('span'); value.className = 'mds-code-value'; value.textContent = match[3];
           row.append(key, value);
         } else row.textContent = line || '​';
       }
@@ -443,12 +449,7 @@
     $('.yaml-preview').hidden = raw;
     $('#yaml-editor').hidden = !raw;
     $('#editor-layout').classList.toggle('raw-mode', raw);
-    $('#form-tab').classList.toggle('selected', !raw);
-    $('#yaml-tab').classList.toggle('selected', raw);
-    $('#form-tab').setAttribute('aria-selected', String(!raw));
-    $('#yaml-tab').setAttribute('aria-selected', String(raw));
-    $('#form-tab').tabIndex = raw ? -1 : 0;
-    $('#yaml-tab').tabIndex = raw ? 0 : -1;
+    $('#yaml-tab').hidden = raw;
     $('#settings-subnav').classList.toggle('raw-mode', raw);
     renderPageTitle();
   }
@@ -584,13 +585,14 @@
       showMode(mode); return true;
     } finally { state.switching = false; updateActions(); }
   }
-  $('#form-tab').addEventListener('click', () => switchMode('form'));
-  $('#yaml-tab').addEventListener('click', () => switchMode('yaml'));
-  $('.editor-tabs').addEventListener('keydown', async (event) => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const mode = event.key === 'Home' ? 'form' : event.key === 'End' ? 'yaml' : state.mode === 'form' ? 'yaml' : 'form';
-    if (await switchMode(mode)) $(`#${mode}-tab`).focus();
+  $('#form-tab').addEventListener('click', async () => {
+    if (await switchMode('form')) $('#yaml-tab').focus();
+  });
+  $('#yaml-tab').addEventListener('click', async () => {
+    if (await switchMode('yaml')) {
+      $('#workspace-body').scrollTop = 0;
+      $('#raw-yaml').focus({ preventScroll: true });
+    }
   });
   function showPage(name) {
     const enteringLogs = name === 'logs' && state.page !== name;
@@ -1064,9 +1066,9 @@
         option.textContent = exitLabel(exit.id); option.disabled = !gatewaySelectable(exit); return option;
       }));
     }
-    select.value = connectionExitRecord()?.id || '';
-    select.disabled = !desktopLive?.desktop || isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || Boolean(desktopLive?.active && !networkActive()) || !records.some(gatewaySelectable);
-    select.title = t(networkActive() ? savedMode() === 'global' ? '切换设备需先确认断开全局保护，保存后保持未连接。' : '选择后保存并重新连接，网络会短暂中断。' : '仅保存选择，保持未连接。');
+    updateSelect(select, connectionExitRecord()?.id || '',
+      !desktopLive?.desktop || isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || Boolean(desktopLive?.active && !networkActive()) || !records.some(gatewaySelectable),
+      t(networkActive() ? savedMode() === 'global' ? '切换设备需先确认断开全局保护，保存后保持未连接。' : '选择后保存并重新连接，网络会短暂中断。' : '仅保存选择，保持未连接。'));
     $('#connection-exit-control').hidden = state.page !== 'connection';
     setStatusText('#connection-exit-label', t(savedMode() === 'global' ? '全局出口' : '默认出口'));
     window.TailSplitSelect?.sync();
@@ -1144,7 +1146,7 @@
       setup?.stage === 'connecting' ? '正在使用已确认的出口连接。' : '正在准备设备授权。完成浏览器登录后会自动打开节点选择，再继续连接。';
     setStatusText('#connection-setup-title', t(title));
     setStatusText('#connection-setup-detail', !nativeCancelReady() ? nativeCancelUnavailable() : message(detail));
-    panel.classList.toggle('error', failed);
+    panel.dataset.tone = failed ? 'error' : 'neutral';
     $('#connection-setup-retry').hidden = Boolean(pendingSetupCancel) || !failed && !approvalRetry;
     setStatusText('#connection-setup-retry', t(approvalRetry ? '检查批准状态' : serviceError ? '安装服务并继续连接' : '重试连接'));
     $('#connection-setup-retry').disabled = isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || !state.savedValid || networkActive();
@@ -1407,7 +1409,7 @@
     setStatusText('#default-exit-heading', t(global ? '选择全局出口' : '选择默认出口'));
     setStatusText('#default-exit-choice-label', t(global ? '全局出口' : '默认出口'));
     const chosen = records.find(exit => exit.id === select.value);
-    select.disabled = locked || !records.length;
+    updateSelect(select, select.value, locked || !records.length);
     $('#confirm-default-exit').disabled = locked || !chosen;
     $('#confirm-default-exit').textContent = t(defaultExitBusy ? '正在应用…' : chosen && !exitCanConnect(chosen) ? '继续设置并连接' : '确认并连接');
     setStatusText('#default-exit-description', t('请选择出口，完成必要的登录和节点选择后会继续连接。'));
@@ -1543,10 +1545,10 @@
       rules: { ...state.savedValues.rules, mode: 'split' } });
     const targetReady = !targetNeedsDefault || records.some(exit => exit.id === targetID && exit.exit_node);
     $('#kill-switch-control').hidden = !live.desktop;
-    killSwitch.value = mode;
-    killSwitch.disabled = !live.desktop || locked || discovering || changing || state.dirty || state.external || !state.loaded || !state.savedValid || connected && !targetReady;
-    killSwitch.title = connected && !targetReady ? t(mode === 'global' ? '请先在设置中选择默认代理出口。' : '请先在设置中选择全局出口。') :
-      t(mode === 'global' ? '关闭后使用规则分流，保留现有规则。' : '开启全局代理；出口掉线时阻断流量，手动断开恢复系统网络。');
+    updateSelect(killSwitch, mode,
+      !live.desktop || locked || discovering || changing || state.dirty || state.external || !state.loaded || !state.savedValid || connected && !targetReady,
+      connected && !targetReady ? t(mode === 'global' ? '请先在设置中选择默认代理出口。' : '请先在设置中选择全局出口。') :
+        t(mode === 'global' ? '关闭后使用规则分流，保留现有规则。' : '开启全局代理；出口掉线时阻断流量，手动断开恢复系统网络。'));
     const activeExit = connectionExit();
     renderConnectionExit();
     renderDefaultExitDialog();
@@ -1739,14 +1741,14 @@
       info.append(title, address);
       trigger.append(dot, info);
       if (backend !== 'NeedsLogin') {
-        const chevron = nodeIcon('chevron'); chevron.setAttribute('class', 'icon exit-chevron');
+        const chevron = nodeIcon('#i-chevron'); chevron.setAttribute('class', 'mds-icon icon exit-chevron');
         trigger.append(chevron);
       }
       trigger.setAttribute('aria-label', `${label}: ${exitName.textContent} · ${detail.textContent}`);
       trigger.addEventListener('click', () => openExitPicker(trigger, id));
       item.append(trigger);
       if (backend === 'NeedsLogin' || exitLive(id).phase === 'isolated') {
-        const login = document.createElement('button'); login.type = 'button'; login.className = 'button small exit-login';
+        const login = document.createElement('button'); login.type = 'button'; login.className = 'button small exit-login mds-button mds-button--small';
         login.textContent = t('登录'); login.disabled = locked; login.dataset.exitLogin = id;
         login.setAttribute('aria-label', t('登录 {name}', { name: label }));
         login.addEventListener('click', async () => {
@@ -1768,11 +1770,11 @@
     setStatusText('#exit-empty-title', approval ? t('等待管理员批准设备') : discovering ? t('正在读取出口') : ready ? t('未发现可用出口') : t('尚未读取出口'));
     setStatusText('#exit-empty-detail', approval ? approvalHelp() : ready ? t('确认设备已在 Tailnet 中提供出口，并获准使用，然后刷新。') : t('登录 Tailscale 后，刷新可用出口。'));
   }
-  function nodeIcon(symbol) {
+  function nodeIcon(href) {
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('class', 'icon'); icon.setAttribute('aria-hidden', 'true');
+    icon.setAttribute('class', 'mds-icon icon'); icon.setAttribute('aria-hidden', 'true');
     const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    use.setAttribute('href', `#i-${symbol}`); icon.append(use);
+    use.setAttribute('href', href); icon.append(use);
     return icon;
   }
   function pingLabel(result) {
@@ -1788,7 +1790,7 @@
     const name = document.createElement('span'); name.className = 'exit-name'; name.textContent = node.name; name.title = node.name;
     const check = document.createElement('span'); check.className = 'node-check';
     check.setAttribute('aria-hidden', 'true');
-    check.append(nodeIcon('check')); choice.append(check, name);
+    check.append(nodeIcon('/vendor/magpie/icons/icons.svg#check')); choice.append(check, name);
     return choice;
   }
   function nodePingControls(node, locked) {
@@ -1803,7 +1805,7 @@
     latency.append(value);
     const route = result?.relay ? t('中继 · {name}', { name: result.relay }) : t(result?.direct ? '直连' : '中继');
     latency.title = result?.error ? message(result.error) : pending ? t('正在测试…') : result ? `${pingLabel(result)} · ${route}` : t(node.online ? '尚未测试' : '节点不可用');
-    const ping = document.createElement('button'); ping.type = 'button'; ping.className = 'link-button node-ping';
+    const ping = document.createElement('button'); ping.type = 'button'; ping.className = 'link-button node-ping mds-link-button';
     ping.dataset.nodePing = node.id; ping.dataset.pingSurface = 'picker'; ping.textContent = 'Ping';
     ping.title = result?.error ? message(result.error) : t('使用 Tailscale Ping 测试延迟');
     ping.setAttribute('aria-label', t('Ping {name}', { name: node.name }));
@@ -2322,9 +2324,9 @@
     if (!updates) return;
     const busy = Boolean(updatesBusy());
     updateButton.disabled = busy;
-    updateButton.classList.toggle('busy', busy);
     const failed = Boolean(updateError || updates.error);
-    updateButton.classList.toggle('error', !busy && failed);
+    updateButton.setAttribute('aria-busy', String(busy));
+    updateButton.dataset.tone = !busy && failed ? 'error' : 'accent';
     $('#update-current').textContent = t('当前版本 {version}', { version: updates.current_version || t('未知') });
     $('#update-latest').textContent = t('最新版本 {version}', { version: updates.latest_version || t('尚未检查') });
     $('#update-automatic').checked = updatePending === 'automatic-on' || updatePending !== 'automatic-off' && updates.automatic === true;
@@ -2338,7 +2340,8 @@
     const current = !updates.available && hasChecked && Boolean(updates.latest_version);
     // An up-to-date app needs no titlebar action; Settings › About keeps the manual check.
     updateButton.hidden = current && !busy && !failed;
-    $('#update-pill .icon use').setAttribute('href', busy || failed ? '#i-reload' : updates.available ? '#i-up' : current ? '#i-check' : '#i-reload');
+    const updateIcon = busy ? 'spinner' : failed ? 'alert' : current ? 'check' : 'up';
+    $('#update-pill .icon use').setAttribute('href', `/vendor/magpie/icons/icons.svg#${updateIcon}`);
     $('#update-last-checked').textContent = t('上次检查：{date}', { date: hasChecked ? checked.toLocaleString(locale.language === 'zh' ? 'zh-CN' : 'en') : t('尚未检查') });
     const downloaded = Math.max(0, Number(updates.downloaded_bytes) || 0);
     const total = Math.max(0, Number(updates.total_bytes) || 0);
@@ -2567,10 +2570,10 @@
         const reading = document.createElement('span');
         reading.className = `map-rate map-rate-${direction}`;
         const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        icon.setAttribute('class', 'icon');
+        icon.setAttribute('class', 'icon mds-icon');
         icon.setAttribute('aria-hidden', 'true');
         const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-        use.setAttribute('href', '#i-up');
+        use.setAttribute('href', '/vendor/magpie/icons/icons.svg#up');
         icon.append(use);
         const value = document.createElement('span');
         value.textContent = '—';
@@ -2704,10 +2707,9 @@
       discovering: t('正在读取出口'), 'logging-out': t('正在退出登录'),
     };
     const connected = !connectionLost && live.active && ['tun', 'proxy'].includes(live.mode) && live.state === 'running';
-    $('#connection-status').classList.toggle('connected', connected);
     const approval = sessionNeedsApproval(live) && live.state !== 'blocked';
-    $('#connection-status').classList.toggle('attention', !connectionLost && (approval || ['blocked', 'waiting-exit', 'missing-exit'].includes(live.state)));
-    $('#connection-status').classList.toggle('error', connectionLost || live.state === 'failed');
+    $('#connection-status').dataset.tone = connectionLost || live.state === 'failed' ? 'error' :
+      approval || ['blocked', 'waiting-exit', 'missing-exit'].includes(live.state) ? 'warn' : connected ? 'good' : 'neutral';
     setStatusText('#connection-status span', connectionLost ? t('页面连接中断') : live.preview ? t('预览环境') : connected ? t('已连接') : approval ? t('等待管理员批准设备') : labels[live.state] || t('未连接'));
     $('#connection-status').title = $('#connection-status span').textContent;
 

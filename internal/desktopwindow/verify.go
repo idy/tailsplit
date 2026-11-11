@@ -261,14 +261,19 @@ func verifyLanguageLayouts(ctx context.Context, window *mygo.Window, directory, 
 					if (visible(update)) {
 						const bounds = update.getBoundingClientRect();
 						if (bounds.left < toggle.right || bounds.right > refresh.left || controls[controls.indexOf(update) + 1] !== refreshes[0]) throw new Error('update action is not immediately left of Refresh');
-						const iconLeft = refreshes[0].querySelector('svg').getBoundingClientRect().left;
-						if (Math.abs((bounds.left - toggle.right) - (iconLeft - bounds.right)) > 1) throw new Error('update action has unequal visible gaps');
+						const width = parseFloat(getComputedStyle(update, '::before').width);
+						const face = {left: bounds.left + (bounds.width - width) / 2, right: bounds.right - (bounds.width - width) / 2};
+						const track = document.querySelector('#desktop-controls button:not([hidden]) .mds-switch-track').getBoundingClientRect();
+						const ink = refreshes[0].querySelector('use').getBoundingClientRect();
+						const expected = parseFloat(getComputedStyle(document.querySelector('.header-actions')).getPropertyValue('--mds-titlebar-visual-gap'));
+						if (Math.abs(face.left - track.right - expected) > 1 || Math.abs(ink.left - face.right - expected) > 1) throw new Error('toolbar visible gaps are inconsistent');
+						if (bounds.left < toggle.right - .5 || refresh.left < bounds.right - .5) throw new Error('toolbar click targets overlap');
 					}
 					if (document.querySelector('#exit-label')) throw new Error('obsolete page-specific exit label remains');
 					const body = document.querySelector('#workspace-body'), content = body.querySelector('.app-page:not([hidden])');
 					const area = body.getBoundingClientRect(), column = content.getBoundingClientRect();
 					const maximum = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--content-max-width'));
-					const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--workspace-gutter'));
+					const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--mds-gutter'));
 					if (Math.abs(column.width - Math.min(maximum, body.clientWidth - 2 * gutter)) > 1) throw new Error('page has a different content width');
 					if (Math.abs(column.left - area.left - (body.clientWidth - column.width) / 2) > 1) throw new Error('page content is not centered in workspace');
 					if (area.top < rectangle.bottom || scrollY || document.documentElement.scrollHeight > innerHeight) throw new Error('document scroll reaches the titlebar');
@@ -279,9 +284,9 @@ func verifyLanguageLayouts(ctx context.Context, window *mygo.Window, directory, 
 					}
 					const family = selector => getComputedStyle(document.querySelector(selector)).fontFamily.split(',')[0].replace(/["']/g, '').trim();
 					const fonts = {brand: family('.brand-name'), title: family('#crumb-section'), button: family('#add-exit'),
-						select: family('#kill-switch-control .select-trigger'), body: family('body'), note: family('.connection-exit-caption'),
+						select: family('#kill-switch-control .mds-select-trigger'), body: family('body'), note: family('.connection-exit-caption'),
 						field_title: family('.field-label label'), dialog_title: family('dialog h2')};
-					const expected = {brand: 'Montserrat', title: 'Monda', button: 'Montserrat', select: 'Montserrat', body: 'Lato', note: 'Lato', field_title: 'Monda', dialog_title: 'Montserrat'};
+					const expected = {brand: 'Montserrat', title: 'Montserrat', button: 'Montserrat', select: 'Lato', body: 'Lato', note: 'Lato', field_title: 'Lato', dialog_title: 'Montserrat'};
 					for (const [role, name] of Object.entries(expected)) if (fonts[role] !== name) throw new Error('incorrect font for ' + role + ': ' + fonts[role]);
 					for (const selector of ['#raw-yaml', '#desktop-log-text']) if (!getComputedStyle(document.querySelector(selector)).fontFamily.includes('monospace')) throw new Error('technical text lost monospace');
 					return {page: '%s', language: window.TailSplitI18n.language, fonts, width: innerWidth, titlebar_height: rectangle.height, content_left: column.left, content_width: column.width,
