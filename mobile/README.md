@@ -56,6 +56,10 @@ state colours and terminal log style:
   buttons, menus and bottom sheets with a static TailSplit-blue scheme.
 - System fonts with Dynamic Type / font scale for all UI text; Montserrat only for
   top-level titles. English and Simplified Chinese.
+- The home network area shows Tailscale's nine-dot mark and native Tailscale text
+  above the Tailnets list. The vector geometry follows the
+  [official SVG](https://github.com/tailscale/tailscale/blob/main/client/web/src/assets/icons/tailscale-logo.svg)
+  and adapts to system label colours without a new image-rendering dependency.
 - Card lists use 24-unit continuous corners and a leading platform icon on every
   single-line item. iOS rows share a 56-unit default height and grow together for
   large text; switches, menus and labels are centered. Long values truncate;

@@ -13,6 +13,7 @@ import '../theme/tokens.dart';
 import 'common.dart';
 import 'native.dart';
 import 'node_picker.dart';
+import 'tailscale_heading.dart';
 
 /// First tab: the connection switch, the routing choice and the one exit.
 class ExitPage extends StatefulWidget {
@@ -68,6 +69,7 @@ class _ExitPageState extends State<ExitPage> {
       slivers: [
         const SliverToBoxAdapter(child: ProblemCard()),
         SliverToBoxAdapter(child: _ConnectionSection(app: app)),
+        const SliverToBoxAdapter(child: TailscaleHeading()),
         if (hasTailnets) SliverToBoxAdapter(child: _TailnetSection(app: app)),
         if (!hasTailnets || app.signIn != SignInPhase.idle)
           SliverToBoxAdapter(child: _AddTailnetSection(app: app)),

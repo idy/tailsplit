@@ -46,6 +46,13 @@
       "css": ".ds-text-action{min-width:44px;min-height:44px;padding:0 12px;border:0;background:transparent;color:#2f62d5;font:600 17px system-ui}.ds-text-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}.ds-text-action:disabled{opacity:.45}@media(prefers-color-scheme:dark){.ds-text-action{color:#5b8cf5}}"
     },
     {
+      "name": "Tailscale Identity — illustrative translation",
+      "kind": "custom",
+      "description": "Official nine-dot geometry and opacity, beside native system text. Appears above the Tailnets list and follows semantic label colour.",
+      "html": "<div class=\"ds-tailnet-brand\"><svg width=\"24\" height=\"24\" viewBox=\"0 0 8 8\" fill=\"currentColor\" aria-hidden=\"true\"><g opacity=\".2\"><circle cx=\"1\" cy=\"1\" r=\"1\"/><circle cx=\"4\" cy=\"1\" r=\"1\"/><circle cx=\"7\" cy=\"1\" r=\"1\"/><circle cx=\"1\" cy=\"7\" r=\"1\"/><circle cx=\"7\" cy=\"7\" r=\"1\"/></g><circle cx=\"1\" cy=\"4\" r=\"1\"/><circle cx=\"4\" cy=\"4\" r=\"1\"/><circle cx=\"7\" cy=\"4\" r=\"1\"/><circle cx=\"4\" cy=\"7\" r=\"1\"/></svg><span>Tailscale</span></div>",
+      "css": ".ds-tailnet-brand{display:flex;align-items:center;gap:10px;padding:4px 20px 10px;color:CanvasText;font:600 17px system-ui}.ds-tailnet-brand svg{flex-shrink:0}"
+    },
+    {
       "name": "Native Group — structural illustration",
       "kind": "card",
       "description": "Single-line card rows with a shared 56-unit default height, required leading icons and 24-unit corners. HTML semantic colours and icons illustrate the structure; the app uses platform controls.",
