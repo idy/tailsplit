@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-10T13:41:09.883091Z",
+  "title": "Design System: TailSplit Native Mobile",
+  "extensions": {
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Native page large title",
+        "purpose": "Montserrat for large page titles; Chinese uses platform glyph fallback. Units are base-scale Flutter logical units, represented as px for tooling."
+      },
+      "title": {
+        "displayName": "Explicit content title",
+        "purpose": "Empty-state title; other list metrics remain native widget defaults."
+      },
+      "body": {
+        "displayName": "Explanation",
+        "purpose": "Explicit empty-state explanatory text, with native system family."
+      },
+      "label": {
+        "displayName": "Grouped-list header",
+        "purpose": "Native inset-group header in secondary label color; not a decorative eyebrow."
+      },
+      "code": {
+        "displayName": "iOS diagnostic text",
+        "purpose": "Selectable wrapped Menlo logs; Android branch uses monospace and is unverified."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Cupertino Filled Action — illustrative translation",
+      "kind": "button",
+      "refersTo": "primary-button",
+      "description": "HTML illustration of CupertinoButton.filled, not a UIKit screenshot or native component implementation. Native defaults and feedback remain platform-owned.",
+      "html": "<button class=\"ds-primary\">Add exit</button>",
+      "css": ".ds-primary{width:100%;background:#2f62d5;color:white;border:0;border-radius:14px;padding:16px;font:600 17px system-ui}.ds-primary:focus-visible{outline:2px solid currentColor;outline-offset:2px}.ds-primary:disabled{opacity:.45}@media(prefers-color-scheme:dark){.ds-primary{background:#5b8cf5}}"
+    },
+    {
+      "name": "Text Action — illustrative translation",
+      "kind": "button",
+      "description": "Row/banner action. HTML focus treatment is a panel affordance, not an extracted native focus token.",
+      "html": "<button class=\"ds-text-action\">Reconnect</button>",
+      "css": ".ds-text-action{min-width:44px;min-height:44px;padding:0 12px;border:0;background:transparent;color:#2f62d5;font:600 17px system-ui}.ds-text-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}.ds-text-action:disabled{opacity:.45}@media(prefers-color-scheme:dark){.ds-text-action{color:#5b8cf5}}"
+    },
+    {
+      "name": "Native Group — structural illustration",
+      "kind": "card",
+      "description": "Single-line card rows with required leading icons and 24-unit corners. HTML semantic colours and icons illustrate the structure; the app uses platform controls.",
+      "html": "<section class=\"ds-group\"><div><svg width=\"21\" height=\"21\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M7 4v16M7 10h10m-4-4 4 4-4 4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\"/></svg><span class=\"ds-title\">Routing</span><span class=\"ds-value\">Rule-based</span></div></section>",
+      "css": ".ds-group{background:Canvas;color:CanvasText;font:17px system-ui;border-radius:24px;overflow:hidden}.ds-group div{display:flex;align-items:center;gap:12px;padding:10px 20px;white-space:nowrap}.ds-group svg{flex-shrink:0;opacity:.65}.ds-title{min-width:0;overflow:hidden;text-overflow:ellipsis}.ds-value{margin-inline-start:auto;opacity:.6}"
+    },
+    {
+      "name": "Node Selection — illustrative translation",
+      "kind": "custom",
+      "description": "Single-line node row: green check when selected, device icon otherwise, with trailing reachability. No persistent selected-row fill.",
+      "html": "<button class=\"ds-node\" aria-pressed=\"true\"><span class=\"ds-check-slot\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M3 10l4 4L17 4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/></svg></span><strong>tokyo-vps</strong><span class=\"ds-online\">Online</span></button>",
+      "css": ".ds-node{display:flex;align-items:center;gap:12px;width:100%;padding:12px 20px;background:transparent;color:CanvasText;border:0;text-align:left;font:17px system-ui}.ds-check-slot{width:22px;color:#167536}.ds-node strong{font-weight:600}.ds-online{margin-left:auto;font-size:15px;font-variant-numeric:tabular-nums;color:#3a8154}.ds-node:focus-visible{outline:2px solid currentColor;outline-offset:2px}@media(prefers-color-scheme:dark){.ds-check-slot{color:#30d158}.ds-online{color:#7ab58b}} .ds-node{white-space:nowrap}.ds-node strong{min-width:0;overflow:hidden;text-overflow:ellipsis}.ds-check-slot{flex-shrink:0}"
+    },
+    {
+      "name": "Diagnostic Terminal — illustrative translation",
+      "kind": "custom",
+      "refersTo": "terminal",
+      "description": "Fixed dark terminal palette with wrapped selectable diagnostic text. Simulated content remains explicitly labeled.",
+      "html": "<div class=\"ds-terminal\"><span class=\"ds-stamp\">17:16:49</span> <b>INFO</b> <span class=\"ds-source\">app</span> Connected (simulated).</div>",
+      "css": ".ds-terminal{background:#272a32;color:#e5e5ea;border-radius:16px;padding:12px 14px 14px;font:12px/1.6 Menlo,monospace;overflow-wrap:anywhere;user-select:text}.ds-stamp{color:#aeb4c0}.ds-terminal b{font-weight:600;color:#7ab58b}.ds-source{color:#dca0e6}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Desktop Configuration Panel, Native on Phone",
+    "overview": "TailSplit retains the user-pinned desktop identity: neutral grouped surfaces, blue actions, text-backed semantic states, a plain green node check, and a fixed deep-gray diagnostic terminal. This mobile boundary implements one embedded Tailscale device with one selected exit node. Native phone controls carry that identity; the desktop web typography and geometry are not transplanted into touch controls.\n\nThe implementation uses native UIKit Liquid Glass through `adaptive_platform_ui` for supported iOS controls on iOS 26+, with Cupertino fallback. The page content, inset grouped lists and node sheet include Flutter Cupertino widgets. Material 3 implementations also exist in source; Android has not been built or tested. This record describes the phone adaptation, not a new identity for TailSplit or a desktop redesign.",
+    "keyCharacteristics": [
+      "System appearance and native semantic surfaces.",
+      "Native tab, toolbar, switch, segmented and menu controls where implemented.",
+      "System text for controls and content, Montserrat for large page titles.",
+      "Explicit connection state and staged node selection.",
+      "A diagnostic terminal with a constant dark palette."
+    ],
+    "rules": [
+      {
+        "name": "The Native Appearance Rule",
+        "body": "Resolve semantic platform surfaces and labels in context; reserve TailSplit's explicit colors for actions, state and the terminal.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Rule",
+        "body": "Keep reachability, saved node choice and VPN connection distinct. A green reachable-node icon is not evidence that the VPN is connected.",
+        "section": "colors"
+      },
+      {
+        "name": "The Native Text Rule",
+        "body": "Use the system face for controls, sheet navigation and content; reserve Montserrat for large page titles. An inline toolbar title is native text. Preserve scaling supplied by the text widgets without claiming tested large-text layouts.",
+        "section": "typography"
+      },
+      {
+        "name": "The Native Material Rule",
+        "body": "Keep translucency in navigation and the reconnect bar; use native grouped surfaces for ordinary content.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve the desktop's blue, semantic state and diagnostic-terminal identity through native roles.",
+      "Do use native semantic surfaces and system content text in both appearances.",
+      "Do distinguish connection state, reachability and a staged node choice with readable labels.",
+      "Do give every card-list row a platform icon, keep rows single-line and put supporting text below the group. Keep the green selected-node check and explicit confirmation.",
+      "Do preserve English/Chinese labels and source text scaling without claiming unverified accessibility conformance.",
+      "Do hide underlying native page toolbars while the picker sheet owns navigation, and disable tickers in inactive tabs."
+    ],
+    "donts": [
+      "Don't introduce the desktop multi-exit list or a giant VPN power-button hero into this single-exit native adaptation.",
+      "Don't add persistent selected-node row fill, fabricated latency, or a Ping action unsupported by the mobile data plane.",
+      "Don't equate simulated connected logs with verified account authorization or real VPN traffic.",
+      "Don't infer Android, tablet, large-text or older-iOS runtime verification from source branches."
+    ]
+  }
+}

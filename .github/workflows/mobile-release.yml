@@ -1,0 +1,90 @@
+name: iOS release (Termitoc)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload the signed IPA to Termitoc App Store Connect / internal TestFlight
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tailsplit-ios-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: mobile
+
+jobs:
+  ios:
+    name: Sign iOS with TERMITOC PTE. LTD.
+    # Only reviewed code on the protected default branch may use release keys.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      && github.ref_protected
+    runs-on: macos-26
+    timeout-minutes: 150
+    environment: mobile-release
+    env:
+      LANG: en_US.UTF-8
+      SINGBOX_PYTHON: python3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require the LetSolo Termitoc credential
+        env:
+          BGL4WMWD3W_APPLE_CREDENTIALS: ${{ secrets.BGL4WMWD3W_APPLE_CREDENTIALS }}
+        run: |
+          test -n "$BGL4WMWD3W_APPLE_CREDENTIALS" || {
+            printf '%s\n' 'Configure BGL4WMWD3W_APPLE_CREDENTIALS in the mobile-release environment, using the Termitoc account from idy/letsolo.' >&2
+            exit 1
+          }
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
+        with:
+          flutter-version: '3.47.2'
+          channel: stable
+      - name: Install release tools
+        run: |
+          python3 -m pip install 'codemagic-cli-tools==0.70.2'
+          gem install --user-install cocoapods -v 1.17.0 --no-document
+          ruby -r rubygems -e 'puts File.join(Gem.user_dir, "bin")' >> "$GITHUB_PATH"
+      - name: Resolve packages and validate
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter analyze --no-pub
+          flutter test --no-pub
+          python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Build the selected Apple core
+        run: >-
+          dart run sing_box_flutter build --target apple --apple-platform ios
+          --work-dir "$RUNNER_TEMP/sing-box-flutter-work"
+      - name: Install iOS pods
+        run: |
+          flutter precache --ios
+          pod install --project-directory=ios
+      - name: Sign, verify organization, and optionally publish
+        env:
+          # Same JSON schema and team-specific name as LetSolo's release-apps.yml.
+          BGL4WMWD3W_APPLE_CREDENTIALS: ${{ secrets.BGL4WMWD3W_APPLE_CREDENTIALS }}
+          PUBLISH_IOS: ${{ inputs.publish }}
+        run: |
+          args=()
+          if [[ "$PUBLISH_IOS" == true ]]; then args+=(--publish); fi
+          python3 -I -B tool/release_ios.py "${args[@]}"
+      - name: Retain the organization-signed IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tailsplit-ios-termitoc-${{ github.run_number }}
+          path: mobile/build/ios/ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 7

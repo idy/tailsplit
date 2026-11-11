@@ -232,6 +232,16 @@ opens the configuration window with automatic connection disabled for that launc
 | `packaging/`, `scripts/` | Installers, release tools, and development helpers |
 | `site/` | Public website |
 | `tests/` | Installer, packaging, and website checks |
+| `mobile/` | Flutter iOS/Android client with a single Tailscale exit |
+
+The [mobile app](mobile/README.md) uses `sing_box_flutter` for the system VPN and
+implements Tailscale sign-in in Dart. It has native platform controls, English
+and Chinese, and a separate mobile build workflow. iOS distribution is configured
+for the LetSolo **TERMITOC PTE. LTD.** organization; see
+[mobile CI and publication](mobile/docs/release.md) for credentials, capabilities
+and the manual IPA/TestFlight workflow. Real-device VPN and signed store
+publication remain separate verification steps; mobile installers are not part
+of the desktop release assets above.
 
 ## Documentation
 

@@ -1,0 +1,50 @@
+name: tailsplit_mobile
+description: "TailSplit for iOS and Android: one Tailscale exit, sing-box routing rules."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.2
+
+dependencies:
+  adaptive_platform_ui: ^1.0.2
+  crypto: ^3.0.8
+  cryptography: ^2.9.0
+  cupertino_icons: ^2.0.0
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  http2: ^3.1.0
+  intl: ^0.20.3
+  path_provider: ^2.1.6
+  sing_box_flutter:
+    git:
+      url: https://github.com/idy/sing-box-flutter.git
+      ref: 05872f4558823bc19b5c6767c853504a9cedd544
+  url_launcher: ^6.3.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  config:
+    enable-swift-package-manager: false
+  assets:
+    - assets/rules/supplemental.txt
+  fonts:
+    - family: Montserrat
+      fonts:
+        - asset: assets/fonts/Montserrat.ttf
+
+# Native sing-box core selection for sing_box_flutter 0.3.0. Rebuild the core
+# after changing it: dart run sing_box_flutter build --target apple|android
+sing_box_flutter:
+  core:
+    inbounds: [tun]
+    outbounds: [direct]
+    endpoints: [tailscale]
+    dns: [local, udp, tcp, fakeip, tailscale]

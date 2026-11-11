@@ -1,0 +1,49 @@
+PODS:
+  - adaptive_platform_ui (0.1.0):
+    - Flutter
+  - Flutter (1.0.0)
+  - foldable (1.0.5):
+    - Flutter
+  - sing_box_flutter (0.1.0):
+    - sing_box_flutter/Plugin (= 0.1.0)
+  - sing_box_flutter/Core (0.1.0)
+  - sing_box_flutter/PacketTunnel (0.1.0):
+    - sing_box_flutter/Core
+    - sing_box_flutter/Shared
+  - sing_box_flutter/Plugin (0.1.0):
+    - Flutter
+    - sing_box_flutter/Shared
+  - sing_box_flutter/Shared (0.1.0)
+  - url_launcher_ios (0.0.1):
+    - Flutter
+
+DEPENDENCIES:
+  - adaptive_platform_ui (from `.symlinks/plugins/adaptive_platform_ui/ios`)
+  - Flutter (from `Flutter`)
+  - foldable (from `.symlinks/plugins/foldable/ios`)
+  - sing_box_flutter (from `.symlinks/plugins/sing_box_flutter/ios`)
+  - sing_box_flutter/PacketTunnel (from `.symlinks/plugins/sing_box_flutter/ios`)
+  - url_launcher_ios (from `.symlinks/plugins/url_launcher_ios/ios`)
+
+EXTERNAL SOURCES:
+  adaptive_platform_ui:
+    :path: ".symlinks/plugins/adaptive_platform_ui/ios"
+  Flutter:
+    :path: Flutter
+  foldable:
+    :path: ".symlinks/plugins/foldable/ios"
+  sing_box_flutter:
+    :path: ".symlinks/plugins/sing_box_flutter/ios"
+  url_launcher_ios:
+    :path: ".symlinks/plugins/url_launcher_ios/ios"
+
+SPEC CHECKSUMS:
+  adaptive_platform_ui: df7a9b2e8063dd0e8eb0fa0bcc9467780f608f86
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  foldable: 1d5f77688e44e3754f129cecaa08403fcb75f612
+  sing_box_flutter: f828d53874cc19fff8418f2273f7f2207a4a91fa
+  url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
+
+PODFILE CHECKSUM: 8767b114804797aefb502a86e75a2eb99753f223
+
+COCOAPODS: 1.17.0
