@@ -223,15 +223,27 @@ func (c Config) WithRulesCacheOrigin(origin Config) Config {
 }
 
 func Load(path string) (Config, error) {
-	return loadConfig(path, true)
+	return LoadWithBase(path, "")
+}
+
+// LoadWithBase loads an immutable document while resolving relative paths from
+// its original directory. An empty base keeps the ordinary document directory.
+func LoadWithBase(path, base string) (Config, error) {
+	return loadConfig(path, base, true)
 }
 
 // LoadDraft validates a candidate without granting it ownership of a legacy cache.
 func LoadDraft(path string) (Config, error) {
-	return loadConfig(path, false)
+	return LoadDraftWithBase(path, "")
 }
 
-func loadConfig(path string, saved bool) (Config, error) {
+// LoadDraftWithBase preserves LoadDraft's schema and size checks and cache policy
+// while allowing captured bytes to live outside their original directory.
+func LoadDraftWithBase(path, base string) (Config, error) {
+	return loadConfig(path, base, false)
+}
+
+func loadConfig(path, base string, saved bool) (Config, error) {
 	stream, err := os.Open(path)
 	if err != nil {
 		return Config{}, err
@@ -254,7 +266,10 @@ func loadConfig(path string, saved bool) (Config, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return Config{}, errors.New("config.yaml must contain exactly one YAML document")
 	}
-	base, err := filepath.Abs(filepath.Dir(path))
+	if base == "" {
+		base = filepath.Dir(path)
+	}
+	base, err = filepath.Abs(base)
 	if err != nil {
 		return Config{}, err
 	}

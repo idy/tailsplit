@@ -131,6 +131,9 @@ func prepareTailnet(ctx context.Context, config Config, callback func(Status), w
 			if err != nil || done {
 				return err
 			}
+			if approvalErr := session.machineApprovalError(); approvalErr != nil {
+				return approvalErr
+			}
 			if !requireExit {
 				return errors.New("the device did not become ready or report its expected Tailnet identity")
 			}
@@ -162,6 +165,23 @@ type preflightSession struct {
 	mu       sync.Mutex
 	latest   map[string]Status
 	finished bool
+}
+
+// Device approval is separate from browser authorization. Keep the bounded
+// readiness wait, but explain the administrator action when that wait expires.
+func (s *preflightSession) machineApprovalError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, exit := range s.required {
+		if s.latest[exit.id].BackendState == "NeedsMachineAuth" {
+			id := exit.id
+			if id == "" {
+				id = MainExit
+			}
+			return fmt.Errorf("exit %q is waiting for Tailnet administrator approval; approve this device in the Tailscale admin console, then retry; TUN was not enabled", id)
+		}
+	}
+	return nil
 }
 
 func (s *preflightSession) report(status Status) bool {

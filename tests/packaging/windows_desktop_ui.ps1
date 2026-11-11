@@ -145,6 +145,7 @@ function Test-NativeCanvas([IntPtr]$Window, [int]$Light) {
 # Connection nav is also named 连接, so it must never be used as a connect action.
 $UiNames = @{
     '连接'='Connect'; '连接 TailSplit'='Connect TailSplit'; '断开'='Disconnect';
+    '首页'='Home'; '开启连接'='Turn on connection';
     '连接页面'=@('出口节点','Exit nodes','连接','Connection'); '出口节点页面'=@('出口节点','Exit nodes'); '日志'='Logs'; '设置'='Settings'; '网络'='Network';
     '登录 Tailscale'='Sign in to Tailscale'; '添加出口'='Add exit'; 'Tailscale 设备操作'='Tailscale device actions';
     '退出登录…'='Sign out…'; '刷新'='Refresh'; '代理监听地址'='Proxy listen address';
@@ -258,6 +259,12 @@ try {
     # Detect the navigation contract from real controls, including builds used
     # by upgrade tests; a version string cannot identify a fixture build's UI.
     $pageNavigation = [bool]((Find-Button $automation '连接 TailSplit') -or (Find-Button $automation '设置'))
+    if (Find-Button $automation '首页') {
+        # Home is the default in current builds. Verify its direct-only switch,
+        # then enter Exit Nodes for the remaining legacy-compatible UI checks.
+        Wait-Until { $button=Find-Button $automation '开启连接'; $button -and $button.Current.IsEnabled } 'The Home direct-config connect action is unavailable.' | Out-Null
+        Invoke-Button $automation '出口节点页面'
+    }
     $connectName = if ($pageNavigation) { '连接 TailSplit' } else { '连接' }
     Wait-Until { $button=Find-Button $automation $connectName; $button -and $button.Current.IsEnabled } 'The direct-config connect action is unavailable.' | Out-Null
     $deviceAction = if (Find-Button $automation '添加出口') { '添加出口' } else { '登录 Tailscale' }

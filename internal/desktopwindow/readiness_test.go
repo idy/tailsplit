@@ -89,6 +89,7 @@ func TestProbePageReadiness(t *testing.T) {
 
 func TestLoadFailureCompletesBeforeDestroy(t *testing.T) {
 	w := &Window{done: make(chan struct{})}
+	w.visible.Store(true)
 	load := newPageLoad()
 	defer load.cancel()
 	w.load = load
@@ -109,6 +110,13 @@ func TestLoadFailureCompletesBeforeDestroy(t *testing.T) {
 	}
 	if !errors.Is(w.Show(), errWebViewReadiness) {
 		t.Fatal("Show did not report the completed startup failure")
+	}
+	if !w.WantsVisible() {
+		t.Fatal("asynchronous failure discarded the user's visibility intent")
+	}
+	w.quitting.Store(true)
+	if w.WantsVisible() {
+		t.Fatal("shutdown retained a browser fallback request")
 	}
 }
 

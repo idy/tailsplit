@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/breml/rootcerts v0.3.8
+	github.com/ebitengine/purego v0.11.1
 	github.com/egoist/mygo v0.8.3
 	github.com/miekg/dns v1.1.72
 	github.com/sagernet/bbolt v0.0.0-20260915102804-500ee1e84832
@@ -33,7 +34,6 @@ require (
 	github.com/database64128/netx-go v0.1.1 // indirect
 	github.com/database64128/tfo-go/v2 v2.3.2 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
-	github.com/ebitengine/purego v0.11.1 // indirect
 	github.com/florianl/go-nfqueue/v2 v2.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect

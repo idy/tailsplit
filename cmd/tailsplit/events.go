@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
+	"io"
+	"time"
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/appservice"
@@ -12,16 +13,99 @@ import (
 	singlog "github.com/sagernet/sing-box/log"
 )
 
+type eventWrite struct {
+	data   []byte
+	result chan error
+}
+
 type eventStream struct {
-	mu          sync.Mutex
-	encoder     *json.Encoder
+	ctx         context.Context
+	cancel      context.CancelFunc
+	writes      chan eventWrite
+	done        chan struct{}
+	err         error // Published by closing done.
 	captureLogs bool
 }
 
+func newEventStream(ctx context.Context, out io.Writer, captureLogs bool) *eventStream {
+	ctx, cancel := context.WithCancel(ctx)
+	s := &eventStream{ctx: ctx, cancel: cancel, writes: make(chan eventWrite), done: make(chan struct{}), captureLogs: captureLogs}
+	go s.writeEvents(out)
+	return s
+}
+
+// close releases senders without closing caller-owned output or waiting for an
+// arbitrary Writer. At most this stream's single worker can remain in Write;
+// there is no event queue and no goroutine created for an individual send.
+func (s *eventStream) close() { s.cancel() }
+
+func (s *eventStream) writeEvents(out io.Writer) {
+	defer close(s.done)
+	for {
+		select {
+		case <-s.ctx.Done():
+			s.err = s.ctx.Err()
+			return
+		case write := <-s.writes:
+			if err := s.ctx.Err(); err != nil {
+				s.err = err
+				return
+			}
+			n, err := out.Write(write.data)
+			if err == nil && n != len(write.data) {
+				err = io.ErrShortWrite
+			}
+			if err != nil {
+				s.err = err
+				return
+			}
+			write.result <- nil
+		}
+	}
+}
+
+func (s *eventStream) outputError() error {
+	select {
+	case <-s.done:
+		return s.err
+	default:
+		return s.ctx.Err()
+	}
+}
+
 func (s *eventStream) send(event any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.encoder.Encode(event)
+	if err := s.outputError(); err != nil {
+		return err
+	}
+	// Encode before handing off ownership: cancellation can release this sender
+	// while Write is still blocked, so the worker must retain only its own bytes.
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	write := eventWrite{data: append(data, '\n'), result: make(chan error, 1)}
+	select {
+	case <-s.ctx.Done():
+		return s.outputError()
+	case <-s.done:
+		return s.err
+	case s.writes <- write:
+	}
+	select {
+	case err := <-write.result:
+		return err
+	case <-s.done:
+		return s.err
+	case <-s.ctx.Done():
+		// Keep an already completed write's result, including a real I/O error,
+		// when cancellation and its acknowledgement become ready together.
+		select {
+		case err := <-write.result:
+			return err
+		default:
+			return s.outputError()
+		}
+	}
 }
 
 func (s *eventStream) WriteMessage(_ singlog.Level, message string) {
@@ -108,6 +192,31 @@ func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.
 			_ = stream.send(status)
 		})
 	}()
-	<-ctx.Done()
-	return nil
+	return streamTraffic(ctx, engine.Traffic, stream)
+}
+
+// The same event stream is forwarded unchanged by appservice, including when
+// the engine runs in the privileged service. Sample only live traffic sessions.
+func streamTraffic(ctx context.Context, sample func() tailsplit.TrafficSnapshot, stream *eventStream) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		if err := stream.send(struct {
+			Event   string                    `json:"event"`
+			Traffic tailsplit.TrafficSnapshot `json:"traffic"`
+		}{Event: "traffic", Traffic: sample()}); err != nil {
+			if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+				return nil
+			}
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }

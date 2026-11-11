@@ -48,7 +48,7 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 /* Only the MyGo host uses CSS drag regions; existing native hosts keep theirs. */
 [data-window-engine="mygo"] .titlebar { --app-region: drag; }
 [data-window-engine="mygo"] .titlebar :is(button, a, input, select, textarea, [role="button"], [role="combobox"]) { --app-region: no-drag; }
-/* Exit Nodes provides keyboard navigation home; branding stays out of Tab order. */
+/* The Home navigation item provides keyboard access; branding stays out of Tab order. */
 .brand:focus { outline: none; }
 .window-controls button:focus-visible { outline-offset: -4px; }
 /* Settings expands in place into its own submenu, hung from a guide line under its icon. */
@@ -73,6 +73,91 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .workspace-body > .notice { flex-shrink: 0; margin-top: 16px; }
 .app-page { flex-shrink: 0; padding-block: 20px; }
 .danger { color: var(--mds-error); }
+/* Home explains saved routing without pretending to measure live traffic. */
+.home-page { max-width: 900px; padding-block: 36px 24px; }
+.home-connection { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 8px 4px 28px; }
+.home-connection-copy { min-width: 0; }
+.home-connection h2 { font-size: 1.5rem; font-weight: 600; line-height: 1.35; letter-spacing: -.02em; }
+.home-connection p { margin-top: 10px; max-width: 60ch; color: var(--mds-muted); overflow-wrap: anywhere; }
+.home-connection .home-setup { flex: 0 0 auto; min-height: 40px; min-width: 100px; }
+.home-toggle-control { display: grid; justify-items: center; gap: 6px; flex: 0 0 auto; font-size: var(--mds-text-note); color: var(--mds-muted); }
+.home-toggle { align-items: center; justify-content: center; width: 56px; height: 44px; }
+.home-toggle[aria-busy="true"] > .mds-switch-track { background: var(--mds-warn); }
+.home-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; list-style: none; margin: 0 0 36px; padding: 16px 0; border-block: 1px solid var(--mds-line); color: var(--mds-muted); }
+.home-steps li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--mds-text-note); }
+.home-step-mark { display: grid; flex: 0 0 auto; place-items: center; width: 24px; height: 24px; border: 1px solid var(--mds-line-strong); border-radius: 50%; font-variant-numeric: tabular-nums; }
+.home-step-mark .icon { display: none; width: 14px; height: 14px; }
+.home-steps li[aria-current="step"] { color: var(--mds-ink); font-weight: 600; }
+.home-steps li[aria-current="step"] .home-step-mark { background: var(--mds-accent); border-color: var(--mds-accent); color: var(--mds-on-accent); }
+.home-steps li.complete .home-step-mark { border-color: var(--mds-good); color: var(--mds-good); }
+.home-steps li.complete .home-step-mark > span { display: none; }
+.home-steps li.complete .home-step-mark .icon { display: block; }
+.home-routing { margin: 12px 0 0; }
+.home-routing-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.home-routing h3 { font-size: var(--mds-text-heading); font-weight: 500; }
+.home-routing-heading .link-button { display: inline-flex; align-items: center; gap: 4px; font-size: var(--mds-text-note); }
+.home-routing-heading .icon { width: 12px; height: 12px; }
+/* After GizMoth's serial map: this device fans out to each saved destination. */
+.split-map { display: grid; grid-template-columns: minmax(96px, max-content) minmax(56px, 104px) minmax(0, 1fr); align-items: center; column-gap: 4px; margin-block: 24px 20px; }
+.map-host { display: grid; justify-items: center; gap: 2px; min-width: 0; padding-inline: 4px; text-align: center; }
+.map-host .icon { width: 32px; height: 32px; margin-bottom: 6px; color: var(--mds-ink-secondary); }
+.map-host strong { font-family: var(--mds-font-heading); font-size: var(--mds-text-body); font-weight: 500; }
+.map-host span { color: var(--mds-muted); font-size: var(--mds-text-note); overflow-wrap: anywhere; }
+.map-wires { display: grid; min-width: 0; }
+.map-wires svg { grid-area: 1 / 1; display: block; width: 100%; overflow: visible; }
+.map-wires path { fill: none; stroke: var(--mds-faint); stroke-width: 1.25; stroke-dasharray: 2 4; stroke-linecap: round; vector-effect: non-scaling-stroke; transition: stroke .15s, stroke-width .15s; }
+.map-wires path.tone-warn { stroke: var(--mds-warn); }
+.map-wires path.active { stroke: var(--mds-ink); stroke-width: 1.75; }
+/* Confirmed routes remain solid; measured traffic adds directional pulses. */
+.map-wires-live { clip-path: inset(0 100% 0 0); transition: clip-path .2s ease-out; }
+.map-wires-live path { stroke: var(--mds-good); stroke-width: 1.25; stroke-dasharray: none; }
+.map-wires-live path.active { stroke: var(--mds-good); stroke-width: 2.5; }
+.split-map[data-connected="true"] .map-wires-live { clip-path: inset(0 -4px 0 0); transition: clip-path .7s cubic-bezier(.16, 1, .3, 1); }
+.map-wires-flow { pointer-events: none; }
+.map-wires-flow .map-flow { stroke: var(--mds-good); stroke-width: 3.5; stroke-dasharray: 2 14; opacity: 0; animation: map-traffic 1.2s linear infinite paused; }
+.map-wires-flow .map-flow-download { animation-direction: reverse; }
+.map-wires-flow .map-flow[data-active="true"] { opacity: 1; animation-play-state: running; }
+.split-map[data-flow-paused="true"] .map-flow, #page-home[hidden] .map-flow { animation-play-state: paused; }
+@keyframes map-traffic { to { stroke-dashoffset: -32; } }
+@media (prefers-reduced-motion: reduce) {
+  .map-wires-flow .map-flow { animation: none; }
+}
+.map-routes { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.map-routes li { min-width: 0; height: 44px; }
+.map-route { position: relative; display: grid; grid-template-columns: max-content minmax(0, max-content); grid-template-rows: auto auto; align-content: center; column-gap: 8px; width: fit-content; max-width: 100%; height: 100%; min-width: 0; padding: 4px 10px 4px 20px; border: 0; border-radius: 8px; background: transparent; color: var(--mds-ink); font: inherit; line-height: 1.4; text-align: left; }
+.map-route::before { content: ""; position: absolute; top: 50%; left: 4px; box-sizing: border-box; width: 8px; height: 8px; margin-top: -4px; border: 1.5px solid var(--mds-faint); border-radius: 50%; }
+.map-route.tone-ok::before { border-color: var(--mds-good); background: var(--mds-good); }
+.map-route.tone-warn::before { border-color: var(--mds-warn); background: var(--mds-warn); }
+.map-route strong, .map-route small { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.map-route strong { grid-column: 1 / -1; grid-row: 1; width: 0; min-width: 100%; font-family: var(--mds-font-heading); font-size: var(--mds-text-body); font-weight: 500; }
+.map-route small { grid-column: 2; grid-row: 2; color: var(--mds-muted); font-size: var(--mds-text-note); }
+.map-rates { grid-column: 1; grid-row: 2; display: flex; align-items: center; gap: 8px; align-self: center; justify-self: start; color: var(--mds-ink-secondary); font-size: var(--mds-text-note); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.map-rate { display: inline-flex; align-items: center; gap: 4px; }
+.map-rate .icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--mds-muted); }
+.map-rate-down .icon { transform: rotate(180deg); }
+.map-route:hover, .map-route.active { background: var(--mds-hover); }
+@media (max-width: 860px) {
+  .home-page { padding-top: 24px; }
+  .home-steps { gap: 12px 8px; }
+  .home-steps li { flex-direction: column; align-items: flex-start; }
+  .split-map { grid-template-columns: minmax(88px, max-content) minmax(40px, 88px) minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .home-connection { gap: 12px; }
+  .home-connection h2 { font-size: 1.25rem; }
+  .home-toggle { width: 56px; }
+  .home-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .home-steps li { flex-direction: row; }
+  .split-map { grid-template-columns: 72px 32px minmax(0, 1fr); margin-top: 16px; }
+  .map-host .icon { width: 28px; height: 28px; }
+  .map-route { padding-right: 8px; }
+}
+@media (forced-colors: active) {
+  .map-wires path, .map-wires-live path { stroke: CanvasText; }
+  .map-route::before { border-color: CanvasText; }
+  .map-route.tone-ok::before, .map-route.tone-warn::before { background: CanvasText; }
+  .home-toggle-track { border: 1px solid ButtonText; }
+}
 /* Exits read like a provider list: one card, one device per two-line row. */
 /* The page owns vertical scrolling; this card only clips its rounded edges. */
 .exit-item { display: flex; align-items: center; gap: 8px; min-height: 52px; padding-right: 12px; border-top: 1px solid var(--mds-line); }
@@ -235,6 +320,11 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .language-control select { width: auto; min-width: 112px; max-width: 180px; font-size: var(--mds-text-note); }
 .section-heading p, .field-label p, .desktop-hint { overflow-wrap: anywhere; }
 :lang(en) .action-buttons { flex-wrap: wrap; justify-content: flex-end; margin-inline-start: auto; }
+/* Product-specific neutral setup and success states extend Magpie notices. */
+#connection-setup:not([data-tone="error"]) { --mds-notice-ink: var(--mds-ink); --mds-notice-detail: var(--mds-muted); --mds-notice-line: var(--mds-line-strong); --mds-notice-bg: var(--mds-surface); }
+#notice[data-tone="good"] { --mds-notice-ink: var(--mds-good); --mds-notice-detail: var(--mds-good-ink); --mds-notice-line: var(--mds-line-strong); --mds-notice-bg: var(--mds-surface); }
+.notice-actions { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+@media (max-width: 860px) { :is(#notice, #connection-setup) { flex-wrap: wrap; } .notice-actions { flex-shrink: 1; } }
 
 .editor-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); gap: var(--mds-gap); align-items: start; padding-bottom: 20px; }
 .editor-layout.raw-mode { display: block; }
