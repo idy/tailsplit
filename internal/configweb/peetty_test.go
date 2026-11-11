@@ -305,6 +305,26 @@ func TestPeettyDoesNotLoadOrReplaceCacheThroughDirectorySymlink(t *testing.T) {
 	}
 }
 
+func TestPeettySupportedDOMConstructionSurface(t *testing.T) {
+	for _, test := range []struct {
+		code    string
+		allowed bool
+	}{
+		{`document.createElement("div");document.createElementNS(namespace,"svg")`, true},
+		{`window.document.createElement(tag)`, false},
+		{`var make=document.createElement;make(tag)`, false},
+		{`var make=ownerDocument["createElement"];make(tag)`, false},
+		{`document.createElement("div").cloneNode(true)`, false},
+		{`document.createElement("div");target.innerHTML=markup`, false},
+		{`document.createElement("div");frame.srcdoc=markup`, false},
+		{`document.createElement("div");new DOMParser().parseFromString(markup,"text/html")`, false},
+	} {
+		if allowed := supportedPeettyDOMConstruction([]byte(test.code)); allowed != test.allowed {
+			t.Errorf("construction support = %v, want %v: %s", allowed, test.allowed, test.code)
+		}
+	}
+}
+
 func TestPeettyRejectsUntrackedHostCreation(t *testing.T) {
 	for _, replacement := range []string{
 		`window.document.createElement("peetty-companion")`,
@@ -313,6 +333,16 @@ func TestPeettyRejectsUntrackedHostCreation(t *testing.T) {
 		`document.createElement("peetty-companion");globalThis.document.createElement("peetty-companion")`,
 		`document.createElement("peetty-companion");window.document.createElement('peetty-companion')`,
 		`document.createElement("peetty-companion");var tag="peetty-companion";window.document.createElement(tag)`,
+		`document.createElement("peetty-companion").cloneNode(true)`,
+		`var template=document.createElement("peetty-companion");template.cloneNode(true)`,
+		`var template=document.createElement("peetty-companion");template["cloneNode"](true)`,
+		`var template=document.createElement("peetty-companion");document.importNode(template,true)`,
+		`document.createElement("peetty-companion");window.document.createElement(tag)`,
+		`document.createElement("peetty-companion");var make=window.document["createElement"];make(tag)`,
+		`document.createElement("peetty-companion");var fragment=document.createRange().createContextualFragment(html)`,
+		`document.createElement("peetty-companion");target.innerHTML=html`,
+		`document.createElement("peetty-companion");document.write(html)`,
+		`document.createElement("peetty-companion");new DOMParser().parseFromString(html,"text/html")`,
 	} {
 		release := &peettyRelease{Format: peettyCacheFormat, Commit: peettyTestCommit("v0.3.1"), Version: "v0.3.1", Files: peettyTestFiles("red", false), Hashes: make(map[string]string)}
 		release.Files["cdn/peetty.global.js"] = bytes.ReplaceAll(release.Files["cdn/peetty.global.js"], []byte(`document.createElement("peetty-companion")`), []byte(replacement))
