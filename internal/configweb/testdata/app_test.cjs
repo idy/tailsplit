@@ -179,6 +179,7 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
     }
     app.nativeNavigations.push(record);
     if (app.navigationOverride(record) !== undefined) return;
+    if (localeOptions.admissionRecovery) Promise.resolve().then(() => app.admitNavigation(record));
     if (localeOptions.navigationRecovery) Promise.resolve().then(() => app.ackNavigation(record));
   };
   const storage = localeOptions.storage || new Map();
@@ -4417,6 +4418,7 @@ for (const retry of ['manual-ipc', 'automatic-http', 'newer-owner']) test(`commi
   if (retry === 'newer-owner') Object.assign(app.snapshot, { active: true, state: 'running', mode: 'tun', operation_id: 'newer-protected-owner' });
   if (retry === 'automatic-http') app.override = () => undefined;
   else app.nativeOverride = () => undefined;
+  app.navigationOverride = record => { app.admitNavigation(record); return true; };
   if (retry === 'manual-ipc') await app.$('#connection-setup-cancel').emit('click');
   else { await app.poll(); await settle(); }
   assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
@@ -4434,7 +4436,7 @@ test('native pending confirmation survives a matching-scope reload with an unrea
   app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP unavailable' }, false) : undefined;
   const cancel = app.$('#connection-setup-cancel').emit('click');
   await settle(); await app.flushTimers(); await cancel;
-  const reload = await page(app.snapshot, 'mygo-macos', { page: 'home', hash: '#', storage: app.storage, cookies: app.cookies, unreadableCookies: true, rejectCookies: true }, app.config);
+  const reload = await page(app.snapshot, 'mygo-macos', { page: 'home', hash: '#', storage: app.storage, cookies: app.cookies, unreadableCookies: true, rejectCookies: true, admissionRecovery: true }, app.config);
   assert.equal(reload.snapshot.active, false);
   assert.equal(reload.nativeCalls.length, 1);
   assert.equal(reload.nativeCalls[0].data.operation_id, 'reload-committed-owner');
@@ -4486,6 +4488,84 @@ test('disabled header disconnect retains menu guidance in its final title and ac
     assert.equal(control.title, activeMode === 'tun' ? '断开' : '取消');
     assert.equal(control.attributes.get('aria-label'), control.title);
   }
+});
+
+async function evictedNativeCancellationFixture() {
+  const options = { page: 'home', hash: '#token=fixture&journal=native-eviction-scope&journal_backup=0&cancel_host=1' };
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'evicted-owner' }, 'mygo-windows', options, guidedDocument());
+  app.navigationOverride = () => { throw new Error('navigation unavailable'); };
+  app.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP unavailable' }, false) : undefined;
+  const cancel = app.$('#connection-setup-cancel').emit('click');
+  await settle(); await app.flushTimers(); await cancel;
+  assert.equal(JSON.parse(app.storage.get('tailsplit-setup-cancel')).journal_scope, 'native-eviction-scope');
+  app.cookies.clear(); // The former committed journal genuinely no longer exists.
+  options.unreadableCookies = options.rejectCookies = true;
+  app.navigationOverride = () => true; // A navigation request with no admission.
+  app.nativeOverride = () => undefined;
+  app.override = () => undefined;
+  return { app, options };
+}
+
+test('an evicted journal cannot authorize legacy retry until the host admits the exact target', async () => {
+  const { app } = await evictedNativeCancellationFixture();
+  const legacyBefore = app.requests.filter(request => request.path === '/api/cancel').length;
+  const retry = app.$('#connection-setup-cancel').emit('click');
+  await settle();
+  const target = app.nativeNavigations.at(-1);
+  assert.equal(app.cookies.size, 0);
+  assert.equal(app.requests.filter(request => request.path === '/api/cancel').length, legacyBefore);
+  assert.equal(app.snapshot.active, true);
+  for (const wrong of [{ ...target, scope: 'foreign-scope' }, { ...target, operation_id: 'newer-owner' }, { ...target, request: 'other-request' }]) {
+    await app.admitNavigation(wrong);
+    assert.equal(app.requests.filter(request => request.path === '/api/cancel').length, legacyBefore);
+  }
+  await app.admitNavigation(target);
+  await retry;
+  assert.equal(app.snapshot.active, false);
+  assert.equal(app.nativeCalls.length, 2);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('stale write history with missing admission leaves cancellation pending without IPC or HTTP retry', async () => {
+  const { app } = await evictedNativeCancellationFixture();
+  const legacyBefore = app.requests.filter(request => request.path === '/api/cancel').length;
+  const retry = app.$('#connection-setup-cancel').emit('click');
+  await settle(); await app.flushTimers(); await retry;
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.cookies.size, 0);
+  assert.equal(app.requests.filter(request => request.path === '/api/cancel').length, legacyBefore);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+  assert.match(app.$('#connection-setup-detail').textContent, /尚未由宿主接收/);
+  app.navigationOverride = record => { app.admitNavigation(record); return true; };
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.snapshot.active, false);
+});
+
+test('a restored historical receipt cannot authorize an evicted journal but exact host completion can finish it', async () => {
+  const { app } = await evictedNativeCancellationFixture();
+  const reload = await page(app.snapshot, 'mygo-windows', { page: 'home', hash: '#', storage: app.storage, cookies: app.cookies, unreadableCookies: true, rejectCookies: true }, app.config);
+  assert.equal(reload.nativeNavigations.length, 1, 'history permits only requesting admission');
+  assert.equal(reload.nativeCalls.length, 0);
+  assert.equal(reload.requests.some(request => request.path === '/api/cancel'), false);
+  assert.equal(reload.snapshot.active, true);
+  assert.equal(reload.storage.has('tailsplit-setup-cancel'), true);
+  await reload.ackNavigation(reload.nativeNavigations.at(-1));
+  await settle();
+  assert.equal(reload.nativeCalls.length, 0, 'completed host acknowledgment also implies admission');
+  assert.equal(reload.snapshot.active, false, JSON.stringify({ navigations: reload.nativeNavigations, operation: reload.snapshot.operation_id, disabled: reload.$('#connection-setup-cancel').disabled, detail: reload.$('#connection-setup-detail').textContent }));
+  assert.equal(reload.storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('stale commitment without a usable native host or current journal cannot start delivery', async () => {
+  const storage = new Map([['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: '', operation_id: 'history-only-owner', journal_scope: 'native-history-scope' })]]);
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'history-only-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-history-scope&journal_backup=0', storage, unreadableCookies: true, rejectCookies: true }, guidedDocument());
+  assert.equal(app.$('#connection-setup-cancel').disabled, true);
+  assert.equal(app.nativeNavigations.length, 0);
+  assert.equal(app.nativeCalls.length, 0);
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
 });
 
 test('backup acknowledgment does not remove another native cancellation entry', async () => {
