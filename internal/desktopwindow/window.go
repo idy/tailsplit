@@ -137,8 +137,12 @@ func (w *Window) createWindow() {
 			return
 		}
 		height := 44
+		var trafficLights *mygo.Point
 		if runtime.GOOS == "darwin" {
 			height = 40
+			// Give AppKit's 14-point buttons equal top and left insets.
+			inset := (height - 14) / 2
+			trafficLights = &mygo.Point{X: inset, Y: inset}
 		}
 		origin := "http://127.0.0.1:" + strconv.Itoa(int(w.port))
 		// Leave URL empty: no page may load before all policies and lifecycle
@@ -147,7 +151,7 @@ func (w *Window) createWindow() {
 		w.native = mygo.NewWindow(mygo.WindowOptions{
 			Title: "TailSplit", Hidden: true,
 			Width: 1120, Height: 780, MinWidth: 760, MinHeight: 560, UseContentSize: true,
-			TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: height,
+			TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: height, TrafficLightPosition: trafficLights,
 			HideWindowButtons: runtime.GOOS == "windows", DisableFullScreen: runtime.GOOS == "darwin",
 			Page: mygo.PageOptions{Session: session, TrustedOrigins: []string{origin}, DevTools: mygo.DevToolsDisabled},
 		})
