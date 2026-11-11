@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.9.6
 
 - Update the page companion independently of TailSplit through compatible stable
   Peetty CDN releases. Cache verified resources atomically, keep each open page
   on one version, and retain the embedded companion for offline use, load failures,
-  reduced motion and oversized diagnostic logs.
+  reduced motion and oversized page text.
 
 ## 0.9.5
 
