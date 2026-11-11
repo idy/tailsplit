@@ -2,15 +2,16 @@
 
 A Flutter app that brings TailSplit's routing to phones with **one** exit: one
 embedded Tailscale device and one selected exit node. Rule-based (Split) routes
-traffic captured by the active VPN. **Global connections are disabled on both
-platforms in this build**: the pinned plugin cannot enforce system-level blocking
-after tunnel loss. It opts out of Android Always-on and does not expose equivalent
-iOS protection. Global cannot be selected or started through saved settings;
-Use Rule-based explicitly recovers a previously saved Global configuration.
-The Global config compiler remains available for future protected backends.
+matched traffic through the exit; Global routes all traffic captured by the VPN
+through that exit, without a direct fallback inside the tunnel. Both routing
+modes are available. They do not promise a system kill switch after the OS removes
+the VPN: normal networking may resume when the tunnel stops. Persistent OS traffic
+blocking is a separate platform capability, not a prerequisite for Global routing.
 sing-box runs as the system VPN through
 [`sing_box_flutter`](https://github.com/idy/sing-box-flutter); Tailscale sign-in and
-exit-node discovery are implemented in Dart inside this app.
+exit-node discovery are implemented in Dart inside this app. The dependency is
+vendored from upstream commit `05872f4558823bc19b5c6767c853504a9cedd544` with a
+reviewable iOS cancellation fix; see [patch provenance and limits](vendor/sing_box_flutter/TAILSPLIT_PATCHES.md).
 
 ## How it works
 
@@ -42,7 +43,9 @@ state colours and terminal log style:
 - System fonts with Dynamic Type / font scale for all UI text; Montserrat only for
   top-level titles. English and Simplified Chinese.
 - Card lists use 24-unit continuous corners and a leading platform icon on every
-  single-line item. Long values truncate; explanations sit below the group.
+  single-line item. iOS rows share a 56-unit default height and grow together for
+  large text; switches, menus and labels are centered. Long values truncate;
+  explanations sit below the group.
   The rule-list download time appears in its own row beside Update, independently
   of the extra domain/IP entries.
 
@@ -119,9 +122,13 @@ download failed). These options only take effect in preview builds.
   replacement tunnel. Without a confirmed native stop, the shutdown latch remains
   set; neither stale status nor dismissing an error releases it. A completely
   unresponsive native backend still requires a successful stop before recovery.
-  This relies on the pinned Android worker's generation invalidation/service
-  teardown and the iOS manager's serialized start/stop queue, documented in
-  `VpnService.stop`; a dependency update must preserve that barrier contract.
+  Android retains its generation invalidation/service teardown contract. The
+  local iOS patch gives stop priority over stalled native commands, fences late
+  callbacks, and uses a fresh system-profile read for shutdown. An unavailable OS
+  read returns `stop_unconfirmed` after five seconds and allows explicit retry.
+  Submitted Apple consent/saves cannot be forcibly cancelled; passive-write
+  reconciliation and the remaining limits are documented in
+  [the patch provenance](vendor/sing_box_flutter/TAILSPLIT_PATCHES.md).
 - **Unexpected VPN loss** shows a warning that traffic may use normal networking.
   It does not switch routing modes or claim that a retry blocks traffic; an OS
   process kill can prevent the UI warning from appearing.
@@ -129,8 +136,8 @@ download failed). These options only take effect in preview builds.
   start, sign-in or identity deletion. A stop failure retains the saved identity
   and reports a retryable error. A restored tunnel whose runtime mode is unknown
   stays active until the user confirms that reconnecting can expose direct traffic,
-  including on failure. Unsupported Global requests are rejected before stopping
-  any working Split connection.
+  including on failure. Changes to a running Global session likewise stay pending
+  until explicit reconnect consent; Global routing itself remains available.
 - **Direct IPv6 disabled** rejects literal and cached IPv6 destinations on direct
   routes as well as suppressing direct AAAA answers; Tailnet/proxy IPv6 remains available.
 - **Rule lists** download on first use and are then reused from a per-source
@@ -161,10 +168,11 @@ The failure states (offline node, first rule-list download failure, connecting
 step) and the Exit Node, picker and Settings screens at the accessibility-extra-large
 text size were also captured on that simulator. Native XCUITest checks have
 covered menus, input validation, node selection and the unexpected-stop warning.
-Global consent logic is now exercised only with an explicitly protected fake
-backend; production and default preview builds reject unsupported Global.
+Global routing remains selectable in production and preview builds. The native
+simulator check verifies switching both ways between Rule-based and Global without
+the former capability-blocking message.
 
-Static analysis is clean. The default test run passes 114 tests and skips six
+Static analysis is clean. The default test run passes 115 tests and skips six
 checks that require external Go helper services; `test/hardening_test.dart` covers
 cancelled connects, offline/missing nodes, logged-out or expired session recovery,
 failed sign-in saves, storage errors, the rule-list cache, resolver and CIDR parsing,
@@ -172,8 +180,8 @@ and damaged settings. `test/vpn_service_test.dart` covers fast disconnect events
 pending status queries, stale snapshots, explicit timeouts and listener cleanup.
 `test/vpn_lifecycle_review_test.dart` covers serialized cancellation, native stop
 barrier recovery without a start reply, late-response isolation, shutdown before
-removal/reconnect, and rejection of unsupported Global settings. Consent paths for
-future protected backends are tested using an explicitly capable fake service.
+removal/reconnect, usable saved Global settings, and explicit reconnect consent
+when changing a running Global configuration.
 `test/navigation_review_test.dart` checks disabled menus, Android Back handling
 and iOS edge-swipe navigation. Release and Android configuration guards pass
 37 Python tests. Android debug and iOS simulator/unsigned device builds passed
@@ -198,6 +206,7 @@ flutter test
 | --- | --- |
 | `lib/src/tailscale/` | Tailscale control client (Noise IK, register, map) and tsnet state handoff |
 | `lib/src/services/config_builder.dart` | sing-box JSON for Split and Global |
+| `vendor/sing_box_flutter/` | Pinned plugin source with the reviewed iOS priority-stop patch; generated SDKs stay ignored |
 | `lib/src/services/rules.dart` | AutoProxy/domain list projection (port of `internal/domainrules`) and per-source cache |
 | `lib/src/services/errors.dart` | Failure causes shown to the user; raw detail for Logs |
 | `lib/src/state/app_controller.dart` | Exit, settings and VPN lifecycle |

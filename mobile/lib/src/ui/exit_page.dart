@@ -152,7 +152,7 @@ class RoutingMenu extends StatelessWidget {
       enabled: !app.transitioning && !app.busy,
       options: [
         (RoutingMode.split, s.ruleBased),
-        if (app.globalAvailable) (RoutingMode.global, s.global),
+        (RoutingMode.global, s.global),
       ],
       selected: app.settings.mode,
       onSelected: (mode) {

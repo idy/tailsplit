@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:adaptive_platform_ui/adaptive_platform_ui.dart';
@@ -408,24 +409,39 @@ class NativeRow extends StatelessWidget {
             child: title,
           );
           if (isCupertino) {
+            // Menus reserve a 44pt hit target; UISwitch is shorter. Row geometry
+            // belongs to the list, not the trailing control's intrinsic height.
+            // All rows grow together for large text while remaining single-line.
+            final rowHeight = math.max(
+              TsSpace.rowHeight,
+              MediaQuery.textScalerOf(context).scale(17) * 1.3 + TsSpace.rowGap,
+            );
             return Semantics(
               label: semanticsLabel,
               button: tap != null,
               enabled: enabled,
-              child: CupertinoListTile.notched(
-                leading: leading,
-                leadingSize: 22,
-                padding: const EdgeInsetsDirectional.fromSTEB(20, 10, 14, 10),
-                title: styledTitle,
-                additionalInfo: value == null
-                    ? null
-                    : bounded(Text(value!, maxLines: 1, overflow: TextOverflow.ellipsis)),
-                trailing: trailing != null
-                    ? bounded(trailing!)
-                    : chevron
-                        ? const CupertinoListTileChevron()
-                        : null,
-                onTap: tap,
+              child: SizedBox(
+                height: rowHeight,
+                child: CupertinoListTile.notched(
+                  leading: leading,
+                  leadingSize: 22,
+                  padding: const EdgeInsetsDirectional.fromSTEB(20, 6, 14, 6),
+                  // CupertinoListTile's title column otherwise top-aligns its
+                  // only child when the row receives a tight height.
+                  title: SizedBox(
+                    height: rowHeight - TsSpace.rowGap,
+                    child: Align(alignment: AlignmentDirectional.centerStart, child: styledTitle),
+                  ),
+                  additionalInfo: value == null
+                      ? null
+                      : bounded(Text(value!, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  trailing: trailing != null
+                      ? bounded(trailing!)
+                      : chevron
+                          ? const CupertinoListTileChevron()
+                          : null,
+                  onTap: tap,
+                ),
               ),
             );
           }

@@ -16,7 +16,8 @@ class ControlledVpn extends VpnService {
   Completer<void>? stopGate;
   Object? stopError;
   bool lingerOnStop = false;
-  bool systemProtection = false;
+  bool failFirstInitialization = false;
+  int initializations = 0;
   int _nativeEpoch = 0;
   int starts = 0;
   int stops = 0;
@@ -32,7 +33,11 @@ class ControlledVpn extends VpnService {
   @override
   Stream<SingBoxLog> get logs => const Stream.empty();
   @override
-  Future<void> initialize() async {}
+  Future<void> initialize() async {
+    if (initializations++ == 0 && failFirstInitialization) {
+      throw StateError('initialization cancelled');
+    }
+  }
   @override
   Future<String> coreVersion() async => 'test';
   @override
@@ -41,8 +46,6 @@ class ControlledVpn extends VpnService {
   Future<void> check(String config) async {}
   @override
   Future<bool> requestPermission() async => true;
-  @override
-  bool get providesSystemKillSwitch => systemProtection;
   @override
   Future<void> start(String config) async {
     starts++;
@@ -91,7 +94,7 @@ const otherNode = TailnetPeer(stableId: 'two', name: 'two', fqdn: 'two.test.ts.n
 Future<({AppController app, ControlledVpn vpn, LifecycleClient client, Directory root})> fixture({
   RoutingMode mode = RoutingMode.split,
   bool restoredConnection = false,
-  bool systemProtection = false,
+  bool failFirstInitialization = false,
 }) async {
   final root = await Directory.systemTemp.createTemp('tailsplit-lifecycle');
   final snapshot = TailnetSnapshot(selfName: 'phone', selfFqdn: 'phone.test.ts.net',
@@ -99,7 +102,7 @@ Future<({AppController app, ControlledVpn vpn, LifecycleClient client, Directory
       userLoginName: 'test@example.com', userDisplayName: 'Test', stableNodeId: 'phone',
       exitNodes: const [node, otherNode], fetchedAt: DateTime.now());
   final client = LifecycleClient(snapshot);
-  final vpn = ControlledVpn()..systemProtection = systemProtection;
+  final vpn = ControlledVpn()..failFirstInitialization = failFirstInitialization;
   if (restoredConnection) vpn.state = VpnConnectionState.connected;
   final app = AppController(paths: AppPaths.at(root, root), vpn: vpn, controlClient: () => client,
       nativeCommandTimeout: const Duration(milliseconds: 100));
@@ -126,6 +129,15 @@ Future<({AppController app, ControlledVpn vpn, LifecycleClient client, Directory
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('connect can retry cancelled initialization without losing native status events', () async {
+    final f = await fixture(failFirstInitialization: true);
+    expect(f.vpn.initializations, 1);
+    await f.app.connect();
+    expect(f.vpn.initializations, 2);
+    expect(f.app.connected, isTrue);
+    expect(f.app.problem, isNull);
+  });
 
   test('cancel waits for an in-flight start then leaves the native service stopped', () async {
     final f = await fixture();
@@ -304,44 +316,39 @@ void main() {
     expect(f.vpn.state, VpnConnectionState.connected);
   });
 
-  test('unsupported Global is blocked even for restored settings and explicit reconnect', () async {
+  test('saved Global routing can connect without an OS kill-switch capability', () async {
     final f = await fixture(mode: RoutingMode.global);
-    expect(f.app.globalAvailable, isFalse);
-    expect(f.app.problem, AppProblem.globalUnavailable);
-    expect(f.app.canConnect, isFalse);
-    f.app.dismissProblem();
+    expect(f.app.canConnect, isTrue);
     await f.app.connect();
-    await f.app.reconnect(allowProtectionGap: true);
-    expect(f.vpn.starts, 0);
-    expect(f.vpn.stops, 0);
-    expect(f.app.problem, AppProblem.globalUnavailable);
-    await f.app.setRoutingMode(RoutingMode.split);
+    expect(f.vpn.starts, 1);
+    expect(f.app.settings.mode, RoutingMode.global);
+    expect(f.app.connected, isTrue);
+    expect(f.app.problem, isNull);
+  });
+
+  test('selecting Global from Split applies routing after confirmed shutdown', () async {
+    final f = await fixture();
+    await f.app.connect();
+    await f.app.setRoutingMode(RoutingMode.global);
+    expect(f.app.settings.mode, RoutingMode.global);
+    expect(f.vpn.starts, 2);
+    expect(f.vpn.stops, 1);
+    expect(f.app.connected, isTrue);
+    expect(f.app.problem, isNull);
+  });
+
+  test('Global settings remain usable while idle', () async {
+    final f = await fixture();
+    await f.app.updateSettings(f.app.settings.copyWith(mode: RoutingMode.global));
+    expect(f.app.settings.mode, RoutingMode.global);
+    expect(f.app.canConnect, isTrue);
     await f.app.connect();
     expect(f.vpn.starts, 1);
     expect(f.app.problem, isNull);
   });
 
-  test('selecting unsupported Global retains a running Split tunnel and saved mode', () async {
-    final f = await fixture();
-    await f.app.connect();
-    await f.app.setRoutingMode(RoutingMode.global);
-    expect(f.app.settings.mode, RoutingMode.split);
-    expect(f.vpn.starts, 1);
-    expect(f.vpn.stops, 0);
-    expect(f.app.connected, isTrue);
-    expect(f.app.problem, AppProblem.globalUnavailable);
-  });
-
-  test('generic settings updates cannot bypass the Global capability gate', () async {
-    final f = await fixture();
-    await f.app.updateSettings(f.app.settings.copyWith(mode: RoutingMode.global), applyNow: true);
-    expect(f.app.settings.mode, RoutingMode.split);
-    expect(f.vpn.starts, 0);
-    expect(f.app.problem, AppProblem.globalUnavailable);
-  });
-
   test('Global node and mode applies keep protection until explicit consent', () async {
-    final f = await fixture(mode: RoutingMode.global, systemProtection: true);
+    final f = await fixture(mode: RoutingMode.global);
     await f.app.connect();
     expect(f.app.reconnectRequiresConsent, isTrue);
     expect(await f.app.confirmNode(otherNode), isTrue);
@@ -359,7 +366,7 @@ void main() {
   });
 
   test('Split applies still reconnect automatically after a confirmed stop', () async {
-    final f = await fixture(systemProtection: true);
+    final f = await fixture();
     await f.app.connect();
     await f.app.setRoutingMode(RoutingMode.global);
     expect(f.vpn.stops, 1);
@@ -368,7 +375,7 @@ void main() {
   });
 
   test('unexpected Global tunnel loss reports normal-network exposure', () async {
-    final f = await fixture(mode: RoutingMode.global, systemProtection: true);
+    final f = await fixture(mode: RoutingMode.global);
     await f.app.connect();
     f.vpn.emit(VpnConnectionState.disconnecting);
     f.vpn.emit(VpnConnectionState.disconnected);
@@ -382,7 +389,7 @@ void main() {
   });
 
   test('a deliberate stop does not show an unexpected-loss warning', () async {
-    final f = await fixture(mode: RoutingMode.global, systemProtection: true);
+    final f = await fixture(mode: RoutingMode.global);
     await f.app.connect();
     expect(await f.app.disconnect(), isTrue);
     expect(f.app.problem, isNull);

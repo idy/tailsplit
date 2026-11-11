@@ -35,7 +35,6 @@ enum AppProblem {
   connect,
   disconnect,
   tunnelStopped,
-  globalUnavailable,
   needsSignIn,
   nodeOffline,
   nodeMissing,
@@ -193,9 +192,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       vpnState == VpnConnectionState.connecting ||
       vpnState == VpnConnectionState.disconnecting;
   bool get busy => removing || signIn != SignInPhase.idle;
-  bool get globalAvailable => _vpn.providesSystemKillSwitch;
-  bool get _unsupportedGlobal => settings.mode == RoutingMode.global && !globalAvailable;
-  bool get canConnect => exit?.hasNode == true && !busy && !_unsupportedGlobal &&
+  bool get canConnect => exit?.hasNode == true && !busy &&
       !_shutdownUnconfirmed && !_nativeStartPending && _stopRequest == null;
   bool get canRetryDisconnect => !busy && _stopRequest == null;
   bool get hasAuthUrl => _authUrl != null || (isPreview && signIn == SignInPhase.browser);
@@ -244,7 +241,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await _loadRuleInfo();
     notifyListeners();
     try {
-      await _vpn.initialize();
+      // Keep observing even if initialization is cancelled and a later connect
+      // retries it; native status streams can be subscribed before setup.
       _statusSub = _vpn.status.listen(_onStatus, onError: (Object error) {
         _log('warn', 'VPN status unavailable: ${describeFailure(error)}');
       });
@@ -252,6 +250,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         (entry) => _log(entry.level, entry.message, source: 'core'),
         onError: (Object _) {},
       );
+      await _vpn.initialize();
       _onStatus(await _vpn.currentStatus());
       coreVersion = await _vpn.coreVersion();
     } catch (error) {
@@ -259,7 +258,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     WidgetsBinding.instance.addObserver(this);
     _observing = true;
-    if (_unsupportedGlobal) _setProblem(AppProblem.globalUnavailable);
     notifyListeners();
     // A saved netmap can be days old; update it quietly while idle.
     if (exit != null && !active) unawaited(refresh(silent: true));
@@ -291,11 +289,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     logBuffer.addAll(PreviewData.logs());
     previewScreen = screen;
     switch (screen) {
-      case 'connected':
+      case 'connected' || 'global':
         vpnState = VpnConnectionState.connected;
         _runningMode = settings.mode;
-      case 'global':
-        _setProblem(AppProblem.globalUnavailable);
       case 'reconnect':
         vpnState = VpnConnectionState.connected;
         _runningMode = settings.mode;
@@ -707,10 +703,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> connect() async {
-    if (_unsupportedGlobal) {
-      _setProblem(AppProblem.globalUnavailable);
-      return;
-    }
     final current = exit;
     if (current == null || !canConnect || preparing || active ||
         vpnState == VpnConnectionState.disconnecting) {
@@ -867,6 +859,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           magicDnsSuffix: profile.snapshot?.magicDnsSuffix ?? '',
         ),
       );
+      // A priority stop may retire an unfinished native initialization. The
+      // adapter is idempotent, so a later connection can initialize afresh.
+      await _vpn.initialize();
+      if (cancelled()) return;
       await _vpn.check(config);
       if (cancelled()) return;
       if (!await _vpn.requestPermission()) {
@@ -1025,10 +1021,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> reconnect({bool allowProtectionGap = false}) async {
-    if (_unsupportedGlobal) {
-      _setProblem(AppProblem.globalUnavailable);
-      return;
-    }
     if (_reconnecting) return;
     if (reconnectRequiresConsent && !allowProtectionGap) {
       // Keep the current Global tunnel alive until the user confirms a gap.
@@ -1055,13 +1047,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// Global and other connection settings wait for an explicit Reconnect.
   Future<void> updateSettings(MobileSettings next, {bool applyNow = false}) async {
     final previous = settings;
-    if (next.mode == RoutingMode.global && previous.mode != next.mode && !globalAvailable) {
-      // Do not stop a working Split tunnel or persist an unusable mode.
-      _setProblem(AppProblem.globalUnavailable);
-      return;
-    }
     settings = next;
-    if (next.mode == RoutingMode.split && problem == AppProblem.globalUnavailable) _clearProblem();
     final changed = previous.affectsConnection(next);
     if (switchOn && changed) needsReconnect = true;
     notifyListeners();

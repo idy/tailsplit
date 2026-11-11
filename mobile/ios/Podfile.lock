@@ -41,7 +41,7 @@ SPEC CHECKSUMS:
   adaptive_platform_ui: df7a9b2e8063dd0e8eb0fa0bcc9467780f608f86
   Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
   foldable: 1d5f77688e44e3754f129cecaa08403fcb75f612
-  sing_box_flutter: f828d53874cc19fff8418f2273f7f2207a4a91fa
+  sing_box_flutter: aa18b9483fbedb7229559809a275f9cdb009baad
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
 
 PODFILE CHECKSUM: f6239ec5b489514e54d5b68d82ef1ba853298afe

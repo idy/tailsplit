@@ -63,6 +63,7 @@ abstract final class TsSpace {
   static const double compact = 4;
   static const double controlGap = 8;
   static const double rowGap = 12;
+  static const double rowHeight = 56;
   static const double inset = 16;
   static const double section = 24;
   static const double panelRadius = 16;

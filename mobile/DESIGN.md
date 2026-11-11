@@ -52,6 +52,7 @@ spacing:
   compact: "4px"
   control-gap: "8px"
   row-gap: "12px"
+  row-height: "56px"
   inset: "16px"
   section: "24px"
   ios-gutter: "20px"
@@ -172,6 +173,8 @@ Transitions and activity indicators are platform widgets. No bespoke motion scal
 
 Card-list groups use the shared 24-unit `TsSpace.groupRadius` on both platforms. iOS clips the entire group, including native row press feedback, with continuous corners; Android uses the same radius on its Material surface. Switches, menus and sheets retain platform geometry. The terminal keeps its separate 16-unit radius.
 
+iOS card-list rows share a 56-unit height at the default text size, with six-unit vertical padding. Switches, menus and plain values are vertically centered rather than setting each row's height; the menu retains its 44-unit hit target. All rows grow by the same text-scale calculation for large text while remaining single-line.
+
 Every card-list row has a plain 21-unit platform icon within its 22-unit leading slot. Connection and exit icons carry their semantic state colours. Picker rows show a device icon when unselected and a green check when selected. iOS 26 toolbar/tab symbols use SF Symbol identifiers; fallback widgets use Cupertino icons, with Material icons in the Android branch. These are functional platform icon APIs, not Unicode glyph icons.
 
 ## Components
@@ -196,9 +199,9 @@ The native tab bar orders Exit Node, Logs, Settings. The selected iOS tab uses d
 
 ### Connection and Routing
 
-Connection state pairs readable text with a neutral, green, amber or red power icon and an explicit switch. Routing uses an unboxed current-value menu. In Settings, the adaptive Rule-based / Global segmented control sits independently above the routing card list, which starts with Rule source. Global requires native system-level protection. The pinned backend cannot provide it, so the segmented control is disabled and the Exit menu only offers Rule-based. Both surfaces explain why. A saved Global configuration cannot connect and shows Use Rule-based as explicit recovery; it is not silently downgraded. The Global model/configuration remains for future protected backends. Signing in, selecting a node and connecting remain separate steps. The app has a single exit; desktop multi-exit controls are outside this mobile implementation.
+Connection state pairs readable text with a neutral, green, amber or red power icon and an explicit switch. Routing uses an unboxed current-value menu. In Settings, the adaptive Rule-based / Global segmented control sits independently above the routing card list, which starts with Rule source. Both routing modes are selectable. Global hides the Split-only card and preserves its saved rules. Global routing means captured traffic uses the selected exit without direct fallback while the VPN is active; it does not require or imply OS lockdown after tunnel loss. The routing surfaces disclose that boundary instead of blocking Global. Signing in, selecting a node and connecting remain separate steps. The app has a single exit; desktop multi-exit controls are outside this mobile implementation.
 
-Ordinary settings save immediately and may expose Reconnect to apply while connected. Supported routing/node changes reconnect a known Split session after confirmed shutdown. Selecting unsupported Global neither saves that mode nor stops a working Split tunnel. Saved Global settings remain visible with an explicit Use Rule-based recovery action; connect and reconnect refuse them.
+Ordinary settings save immediately and may expose Reconnect to apply while connected. Routing/node changes reconnect a known Split session after confirmed shutdown. Changes to a running Global session stay pending until explicit reconnect consent, so saving a new configuration does not silently interrupt the current tunnel. Both modes can be selected, saved and connected without a system kill-switch prerequisite.
 
 A restored tunnel with unknown runtime mode retains its connection until explicit reconnect consent. A shutdown failure keeps the identity and exposes Retry. Native command waits are bounded; a successful native stop barrier and OS disconnection permit recovery even if an earlier Flutter reply is lost. Retired requests cannot affect later connections. Unexpected loss of an observed active tunnel shows a warning; it cannot block traffic, and process death can prevent the warning from appearing. These UI behaviors do not verify real VPN traffic protection.
 
@@ -206,7 +209,7 @@ While a connection is preparing, the group footer names the step (checking the e
 
 ### Problems and Notices
 
-One problem card at a time, at the top of Exit Node (Settings shows rule-list, storage and unavailable-Global problems). Its title names the failure, its body explains the cause in the user's language (offline, timeout, TLS, rate limit, server response, refusal, invalid list), and one text action under the body offers the recovery: Retry, Sign in, Choose node, Refresh or Open sign-in page. Raw English detail goes to Logs. Awaiting approval uses the amber clock; failures use the red exclamation. A 44-point dismiss button closes the card; the card is a live region.
+One problem card at a time, at the top of Exit Node (Settings shows rule-list and storage problems). Its title names the failure, its body explains the cause in the user's language (offline, timeout, TLS, rate limit, server response, refusal, invalid list), and one text action under the body offers the recovery: Retry, Sign in, Choose node, Refresh or Open sign-in page. Raw English detail goes to Logs. Awaiting approval uses the amber clock; failures use the red exclamation. A 44-point dismiss button closes the card; the card is a live region.
 
 Short confirmations (Copied 12 lines, Removed example.com · Undo, Rule list updated) are notices: a Material snackbar on Android, and on iOS a small grouped-surface capsule above the tab bar with a soft offset shadow, announced to screen readers and shown without a fade when animations are reduced.
 

@@ -384,11 +384,9 @@ packages:
   sing_box_flutter:
     dependency: "direct main"
     description:
-      path: "."
-      ref: "05872f4558823bc19b5c6767c853504a9cedd544"
-      resolved-ref: "05872f4558823bc19b5c6767c853504a9cedd544"
-      url: "https://github.com/idy/sing-box-flutter.git"
-    source: git
+      path: "vendor/sing_box_flutter"
+      relative: true
+    source: path
     version: "0.3.0"
   sky_engine:
     dependency: transitive

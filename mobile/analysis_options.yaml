@@ -5,3 +5,5 @@ analyzer:
     - build/**
     - android/**
     - ios/**
+    # Vendored package tests and native checks run separately.
+    - vendor/**
