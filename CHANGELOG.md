@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Update the page companion independently of TailSplit through compatible stable
+  Peetty CDN releases. Cache verified resources atomically, keep each open page
+  on one version, and retain the embedded companion for offline use, load failures,
+  reduced motion and oversized diagnostic logs.
+
 ## 0.9.5
 
 - Open the macOS tray popup over other apps' full-screen Spaces without activating

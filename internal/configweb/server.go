@@ -42,7 +42,10 @@ type Options struct {
 	ConfigPath string
 	Listen     string
 	Preview    bool
-	Snapshot   func() tray.Snapshot
+	// CompanionUpdates downloads compatible Peetty releases into a private cache
+	// beside ConfigPath. The embedded companion remains the offline fallback.
+	CompanionUpdates bool
+	Snapshot         func() tray.Snapshot
 	// Apply must run check against its current snapshot under the same operation
 	// gate as update, before stopping a helper or changing the saved document.
 	Apply func(context.Context, func(tray.Snapshot) error, func() error) error
@@ -73,11 +76,14 @@ type Options struct {
 }
 
 type Server struct {
-	options Options
-	server  *http.Server
-	address string
-	token   string
-	ping    sync.Mutex
+	options    Options
+	server     *http.Server
+	address    string
+	token      string
+	ping       sync.Mutex
+	peetty     *peettyUpdates
+	stopPeetty context.CancelFunc
+	peettyDone chan struct{}
 }
 
 type document struct {
@@ -129,6 +135,15 @@ func Start(options Options) (*Server, error) {
 		ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192,
 	}
+	if options.CompanionUpdates {
+		s.peetty = newPeettyUpdates(options.ConfigPath)
+		ctx, cancel := context.WithCancel(context.Background())
+		s.stopPeetty, s.peettyDone = cancel, make(chan struct{})
+		go func() {
+			defer close(s.peettyDone)
+			s.peetty.run(ctx)
+		}()
+	}
 	go func() { _ = s.server.Serve(listener) }()
 	return s, nil
 }
@@ -139,7 +154,13 @@ func (s *Server) URL() string { return "http://" + s.address + "/#token=" + s.to
 // PopupURL shares the panel's capability without putting it in request URLs.
 func (s *Server) PopupURL() string { return "http://" + s.address + "/tray.html#token=" + s.token }
 
-func (s *Server) Close() error { return s.server.Close() }
+func (s *Server) Close() error {
+	if s.stopPeetty != nil {
+		s.stopPeetty()
+		<-s.peettyDone
+	}
+	return s.server.Close()
+}
 
 func (s *Server) handler() http.Handler {
 	files, _ := fs.Sub(assets, "assets")
@@ -168,7 +189,15 @@ func (s *Server) handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		policy := "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+		var companion *peettyRelease
+		if s.peetty != nil {
+			companion = s.peetty.snapshot()
+		}
+		if companion != nil {
+			policy = strings.Replace(policy, "style-src 'self';", "style-src 'self' "+companion.style+";", 1)
+		}
+		w.Header().Set("Content-Security-Policy", policy)
 		_, port, _ := net.SplitHostPort(s.address)
 		hostOK := r.Host == s.address || s.options.Preview && r.Host == "localhost:"+port
 		if !hostOK || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+r.Host) {
@@ -190,6 +219,28 @@ func (s *Server) handler() http.Handler {
 		}
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path == "/vendor/peetty/fallback.js" || r.URL.Path == "/vendor/peetty/peetty.global.js" {
+			bundle, _ := assets.ReadFile("assets/vendor/peetty/peetty.global.js")
+			global := "Peetty"
+			if r.URL.Path == "/vendor/peetty/fallback.js" {
+				global = "TailSplitBundledPeetty"
+			}
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			_, _ = w.Write(peettyBrowserBundle(bundle, global))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, peettyAssetBase) && s.peetty != nil {
+			s.peetty.serveAsset(w, r)
+			return
+		}
+		if r.URL.Path == "/" && companion != nil {
+			page, _ := assets.ReadFile("assets/index.html")
+			page = bytes.Replace(page, []byte(`<script src="/vendor/peetty/peetty.global.js" defer></script>`), []byte(companion.scriptTag()), 1)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("X-Peetty-Version", companion.Version)
+			_, _ = w.Write(page)
 			return
 		}
 		switch r.URL.Path {

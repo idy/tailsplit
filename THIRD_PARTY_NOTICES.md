@@ -58,6 +58,55 @@ Chat is disabled; no chat or provider dependencies are shipped. Regenerate the
 assets with `node scripts/vendor-peetty.mjs` (Node.js 22.19+, Git, npm and network
 access are needed only when updating the vendored assets).
 
+The desktop can independently download compatible stable Peetty 0.3.x classic
+browser releases from jsDelivr. These unmodified files retain their MIT license
+and any published `THIRD_PARTY_NOTICES.txt` in the private local cache, and both
+notices are served beside the selected version's script. The embedded 0.2.0
+adaptation remains the offline and compatibility fallback. Dynamic releases are
+verified against source bytes fetched directly from the publisher's GitHub
+repository at the resolved tag commit, independently of the delivery CDN. Exact
+stylesheet CSP hashes permit the upstream shadow-root stylesheet without
+inline-style exceptions. Served scripts wrap the verified upstream bytes in a
+TailSplit document facade that gives each instance a private custom-element
+host tag and reports creation. DOM copies preserve that tag for lifecycle
+ownership; the cached upstream files remain unmodified. Script integrity covers the complete
+served wrapper and upstream code.
+
+## Publisher verification certificate roots
+
+Peetty publisher verification uses the unmodified Mozilla public CA bundle from
+[`github.com/breml/rootcerts/embedded` v0.3.8](https://github.com/breml/rootcerts/tree/v0.3.8/embedded),
+pinned through Go module checksums and compiled into the application. It does
+not import the root package's global certificate-store behavior. The project
+retains its [BSD-2-Clause license](https://github.com/breml/rootcerts/blob/v0.3.8/LICENSE)
+and the CA data's [MPL-2.0 license](https://github.com/breml/rootcerts/blob/v0.3.8/LICENSE.certificates).
+The unmodified source and certificate data are available at the linked version.
+
+BSD 2-Clause License
+
+Copyright (c) 2020, Lucas Bremgartner
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 ## Interface fonts
 
 The desktop configuration panel embeds the same unmodified Latin WOFF2 assets
