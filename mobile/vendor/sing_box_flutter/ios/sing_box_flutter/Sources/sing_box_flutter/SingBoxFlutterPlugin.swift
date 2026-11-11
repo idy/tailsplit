@@ -17,6 +17,8 @@ public final class SingBoxFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamH
     private var startRequested = false
     private var stopRequested = false
     private var status = TunnelStatus("disconnected")
+    // Readiness belongs to a configuration session, never merely an NE status.
+    private var providerStatus: TunnelStatus?
 
     private struct PreferenceTarget: Hashable {
         let bundle: String
@@ -136,6 +138,7 @@ public final class SingBoxFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamH
                         do { configuration = try storage.saveConfiguration(config, name: name, coreFingerprint: capabilities.fingerprint) }
                         catch { self.fail(command, .storage); return }
                         do {
+                            self.providerStatus = nil
                             self.startRequested = true
                             try session.startVPNTunnel(options: ["sessionID": configuration.sessionID as NSString])
                             self.emit(TunnelStatus("connecting"))
@@ -369,6 +372,7 @@ public final class SingBoxFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamH
     }
 
     private func setManager(_ manager: NETunnelProviderManager?) {
+        if self.manager?.connection !== manager?.connection { providerStatus = nil }
         self.manager = manager
         observeStatus()
     }
@@ -387,6 +391,7 @@ public final class SingBoxFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamH
     }
 
     private func refreshStatus() {
+        if stopNeedsReconciliation || stopRequested { providerStatus = nil }
         if stopNeedsReconciliation { emit(TunnelStatus("disconnecting")); return }
         if stopRequested {
             // Every profile touched by a cancelled preference operation must be
@@ -401,11 +406,19 @@ public final class SingBoxFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamH
         }
         let state = manager?.connection.status ?? .disconnected
         switch state {
-        case .connecting: emit(TunnelStatus("connecting"))
-        case .connected: emit(TunnelStatus("connected"))
-        case .reasserting: emit(TunnelStatus("connecting"))
-        case .disconnecting: emit(TunnelStatus("disconnecting"))
+        case .connecting:
+            providerStatus = nil
+            emit(TunnelStatus("connecting"))
+        case .connected, .reasserting:
+            let ready = currentProviderStatus()
+            if ready?.state == "error" { emit(TunnelStatus("error", message: ready?.message)) }
+            else if state == .connected, ready?.state == "connected" { emit(TunnelStatus("connected")) }
+            else { emit(TunnelStatus("connecting")) }
+        case .disconnecting:
+            providerStatus = nil
+            emit(TunnelStatus("disconnecting"))
         case .invalid, .disconnected:
+            providerStatus = nil
             if startRequested { emit(TunnelStatus("connecting")); return }
             if let saved = storage?.readStatus(), saved.state == "error",
                let currentSessionID = storage?.currentSessionID(), saved.sessionID == currentSessionID {
@@ -415,8 +428,27 @@ public final class SingBoxFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamH
         }
     }
 
+    private func currentProviderStatus() -> TunnelStatus? {
+        guard let sessionID = storage?.currentSessionID() else { providerStatus = nil; return nil }
+        if providerStatus?.sessionID != sessionID { providerStatus = nil }
+        if let saved = storage?.readStatus(), saved.sessionID == sessionID {
+            // A provider poll can finish after the last successful shared write.
+            // Do not regress its terminal result to an older startup snapshot.
+            let retainTerminalReply = providerStatus?.state == "error" ||
+                (providerStatus?.state == "connected" && saved.state == "connecting")
+            if saved.state == "error" || !retainTerminalReply { providerStatus = saved }
+        }
+        return providerStatus
+    }
+
     private func queryProviderStatus(command: Command) {
-        guard !stopRequested, let manager, [.connected, .reasserting].contains(manager.connection.status),
+        // Shared readiness/error is already authoritative; do not wait behind a
+        // busy extension queue to rediscover it. Keep the existing bounded poll
+        // only for sessions whose shared status is not yet conclusive.
+        if ["connected", "error"].contains(status.state) { finish(command, status.event); return }
+        guard !stopRequested, !stopNeedsReconciliation,
+              let requestedSessionID = storage?.currentSessionID(),
+              let manager, [.connected, .reasserting].contains(manager.connection.status),
               let session = manager.connection as? NETunnelProviderSession,
               let request = try? JSONSerialization.data(withJSONObject: ["version": 1, "command": "getStatus"]) else {
             finish(command, status.event)
@@ -426,9 +458,13 @@ public final class SingBoxFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamH
             guard self.commands.owns(command) else { return }
             // Do not let a delayed provider reply override a more recent OS disconnect.
             self.refreshStatus()
-            if manager === self.manager, manager.connection.status == .connected,
+            if !self.stopRequested, !self.stopNeedsReconciliation,
+               manager === self.manager, manager.connection.status == .connected,
+               self.storage?.currentSessionID() == requestedSessionID,
                let data, let reply = try? JSONDecoder().decode(TunnelStatus.self, from: data),
-               ["connected", "error"].contains(reply.state) {
+               reply.sessionID == requestedSessionID, ["connected", "error"].contains(reply.state),
+               self.status.state != "error" || reply.state == "error" {
+                self.providerStatus = reply
                 self.emit(TunnelStatus(reply.state, message: reply.message))
             }
             self.finish(command, self.status.event)

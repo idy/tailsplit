@@ -220,6 +220,18 @@ enum ConfigPreflight {
     private static func checkConstructedOptions(_ members: Members, path: [String], capabilities: CoreCapabilities) throws {
         guard let field = path.last else { return }
         let parent = path.dropLast().last
+        if path == ["inbounds", "[]"], discriminator(members) == "tun" {
+            if lastValue(members, "strict_route") as? Bool == true {
+                throw TunnelFailure(code: "unsupported_tun_option", message: "strict_route is not supported on iOS. Remove it or set it to false before connecting.")
+            }
+            for field in ["include_package", "exclude_package"] {
+                // Package filters are listable strings; null resets the list.
+                let value = members.last { fieldName($0.key) == field }?.value
+                if value is String || (value as? [Any])?.isEmpty == false {
+                    throw TunnelFailure(code: "unsupported_tun_option", message: "Per-app package routing is not supported on iOS. Remove include_package and exclude_package before connecting.")
+                }
+            }
+        }
         if path.count == 2, parent == "experimental", ["clash_api", "v2ray_api"].contains(field), !capabilities.supports("api", field) {
             throw TunnelFailure.invalidConfig
         }
@@ -258,6 +270,9 @@ enum ConfigPreflight {
 
     private static func expectedPrimitiveShape(for key: String, path: [String], componentType: String?) -> PrimitiveShape? {
         // Schema-specific overrides take precedence over the common defaults.
+        if path == ["inbounds", "[]"], componentType == "tun", ["include_package", "exclude_package"].contains(key) {
+            return .listableString
+        }
         if key == "fragment", path == ["endpoints", "[]"], componentType == "openvpn-client" {
             return .integer(maximum: Double(UInt32.max))
         }

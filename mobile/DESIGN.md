@@ -46,7 +46,6 @@ typography:
 rounded:
   group: "24px"
   primary-button: "14px"
-  terminal: "16px"
   reconnect-bar: "26px"
 spacing:
   compact: "4px"
@@ -77,7 +76,6 @@ components:
     backgroundColor: "{colors.log-background}"
     textColor: "{colors.log-ink}"
     typography: "{typography.code}"
-    rounded: "{rounded.terminal}"
     padding: "12px 14px 14px"
 ---
 
@@ -155,7 +153,7 @@ Top-level iOS pages use a scrolling large title, with the inline toolbar title e
 
 The first tab separates the connection/routing group from a Tailnet list. Each single-line network row opens its own node picker; a green check and trailing node name identify the globally selected exit's Tailnet. Add Tailnet preserves other sign-ins and the current exit. With no accounts, a dedicated sign-in group replaces the list. The picker uses a Cupertino sheet and its supplied scroll controller, with one list for that network's nodes, identity, refresh, reauthentication and sign-out. It does not introduce a nested node-list scroller. While the sheet is presented, `NativeChrome.sheetPresented` removes underlying page toolbars so native actions cannot float over the sheet's navigation.
 
-Logs use a 16-unit horizontal gutter and the terminal's internal padding. Settings use grouped sections and pushed editors rather than the desktop's sidebar, form/preview columns or YAML workspace. Reconnect guidance is pinned above the tab region, with a horizontal inset of 16 and bottom position at safe inset plus 64.
+Logs fill the phone or tablet page with the fixed terminal background, without a page title or card container. A single page scroll uses 14-unit horizontal content padding; filter, copy and clear remain in the native toolbar. Settings use grouped sections and pushed editors rather than the desktop's sidebar, form/preview columns or YAML workspace. Reconnect guidance is pinned above the tab region, with a horizontal inset of 16 and bottom position at safe inset plus 64.
 
 No tablet arrangement or phone breakpoint scale has been demonstrated. Material branch geometry is source-only: inset groups use 16-unit horizontal padding, 24-unit corners and platform list tiles; the modal picker occupies 92% of available height. Do not treat these branches as device-tested layouts.
 
@@ -171,7 +169,7 @@ Transitions and activity indicators are platform widgets. No bespoke motion scal
 
 ## Shapes
 
-Card-list groups use the shared 24-unit `TsSpace.groupRadius` on both platforms. iOS clips the entire group, including native row press feedback, with continuous corners; Android uses the same radius on its Material surface. Switches, menus and sheets retain platform geometry. The terminal keeps its separate 16-unit radius.
+Card-list groups use the shared 24-unit `TsSpace.groupRadius` on both platforms. iOS clips the entire group, including native row press feedback, with continuous corners; Android uses the same radius on its Material surface. Switches, menus and sheets retain platform geometry. The terminal is an edge-to-edge page surface with no card radius.
 
 iOS card-list rows share a 56-unit height at the default text size, with six-unit vertical padding. Switches, menus and plain values are vertically centered rather than setting each row's height; the menu retains its 44-unit hit target. All rows grow by the same text-scale calculation for large text while remaining single-line.
 
@@ -229,7 +227,7 @@ A tap stages a node. Confirm saves the changed online choice; Cancel and sheet d
 
 ### Diagnostic Terminal
 
-Logs preserve the desktop's constant dark palette with native Menlo text, newest entries ordered last, wrapped selectable lines and readable severity labels. Filter, copy and clear live in the page toolbar. The log source uses slivers in the page scroll; do not import the desktop's independent terminal scroller or four-second file-tail behavior.
+Logs use a full-screen terminal surface on phones and iPad, without a Logs title or card container. They preserve the desktop's constant dark palette with native Menlo text, newest entries ordered last, wrapped selectable lines and readable severity labels. Filter, copy and clear live in the page toolbar; local dark themes keep controls readable in either app appearance. The log source uses slivers in the page scroll; do not import the desktop's independent terminal scroller or four-second file-tail behavior.
 
 ## Do's and Don'ts
 

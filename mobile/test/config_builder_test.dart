@@ -57,6 +57,20 @@ String terminalRoute(Map<String, Object?> config, String address, {String domain
 }
 
 void main() {
+  test('both routing modes use TUN options supported by the native iOS backend', () {
+    for (final mode in RoutingMode.values) {
+      final config = ConfigBuilder.buildObject(
+        settings: MobileSettings(mode: mode, source: RuleSource.none), exit: _exit);
+      final tun = (config['inbounds'] as List).single as Map;
+      expect(tun['auto_route'], isTrue);
+      expect(tun['strict_route'] ?? false, isFalse,
+          reason: 'ApplePlatformInterface.openTun rejects desktop strict_route before creating the tunnel.');
+      expect(tun['include_package'], isNull);
+      expect(tun['exclude_package'], isNull);
+      expect(tun['address'], [ConfigBuilder.tunIpv4, ConfigBuilder.tunIpv6]);
+    }
+  });
+
   test('disabled Direct IPv6 rejects literal/cached direct targets but preserves proxy IPv6', () {
     final config = ConfigBuilder.buildObject(
       settings: const MobileSettings(source: RuleSource.none,

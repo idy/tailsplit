@@ -63,9 +63,9 @@
       "name": "Diagnostic Terminal — illustrative translation",
       "kind": "custom",
       "refersTo": "terminal",
-      "description": "Fixed dark terminal palette with wrapped selectable diagnostic text. Simulated content remains explicitly labeled.",
+      "description": "Full-page fixed dark terminal on phones and tablets, without a title or card. Wrapped selectable lines share one page scroll; native filter/copy/clear actions remain. Simulated content is disclosed alongside captures.",
       "html": "<div class=\"ds-terminal\"><span class=\"ds-stamp\">17:16:49</span> <b>INFO</b> <span class=\"ds-source\">app</span> Connected (simulated).</div>",
-      "css": ".ds-terminal{background:#272a32;color:#e5e5ea;border-radius:16px;padding:12px 14px 14px;font:12px/1.6 Menlo,monospace;overflow-wrap:anywhere;user-select:text}.ds-stamp{color:#aeb4c0}.ds-terminal b{font-weight:600;color:#7ab58b}.ds-source{color:#dca0e6}"
+      "css": ".ds-terminal{background:#272a32;color:#e5e5ea;min-height:100vh;box-sizing:border-box;padding:12px 14px 14px;font:12px/1.6 Menlo,monospace;overflow-wrap:anywhere;user-select:text}.ds-stamp{color:#aeb4c0}.ds-terminal b{font-weight:600;color:#7ab58b}.ds-source{color:#dca0e6}"
     }
   ],
   "narrative": {

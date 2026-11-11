@@ -37,6 +37,7 @@ struct PreflightSmoke {
         try ConfigPreflight.check(#"{"outbounds":[{"type":"socks","udp_over_tcp":true,"domain_resolver":"dns","tls":{"certificate_provider":"shared"}}]}"#, capabilities: full)
         try ConfigPreflight.check(#"{"route":{"rule_set":[{"type":"remote","tag":"cn"}],"rules":[{"rule_set":["cn"],"outbound":"direct"},{"rule_set":"cn","outbound":"direct"}]},"inbounds":[{"type":"tun","routing_mark":"0x1"}]}"#, capabilities: full)
         try rejects(#"{"route":{"rules":[{"rule_set":1}]}}"#, capabilities: full)
+        try iosTunOptionChecks(full)
         try scopedPrimitiveChecks(full)
         try transportChecks(full)
         try optionalTLSChecks(full)
@@ -63,6 +64,41 @@ struct PreflightSmoke {
         let event = TunnelStatus("error", message: String(repeating: "a", count: 1000)).event
         precondition(event["type"] as? String == "status" && (event["message"] as? String)?.count == 240)
         print("Foundation preflight: native syntax, ordered parsing, member precedence, null resets, replaced and empty union values, scoped shapes, field-name folding, transports, TLS, ACME, implicit direct, opaque maps and existing contract checks passed.")
+    }
+
+    private static func iosTunOptionChecks(_ full: CoreCapabilities) throws {
+        for fields in [
+            #""strict_route":true"#, #""STRICT_ROUTE":true"#,
+            #""strict_route":false,"Strict_Route":true"#,
+            #""strict_route":true,"Strict_Route":null"#,
+            #""include_package":["private-key-secret-sentinel"]"#,
+            #""EXCLUDE_PACKAGE":"private-key-secret-sentinel""#,
+            #""include_package":["private-key-secret-sentinel"],"Include_Package":[]"#
+        ] {
+            do {
+                try ConfigPreflight.check(#"{"inbounds":[{"type":"tun",\#(fields)}]}"#, capabilities: full, requireTUN: true)
+                fatalError("Unsupported iOS TUN option accepted")
+            } catch let failure as TunnelFailure {
+                precondition(failure.code == "unsupported_tun_option")
+                precondition(failure.message.contains("not supported on iOS") && failure.message.contains("Remove"))
+                precondition(!failure.message.contains("private-key-secret-sentinel"))
+            }
+        }
+        for fields in [
+            #""auto_route":true"#, #""strict_route":false"#, #""strict_route":null"#,
+            #""strict_route":true,"STRICT_ROUTE":false"#,
+            #""strict_route":true,"strict_route":false"#,
+            #""include_package":[],"exclude_package":null"#,
+            #""include_package":["old"],"Include_Package":null"#,
+            #""include_package":["old"],"include_package":[]"#
+        ] {
+            try ConfigPreflight.check(#"{"inbounds":[{"type":"tun",\#(fields)}]}"#, capabilities: full, requireTUN: true)
+        }
+        // Only the effective TUN inbound is constructed; replaced options and
+        // opaque application maps must not acquire iOS platform restrictions.
+        try ConfigPreflight.check(#"{"inbounds":[{"type":"tun","strict_route":true}],"Inbounds":[{"type":"tun"}]}"#, capabilities: full, requireTUN: true)
+        try ConfigPreflight.check(#"{"inbounds":[{"type":"tun"}],"outbounds":[{"type":"http","headers":{"strict_route":true,"include_package":["opaque"]}}]}"#, capabilities: full, requireTUN: true)
+        try rejects(#"{"inbounds":[{"type":"tun","include_package":true}]}"#, capabilities: full)
     }
 
     private static func scopedPrimitiveChecks(_ full: CoreCapabilities) throws {

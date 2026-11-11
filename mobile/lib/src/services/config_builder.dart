@@ -178,7 +178,8 @@ abstract final class ConfigBuilder {
           'address': [tunIpv4, tunIpv6],
           'mtu': settings.mtu,
           'auto_route': true,
-          'strict_route': true,
+          // The native mobile backend installs the VPN routes. Desktop
+          // strict_route is unsupported by the iOS Network Extension backend.
           'stack': 'gvisor',
         },
       ],

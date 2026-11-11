@@ -5,15 +5,19 @@ import Foundation
 final class TunnelStorage {
     static var configurationWrites = 0
     static var statusWrites: [TunnelStatus] = []
+    static var savedStatus: TunnelStatus?
+    static var sessionID: String? = "fixture"
     let appGroup: String
     init(appGroup: String) throws { self.appGroup = appGroup }
     func saveConfiguration(_ config: String, name: String, coreFingerprint: String) throws -> TunnelConfiguration {
         Self.configurationWrites += 1
-        return TunnelConfiguration(version: 1, sessionID: "fixture", config: config, name: name, coreFingerprint: coreFingerprint)
+        let sessionID = "fixture-\(Self.configurationWrites)"
+        Self.sessionID = sessionID
+        return TunnelConfiguration(version: 1, sessionID: sessionID, config: config, name: name, coreFingerprint: coreFingerprint)
     }
-    func writeStatus(_ status: TunnelStatus) throws { Self.statusWrites.append(status) }
-    func readStatus() -> TunnelStatus? { nil }
-    func currentSessionID() -> String? { nil }
+    func writeStatus(_ status: TunnelStatus) throws { Self.statusWrites.append(status); Self.savedStatus = status }
+    func readStatus() -> TunnelStatus? { Self.savedStatus }
+    func currentSessionID() -> String? { Self.sessionID }
 }
 struct CoreCapabilities {
     let version = "fixture-core"

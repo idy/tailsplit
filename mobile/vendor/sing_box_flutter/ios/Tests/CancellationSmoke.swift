@@ -25,7 +25,10 @@ struct CancellationSmoke {
         stopTimeoutAndLateCallback()
         engineDetachDoesNotStop()
         concurrentValidation()
-        print("Native cancellation: 16 scenarios passed (real plugin, stubbed OS; no VPN started).")
+        providerReadinessBeforeConnected()
+        restoredSessionReadiness()
+        providerRepliesRequireCurrentSession()
+        print("Native cancellation/readiness: 19 scenarios passed (real plugin, stubbed OS; no VPN started).")
     }
 
     private static func queueOwnership() {
@@ -241,7 +244,7 @@ struct CancellationSmoke {
         let stop = f.send("stop"); f.completeLoad([f.installed.snapshot()])
         let eventsAfterStop = f.events.count
         let fresh = f.send("checkConfig", ["config": "{}"])
-        lateProvider(try! JSONEncoder().encode(TunnelStatus("connected"))); flush()
+        lateProvider(try! JSONEncoder().encode(TunnelStatus("connected", sessionID: "fixture"))); flush()
         f.scheduler.fire(delay: 2)
         expect(old.code == "operation_cancelled" && old.count == 1 && stop.succeeded && fresh.count == 0, "Provider reply escaped command scope")
         expect(f.events.count == eventsAfterStop, "Retired provider reply changed status")
@@ -293,6 +296,81 @@ struct CancellationSmoke {
         let stops = f.session.stopCalls
         f.plugin.detachFromEngine(for: Registrar())
         expect(f.session.stopCalls == stops && f.session.status == .connected, "Engine detach stopped OS-owned tunnel")
+    }
+
+    private static func providerReadinessBeforeConnected() {
+        let f = Fixture()
+        let start = f.send("start", startArguments); f.runValidation()
+        expect(start.succeeded, "Start request did not finish")
+        let sessionID = TunnelStorage.sessionID!
+        TunnelStorage.savedStatus = TunnelStatus("connecting", sessionID: sessionID)
+        f.session.report(.connected)
+        expect(f.events.last == "connecting" && !f.events.contains("connected"), "OS status advertised readiness before core startup")
+        let pending = f.send("getStatus")
+        let reply = f.session.messages.removeFirst()
+        f.scheduler.fire(delay: 2) // Provider startup is blocked; the existing poll times out.
+        expect(pending.state == "connecting", "Missing provider response became connected")
+        TunnelStorage.savedStatus = TunnelStatus("error", message: "The tunnel could not start.", sessionID: sessionID)
+        f.session.report(.connected)
+        let failed = f.send("getStatus")
+        expect(failed.state == "error" && f.session.messages.isEmpty, "Matching startup error waited for a blocked provider queue")
+        expect((failed.value as? [String: Any])?["message"] as? String == "The tunnel could not start.", "Safe startup error was lost")
+        reply(try! JSONEncoder().encode(TunnelStatus("connected", sessionID: sessionID))); flush()
+        expect(f.events.last == "error" && !f.events.contains("connected"), "Timed-out readiness reply overrode startup failure")
+    }
+
+    private static func restoredSessionReadiness() {
+        let f = Fixture(ready: false)
+        TunnelStorage.savedStatus = TunnelStatus("connected", sessionID: "fixture")
+        f.session.status = .connected
+        let initialized = f.send("initialize", initializeArguments)
+        f.completeLoad([f.installed.snapshot()]); f.runValidation()
+        expect(initialized.succeeded && f.events.last == "connected", "Matching restored session lost readiness")
+        expect(f.send("getStatus").state == "connected" && f.session.startCalls == 0 && f.session.messages.isEmpty, "Restored readiness restarted or queried the core")
+        TunnelStorage.sessionID = "replacement"
+        for stale in ["connected", "error"] {
+            TunnelStorage.savedStatus = TunnelStatus(stale, message: "Old session", sessionID: "fixture")
+            f.session.report(.connected)
+            expect(f.events.last == "connecting", "Stale shared status affected replacement session")
+        }
+        TunnelStorage.savedStatus = TunnelStatus("connected")
+        f.session.report(.connected)
+        expect(f.events.last == "connecting", "Untagged shared status was trusted")
+        TunnelStorage.sessionID = nil
+        expect(f.send("getStatus").state == "connecting" && f.session.messages.isEmpty, "Unknown session was accepted or queried without an identity")
+    }
+
+    private static func providerRepliesRequireCurrentSession() {
+        let f = Fixture()
+        f.session.report(.connected)
+        for sessionID in [nil, "retired"] as [String?] {
+            for state in ["connected", "error"] {
+                let pending = f.send("getStatus")
+                f.session.messages.removeFirst()(try! JSONEncoder().encode(TunnelStatus(state, sessionID: sessionID))); flush()
+                expect(pending.state == "connecting", "Mismatched provider reply changed status")
+            }
+        }
+        let stale = f.send("getStatus")
+        TunnelStorage.sessionID = "replacement"
+        f.session.messages.removeFirst()(try! JSONEncoder().encode(TunnelStatus("connected", sessionID: "fixture"))); flush()
+        expect(stale.state == "connecting", "Reply for replaced current session was accepted")
+        TunnelStorage.savedStatus = TunnelStatus("connecting", sessionID: "replacement")
+        let ready = f.send("getStatus")
+        f.session.messages.removeFirst()(try! JSONEncoder().encode(TunnelStatus("connected", sessionID: "replacement"))); flush()
+        expect(ready.state == "connected" && f.send("getStatus").state == "connected", "Matching provider readiness was not retained")
+        f.session.report(.disconnected)
+        f.session.report(.connected)
+        expect(f.events.last == "connecting", "Prior OS connection readiness survived disconnect")
+        let pending = f.send("getStatus")
+        TunnelStorage.savedStatus = TunnelStatus("error", message: "Startup failed.", sessionID: "replacement")
+        f.session.messages.removeFirst()(try! JSONEncoder().encode(TunnelStatus("connected", sessionID: "replacement"))); flush()
+        expect(pending.state == "error", "Older readiness reply overrode a matching shared error")
+        f.session.report(.disconnected)
+        TunnelStorage.savedStatus = TunnelStatus("connecting", sessionID: "replacement")
+        f.session.report(.connected)
+        let failure = f.send("getStatus")
+        f.session.messages.removeFirst()(try! JSONEncoder().encode(TunnelStatus("error", message: "Startup failed.", sessionID: "replacement"))); flush()
+        expect(failure.state == "error" && f.send("getStatus").state == "error", "Matching provider error regressed to an older shared startup snapshot")
     }
 
     private static func concurrentValidation() {
@@ -355,6 +433,7 @@ private final class Fixture {
     init(ready: Bool = true, installed hasInstalled: Bool = true) {
         NETunnelProviderManager.reset()
         TunnelStorage.configurationWrites = 0; TunnelStorage.statusWrites = []
+        TunnelStorage.savedStatus = nil; TunnelStorage.sessionID = "fixture"
         CoreCapabilities.failure = nil
         plugin = SingBoxFlutterPlugin(scheduling: scheduler.scheduling)
         _ = plugin.onListen(withArguments: nil) { [weak self] event in

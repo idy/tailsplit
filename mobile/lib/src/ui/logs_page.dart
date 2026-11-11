@@ -1,4 +1,5 @@
 import 'package:adaptive_platform_ui/adaptive_platform_ui.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -6,6 +7,7 @@ import '../app.dart';
 import '../l10n/strings.dart';
 import '../state/app_controller.dart';
 import '../theme/tokens.dart';
+import '../theme/theme.dart';
 import 'common.dart';
 import 'native.dart';
 
@@ -104,8 +106,10 @@ class _LogsPageState extends State<LogsPage> {
       color: TsColors.logInk,
     );
 
-    return NativePage(
-      title: s.tabLogs,
+    final page = NativePage(
+      title: '',
+      largeTitle: false,
+      backgroundColor: TsColors.logBackground,
       scrollController: _scroll,
       actions: [
         PageAction(
@@ -146,24 +150,24 @@ class _LogsPageState extends State<LogsPage> {
       ],
       slivers: [
         SliverPadding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          sliver: DecoratedSliver(
-            decoration: BoxDecoration(
-              color: TsColors.logBackground,
-              borderRadius: BorderRadius.circular(TsSpace.panelRadius),
-            ),
-            sliver: SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-              sliver: lines.isEmpty
-                  ? SliverToBoxAdapter(child: _EmptyLogs(s: s, mono: mono))
-                  : SliverList.builder(
-                      itemCount: lines.length,
-                      itemBuilder: (context, i) => _LogRow(line: lines[i], mono: mono),
-                    ),
-            ),
-          ),
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+          sliver: lines.isEmpty
+              ? SliverToBoxAdapter(child: _EmptyLogs(s: s, mono: mono))
+              : SliverList.builder(
+                  itemCount: lines.length,
+                  itemBuilder: (context, i) => _LogRow(line: lines[i], mono: mono),
+                ),
         ),
       ],
+    );
+    // The terminal is the whole page on phones and tablets. Keep its toolbar
+    // and status indicators readable even when the surrounding app is light.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Theme(
+        data: TsTheme.material(Brightness.dark),
+        child: CupertinoTheme(data: TsTheme.cupertino(Brightness.dark), child: page),
+      ),
     );
   }
 

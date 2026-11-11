@@ -121,6 +121,7 @@ jobs:
         run: |
           python3 -I vendor/sing_box_flutter/tests/test_ios_cancellation.py
           python3 -I vendor/sing_box_flutter/tests/test_packet_tunnel_runtime.py
+          bash vendor/sing_box_flutter/ios/Tests/run-native-smoke.sh
       - name: Build the selected Apple core
         run: >-
           dart run sing_box_flutter build --target apple

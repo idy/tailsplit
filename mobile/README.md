@@ -130,6 +130,9 @@ download failed). These options only take effect in preview builds.
   link still requires approval; repeated gone links or explicit rejection stop
   the attempt. Control errors retain bounded, redacted server detail in Logs.
 - **Connecting** names its step and can be cancelled by turning the switch off.
+  Mobile TUN configuration omits desktop `strict_route`, which the iOS backend
+  rejects. Native preflight explains unsupported platform options before startup;
+  iOS reports connected only after the matching provider session is ready.
   Before starting, it refreshes a netmap older than a minute and refuses an exit
   node that Tailscale reports offline or no longer offers, or a device still
   waiting for admin approval. It never picks another node. Native start/stop
@@ -168,7 +171,8 @@ download failed). These options only take effect in preview builds.
   response, refusal, invalid list) in English or Chinese, with the raw detail in
   Logs. A sign-in whose result cannot be saved ends with a retryable error rather
   than waiting forever; storage failures keep changes in memory with Retry.
-- **Logs** are throttled and drop terminal escapes. A bounded queue retains the
+- **Logs** use the whole phone/tablet page without a title or card container;
+  filter, copy and clear remain in the toolbar. Updates are throttled and drop terminal escapes. A bounded queue retains the
   newest 2,000 lines; the hidden Logs tab keeps collecting without rebuilding.
   Opening the tab shows the latest lines and resumes following if it was at the end.
 
@@ -219,9 +223,11 @@ and iOS edge-swipe navigation. Release and Android configuration guards pass
 updates, theme reuse and control-error categories independent of diagnostic wording. Generated Split and
 Global configurations were also instantiated with the desktop's pinned sing-box
 1.14.4 engine. On a physical iPhone Air, an expired browser followup was diagnosed
-and repaired; the user subsequently confirmed sign-in succeeded. The reported
-empty exit list still needs verification with the account-scoped diagnostics.
-Real VPN traffic remains unverified. Android and tablet layouts have not been verified on devices or
+and repaired; the user subsequently confirmed sign-in succeeded. Real-account exit discovery is now confirmed by device diagnostics. A subsequent
+startup failure exposed desktop `strict_route` in the mobile configuration; it is
+removed and guarded by native preflight. Development build 0.1.0 (5), including
+fullscreen logs and session-matched readiness, is installed on iPhone Air.
+Latest physical connection/traffic verification remains blocked by device locking. Android and tablet layouts have not been verified on devices or
 emulators.
 
 ## Tests

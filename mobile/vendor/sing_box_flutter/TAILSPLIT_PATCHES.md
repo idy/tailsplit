@@ -43,6 +43,12 @@ Dart API remain upstream-compatible.
 
 ## Tunnel runtime recovery
 
+The application no longer sends desktop `strict_route` in mobile TUN options.
+iOS preflight rejects that option and nonempty package filters with fixed,
+actionable messages before starting. OS connection status alone is not readiness:
+the host requires a matching configuration-session status from the provider,
+surfaces matching startup errors immediately, and rejects stale provider replies.
+
 - iOS DNS refresh reapplies the complete network settings without first removing
   TUN routes. A failed settings update still reports an actionable tunnel failure.
 - The selected core's `CommandServer.Close` cancels its context before waiting for
