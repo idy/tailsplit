@@ -684,7 +684,7 @@
       // Confirmation explicitly covers disconnecting and losing Global protection.
       // The server rechecks inactivity under the app's operation gate.
       if (desktopLive?.active && !(await desktopAction('disconnect'))) return;
-      if (state.revision !== revision || state.external || connectionLost || desktopLive?.active) return;
+      if (state.revision !== revision || state.generation !== generation || state.external || connectionLost || desktopLive?.active) return;
       operationError = null; stateRequest++;
       state.busy = true; updateActions();
       try {
@@ -2597,9 +2597,10 @@
   }
   function renderHome(live = desktopLive || {}) {
     const global = savedMode() === 'global';
+    const activeGlobal = (live.routing_mode || savedMode()) === 'global';
     const connected = !connectionLost && networkActive(live) && live.state === 'running';
     const matchingState = Boolean(live.active_revision) && live.active_revision === state.revision;
-    const blocked = !connectionLost && live.active && global && live.state === 'blocked';
+    const blocked = !connectionLost && live.active && activeGlobal && live.state === 'blocked';
     const setup = connectionSetup;
     const working = Boolean(live.active || pendingSetupCancel || setup && setup.stage !== 'failed');
     const error = connectionLost || live.state === 'failed' || setup?.stage === 'failed';
@@ -2628,7 +2629,7 @@
     const control = $('#home-connect');
     control.disabled = !state.loaded || !live.desktop || (working ? $('#desktop-disconnect').disabled :
       setup?.stage === 'failed' ? $('#connection-setup-retry').disabled : $('#desktop-connect').disabled);
-    control.setAttribute('aria-checked', String(connected));
+    control.setAttribute('aria-checked', String(networkActive(live)));
     control.setAttribute('aria-busy', String(working && !connected && !blocked));
     const action = working ? (networkActive(live) ? '断开' : '取消连接') : error ? '重试连接' : '开启连接';
     control.setAttribute('aria-label', t(action));
@@ -2662,7 +2663,7 @@
     map.dataset.blocked = String(blocked);
     setStatusText('#home-mode', t(global ? '全局代理' : '规则分流'));
     setStatusText('#home-capture', t(global || fieldValue(state.savedValues, 'tun.enabled') ? '整机流量接管' : '应用代理'));
-    renderSplitMap(homeRoutes({ global, applied, blocked }));
+    renderSplitMap(homeRoutes({ global, applied, blocked: blocked && matchingState && global }));
     renderHomeRates(applied);
     setStatusText('#home-routing-caption', t(!state.savedValid ? '配置尚未有效，图中路径未生效。' : blocked ? '出口不可用，接管流量已阻断；此图展示已保存路由。' :
       applied ? '实线为已连接路由；上下行速度按实际转发字节计算，未取得数据时显示 —。' : '路由预览 · 虚线表示尚未生效的已保存路径。'));

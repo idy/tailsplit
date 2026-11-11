@@ -1,11 +1,13 @@
 package configweb
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 
+	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/tray"
 )
 
@@ -32,6 +34,7 @@ func (s *Server) recoverConfig(w http.ResponseWriter, r *http.Request, repair bo
 	}
 	active := errors.New("请先断开连接，再重建配置。")
 	valid := errors.New("当前配置有效，无需重建。")
+	var written []byte
 	check := func(snapshot tray.Snapshot) error {
 		data, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)
 		if err != nil {
@@ -50,6 +53,11 @@ func (s *Server) recoverConfig(w http.ResponseWriter, r *http.Request, repair bo
 		if snapshot.Active {
 			return active
 		}
+		if repair {
+			written, err = tray.PrepareConfigRepair(s.options.ConfigPath, data)
+			return err
+		}
+		written = bytes.Clone(tailsplit.DefaultYAML)
 		return nil
 	}
 	var backup string
@@ -84,6 +92,12 @@ func (s *Server) recoverConfig(w http.ResponseWriter, r *http.Request, repair bo
 	data, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "read", "无法读取配置文件："+err.Error())
+		return
+	}
+	// Recovery must acknowledge its own exact bytes, not an external edit that
+	// landed after the operation gate released and before this response read.
+	if !bytes.Equal(data, written) {
+		fail(w, http.StatusConflict, "conflict", "配置文件已由其他操作修改，请重新读取后再保存。")
 		return
 	}
 	doc := s.describe(data)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -165,7 +166,7 @@ func New(options Options) (*Controller, error) {
 		return nil, err
 	}
 	controller := &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}
-	if err := cleanupConnectionSnapshots(options.ConfigPath); err != nil {
+	if err := cleanupStartupConnectionSnapshots(options.ConfigPath); err != nil {
 		controller.RecordDesktopEvent("Could not clean orphaned connection snapshots: " + err.Error())
 	}
 	return controller, nil
@@ -332,8 +333,8 @@ func (c *Controller) Start() error {
 }
 
 // StartRevision binds an explicit UI connection to the displayed document. The
-// child reads a private snapshot beside the original (preserving relative paths),
-// so an external edit after dispatch cannot change its gateway or routing mode.
+// child reads a private snapshot preserving the original path base, so an
+// external edit after dispatch cannot change its gateway or routing mode.
 func (c *Controller) StartRevision(expected string) error {
 	return c.startRevision(expected, "")
 }
@@ -364,9 +365,9 @@ func (c *Controller) startRevision(expected, operation string) error {
 	return nil
 }
 
-// Every traffic helper receives an immutable source document. The revision is
-// derived from this private path, so a saved-file edit cannot change either the
-// running policy or the revision later exposed as active.
+// Every traffic helper receives an immutable captured document. Keep its source
+// revision even when a read-only source directory requires a relocated snapshot
+// with absolute paths; a later saved-file edit cannot change the running policy.
 func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expected string) error {
 	path, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
 	if err != nil {
@@ -382,6 +383,7 @@ func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expe
 		cleanup()
 		return err
 	}
+	c.activeRevision = fmt.Sprintf("%x", sha256.Sum256(data))
 	done := c.done
 	go func() { <-done; cleanup() }()
 	return nil
@@ -554,7 +556,7 @@ func (c *Controller) startOperationLocked(mode, focus, operation string) error {
 	var err error
 	if mode == "proxy" || mode == "tun" {
 		var data []byte
-		data, _, err = ReadConfigDocument(c.options.ConfigPath)
+		data, _, err = readStartupConfigDocument(c.options.ConfigPath)
 		if err == nil {
 			err = c.startConnectionLocked(mode, focus, data, "")
 		}
@@ -606,7 +608,7 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	var revision string
 	if len(c.options.HelperArgs) == 0 || mode == "proxy" || mode == "tun" {
 		var err error
-		data, revision, err = ReadConfigDocument(configPath)
+		data, revision, err = readStartupConfigDocument(configPath)
 		if err != nil {
 			return err
 		}
@@ -662,7 +664,7 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 		args = append(args, "--exit", focus)
 	}
 	command := exec.Command(c.options.Helper, args...)
-	command.Dir = filepath.Dir(configPath)
+	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
 	command.Stderr = c.log
 	command.Stdout = &eventWriter{callback: c.onEvent}

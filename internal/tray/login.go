@@ -262,6 +262,17 @@ func (c *Controller) AuthorizeLoginBrowserStart(request LoginBrowserRequest, sta
 	if request.URL != c.snapshot.LoginURL || !validLoginURL(request.URL) {
 		return ErrLoginURLChanged
 	}
+	// Discovery can outlive the selected device's login state. Match Snapshot's
+	// live traffic owner while locked; rejecting this attempt does not revoke it.
+	snapshot := c.snapshot
+	snapshot.TrafficExit = c.trafficExit
+	backend := snapshot.BackendState
+	if exit := snapshot.LoginExitID(); exit != tailsplit.MainExit {
+		backend = snapshot.Exits[exit].BackendState
+	}
+	if backend == "NeedsMachineAuth" {
+		return ErrOperationCanceled
+	}
 	return start()
 }
 

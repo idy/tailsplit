@@ -8,9 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/privatefs"
+
+	"gopkg.in/yaml.v3"
 )
 
 const connectionSnapshotPrefix = ".tailsplit-connect-"
@@ -38,6 +41,36 @@ func lockConnectionSnapshotDirectory(configPath string) (func() error, error) {
 }
 
 func createConnectionSnapshot(configPath string, data []byte) (string, func(), error) {
+	path, cleanup, err := createConnectionSnapshotBeside(configPath, data)
+	if err == nil || !errors.Is(err, os.ErrPermission) && !errors.Is(err, syscall.EROFS) {
+		return path, cleanup, err
+	}
+	// Readable configuration can live in a managed, read-only directory. Only
+	// this startup snapshot falls back to private state; editing stays strict.
+	config, err := startupConfig(configPath, data)
+	if err != nil {
+		return "", nil, err
+	}
+	// A relocated helper document needs absolute filesystem paths. Its policy
+	// comes solely from captured bytes; the controller retains their revision.
+	data, err = yaml.Marshal(config)
+	if err != nil {
+		return "", nil, err
+	}
+	statePath := stateConnectionSnapshotPath(config)
+	if err := privatefs.EnsureDir(config.StateDir); err != nil {
+		return "", nil, err
+	}
+	if err := privatefs.EnsureDir(filepath.Dir(statePath)); err != nil {
+		return "", nil, err
+	}
+	if err := cleanupConnectionSnapshotsAt(configPath, statePath); err != nil {
+		return "", nil, err
+	}
+	return createConnectionSnapshotBeside(statePath, data)
+}
+
+func createConnectionSnapshotBeside(configPath string, data []byte) (string, func(), error) {
 	unlockDirectory, err := lockConnectionSnapshotDirectory(configPath)
 	if err != nil {
 		return "", nil, err
@@ -63,7 +96,11 @@ func createConnectionSnapshot(configPath string, data []byte) (string, func(), e
 // snapshots, foreign files and links are never adopted. The OS releases a dead
 // creator's lock, even when an unrelated live process has since reused its PID.
 func cleanupConnectionSnapshots(configPath string) error {
-	directory := filepath.Dir(configPath)
+	return cleanupConnectionSnapshotsAt(configPath, configPath)
+}
+
+func cleanupConnectionSnapshotsAt(configPath, snapshotPath string) error {
+	directory := filepath.Dir(snapshotPath)
 	entries, err := os.ReadDir(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -81,7 +118,7 @@ func cleanupConnectionSnapshots(configPath string) error {
 	if !found {
 		return nil // Do not create snapshot metadata for unrelated desktop operations.
 	}
-	unlockDirectory, err := lockConnectionSnapshotDirectory(configPath)
+	unlockDirectory, err := lockConnectionSnapshotDirectory(snapshotPath)
 	if err != nil {
 		return err
 	}

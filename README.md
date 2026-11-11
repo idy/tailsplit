@@ -100,7 +100,11 @@ even when the panel cannot open. Each connection snapshot holds an OS file lock
 for its lifetime. On the next launch, snapshots with released locks are reclaimed
 even if an old PID has been reused; locked snapshots, unrecognized files and links
 are preserved. Snapshot creation and cleanup share a short directory lock so an
-in-progress write cannot be mistaken for an orphan.
+in-progress write cannot be mistaken for an orphan. Native startup can read a
+symlinked configuration. If its source directory is read-only, a writable
+`state_dir` holds the private traffic snapshot instead; relative paths still use
+the original configuration argument's directory, and the active revision identifies
+the captured source bytes. Web editing and recovery retain strict file checks.
 
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks

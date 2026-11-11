@@ -4951,6 +4951,65 @@ test('a changed file during rebuild confirmation is never overwritten', async ()
   assert.equal(mutations(app).length, 0);
 });
 
+for (const action of ['repair', 'rebuild']) test(`${action} preserves draft edits made while the confirmed recovery disconnect waits`, async () => {
+  for (const editor of ['form', 'yaml']) {
+    const original = { ...multiExitDocument('100.101.0.11'), valid: false, repairable: true, error: 'obsolete dns.listen' };
+    const app = await page({ desktop: true, state: 'running', active: true, mode: 'tun', routing_mode: 'global' }, '', {}, original);
+    const stopped = deferred();
+    app.override = request => {
+      if (request.path === '/api/action' && request.data.action === 'disconnect') return stopped.promise.then(() => {
+        Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+        return response({ ok: true });
+      });
+      if (request.path === '/api/preview') {
+        const edited = request.data.changes?.log_level;
+        return response({ ...original, valid: true, yaml: edited ? `log_level: ${edited}\n${request.data.yaml}` : request.data.yaml,
+          values: { ...original.values, ...(edited ? { log_level: edited } : {}) } });
+      }
+    };
+    const recovery = app.$(`#notice-${action}`).emit('click');
+    const dialog = app.$(action === 'repair' ? '#repair-config-dialog' : '#rebuild-config-dialog');
+    dialog.returnValue = action; dialog.close();
+    await settle();
+    assert.ok(app.requests.some(request => request.path === '/api/action' && request.data.action === 'disconnect'));
+    if (editor === 'form') {
+      await app.input('#level', 'debug'); await app.flushTimers();
+      await app.$('#yaml-tab').emit('click'); // Inspect the form-generated draft.
+    } else {
+      await app.$('#yaml-tab').emit('click');
+      await app.input('#raw-yaml', original.yaml + '# unsaved edit while disconnecting\n');
+    }
+    const draft = app.$('#raw-yaml').value;
+    assert.notEqual(draft, original.yaml, JSON.stringify({ editor, disabled: app.$('#level').disabled, previews: app.requests.filter(request => request.path === '/api/preview').map(request => request.data), notice: app.$('#notice-detail').textContent }));
+    stopped.resolve(); await recovery;
+    assert.equal(app.$('#raw-yaml').value, draft, `${action}/${editor} lost the concurrent draft`);
+    assert.deepEqual(mutations(app).map(request => request.path === '/api/action' ? request.data.action : request.path), ['disconnect']);
+    assert.equal(app.config, original);
+    assert.equal(app.$('#settings-draft').hidden, false);
+  }
+});
+
+for (const mode of ['global', 'split']) test(`blocked live Global remains checked and visible with saved ${mode} policy`, async () => {
+  const initial = multiExitDocument('100.101.0.11');
+  initial.values.rules = { mode, source: 'builtin', default_exit: 'main', global_exit: 'office', final: 'direct' };
+  const snapshot = { ...officeSnapshot(), desktop: true, active: true, mode: 'tun', state: 'blocked', routing_mode: 'global',
+    active_revision: mode === 'global' ? initial.revision : 'older-active-global-revision' };
+  const app = await page(snapshot, '', { page: 'home' }, initial);
+  assert.equal(app.$('#home-status').textContent, '出口不可用 · 已阻断');
+  assert.match(app.$('#home-description').textContent, /全局模式正在阻断流量.*手动断开会恢复系统网络/);
+  assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'true');
+  assert.equal(app.$('#home-connect').attributes.get('aria-busy'), 'false');
+  assert.equal(app.$('#home-connect').attributes.get('aria-label'), '断开');
+  assert.equal(app.$('#home-wires-live').children.length, 0);
+  if (mode === 'split') {
+    assert.equal(app.$('#split-map').dataset.global, 'false', 'map still previews the saved Split policy');
+    assert.ok(app.$('#home-routes').children.every(row => row.children[0].className.endsWith('tone-planned')));
+  }
+  await app.$('#home-connect').emit('click');
+  assert.equal(app.snapshot.active, false, 'checked active control explicitly disconnects when requested');
+  assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'false');
+});
+
 test('home fans out saved destinations and only marks confirmed routes as in effect', async () => {
   const documentWith = (rules) => { const value = multiExitDocument('100.101.0.11'); value.values.rules = rules; return value; };
   const split = { mode: 'split', default_exit: 'main', global_exit: 'office', final: 'direct', source: 'builtin',
