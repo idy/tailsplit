@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -73,7 +74,7 @@ TailnetPeer _peer(String name, {bool online = true, List<String> addresses = con
       isExitNode: true,
     );
 
-TailnetSnapshot _snapshot(List<TailnetPeer> peers, {DateTime? at}) => TailnetSnapshot(
+TailnetSnapshot _snapshot(List<TailnetPeer> peers, {DateTime? at, DateTime? keyExpiry}) => TailnetSnapshot(
       selfName: 'phone',
       selfFqdn: 'phone.example.ts.net',
       selfAddresses: const ['100.64.0.2'],
@@ -83,6 +84,7 @@ TailnetSnapshot _snapshot(List<TailnetPeer> peers, {DateTime? at}) => TailnetSna
       userDisplayName: 'User',
       stableNodeId: 'self',
       exitNodes: peers,
+      keyExpiry: keyExpiry,
       fetchedAt: at ?? DateTime.now(),
     );
 
@@ -99,6 +101,28 @@ Future<(AppController, FakeVpn, Directory)> _controller({
     ruleDownload: download,
   );
   return (app, vpn, root);
+}
+
+Future<File> _savedState(Directory root, ExitProfile profile, String state) async {
+  final directory = Directory('${root.path}/shared/tailscale');
+  await TsnetState.write(
+    stateDirectory: directory,
+    identity: profile.identity,
+    snapshot: profile.snapshot!,
+  );
+  final file = File('${directory.path}/${TsnetState.stateFileName}');
+  if (state == 'unreadable') {
+    await file.writeAsString('{}');
+    return file;
+  }
+  final store = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+  final profileKey = utf8.decode(base64.decode(store['_current-profile'] as String));
+  final prefs = jsonDecode(utf8.decode(base64.decode(store[profileKey] as String))) as Map<String, dynamic>;
+  if (state == 'logged-out') prefs['LoggedOut'] = true;
+  if (state == 'missing-key') (prefs['Config'] as Map).remove('PrivateNodeKey');
+  store[profileKey] = base64.encode(utf8.encode(jsonEncode(prefs)));
+  await file.writeAsString(jsonEncode(store));
+  return file;
 }
 
 void main() {
@@ -222,6 +246,108 @@ void main() {
   });
 
   group('connection preflight', () {
+    for (final state in ['logged-out', 'missing-key', 'unreadable']) {
+      test('$state native state requires sign-in without discarding the exit', () async {
+        final (app, vpn, root) = await _controller();
+        addTearDown(() async {
+          app.dispose();
+          await vpn.statuses.close();
+          await root.delete(recursive: true);
+        });
+        app.settings = const MobileSettings(source: RuleSource.none);
+        final profile = ExitProfile(
+          identity: await TailscaleIdentity.generate(hostname: 'phone'),
+          snapshot: _snapshot([_peer('tokyo')]),
+          nodeId: 'id-tokyo',
+          nodeName: 'tokyo',
+          nodeAddress: '100.64.0.9',
+        );
+        app.exit = profile;
+        final file = await _savedState(root, profile, state);
+        final before = await file.readAsString();
+        await app.connect();
+        expect(vpn.starts, 0);
+        expect(app.problem, AppProblem.needsSignIn);
+        expect(app.preparing, isFalse);
+        expect(app.exit, same(profile));
+        expect(await file.readAsString(), before,
+            reason: 'A connect must not silently restore a logged-out identity.');
+      });
+    }
+
+    test('signing in again repairs native state while keeping the chosen exit', () async {
+      final identity = await TailscaleIdentity.generate(hostname: 'phone');
+      final snapshot = _snapshot([_peer('tokyo')]);
+      final (app, vpn, root) = await _controller(client: () => FakeClient(
+        loginEvents: Stream.value(LoginAuthorized(snapshot, identity: identity)),
+      ));
+      addTearDown(() async {
+        app.dispose();
+        await vpn.statuses.close();
+        await root.delete(recursive: true);
+      });
+      app.settings = const MobileSettings(source: RuleSource.none);
+      app.exit = ExitProfile(identity: identity, snapshot: snapshot,
+          nodeId: 'id-tokyo', nodeName: 'tokyo', nodeAddress: '100.64.0.9');
+      await _savedState(root, app.exit!, 'logged-out');
+      await app.connect();
+      expect(app.problem, AppProblem.needsSignIn);
+
+      final finished = Completer<void>();
+      app.addListener(() {
+        if (app.signIn == SignInPhase.idle && !finished.isCompleted) finished.complete();
+      });
+      await app.signInExit();
+      await finished.future.timeout(const Duration(seconds: 5));
+      expect(app.problem, isNull);
+      expect(app.exit!.nodeId, 'id-tokyo');
+      expect(await TsnetState.readLoggedOut(Directory('${root.path}/shared/tailscale')), isFalse);
+      await app.connect();
+      expect(vpn.starts, 1);
+      expect(app.problem, isNull);
+    });
+
+    test('expired cached keys cannot start when revalidation is unavailable', () async {
+      final (app, vpn, root) = await _controller();
+      addTearDown(() async {
+        app.dispose();
+        await vpn.statuses.close();
+        await root.delete(recursive: true);
+      });
+      app.settings = const MobileSettings(source: RuleSource.none);
+      app.exit = ExitProfile(
+        identity: await TailscaleIdentity.generate(hostname: 'phone'),
+        snapshot: _snapshot([_peer('tokyo')], keyExpiry: DateTime.utc(2020)),
+        nodeId: 'id-tokyo', nodeName: 'tokyo', nodeAddress: '100.64.0.9',
+      );
+      await _savedState(root, app.exit!, 'active');
+      await app.connect();
+      expect(vpn.starts, 0);
+      expect(app.problem, AppProblem.needsSignIn);
+    });
+
+    test('a fresh control snapshot can renew an expired cached key', () async {
+      final snapshot = _snapshot([_peer('tokyo')],
+          keyExpiry: DateTime.now().add(const Duration(days: 30)));
+      final (app, vpn, root) = await _controller(client: () => FakeClient(snapshot: snapshot));
+      addTearDown(() async {
+        app.dispose();
+        await vpn.statuses.close();
+        await root.delete(recursive: true);
+      });
+      app.settings = const MobileSettings(source: RuleSource.none);
+      app.exit = ExitProfile(
+        identity: await TailscaleIdentity.generate(hostname: 'phone'),
+        snapshot: _snapshot([_peer('tokyo')], keyExpiry: DateTime.utc(2020)),
+        nodeId: 'id-tokyo', nodeName: 'tokyo', nodeAddress: '100.64.0.9',
+      );
+      await _savedState(root, app.exit!, 'active');
+      await app.connect();
+      expect(vpn.starts, 1);
+      expect(app.problem, isNull);
+      expect(app.exit!.snapshot!.keyExpiry, snapshot.keyExpiry);
+    });
+
     test('refuses an exit node that Tailscale reports offline', () async {
       final stale = _snapshot([_peer('tokyo')], at: DateTime(2020));
       final (app, vpn, _) = await _controller(

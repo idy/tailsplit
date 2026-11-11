@@ -38,6 +38,17 @@ class ReleaseIdentityTests(unittest.TestCase):
     def test_accepts_matching_app_store_vpn_profile(self):
         self.check(self.profile)
 
+    def test_accepts_omitted_get_task_allow(self):
+        del self.profile["Entitlements"]["get-task-allow"]
+        self.check(self.profile)
+
+    def test_rejects_malformed_get_task_allow(self):
+        for value in (None, "false", 0, 1):
+            profile = copy.deepcopy(self.profile)
+            profile["Entitlements"]["get-task-allow"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.check(profile)
+
     def test_rejects_another_team(self):
         for key in ("TeamIdentifier", "com.apple.developer.team-identifier"):
             profile = copy.deepcopy(self.profile)

@@ -133,10 +133,12 @@ The failure states (offline node, first rule-list download failure, connecting
 step) and the Exit Node, picker and Settings screens at the accessibility-extra-large
 text size were also captured on that simulator.
 
-Static analysis is clean. The default test run passes 69 tests and skips six
+Static analysis is clean. The default test run passes 81 tests and skips six
 checks that require external Go helper services; `test/hardening_test.dart` covers
-cancelled connects, offline/missing nodes, failed sign-in saves, storage errors, the
-rule-list cache, resolver and CIDR parsing, and damaged settings.
+cancelled connects, offline/missing nodes, logged-out or expired session recovery,
+failed sign-in saves, storage errors, the rule-list cache, resolver and CIDR parsing,
+and damaged settings. `test/vpn_service_test.dart` covers fast disconnect events,
+pending status queries, explicit timeouts and listener cleanup.
 `test/cleanup_test.dart` checks bounded log ordering and notifications, inactive-tab
 updates, theme reuse and control-error categories independent of diagnostic wording. Generated Split and
 Global configurations were also instantiated with the desktop's pinned sing-box

@@ -51,7 +51,8 @@ def validate_profile(profile, bundle_id, app_group):
         raise ValueError("Provisioning entitlements have a different Apple team")
     if entitlements.get("application-identifier") != f"{TEAM}.{bundle_id}":
         raise ValueError("Provisioning profile does not match the exact application identifier")
-    if entitlements.get("get-task-allow") is not False or profile.get("ProvisionedDevices") or profile.get("ProvisionsAllDevices"):
+    # Distribution profiles may omit this development-only entitlement.
+    if entitlements.get("get-task-allow", False) is not False or profile.get("ProvisionedDevices") or profile.get("ProvisionsAllDevices"):
         raise ValueError("An App Store distribution profile is required")
     if app_group not in entitlements.get("com.apple.security.application-groups", []):
         raise ValueError("Provisioning profile is missing the shared App Group")

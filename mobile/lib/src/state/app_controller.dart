@@ -670,11 +670,29 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
 
+      // A native logout must not be undone using the app's cached identity.
+      // Keep the exit selection and let an explicit sign-in replace the state.
+      final stateFile = File('${_paths.tailscaleState.path}/${TsnetState.stateFileName}');
+      if (await stateFile.exists()) {
+        final loggedOut = await TsnetState.readLoggedOut(_paths.tailscaleState);
+        final nodeKey = await TsnetState.readNodePrivateKey(_paths.tailscaleState);
+        if (cancelled()) return;
+        if (loggedOut != false || nodeKey == null) {
+          _setProblem(AppProblem.needsSignIn);
+          _log('warn', 'The saved Tailscale session needs a new sign-in.');
+          return;
+        }
+      }
+      if (cancelled()) return;
+
       // 1. Check the node against Tailscale rather than a stale netmap; never
       // connect through a node that is known to be gone or offline.
       var profile = current;
       final fetched = profile.snapshot?.fetchedAt;
-      var fresh = fetched != null && DateTime.now().difference(fetched) < freshSnapshot;
+      bool expired(TailnetSnapshot? snapshot) =>
+          snapshot?.keyExpiry != null && !snapshot!.keyExpiry!.isAfter(DateTime.now());
+      var fresh = fetched != null && DateTime.now().difference(fetched) < freshSnapshot &&
+          !expired(profile.snapshot);
       if (!fresh) {
         try {
           final snapshot = await _fetchSnapshot(profile, timeout: const Duration(seconds: 12));
@@ -692,6 +710,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           if (cancelled()) return;
           _log('warn', 'Could not check the exit node (${describeFailure(error)}); using its saved status.');
         }
+      }
+      if (expired(profile.snapshot)) {
+        _setProblem(AppProblem.needsSignIn);
+        _log('warn', 'The saved Tailscale key has expired; sign in again.');
+        return;
       }
       if (fresh) {
         final snapshot = profile.snapshot!;
@@ -723,7 +746,6 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       final identity = await _liveIdentity(profile.identity);
-      final stateFile = File('${_paths.tailscaleState.path}/tailscaled.state');
       final snapshot = profile.snapshot;
       if (!await stateFile.exists() && snapshot != null) {
         await TsnetState.write(

@@ -39,15 +39,28 @@ class VpnService {
 
   Future<void> stop() => _plugin.stop();
 
-  /// Completes once the service reports [state], or after [timeout].
+  /// Completes when the service reports [state]; throws on a status-query
+  /// failure, stream error or timeout. Subscribe before querying so a fast
+  /// transition cannot fall between the snapshot and the event listener.
   Future<void> waitFor(
     VpnConnectionState state, {
     Duration timeout = const Duration(seconds: 15),
   }) async {
-    final current = await currentStatus();
-    if (current.state == state) return;
-    await status
-        .firstWhere((event) => event.state == state)
-        .timeout(timeout, onTimeout: () => current);
+    final reached = Completer<void>();
+    void observe(VpnStatus status) {
+      if (status.state == state && !reached.isCompleted) reached.complete();
+    }
+    void fail(Object error, StackTrace stack) {
+      if (!reached.isCompleted) reached.completeError(error, stack);
+    }
+
+    final subscription = status.listen(observe, onError: fail);
+    try {
+      // A matching event also completes the wait if the snapshot query stalls.
+      unawaited(currentStatus().then(observe, onError: fail));
+      await reached.future.timeout(timeout);
+    } finally {
+      await subscription.cancel();
+    }
   }
 }
