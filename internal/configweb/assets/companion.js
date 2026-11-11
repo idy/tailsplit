@@ -6,7 +6,9 @@
   const retryButton = document.querySelector('#page-companion-retry');
   const locale = window.TailSplitI18n;
   const preferences = window.TailSplitCompanionPreferences;
-  const hostByPet = new WeakMap();
+  const hostsByPet = new WeakMap();
+  let mountTail = Promise.resolve();
+  let mountLease = null;
   let enabled = false;
   let ready = false;
   let saving = false;
@@ -66,13 +68,63 @@
     return fallbackLoading;
   }
 
+  function rememberHosts(lease) {
+    for (const host of document.querySelectorAll('peetty-companion')) {
+      if (!lease.previous.has(host)) lease.hosts.add(host);
+    }
+  }
+
+  function removeHosts(hosts) {
+    for (const host of hosts || []) host.remove();
+  }
+
   function dispose(instance) {
+    if (mountLease && mountLease.instance === instance) rememberHosts(mountLease);
     try { if (typeof instance?.destroy === 'function') instance.destroy(); }
     catch (_) { /* A broken CDN cleanup must not prevent embedded recovery. */ }
     finally {
-      // The adapter owns this exact host, even if destroy throws before removal.
-      hostByPet.get(instance)?.remove();
-      hostByPet.delete(instance);
+      removeHosts(hostsByPet.get(instance));
+      hostsByPet.delete(instance);
+    }
+  }
+
+  // Only one SDK mount may own new DOM hosts at a time. Its lease survives
+  // cancellation until the mount settles and its additions have been removed.
+  // This makes cleanup independent of the SDK's private instance fields and
+  // prevents an old mount from claiming or deleting a replacement's host.
+  async function mountOne(current) {
+    if (current !== generation || !ready || !enabled || suspended || document.hidden || saving) return;
+    const lease = { current, instance: null, previous: new Set(document.querySelectorAll('peetty-companion')), hosts: new Set() };
+    mountLease = lease;
+    let next = null;
+    let committed = false;
+    try {
+      next = sdk.createPeetty({
+        figure: 'miru', size: 88, activity: 'lively',
+        language: locale.language, greet: false, chat: false, zIndex: 20,
+      });
+      lease.instance = next;
+      if (!next || typeof next.mount !== 'function' || typeof next.destroy !== 'function' || typeof next.setLanguage !== 'function') {
+        throw new Error('Incompatible companion instance.');
+      }
+      hostsByPet.set(next, lease.hosts);
+      pet = next;
+      await next.mount();
+      rememberHosts(lease);
+      if (current !== generation || pet !== next) return;
+      const live = new Set(document.querySelectorAll('peetty-companion'));
+      const host = [...lease.hosts].find((candidate) => live.has(candidate) && candidate.shadowRoot?.querySelector('[data-action="hide"]'));
+      if (!host) throw new Error('Missing companion host.');
+      host.shadowRoot.querySelector('[data-action="hide"]').addEventListener('click', () => { void save(false); });
+      committed = true;
+    } finally {
+      rememberHosts(lease);
+      if (!committed || current !== generation || pet !== next) {
+        dispose(next);
+        removeHosts(lease.hosts);
+        if (pet === next) pet = null;
+      }
+      mountLease = null;
     }
   }
 
@@ -96,41 +148,18 @@
     }
     if (pet || saving) return;
     const current = ++generation;
-    let next = null;
     let fallbackAttempted = false;
-    const previousHosts = new Set(document.querySelectorAll('peetty-companion'));
     try {
       if (!bundled && needsBundled()) {
         fallbackAttempted = true;
         await useBundled();
       }
       if (current !== generation) return;
-      next = sdk.createPeetty({
-        figure: 'miru', size: 88, activity: 'lively',
-        language: locale.language, greet: false, chat: false, zIndex: 20,
-      });
-      if (!next || typeof next.mount !== 'function' || typeof next.destroy !== 'function' || typeof next.setLanguage !== 'function') {
-        throw new Error('Incompatible companion instance.');
-      }
-      pet = next;
-      await next.mount();
-      if (current !== generation || pet !== next) {
-        dispose(next);
-        return;
-      }
-      const host = document.querySelector('peetty-companion');
-      if (!host) throw new Error('Missing companion host.');
-      hostByPet.set(next, host);
-      host.shadowRoot.querySelector('[data-action="hide"]').addEventListener('click', () => { void save(false); });
+      const task = mountTail.then(() => mountOne(current));
+      mountTail = task.catch(() => {});
+      await task;
     } catch (_) {
-      dispose(next);
       if (current !== generation) return;
-      if (pet === next) pet = null;
-      // A failed mount may have inserted a host before rejecting. Remove only
-      // its additions, and never run this sweep for a canceled generation.
-      for (const host of document.querySelectorAll('peetty-companion')) {
-        if (!previousHosts.has(host)) host.remove();
-      }
       if (!bundled && !fallbackAttempted) {
         try {
           await useBundled();
@@ -153,7 +182,13 @@
 
   reducedMotion?.addEventListener('change', checkCompatibility);
   if (window.MutationObserver) {
-    new window.MutationObserver(checkCompatibility).observe(document.body, { childList: true, characterData: true, subtree: true });
+    new window.MutationObserver(() => {
+      if (mountLease) {
+        rememberHosts(mountLease);
+        if (mountLease.current !== generation) removeHosts(mountLease.hosts);
+      }
+      checkCompatibility();
+    }).observe(document.body, { childList: true, characterData: true, subtree: true });
   }
 
   async function save(value) {

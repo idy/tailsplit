@@ -101,17 +101,20 @@ for (const interruption of ['toggle off', 'document hidden', 'page hidden']) {
   });
 }
 
-test('late old mount does not leave an orphan or replace the active Hide action', async () => {
+test('canceled old mount cleans up before a replacement receives the Hide action', async () => {
   const state = await setup();
   state.setEnabled(false);
   await flush();
   state.setEnabled(true);
   await flush();
-  assert.equal(state.instances.length, 2);
-  const [old, active] = state.instances;
-  active.finish();
-  await flush();
+  assert.equal(state.instances.length, 1, 'the replacement waits for the old mount');
+  const old = state.instances[0];
   old.finish();
+  await flush();
+  assert.equal(state.instances.length, 2);
+  assert.equal(state.overlays.size, 0);
+  const active = state.instances[1];
+  active.finish();
   await flush();
   assert.deepEqual([...state.overlays], [active]);
   active.hide.dispatchEvent(new Event('click'));
@@ -125,8 +128,11 @@ test('a page restored before its old mount settles keeps only the restored compa
   const state = await setup();
   state.window.dispatchEvent(new Event('pagehide'));
   state.window.dispatchEvent(new Event('pageshow'));
-  assert.equal(state.instances.length, 2);
+  await flush();
+  assert.equal(state.instances.length, 1);
   state.instances[0].finish();
+  await flush();
+  assert.equal(state.instances.length, 2);
   state.instances[1].finish();
   await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
@@ -154,6 +160,7 @@ test('an unfinished initial preference read cannot mount into a hidden page', as
   await flush();
   assert.equal(state.instances.length, 0);
   state.window.dispatchEvent(new Event('pageshow'));
+  await flush();
   assert.equal(state.instances.length, 1);
 });
 
@@ -168,7 +175,13 @@ test('failed saves restore the persisted visibility and expose a retryable error
   assert.equal(state.toggle.disabled, false);
   assert.equal(state.error.hidden, false);
   assert.match(state.error.textContent, /无法保存/);
+  assert.equal(state.instances.length, 1);
+  state.instances[0].finish();
+  await flush();
   assert.equal(state.instances.length, 2);
+  state.instances[1].finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
 });
 
 for (const recovery of ['retry button', 'visible panel']) {
@@ -262,8 +275,10 @@ test('late updated mount is removed when diagnostic logs trigger compatibility f
   assert.equal(state.scripts.length, 1, 'concurrent fallback requests share one script load');
   state.scripts[0].finishLoad();
   await flush();
-  assert.equal(state.instances.length, 2);
+  assert.equal(state.instances.length, 1);
   old.finish();
+  await flush();
+  assert.equal(state.instances.length, 2);
   state.instances[1].finish();
   await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
@@ -313,6 +328,8 @@ test('YAML changes interrupt a pending CDN mount and select embedded compatibili
   state.scripts[0].finishLoad();
   await flush();
   state.instances[0].finish();
+  await flush();
+  assert.equal(state.instances.length, 2);
   state.instances[1].finish();
   await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
@@ -436,6 +453,64 @@ test('a consistently failing SDK and shared fallback load preserve a failed pref
   state.retry.dispatchEvent(new Event('click'));
   await flush();
   assert.deepEqual(values, [false, false], 'retry must repeat the preference write, not a mount');
+});
+
+for (const interruption of ['disabled', 'document hidden', 'page hidden']) {
+  test(`canceled mount that inserts a host and rejects after ${interruption} removes it despite failed destruction`, async () => {
+    const state = await setup({ updated: true, mountRejects: true, partialMount: true, destroyBeforeRemoval: true });
+    if (interruption === 'disabled') state.setEnabled(false);
+    else if (interruption === 'document hidden') state.setHidden(true);
+    else state.window.dispatchEvent(new Event('pagehide'));
+    await flush();
+    state.instances[0].finish();
+    await flush();
+    assert.equal(state.overlays.size, 0, 'late rejected mount must not leave its host visible');
+    assert.equal(state.error.hidden, true);
+    assert.equal(state.scripts.length, 0, 'canceled mounts do not start fallback loads');
+  });
+}
+
+test('replacement waits for canceled mount cleanup and keeps only its own host', async () => {
+  const state = await setup({ updated: true, mountRejects: true, partialMount: true, destroyBeforeRemoval: true });
+  state.setHidden(true);
+  state.setHidden(false);
+  await flush();
+  assert.equal(state.instances.length, 1, 'SDK mounts must not overlap');
+  state.instances[0].finish();
+  await flush();
+  assert.equal(state.instances.length, 2);
+  assert.equal(state.overlays.size, 0, 'old host must be removed before the replacement starts');
+  state.instances[1].finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+  state.instances[1].hide.dispatchEvent(new Event('click'));
+  await flush();
+  assert.equal(state.saved.enabled, false);
+  assert.equal(state.overlays.size, 0);
+});
+
+test('body observation removes hosts added by canceled mounts before they settle', async () => {
+  const state = await setup({ updated: true, mountRejects: true, partialMount: true, destroyBeforeRemoval: true });
+  state.setHidden(true);
+  state.overlays.add(state.instances[0]);
+  state.logChanged();
+  assert.equal(state.overlays.size, 0, 'a canceled mount cannot display a host while still pending');
+  state.instances[0].finish();
+  await flush();
+  assert.equal(state.overlays.size, 0);
+});
+
+test('obsolete queued generations never mount after repeated visibility changes', async () => {
+  const state = await setup({ updated: true, destroyBeforeRemoval: true });
+  for (let i = 0; i < 3; i++) { state.setHidden(true); state.setHidden(false); }
+  await flush();
+  assert.equal(state.instances.length, 1);
+  state.instances[0].finish();
+  await flush();
+  assert.equal(state.instances.length, 2);
+  state.instances[1].finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
 });
 
 test('changing reduced motion switches an active CDN companion to the embedded runtime', async () => {
