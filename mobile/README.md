@@ -110,6 +110,11 @@ download failed). These options only take effect in preview builds.
 
 ## Failure handling
 
+- **Browser authorization** can consume or expire its followup URL before the
+  app reads the result. A followup HTTP 410 triggers one fresh registration with
+  the same pending device keys, then the usual authenticated netmap check. A new
+  link still requires approval; repeated gone links or explicit rejection stop
+  the attempt. Control errors retain bounded, redacted server detail in Logs.
 - **Connecting** names its step and can be cancelled by turning the switch off.
   Before starting, it refreshes a netmap older than a minute and refuses an exit
   node that Tailscale reports offline or no longer offers, or a device still
@@ -172,7 +177,7 @@ Global routing remains selectable in production and preview builds. The native
 simulator check verifies switching both ways between Rule-based and Global without
 the former capability-blocking message.
 
-Static analysis is clean. The default test run passes 115 tests and skips six
+Static analysis is clean. The default test run passes 126 tests and skips six
 checks that require external Go helper services; `test/hardening_test.dart` covers
 cancelled connects, offline/missing nodes, logged-out or expired session recovery,
 failed sign-in saves, storage errors, the rule-list cache, resolver and CIDR parsing,

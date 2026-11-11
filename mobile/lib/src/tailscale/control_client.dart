@@ -10,6 +10,11 @@ import 'models.dart';
 import 'noise.dart';
 import 'tailcfg.dart';
 
+class _LoginFollowupGone extends TailscaleControlException {
+  const _LoginFollowupGone()
+      : super('The sign-in link is no longer available; start again.', kind: ControlFailureKind.rejected);
+}
+
 /// A minimal Tailscale control-plane client (register, read-only netmap,
 /// logout) speaking ts2021 like `controlclient.Direct` of the tailscale fork
 /// pinned by sing-box 1.14.4. It never needs a VPN/TUN.
@@ -128,12 +133,18 @@ class TailscaleControlClient {
 
   // ── Login ────────────────────────────────────────────────────────────
 
+  /// Opens the login transport. Tests override this boundary with a scripted
+  /// session so the login state machine runs without contacting control.
+  Future<ControlSession> openLoginSession(TailscaleIdentity identity, CancelToken cancel) async {
+    final controlKey = await _getControlKey();
+    return _open(identity, controlKey, cancel);
+  }
+
   Future<void> _runLogin(
     TailscaleIdentity identity,
     StreamController<LoginProgress> out,
     CancelToken cancel,
   ) async {
-    final controlKey = await _getControlKey();
     cancel.throwIfCancelled();
     ControlSession? session;
     final unregister = cancel.onCancel(() => session?.close());
@@ -141,7 +152,7 @@ class TailscaleControlClient {
       final s = session;
       if (s != null && s.isOpen) return s;
       await s?.close();
-      return session = await _open(id, controlKey, cancel);
+      return session = await openLoginSession(id, cancel);
     }
 
     Future<void> dropSession() async {
@@ -178,6 +189,7 @@ class TailscaleControlClient {
       final authorized = identity.copyWith(nodePrivateKey: nodePrivate);
       var url = response.authUrl;
       String? shown;
+      String? goneFollowup;
       var repeats = 0;
       while (url.isNotEmpty) {
         if (url != shown) {
@@ -191,20 +203,36 @@ class TailscaleControlClient {
         }
         final followup = url;
         // Long-poll: control answers once the user finished in the browser.
-        response = await _retrying(
-          cancel,
-          () async => _register(await current(authorized), authorized,
-              nodePrivateKey: nodePrivate,
-              oldNodePublicKey: oldNodePublic,
-              followup: followup,
-              timeout: _longPollTimeout),
-          forever: true,
-          onTransient: dropSession,
-        );
+        try {
+          response = await _retrying(
+            cancel,
+            () async => _register(await current(authorized), authorized,
+                nodePrivateKey: nodePrivate,
+                oldNodePublicKey: oldNodePublic,
+                followup: followup,
+                timeout: _longPollTimeout),
+            forever: true,
+            onTransient: dropSession,
+          );
+        } on _LoginFollowupGone {
+          if (goneFollowup != null) rethrow;
+          goneFollowup = followup;
+          // The browser may have approved the node before this auth path
+          // disappeared. Ask control about the SAME pending key without the
+          // gone URL; only a normal register response can finish sign-in.
+          // Allow this recovery once so expired links cannot cause a loop.
+          response = await _retrying(
+            cancel,
+            () async => _register(await current(authorized), authorized,
+                nodePrivateKey: nodePrivate, oldNodePublicKey: oldNodePublic),
+            onTransient: dropSession,
+          );
+        }
         _checkRegister(response);
         if (response.nodeKeyExpired) {
           throw const TailscaleControlException('The sign-in expired; start again.');
         }
+        if (response.authUrl == goneFollowup) throw const _LoginFollowupGone();
         if (response.authUrl == url) {
           repeats++;
           await _sleep(_backoff(repeats), cancel);
@@ -282,6 +310,9 @@ class TailscaleControlClient {
       headerTimeout: timeout,
     );
     final body = await _readBody(response, _requestTimeout);
+    if (response.status == HttpStatus.gone && followup.isNotEmpty) {
+      throw const _LoginFollowupGone();
+    }
     _checkStatus(response.status, body, what: 'sign-in request');
     final Object? json;
     try {
@@ -309,8 +340,10 @@ class TailscaleControlClient {
       final body = await _readBody(response, const Duration(seconds: 5), maxBytes: 4096)
           .catchError((Object _) => Uint8List(0));
       if (response.status == 401 || response.status == 403 || response.status == 404) {
+        final reason = redact(utf8.decode(body, allowMalformed: true));
+        final detail = reason.isEmpty ? 'HTTP ${response.status}' : 'HTTP ${response.status}: $reason';
         throw TailscaleNeedsLogin(
-            'Tailscale control does not accept this device’s key (HTTP ${response.status}); sign in again.');
+            'Tailscale control refused the netmap request ($detail); sign in again.');
       }
       _checkStatus(response.status, body, what: 'netmap request');
     }
