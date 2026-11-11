@@ -183,8 +183,17 @@ The local configuration page includes a [Peetty](https://github.com/idy/peetty)
 Miru companion that walks and jumps between safe page edges. Drag it to move it,
 or hover for actions. **Settings › General › Page companion** hides or restores
 it immediately; the preference is saved with the app's UI preferences and survives
-restarts and updates. The companion runs locally with bundled assets, respects reduced motion, and
-requires no AI connection or API key.
+restarts and updates. The companion runs locally and requires no AI connection
+or API key. TailSplit checks jsDelivr at startup and every six hours for compatible
+stable Peetty 0.3.x releases, downloads the classic browser bundle and license
+notices, and atomically caches them beside the configuration in
+`<config-path>.peetty/current.json`. New configuration pages use the downloaded
+version without a TailSplit app update; already open pages keep their version.
+Network or validation failures keep the last complete cache, and the embedded
+build remains available offline. Reduced motion, oversized diagnostic logs, or
+a failed CDN companion use the embedded build with TailSplit's compatibility
+fixes. All browser requests stay on the local origin; CSP permits only the
+selected release's exact stylesheet.
 
 ## CLI
 
@@ -249,8 +258,9 @@ This is the published v0.4.3 release. Assets are pinned with
 SHA-256 hashes under `internal/configweb/assets/vendor/magpie/`; run
 `node scripts/vendor-magpie.mjs --check` to verify them, or omit `--check` to
 restore the pinned files. Node.js 18+ is needed only for this maintenance
-command and the frontend regression tests. The shipped panel needs no CDN,
-package installation or frontend build step. `assets/ui.js` loads its modules
+command and the frontend regression tests. The panel works offline with embedded
+assets and needs no package installation or frontend build step; optional Peetty
+CDN refreshes are cached locally as described above. `assets/ui.js` loads its modules
 in dependency order, and `assets/style.css` holds TailSplit's layout and
 product-specific states.
 

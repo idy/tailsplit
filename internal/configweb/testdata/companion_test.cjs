@@ -14,7 +14,8 @@ async function setup(options = {}) {
   const document = new EventTarget();
   document.hidden = false;
   const overlays = new Set();
-  document.querySelector = (selector) => selector === '#page-companion' ? toggle : selector === '#page-companion-error' ? error : selector === '#page-companion-retry' ? retry : [...overlays][0]?.host;
+  const log = { textContent: options.log || '' };
+  document.querySelector = (selector) => selector === '#page-companion' ? toggle : selector === '#page-companion-error' ? error : selector === '#page-companion-retry' ? retry : selector === '#desktop-log-text' ? log : selector === 'script[data-peetty-release]' ? (options.updated ? {} : null) : [...overlays][0]?.host;
   const saved = options.saved || { enabled: true };
   const saves = [];
   const preferences = options.preferences || {
@@ -32,17 +33,33 @@ async function setup(options = {}) {
     const instance = {
       host: { shadowRoot: { querySelector: () => hide } }, hide, finish,
       // Model a mount whose asynchronous work completes after early disposal.
-      mount: () => pending.then(() => { overlays.add(instance); }),
+      mount: () => pending.then(() => {
+        if (options.mountRejects && instances[0] === instance) throw new Error('Mount failed');
+        overlays.add(instance);
+      }),
       destroy: () => { overlays.delete(instance); },
     };
     instances.push(instance);
     return instance;
   } };
+  const scripts = [];
+  const motion = new EventTarget();
+  motion.matches = !!options.reducedMotion;
+  window.matchMedia = () => motion;
+  let logChanged = () => {};
+  window.MutationObserver = class {
+    constructor(callback) { logChanged = callback; }
+    observe() {}
+  };
+  document.createElement = () => ({ remove() {} });
+  document.head = { append(script) { scripts.push(script); } };
+  const factory = window.Peetty.createPeetty;
+  if (options.createThrows) window.Peetty.createPeetty = () => { throw new Error('Incompatible SDK'); };
   runInNewContext(source, { window, document, console });
   const setEnabled = (enabled) => { toggle.checked = enabled; toggle.dispatchEvent(new Event('change')); };
   const setHidden = (hidden) => { document.hidden = hidden; document.dispatchEvent(new Event('visibilitychange')); };
   await flush();
-  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden };
+  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden, scripts, motion, log, logChanged, factory };
 }
 
 for (const interruption of ['toggle off', 'document hidden', 'page hidden']) {
@@ -174,4 +191,95 @@ test('failed or invalid preference reads do not flash an unwanted companion', as
     assert.equal(state.toggle.disabled, true);
     assert.equal(state.error.hidden, false);
   }
+});
+
+for (const options of [{ reducedMotion: true }, { log: 'x'.repeat(16385) }]) {
+  test(`updated runtime preserves embedded compatibility for ${Object.keys(options)[0]}`, async () => {
+    const state = await setup({ updated: true, ...options });
+    assert.equal(state.instances.length, 0);
+    assert.equal(state.scripts.length, 1);
+    assert.equal(state.scripts[0].src, '/vendor/peetty/peetty.global.js');
+    state.scripts[0].onload();
+    await flush();
+    assert.equal(state.instances.length, 1);
+    state.instances[0].finish();
+    await flush();
+    assert.equal(state.overlays.size, 1);
+  });
+}
+
+for (const failure of ['mountRejects', 'createThrows']) {
+  test(`updated SDK ${failure} falls back without exposing an error`, async () => {
+    const state = await setup({ updated: true, [failure]: true });
+    if (failure === 'mountRejects') {
+      state.instances[0].finish();
+      await flush();
+    }
+    assert.equal(state.scripts.length, 1);
+    state.window.Peetty.createPeetty = state.factory;
+    state.scripts[0].onload();
+    await flush();
+    state.instances.at(-1).finish();
+    await flush();
+    assert.equal(state.overlays.size, 1);
+    assert.equal(state.error.hidden, true);
+  });
+}
+
+test('late updated mount is removed when diagnostic logs trigger compatibility fallback', async () => {
+  const state = await setup({ updated: true });
+  const old = state.instances[0];
+  state.log.textContent = '😀'.repeat(9000);
+  state.logChanged();
+  state.logChanged();
+  assert.equal(state.scripts.length, 1, 'concurrent fallback requests share one script load');
+  state.scripts[0].onload();
+  await flush();
+  assert.equal(state.instances.length, 2);
+  old.finish();
+  state.instances[1].finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+});
+
+test('a hidden page cannot mount after its fallback script finishes loading', async () => {
+  const state = await setup({ updated: true, reducedMotion: true });
+  state.window.dispatchEvent(new Event('pagehide'));
+  state.scripts[0].onload();
+  await flush();
+  assert.equal(state.instances.length, 0);
+  state.window.dispatchEvent(new Event('pageshow'));
+  await flush();
+  assert.equal(state.instances.length, 1);
+});
+
+test('a failed fallback download exposes an error and retry reloads the embedded script', async () => {
+  const state = await setup({ updated: true, reducedMotion: true });
+  state.scripts[0].onerror();
+  await flush();
+  assert.equal(state.error.hidden, false);
+  assert.equal(state.retry.hidden, false);
+  state.retry.dispatchEvent(new Event('click'));
+  assert.equal(state.scripts.length, 2);
+  state.scripts[1].onload();
+  await flush();
+  state.instances[0].finish();
+  await flush();
+  assert.equal(state.overlays.size, 1);
+  assert.equal(state.error.hidden, true);
+});
+
+test('changing reduced motion switches an active CDN companion to the embedded runtime', async () => {
+  const state = await setup({ updated: true });
+  state.instances[0].finish();
+  await flush();
+  state.motion.matches = true;
+  state.motion.dispatchEvent(new Event('change'));
+  assert.equal(state.overlays.size, 0);
+  assert.equal(state.scripts.length, 1);
+  state.scripts[0].onload();
+  await flush();
+  state.instances[1].finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
 });

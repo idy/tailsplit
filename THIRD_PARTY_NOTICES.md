@@ -58,6 +58,15 @@ Chat is disabled; no chat or provider dependencies are shipped. Regenerate the
 assets with `node scripts/vendor-peetty.mjs` (Node.js 22.19+, Git, npm and network
 access are needed only when updating the vendored assets).
 
+The desktop can independently download compatible stable Peetty 0.3.x classic
+browser releases from jsDelivr. These unmodified files retain their MIT license
+and any published `THIRD_PARTY_NOTICES.txt` in the private local cache, and both
+notices are served beside the selected version's script. The embedded 0.2.0
+adaptation remains the offline and compatibility fallback. Dynamic releases are
+checked against the pinned CDN manifest's SHA-256 hashes; an exact stylesheet
+CSP hash permits the upstream shadow-root stylesheet without inline-style
+exceptions.
+
 ## Interface fonts
 
 The desktop configuration panel embeds the same unmodified Latin WOFF2 assets

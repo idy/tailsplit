@@ -489,7 +489,9 @@ sh scripts/preview-config-web.sh
 This command creates a private copy of `config.example.yaml` under
 `bin/config-web-preview/` if needed and prints a capability URL for
 `127.0.0.1:19790`. Saves affect only that preview file; no TUN, login or installed
-network service is started. The page assets are embedded and need no npm or CDN.
+network service is started. The page works offline with embedded assets and needs
+no npm. The preview also exercises Peetty's independent CDN updater; its private
+cache is stored beside the preview configuration, separate from installed profiles.
 
 ## CI releases
 

@@ -264,7 +264,8 @@ func main() {
 	panelReady := make(chan struct{})
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
-		PingExit: controller.PingExitNode,
+		CompanionUpdates: true,
+		PingExit:         controller.PingExitNode,
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return submit(configurationApply{ctx: ctx, action: "add-exit:" + id, revision: revision})
 		},
