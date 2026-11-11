@@ -1,11 +1,14 @@
 # TailSplit for iOS and Android
 
 A Flutter app that brings TailSplit's routing to phones with **one** exit: one
-embedded Tailscale device and one selected exit node. Rule-based (Split) and Global
-route traffic captured by the active VPN. Global has no direct fallback within
-the tunnel, but **this app does not provide a system kill switch**: when the OS
-stops the VPN or the service fails, ordinary networking may resume. The pinned
-plugin opts out of Android Always-on and does not expose OS lockdown controls. sing-box runs as the system VPN through
+embedded Tailscale device and one selected exit node. Rule-based (Split) routes
+traffic captured by the active VPN. **Global connections are disabled on both
+platforms in this build**: the pinned plugin cannot enforce system-level blocking
+after tunnel loss. It opts out of Android Always-on and does not expose equivalent
+iOS protection. Global cannot be selected or started through saved settings;
+Use Rule-based explicitly recovers a previously saved Global configuration.
+The Global config compiler remains available for future protected backends.
+sing-box runs as the system VPN through
 [`sing_box_flutter`](https://github.com/idy/sing-box-flutter); Tailscale sign-in and
 exit-node discovery are implemented in Dart inside this app.
 
@@ -109,18 +112,25 @@ download failed). These options only take effect in preview builds.
   node that Tailscale reports offline or no longer offers, or a device still
   waiting for admin approval. It never picks another node. Native start/stop
   commands are serialized and each native command/status wait is bounded to 15
-  seconds. A timed-out start keeps new starts and identity removal blocked, but
-  releases the command queue for stop retries. A late start response triggers a
-  compensating stop; neither stale status nor dismissing an error releases the
-  shutdown latch. A stop is confirmed only after all outstanding commands settle.
+  seconds. A timed-out start releases the command queue for stop retries. A
+  successful native stop plus confirmed OS disconnection retires earlier native
+  requests, even when their Flutter replies never arrive, allowing reconnect or
+  removal. Late replies are scoped to their original request and cannot stop a
+  replacement tunnel. Without a confirmed native stop, the shutdown latch remains
+  set; neither stale status nor dismissing an error releases it. A completely
+  unresponsive native backend still requires a successful stop before recovery.
+  This relies on the pinned Android worker's generation invalidation/service
+  teardown and the iOS manager's serialized start/stop queue, documented in
+  `VpnService.stop`; a dependency update must preserve that barrier contract.
 - **Unexpected VPN loss** shows a warning that traffic may use normal networking.
   It does not switch routing modes or claim that a retry blocks traffic; an OS
   process kill can prevent the UI warning from appearing.
 - **Reconnect and removal** require confirmed native disconnection before a new
   start, sign-in or identity deletion. A stop failure retains the saved identity
-  and reports a retryable error. Changes to a running Global tunnel (or a restored
-  tunnel whose mode is unknown) stay pending until the user confirms that stopping
-  the VPN can expose direct traffic during reconnection, including if it fails.
+  and reports a retryable error. A restored tunnel whose runtime mode is unknown
+  stays active until the user confirms that reconnecting can expose direct traffic,
+  including on failure. Unsupported Global requests are rejected before stopping
+  any working Split connection.
 - **Direct IPv6 disabled** rejects literal and cached IPv6 destinations on direct
   routes as well as suppressing direct AAAA answers; Tailnet/proxy IPv6 remains available.
 - **Rule lists** download on first use and are then reused from a per-source
@@ -149,20 +159,21 @@ use explicitly labelled simulated data.
 
 The failure states (offline node, first rule-list download failure, connecting
 step) and the Exit Node, picker and Settings screens at the accessibility-extra-large
-text size were also captured on that simulator. A native XCUITest also verifies
-that changing a running Global preview to Split leaves a pending reconnect,
-that Reconnect displays the protection-gap confirmation, and that cancelling
-keeps the preview connected. A second native XCUITest checks the unexpected-stop
-warning and the Global routing limitation on both Exit Node and Settings.
+text size were also captured on that simulator. Native XCUITest checks have
+covered menus, input validation, node selection and the unexpected-stop warning.
+Global consent logic is now exercised only with an explicitly protected fake
+backend; production and default preview builds reject unsupported Global.
 
-Static analysis is clean. The default test run passes 108 tests and skips six
+Static analysis is clean. The default test run passes 114 tests and skips six
 checks that require external Go helper services; `test/hardening_test.dart` covers
 cancelled connects, offline/missing nodes, logged-out or expired session recovery,
 failed sign-in saves, storage errors, the rule-list cache, resolver and CIDR parsing,
 and damaged settings. `test/vpn_service_test.dart` covers fast disconnect events,
 pending status queries, stale snapshots, explicit timeouts and listener cleanup.
-`test/vpn_lifecycle_review_test.dart` covers serialized cancellation, confirmed
-shutdown before removal/reconnect, and Global protection consent.
+`test/vpn_lifecycle_review_test.dart` covers serialized cancellation, native stop
+barrier recovery without a start reply, late-response isolation, shutdown before
+removal/reconnect, and rejection of unsupported Global settings. Consent paths for
+future protected backends are tested using an explicitly capable fake service.
 `test/navigation_review_test.dart` checks disabled menus, Android Back handling
 and iOS edge-swipe navigation. Release and Android configuration guards pass
 37 Python tests. Android debug and iOS simulator/unsigned device builds passed

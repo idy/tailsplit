@@ -45,8 +45,8 @@ class S {
   String get global => globalShort;
   String get globalShort => _('Global', '全局');
   String get routingFooter => _(
-        'Rule-based sends matched domains and IPs through the exit. Global sends captured traffic through the exit without direct fallback while the VPN is running. If the VPN stops or fails, normal networking may resume. A system kill switch is not supported.',
-        '规则分流让匹配的域名和 IP 经过出口。VPN 运行时，全局模式让接管的流量经过出口，不回退直连。VPN 停止或故障后可能恢复正常网络；当前版本不支持系统级断网保护。',
+        'Rule-based sends matched domains and IPs through the exit. Global is unavailable because the VPN backend cannot enforce system-level protection after tunnel loss. If the VPN stops, normal networking may resume.',
+        '规则分流让匹配的域名和 IP 经过出口。当前 VPN 后端无法在隧道中断后提供系统级保护，因此全局模式暂不可用。VPN 停止后可能恢复正常网络。',
       );
 
   // Exit
@@ -130,8 +130,8 @@ class S {
   String entries(int n) => _(n == 1 ? '1 entry' : '$n entries', '$n 条');
   String get none => _('None', '无');
   String get globalHidesSplit => _(
-        'Global keeps these rules saved until you return to Rule-based. It has no direct fallback while the VPN is running, but does not provide a system kill switch: traffic may go direct if the VPN stops or fails.',
-        '全局模式保留这些规则，回到规则分流后重新生效。VPN 运行时不回退直连，但不提供系统级断网保护：VPN 停止或故障后流量可能直连。',
+        'Global keeps these rules saved until you return to Rule-based.',
+        '全局模式保留这些规则，回到规则分流后重新生效。',
       );
   String get dns => _('DNS', 'DNS');
   String get proxyDns => _('Proxy DNS', '代理 DNS');
@@ -193,6 +193,12 @@ class S {
         'This device was signed out of the Tailnet. Sign in again.',
         '这台设备已退出 Tailnet，请重新登录。',
       );
+  String get globalUnavailable => _('Global is unavailable', '全局模式暂不可用');
+  String get globalUnavailableBody => _(
+        'Global requires system-level traffic blocking after VPN loss. The current VPN backend cannot provide it, so Global connections are disabled. Use Rule-based routing instead.',
+        '全局模式需要在 VPN 中断后仍由系统阻断流量。当前 VPN 后端不具备此能力，因此已禁止全局连接。请使用规则分流。',
+      );
+  String get useRuleBased => _('Use Rule-based', '使用规则分流');
   String get tunnelStopped => _('VPN stopped unexpectedly', 'VPN 意外停止');
   String get tunnelStoppedBody => _(
         'Traffic may now use normal networking. Reconnect to restore VPN routing. This app cannot block traffic after the system stops the VPN.',

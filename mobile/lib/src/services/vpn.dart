@@ -37,6 +37,15 @@ class VpnService {
   Future<void> start(String config) =>
       _plugin.start(config: config, name: AppIdentifiers.vpnName);
 
+  /// Neither pinned backend exposes verified OS lockdown. Global must remain
+  /// unavailable until the native layer can enforce it across tunnel loss.
+  bool get providesSystemKillSwitch => false;
+
+  /// Native command barrier, not just a status hint. The pinned Android worker
+  /// orders start before stop, invalidates pending starts and awaits service
+  /// destruction. iOS serializes start/stop in its manager command queue.
+  /// Once this succeeds AND the OS reports disconnected, earlier start commands
+  /// cannot start another tunnel even if their Flutter acknowledgement was lost.
   Future<void> stop() => _plugin.stop();
 
   /// Completes when the service reports [state]; throws on a status-query

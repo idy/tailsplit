@@ -34,7 +34,7 @@ class SettingsPage extends StatelessWidget {
       bottom: app.needsReconnect ? const ReconnectBar() : null,
       slivers: [
         const SliverToBoxAdapter(
-          child: ProblemCard(only: {AppProblem.rules, AppProblem.storage}),
+          child: ProblemCard(only: {AppProblem.rules, AppProblem.storage, AppProblem.globalUnavailable}),
         ),
         SliverToBoxAdapter(
           child: Padding(
@@ -54,15 +54,23 @@ class SettingsPage extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
-                AdaptiveSegmentedControl(
-                  labels: [s.ruleBased, s.globalShort],
-                  selectedIndex: split ? 0 : 1,
-                  enabled: !app.transitioning && !app.busy,
-                  onValueChanged: (index) {
-                    final mode = index == 0 ? RoutingMode.split : RoutingMode.global;
-                    if (mode != settings.mode) app.setRoutingMode(mode);
-                  },
+                IgnorePointer(
+                  ignoring: !app.globalAvailable,
+                  child: AdaptiveSegmentedControl(
+                    labels: [s.ruleBased, s.globalShort],
+                    selectedIndex: split ? 0 : 1,
+                    enabled: app.globalAvailable && !app.transitioning && !app.busy,
+                    onValueChanged: (index) {
+                      final mode = index == 0 ? RoutingMode.split : RoutingMode.global;
+                      if (mode != settings.mode) app.setRoutingMode(mode);
+                    },
+                  ),
                 ),
+                if (!app.globalAvailable) ...[
+                  const SizedBox(height: 8),
+                  Text(s.globalUnavailableBody,
+                      style: TextStyle(fontSize: 13, color: secondaryLabelColor(context))),
+                ],
               ],
             ),
           ),
@@ -140,7 +148,7 @@ class SettingsPage extends StatelessWidget {
               ],
             ),
           )
-        else
+        else if (app.globalAvailable)
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),

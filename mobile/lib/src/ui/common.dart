@@ -6,6 +6,7 @@ import 'package:flutter/semantics.dart';
 
 import '../app.dart';
 import '../l10n/strings.dart';
+import '../model/settings.dart';
 import '../services/errors.dart';
 import '../state/app_controller.dart';
 import '../theme/tokens.dart';
@@ -74,6 +75,8 @@ class ProblemCard extends StatelessWidget {
           app.canRetryDisconnect ? () => app.disconnect(force: true) : null),
       AppProblem.tunnelStopped => (s.tunnelStopped, s.tunnelStoppedBody, s.retry,
           app.canConnect && !app.switchOn ? app.connect : null),
+      AppProblem.globalUnavailable => (s.globalUnavailable, s.globalUnavailableBody, s.useRuleBased,
+          app.busy ? null : () => app.setRoutingMode(RoutingMode.split)),
       AppProblem.needsSignIn => (s.signedOut, s.needsSignInAgain, s.signIn,
           app.busy ? null : () => signInWithConsent(context, app)),
       AppProblem.nodeOffline => (

@@ -16,6 +16,8 @@ class ControlledVpn extends VpnService {
   Completer<void>? stopGate;
   Object? stopError;
   bool lingerOnStop = false;
+  bool systemProtection = false;
+  int _nativeEpoch = 0;
   int starts = 0;
   int stops = 0;
   VpnConnectionState state = VpnConnectionState.disconnected;
@@ -40,18 +42,26 @@ class ControlledVpn extends VpnService {
   @override
   Future<bool> requestPermission() async => true;
   @override
+  bool get providesSystemKillSwitch => systemProtection;
+  @override
   Future<void> start(String config) async {
     starts++;
+    final epoch = ++_nativeEpoch;
     if (!startEntered.isCompleted) startEntered.complete();
     await startGate?.future;
-    emit(VpnConnectionState.connected);
+    // Model the pinned native stop barrier: an older pending start cannot take
+    // effect after stop, even if its method-channel reply is delivered late.
+    if (epoch == _nativeEpoch) emit(VpnConnectionState.connected);
   }
   @override
   Future<void> stop() async {
     stops++;
     if (stopError != null) throw stopError!;
+    final epoch = ++_nativeEpoch;
     await stopGate?.future;
-    emit(lingerOnStop ? VpnConnectionState.disconnecting : VpnConnectionState.disconnected);
+    if (epoch == _nativeEpoch) {
+      emit(lingerOnStop ? VpnConnectionState.disconnecting : VpnConnectionState.disconnected);
+    }
   }
   @override
   Future<void> waitFor(VpnConnectionState state, {Duration timeout = const Duration(seconds: 15)}) =>
@@ -81,6 +91,7 @@ const otherNode = TailnetPeer(stableId: 'two', name: 'two', fqdn: 'two.test.ts.n
 Future<({AppController app, ControlledVpn vpn, LifecycleClient client, Directory root})> fixture({
   RoutingMode mode = RoutingMode.split,
   bool restoredConnection = false,
+  bool systemProtection = false,
 }) async {
   final root = await Directory.systemTemp.createTemp('tailsplit-lifecycle');
   final snapshot = TailnetSnapshot(selfName: 'phone', selfFqdn: 'phone.test.ts.net',
@@ -88,7 +99,7 @@ Future<({AppController app, ControlledVpn vpn, LifecycleClient client, Directory
       userLoginName: 'test@example.com', userDisplayName: 'Test', stableNodeId: 'phone',
       exitNodes: const [node, otherNode], fetchedAt: DateTime.now());
   final client = LifecycleClient(snapshot);
-  final vpn = ControlledVpn();
+  final vpn = ControlledVpn()..systemProtection = systemProtection;
   if (restoredConnection) vpn.state = VpnConnectionState.connected;
   final app = AppController(paths: AppPaths.at(root, root), vpn: vpn, controlClient: () => client,
       nativeCommandTimeout: const Duration(milliseconds: 100));
@@ -199,64 +210,138 @@ void main() {
     expect(f.vpn.starts, 1);
   });
 
-  test('a lost start acknowledgement permits bounded stop retries and compensates late success', () async {
+  test('confirmed stop releases a start whose acknowledgement never completes', () async {
     final f = await fixture();
     f.vpn.startGate = Completer<void>();
     final connecting = f.app.connect();
     await f.vpn.startEntered.future;
-    final stopping = f.app.disconnect();
-    expect(await stopping.timeout(const Duration(seconds: 2)), isFalse);
+    expect(await f.app.disconnect().timeout(const Duration(seconds: 2)), isTrue);
     await connecting.timeout(const Duration(seconds: 2));
+    expect(f.vpn.startGate!.isCompleted, isFalse);
     expect(f.app.preparing, isFalse);
-    expect(f.app.canRetryDisconnect, isTrue);
-    expect(await f.app.disconnect(force: true), isFalse);
-    expect(await f.app.removeExit(), isFalse);
-    expect(f.client.logouts, 0);
-    expect(f.app.exit, isNotNull);
-    await f.app.connect();
-    expect(f.vpn.starts, 1);
-    final stopsBeforeLateStart = f.vpn.stops;
-    f.vpn.startGate!.complete();
-    await pumpEventQueue();
-    expect(f.vpn.stops, greaterThan(stopsBeforeLateStart));
-    expect(f.vpn.state, VpnConnectionState.disconnected);
     expect(f.app.canConnect, isTrue);
+    expect(await f.app.removeExit(), isTrue);
+    expect(f.client.logouts, 1);
+    expect(f.app.exit, isNull);
+  });
+
+  test('a retired late start acknowledgement cannot stop a replacement tunnel', () async {
+    final f = await fixture();
+    final oldReply = Completer<void>();
+    f.vpn.startGate = oldReply;
+    await f.app.connect().timeout(const Duration(seconds: 2));
+    expect(f.app.canConnect, isTrue);
+    f.vpn.startGate = null;
     await f.app.connect();
     expect(f.vpn.starts, 2);
+    final stops = f.vpn.stops;
+    oldReply.complete();
+    await pumpEventQueue();
+    expect(f.vpn.stops, stops);
+    expect(f.vpn.state, VpnConnectionState.connected);
+    expect(f.app.connected, isTrue);
   });
 
-  test('late start failure is consumed and releases the latch only after shutdown', () async {
+  test('a failed barrier retains identity until a successful stop retry', () async {
     final f = await fixture();
-    f.vpn.startGate = Completer<void>();
+    final oldReply = Completer<void>();
+    f.vpn.startGate = oldReply;
+    f.vpn.stopError = StateError('stop failed');
     await f.app.connect().timeout(const Duration(seconds: 2));
     expect(f.app.canConnect, isFalse);
-    f.vpn.startGate!.completeError(StateError('late start failure'));
+    expect(await f.app.removeExit(), isFalse);
+    expect(f.client.logouts, 0);
+    f.vpn.stopError = null;
+    expect(await f.app.disconnect(force: true), isTrue);
+    expect(oldReply.isCompleted, isFalse);
+    expect(await f.app.removeExit(), isTrue);
+    oldReply.complete();
     await pumpEventQueue();
-    expect(f.app.canConnect, isTrue);
     expect(f.vpn.state, VpnConnectionState.disconnected);
+    expect(f.app.exit, isNull);
   });
 
-  test('a hung stop is bounded and cannot be bypassed by a later stop acknowledgement', () async {
+  test('a late unretired start still receives compensating shutdown', () async {
+    final f = await fixture();
+    f.vpn.startGate = Completer<void>();
+    f.vpn.stopError = StateError('stop failed');
+    await f.app.connect().timeout(const Duration(seconds: 2));
+    expect(f.app.canConnect, isFalse);
+    f.vpn.stopError = null;
+    f.vpn.startGate!.complete();
+    await pumpEventQueue();
+    expect(f.vpn.state, VpnConnectionState.disconnected);
+    expect(f.app.canConnect, isTrue);
+  });
+
+  test('a retired late start failure is consumed without disturbing a new tunnel', () async {
+    final f = await fixture();
+    final oldReply = Completer<void>();
+    f.vpn.startGate = oldReply;
+    await f.app.connect().timeout(const Duration(seconds: 2));
+    f.vpn.startGate = null;
+    await f.app.connect();
+    oldReply.completeError(StateError('late start failure'));
+    await pumpEventQueue();
+    expect(f.app.problem, isNull);
+    expect(f.vpn.state, VpnConnectionState.connected);
+  });
+
+  test('a newer stop barrier recovers a lost stop reply without affecting the next tunnel', () async {
     final f = await fixture();
     await f.app.connect();
-    final gate = Completer<void>();
-    f.vpn.stopGate = gate;
+    final oldReply = Completer<void>();
+    f.vpn.stopGate = oldReply;
     expect(await f.app.removeExit().timeout(const Duration(seconds: 2)), isFalse);
     expect(f.app.canRetryDisconnect, isTrue);
     f.vpn.stopGate = null;
-    expect(await f.app.disconnect(force: true), isFalse);
+    expect(await f.app.disconnect(force: true), isTrue);
+    await f.app.connect();
+    expect(f.vpn.starts, 2);
+    expect(f.client.logouts, 0);
+    oldReply.complete();
+    await pumpEventQueue();
+    expect(f.vpn.state, VpnConnectionState.connected);
+  });
+
+  test('unsupported Global is blocked even for restored settings and explicit reconnect', () async {
+    final f = await fixture(mode: RoutingMode.global);
+    expect(f.app.globalAvailable, isFalse);
+    expect(f.app.problem, AppProblem.globalUnavailable);
+    expect(f.app.canConnect, isFalse);
+    f.app.dismissProblem();
+    await f.app.connect();
+    await f.app.reconnect(allowProtectionGap: true);
+    expect(f.vpn.starts, 0);
+    expect(f.vpn.stops, 0);
+    expect(f.app.problem, AppProblem.globalUnavailable);
+    await f.app.setRoutingMode(RoutingMode.split);
     await f.app.connect();
     expect(f.vpn.starts, 1);
-    expect(f.client.logouts, 0);
-    gate.complete();
-    await pumpEventQueue();
-    expect(f.app.canConnect, isFalse);
-    expect(await f.app.disconnect(force: true), isTrue);
-    expect(f.app.canConnect, isTrue);
+    expect(f.app.problem, isNull);
+  });
+
+  test('selecting unsupported Global retains a running Split tunnel and saved mode', () async {
+    final f = await fixture();
+    await f.app.connect();
+    await f.app.setRoutingMode(RoutingMode.global);
+    expect(f.app.settings.mode, RoutingMode.split);
+    expect(f.vpn.starts, 1);
+    expect(f.vpn.stops, 0);
+    expect(f.app.connected, isTrue);
+    expect(f.app.problem, AppProblem.globalUnavailable);
+  });
+
+  test('generic settings updates cannot bypass the Global capability gate', () async {
+    final f = await fixture();
+    await f.app.updateSettings(f.app.settings.copyWith(mode: RoutingMode.global), applyNow: true);
+    expect(f.app.settings.mode, RoutingMode.split);
+    expect(f.vpn.starts, 0);
+    expect(f.app.problem, AppProblem.globalUnavailable);
   });
 
   test('Global node and mode applies keep protection until explicit consent', () async {
-    final f = await fixture(mode: RoutingMode.global);
+    final f = await fixture(mode: RoutingMode.global, systemProtection: true);
     await f.app.connect();
     expect(f.app.reconnectRequiresConsent, isTrue);
     expect(await f.app.confirmNode(otherNode), isTrue);
@@ -274,7 +359,7 @@ void main() {
   });
 
   test('Split applies still reconnect automatically after a confirmed stop', () async {
-    final f = await fixture();
+    final f = await fixture(systemProtection: true);
     await f.app.connect();
     await f.app.setRoutingMode(RoutingMode.global);
     expect(f.vpn.stops, 1);
@@ -283,7 +368,7 @@ void main() {
   });
 
   test('unexpected Global tunnel loss reports normal-network exposure', () async {
-    final f = await fixture(mode: RoutingMode.global);
+    final f = await fixture(mode: RoutingMode.global, systemProtection: true);
     await f.app.connect();
     f.vpn.emit(VpnConnectionState.disconnecting);
     f.vpn.emit(VpnConnectionState.disconnected);
@@ -297,7 +382,7 @@ void main() {
   });
 
   test('a deliberate stop does not show an unexpected-loss warning', () async {
-    final f = await fixture(mode: RoutingMode.global);
+    final f = await fixture(mode: RoutingMode.global, systemProtection: true);
     await f.app.connect();
     expect(await f.app.disconnect(), isTrue);
     expect(f.app.problem, isNull);
