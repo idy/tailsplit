@@ -1,6 +1,8 @@
 # TailSplit guide
 
 [Back to the project overview](../README.md). Commands and file paths in this guide are relative to the repository root.
+For connection recovery, routing edge cases and implementation details, see the
+[desktop behavior reference](desktop-reference.md).
 
 TailSplit is an open-source routing client based on sing-box rule lists. It
 supports multiple Tailscale networks: switch between networks and access the

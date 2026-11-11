@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">TailSplit routes your traffic directly or through different Tailscale exits</title>
+  <desc id="description">Your computer sends connections to TailSplit. Your rules keep everyday sites on the direct connection, send selected sites through exit A in Tailscale network A, and send other destinations through exit B in network B. These are example routes; each exit has its own authorized Tailscale device.</desc>
+  <style>
+    /* One 6s cycle: a connection leaves the computer, then TailSplit sends it to Direct, exit A and exit B in turn. */
+    .pulse { stroke-width: 6; stroke-linecap: round; stroke-dasharray: 12 120; stroke-dashoffset: 12; opacity: 0; }
+    .entry { animation: entry 2s linear infinite; }
+    .branch { animation: branch 6s linear infinite; }
+    .glow { opacity: 0; animation: glow 6s ease-out infinite; }
+    .a { animation-delay: 2s; }
+    .b { animation-delay: 4s; }
+    .rules-ring { transform-origin: 360px 310px; animation: ring 2s ease-out infinite; }
+    @keyframes entry {
+      0% { stroke-dashoffset: 12; opacity: 1; }
+      45% { stroke-dashoffset: -100; opacity: 1; }
+      46%, 100% { stroke-dashoffset: -100; opacity: 0; }
+    }
+    @keyframes branch {
+      0%, 16% { stroke-dashoffset: 12; opacity: 0; }
+      17% { stroke-dashoffset: 12; opacity: 1; }
+      31% { stroke-dashoffset: -100; opacity: 1; }
+      32%, 100% { stroke-dashoffset: -100; opacity: 0; }
+    }
+    @keyframes glow {
+      0%, 28% { opacity: 0; }
+      32% { opacity: 1; }
+      48%, 100% { opacity: 0; }
+    }
+    @keyframes ring {
+      0%, 40% { transform: scale(1); }
+      52% { transform: scale(1.08); }
+      70%, 100% { transform: scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse, .glow, .rules-ring { animation: none; }
+      .route { stroke-opacity: 1; }
+    }
+  </style>
+  <defs>
+    <marker id="direct-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="m1 1 4 3-4 3" stroke="#26755e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="exit-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="m1 1 4 3-4 3" stroke="#7153bf" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect x="1" y="1" width="1118" height="558" rx="20" fill="#f7f9fc" stroke="#dce4ef"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="48" y="65" fill="#17243a" font-size="36" font-weight="650" letter-spacing="-1">One computer. More ways out.</text>
+    <text x="48" y="103" fill="#52647b" font-size="20">Keep everyday traffic direct. Send selected sites through your Tailscale exits.</text>
+
+    <!-- Routes -->
+    <path d="M166 310H310" stroke="#a4b3c6" stroke-width="3" stroke-linecap="round"/>
+    <path class="route" d="M406 310H430C482 310 482 188 534 188H590" stroke="#26755e" stroke-opacity="0.4" stroke-width="3" stroke-linecap="round" marker-end="url(#direct-arrow)"/>
+    <path class="route" d="M406 310H590" stroke="#7153bf" stroke-opacity="0.4" stroke-width="3" stroke-linecap="round" marker-end="url(#exit-arrow)"/>
+    <path class="route" d="M406 310H430C482 310 482 432 534 432H590" stroke="#7153bf" stroke-opacity="0.4" stroke-width="3" stroke-linecap="round" marker-end="url(#exit-arrow)"/>
+
+    <!-- Moving traffic -->
+    <path class="pulse entry" pathLength="100" d="M166 310H310" stroke="#52647b"/>
+    <path class="pulse branch" pathLength="100" d="M406 310H430C482 310 482 188 534 188H590" stroke="#26755e"/>
+    <path class="pulse branch a" pathLength="100" d="M406 310H590" stroke="#7153bf"/>
+    <path class="pulse branch b" pathLength="100" d="M406 310H430C482 310 482 432 534 432H590" stroke="#7153bf"/>
+
+    <!-- Your computer -->
+    <g stroke="#17243a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="82" y="275" width="76" height="51" rx="5" fill="#ffffff"/>
+      <path d="M74 336H166L158 343H82Z" fill="#ffffff"/>
+    </g>
+    <text x="120" y="382" text-anchor="middle" fill="#17243a" font-size="22" font-weight="600">Your computer</text>
+
+    <!-- TailSplit rules -->
+    <circle class="rules-ring" cx="360" cy="310" r="68" fill="#ebe7f7"/>
+    <circle cx="360" cy="310" r="46" fill="#7153bf"/>
+    <g stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M340 310H350C363 310 359 294 375 294M350 310C363 310 359 326 375 326"/>
+      <circle cx="340" cy="310" r="3" fill="#ffffff"/>
+      <path d="m370 289 5 5-5 5m0 22 5 5-5 5"/>
+    </g>
+    <text x="360" y="411" text-anchor="middle" fill="#17243a" font-size="25" font-weight="650">TailSplit</text>
+    <text x="360" y="439" text-anchor="middle" fill="#52647b" font-size="18">Your rules</text>
+
+    <!-- Destination highlights -->
+    <circle class="glow" cx="620" cy="188" r="33" fill="#26755e" fill-opacity="0.16"/>
+    <circle class="glow a" cx="620" cy="310" r="33" fill="#7153bf" fill-opacity="0.16"/>
+    <circle class="glow b" cx="620" cy="432" r="33" fill="#7153bf" fill-opacity="0.16"/>
+
+    <!-- Direct -->
+    <circle cx="620" cy="188" r="23" fill="#e4f1eb" stroke="#26755e" stroke-width="1.5"/>
+    <path d="M610 188H630M623 181L630 188L623 195" stroke="#26755e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="669" y="179" fill="#17243a" font-size="25" font-weight="600">Direct</text>
+    <text x="669" y="211" fill="#52647b" font-size="19">Everyday sites · your usual connection</text>
+
+    <!-- Tailscale exits -->
+    <g stroke="#7153bf" stroke-width="1.5">
+      <circle cx="620" cy="310" r="23" fill="#ebe7f7"/>
+      <circle cx="620" cy="432" r="23" fill="#ebe7f7"/>
+    </g>
+    <g stroke="#7153bf" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="610" y="299" width="20" height="22" rx="3"/>
+      <path d="M610 310H630M615 304H615.01M615 315H615.01"/>
+      <rect x="610" y="421" width="20" height="22" rx="3"/>
+      <path d="M610 432H630M615 426H615.01M615 437H615.01"/>
+    </g>
+    <text x="669" y="301" fill="#17243a" font-size="25" font-weight="600">Tailscale exit A</text>
+    <text x="669" y="333" fill="#52647b" font-size="19">Selected sites · network A</text>
+    <text x="669" y="423" fill="#17243a" font-size="25" font-weight="600">Tailscale exit B</text>
+    <text x="669" y="455" fill="#52647b" font-size="19">Other rules · network B</text>
+
+    <path d="M48 494H1072" stroke="#dce4ef"/>
+    <text x="48" y="530" fill="#52647b" font-size="13" font-weight="600" letter-spacing="1.5">SPLIT ROUTING</text>
+    <text x="1072" y="530" text-anchor="end" fill="#52647b" font-size="17">Example routes · you choose the domains and IP ranges</text>
+  </g>
+</svg>
