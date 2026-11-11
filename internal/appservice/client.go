@@ -28,8 +28,8 @@ func Launch(ctx context.Context, executable string, config tailsplit.Config, out
 	}
 	connection, err := OpenSession(ctx, executable, "start", config, output)
 	if err != nil {
-		if !errors.Is(err, ErrNotInstalled) && ctx.Err() == nil {
-			_ = json.NewEncoder(output).Encode(map[string]string{"event": "error", "message": err.Error()})
+		if ctx.Err() == nil {
+			_ = json.NewEncoder(output).Encode(ErrorEvent(err))
 		}
 		return err
 	}
@@ -64,6 +64,20 @@ func packagePath(executable, name string) string {
 	return filepath.Join(filepath.Dir(executable), "..", "Resources", name)
 }
 
+func serviceInstallPackage(executable, installed string, probeErr error) (string, error) {
+	path := packagePath(executable, InstallPackage)
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) && errors.Is(probeErr, ErrNotInstalled) {
+			if _, err := os.Lstat(installed); errors.Is(err, os.ErrNotExist) {
+				// Source builds can authenticate locally only without an existing service.
+				return "", ErrNotInstalled
+			}
+		}
+		return "", errors.New("open the packaged TailSplit.app to install its network service")
+	}
+	return path, nil
+}
+
 // EnsureInstalled opens the normal macOS Installer when the helper is absent,
 // differs from this app, or is no longer reachable through launchd. A matching
 // file alone does not mean an interrupted installation registered its service.
@@ -77,12 +91,15 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 		return Info{}, err
 	}
 	info, err := probe(ctx, SocketPath, "0")
+	if ctx.Err() != nil {
+		return Info{}, ctx.Err()
+	}
 	if err == nil && info.BuildID == expected {
 		return info, nil
 	}
-	path := packagePath(executable, InstallPackage)
-	if _, err := os.Stat(path); err != nil {
-		return Info{}, errors.New("open the packaged TailSplit.app to install its network service")
+	path, err := serviceInstallPackage(executable, ExecutablePath, err)
+	if err != nil {
+		return Info{}, err
 	}
 	if err := json.NewEncoder(output).Encode(map[string]string{"event": "authorizing"}); err != nil {
 		return Info{}, err
@@ -103,7 +120,7 @@ func EnsureInstalled(ctx context.Context, executable string, output io.Writer) (
 			if err := ctx.Err(); err != nil {
 				return Info{}, err
 			}
-			return Info{}, errors.New("network service installation did not finish; click Start after completing Installer")
+			return Info{}, errors.New("network service installation did not finish; complete Installer, then retry in TailSplit")
 		case <-ticker.C:
 			info, err := probe(installCtx, SocketPath, "0")
 			if err == nil && info.BuildID == expected {
@@ -121,31 +138,36 @@ func OpenSession(ctx context.Context, executable, operation string, config tails
 }
 
 func openSession(ctx context.Context, executable, operation string, config tailsplit.Config, output io.Writer, target string) (net.Conn, error) {
-	if runtime.GOOS == "windows" {
-		return openWindowsSession(ctx, executable, operation, config, target)
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	info, err := probe(ctx, SocketPath, "0")
-	if operation == "start" {
-		info, err = EnsureInstalled(ctx, executable, output)
-		if err != nil {
-			return nil, err
+	if runtime.GOOS == "windows" {
+		connection, err := openWindowsSession(ctx, executable, operation, config, target)
+		if err != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
+		return connection, windowsServiceFailure(operation, err)
 	}
-	if err != nil {
-		if _, installedErr := os.Stat(ExecutablePath); installedErr == nil {
-			return nil, errors.New("后台服务没有响应；请从“设置与工具 → 后台网络服务 → 更新或修复…”恢复服务")
+	info, err := resolveSessionService(ctx, operation, func(ctx context.Context) (Info, error) {
+		info, err := probe(ctx, SocketPath, "0")
+		if err != nil {
+			if _, installedErr := os.Stat(ExecutablePath); installedErr == nil {
+				return Info{}, errors.New("后台服务没有响应；请从“设置与工具 → 后台网络服务 → 更新或修复…”恢复服务")
+			}
 		}
-		return nil, err
+		return info, err
+	}, func(ctx context.Context) (Info, error) {
+		return EnsureInstalled(ctx, executable, output)
+	})
+	if err != nil {
+		return nil, installationFailure(operation, err)
 	}
 	expected, err := executableID(executable)
 	if err != nil {
 		return nil, err
 	}
 	if info.BuildID != expected {
-		return nil, errors.New("update the TailSplit network service from this app before continuing")
+		return nil, installationFailure(operation, errors.New("update the TailSplit network service from this app before continuing"))
 	}
 	if operation == "ping" && !info.PingAvailable {
 		return nil, tailsplit.ErrPingUnavailable
@@ -161,6 +183,26 @@ func openSession(ctx context.Context, executable, operation string, config tails
 		}
 		return connection, nil
 	})
+}
+
+// Only an explicit Connect or device sign-in may open Installer. Discovery,
+// Ping and logout remain non-installing, including automatic startup probes.
+// Preparing before the session/lease boundary also lets a first Add exit work
+// without an existing service or a configured traffic gateway.
+func resolveSessionService(ctx context.Context, operation string, probeService, ensureService func(context.Context) (Info, error)) (Info, error) {
+	if err := ctx.Err(); err != nil {
+		return Info{}, err
+	}
+	resolve := probeService
+	switch operation {
+	case "start", "login", "login-new":
+		resolve = ensureService
+	}
+	info, err := resolve(ctx)
+	if err == nil {
+		err = ctx.Err()
+	}
+	return info, err
 }
 
 // migrationIDs scopes ordinary-user reads to engines this operation can open.
@@ -469,7 +511,13 @@ func (c *stateLeaseConnection) Close() error {
 }
 
 // Forward keeps the app channel alive until privileged cleanup completes.
+// Cancellation abandons ordinary output and gives stopped a bounded delivery
+// window while draining to service EOF. A caller-owned write can outlive Forward.
 func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
+	return forwardWithTerminalGrace(ctx, connection, output, 100*time.Millisecond)
+}
+
+func forwardWithTerminalGrace(ctx context.Context, connection net.Conn, output io.Writer, terminalGrace time.Duration) error {
 	stop := sync.OnceFunc(func() { stopSession(connection) })
 	done := make(chan struct{})
 	go func() {
@@ -480,23 +528,113 @@ func Forward(ctx context.Context, connection net.Conn, output io.Writer) error {
 		}
 	}()
 	defer close(done)
+	writes, written := make(chan []byte), make(chan error, 1)
+	// One worker owns output and copied bytes only. An arbitrary caller-owned
+	// Writer may remain blocked after cancellation, without holding the lease.
+	go func() {
+		for data := range writes {
+			n, err := output.Write(data)
+			if err == nil && n != len(data) {
+				err = io.ErrShortWrite
+			}
+			written <- err
+		}
+	}()
+	defer close(writes)
+	outputCanceled, writePending := false, false
+	writeLine := func(line []byte, terminal bool) error {
+		if ctx.Err() != nil && !terminal {
+			outputCanceled = true
+			return nil
+		}
+		writeCtx := ctx
+		var cancelGrace context.CancelFunc
+		defer func() {
+			if cancelGrace != nil {
+				cancelGrace()
+			}
+		}()
+		abandon := func() bool {
+			if terminal && cancelGrace == nil {
+				// Pending acknowledgement, terminal handoff and completion share
+				// one grace deadline. Service cleanup has no deadline.
+				writeCtx, cancelGrace = context.WithTimeout(context.Background(), terminalGrace)
+				return false
+			}
+			outputCanceled = true
+			return true
+		}
+		waitForWrite := func() error {
+			for {
+				select {
+				case err := <-written:
+					writePending = false
+					return err
+				case <-writeCtx.Done():
+					// Prefer a completed write's real error over simultaneous cancellation.
+					select {
+					case err := <-written:
+						writePending = false
+						return err
+					default:
+					}
+					if abandon() {
+						return nil
+					}
+				}
+			}
+		}
+		if writePending {
+			if err := waitForWrite(); err != nil || writePending {
+				return err
+			}
+		}
+		data := append(append([]byte(nil), line...), '\n')
+	submit:
+		for {
+			if writeCtx.Err() != nil && abandon() {
+				return nil
+			}
+			select {
+			case writes <- data:
+				writePending = true
+				break submit
+			case <-writeCtx.Done():
+				if abandon() {
+					return nil
+				}
+			}
+		}
+		return waitForWrite()
+	}
 	scanner := bufio.NewScanner(connection)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
-	stopped := false
+	stopped, terminalTried := false, false
 	var writeErr error
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if writeErr == nil {
-			if _, err := output.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+		var event struct {
+			Event string `json:"event"`
+		}
+		terminal := json.Unmarshal(line, &event) == nil && event.Event == "stopped"
+		stopped = stopped || terminal
+		forward := !outputCanceled
+		if terminal && ctx.Err() != nil {
+			forward = !terminalTried
+		}
+		if writeErr == nil && forward {
+			terminalTried = terminalTried || terminal
+			if err := writeLine(line, terminal); err != nil {
 				writeErr = err
 				stop()
 			}
 		}
-		var event struct {
-			Event string `json:"event"`
-		}
-		if json.Unmarshal(line, &event) == nil && event.Event == "stopped" {
-			stopped = true
+	}
+	if writeErr == nil {
+		// A canceled output may have completed while service cleanup was draining.
+		select {
+		case writeErr = <-written:
+		default:
 		}
 	}
 	if writeErr != nil {

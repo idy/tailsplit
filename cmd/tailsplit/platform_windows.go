@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -59,16 +58,22 @@ func platformInstalledService(args []string) (bool, error) {
 			if err != nil {
 				return err
 			}
-			return runEvents(ctx, config, compiled, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+			stream := newEventStream(ctx, output, true)
+			defer stream.close()
+			return runEvents(ctx, config, compiled, stream)
 		},
 		func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-			return runLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+			stream := newEventStream(ctx, output, true)
+			defer stream.close()
+			return runLoginEvents(ctx, config, stream)
 		},
 		func(ctx context.Context, config tailsplit.Config, _ io.Writer) error {
 			return tailsplit.LogoutSavedTailnet(ctx, config)
 		},
 		func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-			return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+			stream := newEventStream(ctx, output, true)
+			defer stream.close()
+			return runDiscoveryEvents(ctx, config, stream)
 		},
 	)
 }

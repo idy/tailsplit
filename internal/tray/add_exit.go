@@ -1,7 +1,9 @@
 package tray
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/idy/tailsplit"
@@ -19,8 +21,15 @@ type pendingExitAddition struct {
 // The saved document and visible device list change only after authentication
 // and graceful helper shutdown. Cancellation never publishes a provisional exit.
 func (c *Controller) AddExit(id string, expectedRevision ...string) error {
+	return c.addExit(id, "", expectedRevision...)
+}
+
+func (c *Controller) addExit(id, operation string, expectedRevision ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.operationAllowedLocked(operation); err != nil {
+		return err
+	}
 	if c.closed || c.stopping || c.reconfiguring || c.loggingOut || c.command != nil || c.pendingAdd != nil || c.preparation != nil {
 		return tailsplit.ErrPingBusy
 	}
@@ -47,6 +56,7 @@ func (c *Controller) AddExit(id string, expectedRevision ...string) error {
 		_ = os.Remove(path)
 		return err
 	}
+	c.ownOperationLocked(operation)
 	return nil
 }
 
@@ -67,5 +77,8 @@ func (c *Controller) finishPendingAddLocked(helperErr error) {
 		c.snapshot.State = "failed"
 		c.snapshot.Error = "已完成登录，但无法保存出口。请重新读取配置后重试。"
 		c.RecordDesktopEvent("Could not commit the authenticated exit: " + err.Error())
+		return
 	}
+	c.snapshot.AddedExit = pending.id
+	c.snapshot.AddedRevision = fmt.Sprintf("%x", sha256.Sum256(pending.data))
 }

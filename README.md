@@ -29,9 +29,13 @@ Windows executables are unsigned; verify the release checksums before installati
 
 ## Get connected
 
-1. Open TailSplit and use **Add exit** to authorize a device in your chosen Tailnet, or sign in to an existing saved exit. Then choose its exit node.
-2. Review your routing rules in the configuration panel.
-3. Choose a default gateway and connect when ready. Signing in alone does not connect. New configurations enable automatic connection on later launches once a gateway is configured.
+1. Open **Home** and select **Set up** on a fresh installation. Once an exit is configured, Home shows the connection switch. TailSplit guides you through system service authorization and Tailscale sign-in when needed.
+2. Choose an exit node and use **Save & connect** to finish the requested connection. You can cancel or retry any incomplete step.
+3. Review routing rules in Settings as needed. New configurations enable automatic connection on later launches once a gateway is configured. Signing in through **Add exit** alone does not connect.
+
+Cancellation stops the matching setup or connection and clears its pending tray request. Until confirmed, it stays pending across reloads and retries when the panel reconnects. Browser panels share canceled-request records. Before the native panel starts setup, claims a connection request or writes configuration, it verifies a recovery-store write sized for that operation; if neither store confirms it, the operation stays unstarted with a retry explanation. The host negotiates backup storage before the panel first loads: an unavailable backup stays disabled for that scope, while Cookie-only recovery remains usable. The native window preserves its scope and negotiated backup mode across reloads and verifies storage of opaque cancellation IDs before delivery. A native-origin backup supports Cookie rejection; the host can replay confirmed records without the original renderer or either cancellation transport, retaining the in-memory session until acknowledgment. Native Cancel and Disconnect first confirm their recovery journal and immediately show the request as unconfirmed and pending. The panel then attempts host retention; a failed or timed-out receipt cannot hide the pending request because the journal or a late host call may still cancel it. Once the host retains the intent, that copy stays owned until completion even if every renderer journal is later cleared. If neither store can retain intent, or a reload lost the scope metadata, the panel disables those controls and directs you to the native menu's Disconnect command or Quit; the current connection stays unchanged. After host retention is confirmed, IPC/HTTP can proceed even if native navigation or its acknowledgment fails. If the retention bridge fails, a fresh exact journal confirmation also permits the existing independent HTTP fallback; otherwise the request remains pending without unprotected delivery. The exact pending request remains retryable through storage outages and same-scope reloads. Each retry rechecks host retention; a historical write receipt alone does not authorize delivery. The original accepted host copy remains owned throughout that recheck. Fresh operations must obtain their own journal confirmation. Renderer failure without an explicit committed cancellation never stops an established connection. The host retains that inbox across renderer destruction, independently of either store, and confirms the exact target when cancellation finishes; a host acknowledgment releases the UI even if an older HTTP attempt is stuck. If no path confirms delivery, the panel keeps the retry intent. Requests already offered to a native panel cannot automatically continue in a browser fallback when delivery is uncertain; the fallback explains how to turn on or cancel again. A native failure before receiving a request still permits the designated browser to continue it. Retries leave any later connection running, and quick edits after disconnect use a fresh save operation. Quick saves check recovery before disconnecting Global protection and recheck after consent, keeping the existing connection if storage becomes unavailable.
+
+**Home** shows this computer fanning out to Direct and each exit referenced by saved routing policy, including implicit private-domain routes, following the GizMoth serial-map layout. Global mode shows only its selected exit. Solid paths indicate a confirmed connection; dashed paths are saved routes not currently applied. Each destination shows upload and download speed from successive real router-byte samples. Missing samples display **—**, while a confirmed idle sample displays **0 B/s**. Counters reset on a new engine session. Directional pulses appear only on routes with positive measured byte deltas and stop on idle, missing or stale samples. Upload moves outward from this computer; download moves inward. TCP/UDP streams count payload; native TUN flows count IP packet bytes, excluding Tailscale transport and control overhead. These are routed-byte rates rather than physical-interface usage.
 
 The **Exit Nodes** page lists your saved exits; its top-right switch starts or
 stops the connection. Above the list, **Add exit** sits on the left and the current
@@ -63,11 +67,19 @@ until you reconnect manually. Signing in to another saved device follows the
 same consent rule; active Global settings, node and DNS-metadata applies also
 require that separate disconnect. Exact no-op saves keep the current session.
 Native actions without confirmation require disconnecting first. Recovery of the
-current device's pending authorization keeps its helper. Turning on without a default
-still opens a selection dialog with no preselected option. Choose an
-exit and confirm to save it and connect; Cancel or Escape changes nothing. A
-failed or stale save never starts traffic. Settings drafts must be resolved
-first. An existing offline default is retained rather than silently replaced.
+current device's pending authorization keeps its helper. Turning on with no saved
+devices starts guided Add exit, sign-in and node selection. A saved device that
+needs login or a node enters the corresponding step instead of disabling the
+switch. Confirming its node saves that node and the current mode's default exit,
+then continues this one connection. With several saved devices and no default,
+a selection dialog has no preselected option; choosing an unready device guides
+its setup. An offline default opens its own picker and is never silently replaced.
+The macOS menu and Windows tray Connect actions open this same flow. Ordinary
+Add and Sign in still leave traffic disconnected. A visible status banner explains
+installation, authorization, node selection and failure, with Cancel and explicit
+Retry actions. Cancel or Escape drops the pending connection; failed saves and
+unrelated configuration revisions never start traffic. Settings drafts must be
+resolved first.
 
 Click the menu-bar or tray icon for a compact popup with connection status,
 a connect/disconnect switch, and read-only routing mode and traffic exit details. Open
@@ -88,7 +100,18 @@ even when the panel cannot open. Each connection snapshot holds an OS file lock
 for its lifetime. On the next launch, snapshots with released locks are reclaimed
 even if an old PID has been reused; locked snapshots, unrecognized files and links
 are preserved. Snapshot creation and cleanup share a short directory lock so an
-in-progress write cannot be mistaken for an orphan.
+in-progress write cannot be mistaken for an orphan. Native startup can read a
+symlinked configuration. If its source directory is read-only or write-protected,
+the fixed per-user `TailSplit/connection-snapshots` directory under the OS user
+cache directory holds the traffic snapshot, independently of the default
+configuration directory (on macOS, `~/Library/Caches` versus
+`~/Library/Application Support`). Its entire canonical parent
+chain must prevent replacement by other users, including macOS extended ACL and
+Windows ACL grants; unsafe paths are rejected without changing their permissions. Captured YAML bytes and the 1 MiB limit stay unchanged;
+the original base directory is passed separately so relative paths keep their
+meaning. Startup can find these snapshots even after `--log` or `state_dir` changes
+or the saved YAML is invalid or missing.
+Web editing and recovery retain strict file checks.
 
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
@@ -159,7 +182,11 @@ new additional profile and leaves both traffic exit selections unset until confi
 **Application proxy** lets individual applications use the local HTTP/SOCKS
 listeners. **System routing** captures system traffic when `tun.enabled` is set.
 Both modes create a DNS TUN and require the privileged network service:
-Windows Setup installs it; macOS requests administrator approval on first connection.
+Windows Setup installs it; macOS requests administrator approval when an explicit
+Add exit, Sign in or connection needs to install or update the bundled service.
+After installation, the original action continues; signing in still leaves traffic
+disconnected. The app shows the system-installer wait separately from Tailscale
+authorization. Source-built macOS device login can run locally when neither the service nor a bundled installer exists; an existing or mismatched service must still be repaired. On Windows, a missing service directs users to rerun TailSplit Setup instead of promising an in-app installation.
 
 Configuration and device state are retained across normal updates. In-app updates
 also restore the connection switch: an active connection reconnects after the
@@ -175,12 +202,31 @@ before releasing the lease. A slow disconnect reports cleanup in progress and
 keeps the helper alive; the desktop does not force-kill it after its stop timeout.
 Older services without session recovery must be updated before connecting.
 
+Tailnets with device approval can require a separate administrator action after
+browser sign-in. TailSplit shows **Awaiting device approval** and explains how to
+approve the new device in the Tailscale admin console. Approval timeouts identify
+the affected exit instead of reporting a generic readiness error. Device approval
+is separate from authorizing a node to serve as an exit.
+
 New desktop profiles use [config.default.yaml](config.default.yaml): direct Internet
 IPv6 off, FakeIP and system TUN on, MTU 1400, Split/builtin rules, unmatched traffic
 direct, system DNS for direct traffic and `8.8.8.8` for proxy DNS. Auto-connect is
 on once a gateway is configured. The template has no saved devices or account
 identity. Existing files, including their omitted-field behavior, are preserved.
 The CLI example uses the same portable preferences with an illustrative exit.
+
+If a saved configuration is invalid, its error banner offers **Edit YAML** or
+**Back up & rebuild**. When the only blocking issue is the obsolete `dns.listen`
+field, **Repair configuration** first backs up the source and removes that field,
+retaining saved exits, routing rules, comments and other settings. The entire
+result must pass strict validation; unknown fields, broken YAML and other errors
+are left for manual editing or rebuilding. Repair requires confirmation and stays
+disconnected, just like rebuilding. Rebuilding asks for confirmation, backs up the original
+file in the same folder, and restores the new-desktop defaults. It discards
+unsaved edits and resets saved exits and routing rules; device login data is
+retained. An active connection is disconnected first, including Global protection,
+and the app stays disconnected. External file changes block rebuilding until
+reloaded; backup or write failures leave the original configuration intact.
 
 The local configuration page includes a [Peetty](https://github.com/idy/peetty)
 Miru companion that walks and jumps between safe page edges. Drag it to move it,

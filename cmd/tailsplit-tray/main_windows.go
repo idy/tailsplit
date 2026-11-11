@@ -49,16 +49,19 @@ type windowsOperation struct {
 }
 
 type windowsApp struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	controller  *tray.Controller
-	configPath  string
-	window      *desktopwindow.Window
-	operations  chan windowsOperation
-	login       tray.LoginFlow
-	browserDone chan error
-	quit        sync.Once
-	updates     *desktopUpdates
+	ctx                context.Context
+	cancel             context.CancelFunc
+	controller         *tray.Controller
+	configPath         string
+	window             *desktopwindow.Window
+	panelReady         <-chan struct{}
+	showPanel          func() error // Published by closing panelReady.
+	operations         chan windowsOperation
+	login              tray.LoginFlow
+	loginCancellations *desktopLoginCancellations
+	browserDone        chan error
+	quit               sync.Once
+	updates            *desktopUpdates
 }
 
 func desktopPipeDescriptor(sid string) string {
@@ -201,9 +204,14 @@ func runWindowsDesktop() (runErr error) {
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// The tray owns application lifetime, independently of the settings frame,
+	// its recovery keeper and any transient popup. Explicit Quit still exits.
+	offAllClosed := mygo.App.OnWindowAllClosed(func() {})
+	defer offAllClosed()
 	// Keep one bounded pending request while the dispatcher handles its status
 	// tick. An unbuffered nonblocking send can reject a click while idle.
-	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1)}
+	panelReady := make(chan struct{})
+	app := &windowsApp{ctx: ctx, cancel: cancel, controller: controller, configPath: *config, operations: make(chan windowsOperation, 1), browserDone: make(chan error, 1), loginCancellations: newDesktopLoginCancellations(), panelReady: panelReady}
 	go app.operate()
 	preferences, err := tray.ReadPreferences(*config)
 	if err != nil {
@@ -215,14 +223,23 @@ func runWindowsDesktop() (runErr error) {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
 		}, launchWindowsUpdate)
 	var showConfiguration func()
-	panelReady := make(chan struct{})
+	cancelConnection := app.loginCancellations.callback(controller)
 	page, err := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
-		PingExit: controller.PingExitNode,
+		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
+		ClaimConnectOperation: controller.ClaimConnectOperation,
+		ObserveNativeConnectRequest: observeLiveNativeConnectRequests(controller, panelReady, func() bool {
+			return app.window != nil && app.window.CanReceiveConnectRequest()
+		}),
+		ClaimPanelConnectOperation: controller.ClaimPanelConnectOperation,
+		Cancel:                     cancelConnection,
 		AddExit: func(ctx context.Context, id, revision string) error {
 			return app.do(ctx, func() error {
 				app.login.Cancel()
-				return finishDesktopExitLogin(&app.login, controller.AddExit(id, revision))
+				scoped := controller.ForOperation(tray.OperationID(ctx))
+				err := scoped.AddExit(id, revision)
+				app.loginCancellations.apply(&app.login)
+				return finishDesktopExitLogin(&app.login, err, desktopLoginIdentity(scoped)...)
 			})
 		},
 		RemoveExit: func(ctx context.Context, id, revision string) error {
@@ -233,7 +250,7 @@ func runWindowsDesktop() (runErr error) {
 		},
 		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
 			return app.do(ctx, func() error {
-				err := controller.ReconfigureChecked(check, update)
+				err := controller.ReconfigureOperation(tray.OperationID(ctx), check, update)
 				if preferences, readErr := tray.ReadPreferences(*config); readErr == nil {
 					app.updates.updater.SetAutomatic(preferences.CheckForUpdates)
 				}
@@ -242,11 +259,17 @@ func runWindowsDesktop() (runErr error) {
 		},
 		Connect: func(ctx context.Context, revision string) error {
 			return app.do(ctx, func() error {
-				operation, err := checkedDesktopConnectOperation(*config, revision, controller, &app.login)
+				scoped := controller.ForOperation(tray.OperationID(ctx))
+				if err := scoped.Check(); err != nil {
+					return err
+				}
+				operation, err := checkedDesktopConnectOperation(*config, revision, scoped, &app.login)
 				if err != nil || operation == nil {
 					return err
 				}
-				return finishDesktopConnect(&app.login, operation())
+				err = operation()
+				app.loginCancellations.apply(&app.login)
+				return finishDesktopConnect(&app.login, err, desktopLoginIdentity(scoped)...)
 			})
 		},
 		UpdateState: app.updates.snapshot, UpdateAction: app.updates.action,
@@ -269,29 +292,30 @@ func runWindowsDesktop() (runErr error) {
 	if err != nil {
 		return err
 	}
-	showConfiguration = func() {
-		if err := app.window.Show(); err != nil {
-			controller.RecordDesktopEvent("Configuration window unavailable; opening the panel in the default browser: " + err.Error())
-			if err := mygo.Shell.OpenExternal(page.URL()); err != nil {
-				windowsError(err.Error())
-			}
+	app.window.SetCancelHandler(cancelConnection)
+	app.window.SetConnectRequestHandler(func() { controller.OfferNativeConnectRequest(app.window.CanPresentConnectRequest) })
+	fallback := configurationFallback{ctx: ctx, launch: func() {
+		if err := mygo.Shell.OpenExternal(tray.ConfigurationWindowConnectURL(page.URL(), controller.Snapshot().ConnectRequest)); err != nil {
+			windowsError(err.Error())
 		}
+	}}
+	reportWindowFailure := func(err error) {
+		controller.RecordDesktopEvent("Native configuration window unavailable: " + err.Error())
 	}
+	app.showPanel = func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		fallback.beginShow()
+		fallback.nativeFailure(app.window.Show(), true, reportWindowFailure)
+		return nil
+	}
+	showConfiguration = func() { _ = app.showConfiguration() }
 	close(panelReady)
-	windowDone := make(chan error, 1)
 	go func() {
 		controller.RecordDesktopEvent("MyGo native window starting with the system WebView.")
-		windowDone <- app.window.Run()
-	}()
-	go func() {
-		select {
-		case err := <-windowDone:
-			if err != nil {
-				controller.RecordDesktopEvent("Native window initialization failed: " + err.Error())
-				windowsError("Could not open the TailSplit window. Repair TailSplit and its Microsoft Edge WebView2 runtime.\n\n" + err.Error())
-			}
-			app.shutdown()
-		case <-ctx.Done():
+		if err := app.window.Run(); err != nil {
+			fallback.nativeFailure(err, app.window.WantsVisible(), reportWindowFailure)
 		}
 	}()
 	go app.serveDesktop(listener)
@@ -362,6 +386,24 @@ func runWindowsDesktop() (runErr error) {
 	}, func() { cancel(); _ = controller.Close(); _ = page.Close() })
 }
 
+func (a *windowsApp) showConfiguration() error {
+	if a.panelReady == nil {
+		return desktopwindow.ErrNotReady
+	}
+	select {
+	case <-a.panelReady:
+		if err := a.ctx.Err(); err != nil {
+			return err
+		}
+		if a.showPanel == nil {
+			return desktopwindow.ErrNotReady
+		}
+		return a.showPanel()
+	case <-a.ctx.Done():
+		return a.ctx.Err()
+	}
+}
+
 func (a *windowsApp) do(ctx context.Context, apply func() error) error {
 	request := windowsOperation{ctx: ctx, apply: apply, done: make(chan error, 1)}
 	select {
@@ -390,7 +432,10 @@ func (a *windowsApp) operate() {
 		select {
 		case <-a.ctx.Done():
 			return
+		case <-a.loginCancellations.events():
+			a.loginCancellations.apply(&a.login)
 		case request := <-a.operations:
+			a.loginCancellations.apply(&a.login)
 			if err := request.ctx.Err(); err != nil {
 				request.done <- err
 			} else if a.login.Opening() {
@@ -398,22 +443,28 @@ func (a *windowsApp) operate() {
 				// Do not let that completion overwrite a newer login or switch.
 				request.done <- configweb.ErrBusy
 			} else {
-				request.done <- request.apply()
+				err := request.apply()
+				a.loginCancellations.apply(&a.login)
+				request.done <- err
 			}
 		case err := <-a.browserDone:
+			a.loginCancellations.apply(&a.login)
 			a.login.Complete(err)
 		case <-ticker.C:
-			if link := a.login.Next(a.controller.Snapshot()); link != "" {
-				go func() {
+			a.loginCancellations.apply(&a.login)
+			if request := a.login.NextBrowserRequest(a.controller.Snapshot()); request.URL != "" {
+				go func(request tray.LoginBrowserRequest) {
 					ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 					defer cancel()
-					err := tray.OpenLoginPage(ctx, link)
+					err := tray.OpenLoginPageGuarded(ctx, request.URL, func(start func() error) error {
+						return a.controller.AuthorizeLoginBrowserStart(request, start)
+					})
 					a.controller.RecordLoginBrowserResult(err)
 					select {
 					case a.browserDone <- err:
 					case <-a.ctx.Done():
 					}
-				}()
+				}(request)
 			}
 		}
 	}
@@ -421,40 +472,48 @@ func (a *windowsApp) operate() {
 
 func (a *windowsApp) action(ctx context.Context, action string) error {
 	return a.do(ctx, func() error {
+		controller := a.controller.ForOperation(tray.OperationID(ctx))
+		if err := controller.Check(); err != nil {
+			return err
+		}
 		action, exit := splitExitAction(action)
 		switch action {
 		case "add-exit":
 			a.login.Cancel()
-			return finishDesktopExitLogin(&a.login, a.controller.AddExit(exit))
+			err := controller.AddExit(exit)
+			a.loginCancellations.apply(&a.login)
+			return finishDesktopExitLogin(&a.login, err, desktopLoginIdentity(controller)...)
 		case "login-exit":
-			return requestDesktopExitLogin(a.controller, &a.login, exit)
+			return requestDesktopExitLogin(controller, &a.login, exit)
 		case "logout-exit":
 			a.login.Cancel()
 			return a.controller.LogoutExit(exit)
 		case "connect":
-			operation, err := desktopConnectOperation(a.controller, &a.login)
+			operation, err := desktopConnectOperation(controller, &a.login)
 			if err != nil || operation == nil {
 				return err
 			}
-			return finishDesktopConnect(&a.login, operation())
+			err = operation()
+			a.loginCancellations.apply(&a.login)
+			return finishDesktopConnect(&a.login, err, desktopLoginIdentity(controller)...)
 		case "disconnect":
 			a.login.Cancel()
 			return a.controller.Stop()
 		case "login":
-			return nativePrimarySignIn(a.configPath, a.window.Show,
-				func() error { return requestDesktopLogin(a.controller, &a.login) })
+			return nativePrimarySignIn(a.configPath, a.showConfiguration,
+				func() error { return requestDesktopLogin(controller, &a.login) })
 		case "logout":
 			a.login.Cancel()
 			return a.controller.Logout()
 		case "switch-network":
 			a.login.Cancel()
-			if err := a.controller.SwitchNetwork(); err != nil {
+			if err := controller.SwitchNetwork(); err != nil {
 				return err
 			}
-			a.login.Request()
-			return nil
+			a.loginCancellations.apply(&a.login)
+			return requestDesktopAuthorization(&a.login, desktopLoginIdentity(controller)...)
 		case "refresh-exits":
-			return a.controller.RefreshExitNodes()
+			return controller.RefreshExitNodes()
 		case "startup-on":
 			return tray.SetLoginItem(true)
 		case "startup-off":
@@ -466,6 +525,13 @@ func (a *windowsApp) action(ctx context.Context, action string) error {
 }
 
 func (a *windowsApp) menuAction(action string) {
+	if action == "connect" && !a.controller.Snapshot().Active {
+		a.controller.RequestConnectionSetup()
+		if err := a.showConfiguration(); err != nil {
+			windowsError(err.Error())
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
 	defer cancel()
 	if err := a.action(ctx, action); err != nil {
@@ -502,7 +568,7 @@ func (a *windowsApp) serveDesktop(listener net.Listener) {
 			}
 			switch command {
 			case "show\n":
-				if a.window.Show() != nil {
+				if a.showConfiguration() != nil {
 					return
 				}
 				_, _ = io.WriteString(connection, "ok\n")

@@ -35,7 +35,7 @@ func newPageLoad() *pageLoad {
 func probePageReadiness(ctx context.Context, eval func(context.Context, string) (any, error), origin string, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	code := `document.readyState === 'complete' && location.origin === ` + strconv.Quote(origin)
+	code := `document.readyState === 'complete' && location.origin === ` + strconv.Quote(normalizePageOrigin(origin))
 	var lastError error
 	failure := func() error {
 		if errors.Is(ctx.Err(), context.Canceled) {
@@ -85,10 +85,9 @@ func (w *Window) failLoad(load *pageLoad, destroyed bool, err error, destroy fun
 		return
 	}
 	w.stopLoadProbe()
-	// Destroy emits OnClosed synchronously. Publish the failure first so its nil
-	// completion cannot win and silently discard the startup error.
-	w.complete(err)
-	destroy()
+	// Read renderer-independent cancellation intent before destroying the last
+	// ephemeral page. Slow recovery retains its hidden session across fallback.
+	w.failAfterCancellationRecovery(err, destroy)
 }
 
 func createWindowOnRun(platform string, visible, proof bool) bool {

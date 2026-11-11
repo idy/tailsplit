@@ -9,7 +9,7 @@ import (
 )
 
 // UpgradeExisting prepares a previously installed service at desktop startup.
-// First installation remains an explicit Connect action. Development binaries
+// First installation requires an explicit Connect or device sign-in. Development binaries
 // without a bundled installer never open Installer. EnsureInstalled still checks
 // the live root-owned service and preserves macOS administrator approval.
 func UpgradeExisting(ctx context.Context, executable string, output io.Writer) error {
