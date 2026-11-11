@@ -92,6 +92,22 @@ func TestStartupConfigHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+func isolateStartupSnapshotRoot(t *testing.T) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		t.Setenv("HOME", root)
+	case "windows":
+		t.Setenv("APPDATA", root)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", root)
+	}
+}
+
 func startupTestController(t *testing.T, configPath, stateDir, rulePath, mode string) *Controller {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -241,6 +257,7 @@ func readOnlyStartupConfig(t *testing.T) (configPath string, data []byte, stateD
 	if runtime.GOOS == "windows" {
 		t.Skip("read-only directory fixture uses POSIX permissions")
 	}
+	isolateStartupSnapshotRoot(t)
 	base := t.TempDir()
 	source := filepath.Join(base, "read-only")
 	if err := os.Mkdir(source, 0o700); err != nil {
@@ -295,7 +312,7 @@ func TestNativeStartupUsesPrivateFallbackSnapshotWithReadOnlyConfigDirectory(t *
 				t.Fatal("relocated snapshot lost the exact source revision", snapshot)
 			}
 			helperPath := startupHelperConfigPath(t, controller)
-			fallbackPath, err := connectionSnapshotFallbackPath(controller.options.LogPath)
+			fallbackPath, err := connectionSnapshotFallbackPath()
 			if err != nil || filepath.Dir(helperPath) != filepath.Dir(fallbackPath) {
 				t.Fatal("snapshot was not placed in the stable private fallback root", helperPath, err)
 			}
@@ -326,7 +343,7 @@ func TestNativeStartupUsesPrivateFallbackSnapshotWithReadOnlyConfigDirectory(t *
 				_ = unlock()
 				t.Fatal("helper did not retain the saved-state lease")
 			}
-			if err := cleanupStartupConnectionSnapshots(configPath, controller.options.LogPath); err != nil {
+			if err := cleanupStartupConnectionSnapshots(configPath); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(helperPath); err != nil {
@@ -412,8 +429,7 @@ func TestStartupFallbackKeepsOriginalByteLimit(t *testing.T) {
 	if len(data) != MaxConfigBytes {
 		t.Fatal("fixture does not exactly fill the original byte budget", len(data))
 	}
-	logPath := filepath.Join(t.TempDir(), "logs", "core.log")
-	path, base, cleanup, err := createConnectionSnapshot(configPath, logPath, data)
+	path, base, cleanup, err := createConnectionSnapshot(configPath, data)
 	if err != nil {
 		t.Fatal("valid source at the byte limit was rejected", err)
 	}
@@ -424,7 +440,7 @@ func TestStartupFallbackKeepsOriginalByteLimit(t *testing.T) {
 	if captured, _, err := ReadConfigDocument(path); err != nil || !bytes.Equal(captured, data) {
 		t.Fatal("exact-limit captured source was expanded or truncated", len(captured), err)
 	}
-	if _, _, extraCleanup, err := createConnectionSnapshot(configPath, logPath, append(bytes.Clone(data), '\n')); err == nil || extraCleanup != nil {
+	if _, _, extraCleanup, err := createConnectionSnapshot(configPath, append(bytes.Clone(data), '\n')); err == nil || extraCleanup != nil {
 		if extraCleanup != nil {
 			extraCleanup()
 		}
@@ -437,11 +453,14 @@ func TestNativeStartupRejectsUnavailablePrivateFallbackRoot(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			configPath, _, stateDir, rulePath := readOnlyStartupConfig(t)
 			controller := startupTestController(t, configPath, stateDir, rulePath, "traffic")
-			fallbackPath, err := connectionSnapshotFallbackPath(controller.options.LogPath)
+			fallbackPath, err := connectionSnapshotFallbackPath()
 			if err != nil {
 				t.Fatal(err)
 			}
 			directory := filepath.Dir(fallbackPath)
+			if err := os.MkdirAll(filepath.Dir(directory), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			switch kind {
 			case "public-directory":
 				if err := os.Mkdir(directory, 0o700); err != nil {
@@ -500,7 +519,7 @@ func TestReadOnlyStartupSnapshotCleansRejectedAdmissionAndFailedLaunch(t *testin
 			if err == nil || stale && !errors.Is(err, ErrConfigChanged) {
 				t.Fatal("rejected startup was admitted", err)
 			}
-			fallbackPath, pathErr := connectionSnapshotFallbackPath(controller.options.LogPath)
+			fallbackPath, pathErr := connectionSnapshotFallbackPath()
 			if pathErr != nil {
 				t.Fatal(pathErr)
 			}
@@ -513,8 +532,8 @@ func TestReadOnlyStartupSnapshotCleansRejectedAdmissionAndFailedLaunch(t *testin
 }
 
 func TestStartupCleanupPreservesSelectedFallbackSnapshot(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "logs", "core.log")
-	fallbackPath, err := connectionSnapshotFallbackPath(logPath)
+	isolateStartupSnapshotRoot(t)
+	fallbackPath, err := connectionSnapshotFallbackPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +553,7 @@ func TestStartupCleanupPreservesSelectedFallbackSnapshot(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := cleanupStartupConnectionSnapshots(configPath, logPath); err != nil {
+	if err := cleanupStartupConnectionSnapshots(configPath); err != nil {
 		t.Fatal(err)
 	}
 	if current, err := os.ReadFile(configPath); err != nil || !bytes.Equal(current, data) {
@@ -543,11 +562,16 @@ func TestStartupCleanupPreservesSelectedFallbackSnapshot(t *testing.T) {
 }
 
 func TestStartupReclaimsFallbackSnapshotsIndependentOfConfig(t *testing.T) {
-	for _, change := range []string{"state-dir-changed", "invalid-yaml", "source-missing"} {
+	for _, change := range []string{"state-dir-changed", "invalid-yaml", "source-missing", "log-path-changed", "login-item-default-log"} {
 		t.Run(change, func(t *testing.T) {
 			configPath, original, _, _ := readOnlyStartupConfig(t)
-			logPath := filepath.Join(t.TempDir(), "logs", "core.log")
-			fallbackPath, err := connectionSnapshotFallbackPath(logPath)
+			customLog := filepath.Join(t.TempDir(), "custom-logs", "core.log")
+			previous, err := New(Options{Helper: "unused-test-helper", ConfigPath: configPath, LogPath: customLog})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = previous.Close()
+			fallbackPath, err := connectionSnapshotFallbackPath()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -605,7 +629,7 @@ func TestStartupReclaimsFallbackSnapshotsIndependentOfConfig(t *testing.T) {
 				if err := os.Remove(configPath); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			} else if change != "log-path-changed" && change != "login-item-default-log" {
 				updated := bytes.Replace(original, []byte("state_dir: ../state"), []byte("state_dir: ../replacement-state"), 1)
 				if change == "invalid-yaml" {
 					updated = []byte("invalid YAML: [\n")
@@ -613,6 +637,16 @@ func TestStartupReclaimsFallbackSnapshotsIndependentOfConfig(t *testing.T) {
 				if err := os.WriteFile(configPath, updated, 0o600); err != nil {
 					t.Fatal(err)
 				}
+			}
+			logPath := customLog
+			if change == "log-path-changed" {
+				logPath = filepath.Join(t.TempDir(), "different-logs", "core.log")
+			} else if change == "login-item-default-log" {
+				configRoot, err := os.UserConfigDir()
+				if err != nil {
+					t.Fatal(err)
+				}
+				logPath = filepath.Join(configRoot, "TailSplit", "logs", "tailsplit.log")
 			}
 			controller, err := New(Options{Helper: executable, ConfigPath: configPath, LogPath: logPath})
 			if err != nil {

@@ -38,7 +38,7 @@ func lockConnectionSnapshotDirectory(configPath string) (func() error, error) {
 	return tailsplit.LockSavedState(filepath.Join(filepath.Dir(configPath), ".tailsplit-connection-lock"))
 }
 
-func createConnectionSnapshot(configPath, logPath string, data []byte) (path, base string, cleanup func(), err error) {
+func createConnectionSnapshot(configPath string, data []byte) (path, base string, cleanup func(), err error) {
 	// Validate captured bytes against the original argument directory without
 	// re-encoding them: compact YAML and aliases must keep the same byte budget.
 	if _, err := startupConfig(configPath, data); err != nil {
@@ -50,7 +50,7 @@ func createConnectionSnapshot(configPath, logPath string, data []byte) (path, ba
 	}
 	// This root belongs to the desktop, independently of mutable YAML state_dir.
 	// Never publish an unindexed snapshot elsewhere if it is unavailable.
-	fallbackPath, err := connectionSnapshotFallbackPath(logPath)
+	fallbackPath, err := connectionSnapshotFallbackPath()
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -59,7 +59,7 @@ func createConnectionSnapshot(configPath, logPath string, data []byte) (path, ba
 		return "", "", nil, err
 	}
 	directory := filepath.Dir(fallbackPath)
-	if err := privatefs.EnsureDir(directory, directory); err != nil {
+	if err := privatefs.StableDir(directory, true); err != nil {
 		return "", "", nil, err
 	}
 	if err := cleanupConnectionSnapshotsAt(configPath, fallbackPath); err != nil {

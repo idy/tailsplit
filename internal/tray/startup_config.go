@@ -70,29 +70,48 @@ func startupConfig(configPath string, data []byte) (tailsplit.Config, error) {
 	return tailsplit.Normalize(config, base)
 }
 
-func connectionSnapshotFallbackPath(logPath string) (string, error) {
-	path, err := filepath.Abs(logPath)
+// Keep snapshot discovery independent of custom log paths and mutable YAML.
+func connectionSnapshotFallbackPath() (string, error) {
+	root, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(path), ".tailsplit-connection-snapshots", "config.yaml"), nil
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	// Resolve OS/user path aliases only in the config base, then use that exact
+	// canonical pathname for creation and helper loading. App-owned descendants
+	// are never followed through links. StableDir checks the entire resulting
+	// ancestry before using or creating any of them.
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(root)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Join(resolved, "TailSplit", "connection-snapshots", "config.yaml"), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) || filepath.Dir(root) == root {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(root))
+		root = filepath.Dir(root)
+	}
 }
 
-func cleanupStartupConnectionSnapshots(configPath, logPath string) error {
+func cleanupStartupConnectionSnapshots(configPath string) error {
 	err := cleanupConnectionSnapshots(configPath)
-	fallbackPath, pathErr := connectionSnapshotFallbackPath(logPath)
+	fallbackPath, pathErr := connectionSnapshotFallbackPath()
 	if pathErr != nil {
 		return errors.Join(err, pathErr)
 	}
-	directory := filepath.Dir(fallbackPath)
-	if _, statErr := os.Lstat(directory); errors.Is(statErr, os.ErrNotExist) {
-		return err // Do not create snapshot metadata before the first fallback.
-	} else if statErr != nil {
-		return errors.Join(err, statErr)
-	}
-	// Check the private root itself; cleanup individually checks its files and
-	// must preserve unrelated entries and links rather than recursively adopt them.
-	if rootErr := privatefs.EnsureDir(directory, directory); rootErr != nil {
+	// Validate parents before inspecting descendants. Cleanup must neither create
+	// missing metadata nor follow a replaceable root into someone else's files.
+	if rootErr := privatefs.StableDir(filepath.Dir(fallbackPath), false); errors.Is(rootErr, os.ErrNotExist) {
+		return err
+	} else if rootErr != nil {
 		return errors.Join(err, rootErr)
 	}
 	return errors.Join(err, cleanupConnectionSnapshotsAt(configPath, fallbackPath))

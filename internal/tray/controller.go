@@ -166,7 +166,7 @@ func New(options Options) (*Controller, error) {
 		return nil, err
 	}
 	controller := &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}
-	if err := cleanupStartupConnectionSnapshots(options.ConfigPath, options.LogPath); err != nil {
+	if err := cleanupStartupConnectionSnapshots(options.ConfigPath); err != nil {
 		controller.RecordDesktopEvent("Could not clean orphaned connection snapshots: " + err.Error())
 	}
 	return controller, nil
@@ -369,7 +369,7 @@ func (c *Controller) startRevision(expected, operation string) error {
 // relocated snapshot carries its original path base separately, so neither
 // aliases nor the source byte budget change when its directory is read-only.
 func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expected string) error {
-	path, base, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, c.options.LogPath, data)
+	path, base, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
 	if err != nil {
 		return err
 	}
