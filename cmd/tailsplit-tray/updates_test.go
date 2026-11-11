@@ -89,7 +89,7 @@ type updateStartFixture struct {
 }
 
 func (f *updateStartFixture) Start() error { f.started = true; return nil }
-func (f *updateStartFixture) StartRevision(revision string) error {
+func (f *updateStartFixture) StartUpdateRevision(revision string) error {
 	f.revision = revision
 	return tray.ErrConfigChanged
 }

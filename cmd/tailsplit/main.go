@@ -67,6 +67,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	flags.SetOutput(diagnostic)
 	path := flags.String("c", "config.yaml", "YAML configuration path")
 	configBase := flags.String("config-base", "", "original base directory for a captured configuration")
+	rulesRevision := flags.String("rules-revision", "", "expected rule projection for an update restart (app-run only)")
 	target := flags.String("id", "", "discovered exit node ID to ping (ping only)")
 	exit := flags.String("exit", "", "limit login, discovery, logout or ping to one exit ID (main is the primary device)")
 	events := flags.Bool("events", false, "emit private connection events on stdout (run only)")
@@ -81,6 +82,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		command == "discover" || command == "app-discover"
 	if *events && !isRun {
 		return errors.New("--events is supported only by run")
+	}
+	if *rulesRevision != "" && command != "app-run" {
+		return errors.New("--rules-revision is supported only by app-run")
 	}
 	if *parentPID < 0 || *parentPID != 0 && (!(isRun || command == "ping" || command == "app-ping") || os.Getppid() != *parentPID) {
 		return errors.New("--parent-pid must identify the current parent of a run command")
@@ -109,6 +113,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	if err != nil {
 		return err
 	}
+	config.ExpectedRulesRevision = *rulesRevision
 	if command == "app-login" && *exit == "" {
 		*exit = tailsplit.MainExit
 	}

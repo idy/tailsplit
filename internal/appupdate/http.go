@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func (u *Updater) fetchRelease(ctx context.Context) (checkResult, error) {
+func (u *Updater) fetchRelease(ctx context.Context, tag string) (result checkResult, err error) {
 	ctx, cancel := context.WithTimeout(ctx, u.requestTimeout)
 	defer cancel()
 	response, err := u.get(ctx, u.source, false)
@@ -21,6 +21,16 @@ func (u *Updater) fetchRelease(ctx context.Context) (checkResult, error) {
 		return checkResult{}, err
 	}
 	defer response.Body.Close()
+	// HTTP/rate-limit failures retain their existing retry behavior. An accepted
+	// response that cannot produce validated metadata gets a separate retry
+	// deadline, which does not suppress public tag discovery or manual checks.
+	defer func() {
+		if err == nil {
+			u.failedMetadata = nil
+		} else {
+			u.failedMetadata = &metadataFailure{tag: tag, retryAt: u.now().Add(metadataRetryDelay), err: err}
+		}
+	}()
 	if response.StatusCode == http.StatusNotModified {
 		if u.cached == nil || u.cached.etag == "" {
 			return checkResult{}, errors.New("GitHub returned 304 without a validated cached release")
@@ -28,6 +38,9 @@ func (u *Updater) fetchRelease(ctx context.Context) (checkResult, error) {
 		if etag := response.Header.Get("ETag"); etag != "" &&
 			(!validETag(etag) || strings.TrimPrefix(etag, "W/") != strings.TrimPrefix(u.cached.etag, "W/")) {
 			return checkResult{}, errors.New("GitHub returned 304 with a different or malformed ETag")
+		}
+		if tag != "" && tag != u.cached.tag {
+			return checkResult{}, errors.New("GitHub returned 304 for a different latest release tag")
 		}
 		return u.cached.result, nil
 	}
@@ -39,9 +52,19 @@ func (u *Updater) fetchRelease(ctx context.Context) (checkResult, error) {
 	if err := json.Unmarshal(data, &release); err != nil {
 		return checkResult{}, fmt.Errorf("decode release metadata: %w", err)
 	}
-	result, err := u.validateRelease(release)
+	if tag == "" {
+		// Initial/manual checks may not have probed the public redirect. Use a
+		// stable, repository-pinned page only as a retry hint, never as an offer.
+		if _, valid := stableVersion(release.Tag); valid && release.URL == releasePageBase+release.Tag {
+			tag = release.Tag
+		}
+	}
+	result, err = u.validateRelease(release)
 	if err != nil {
 		return checkResult{}, err
+	}
+	if tag != release.Tag {
+		return checkResult{}, errors.New("release metadata does not match the public latest release tag")
 	}
 	etag := response.Header.Get("ETag")
 	if !validETag(etag) {

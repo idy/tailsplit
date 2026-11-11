@@ -12,7 +12,7 @@ import (
 )
 
 // Identify traffic intent without treating discovery or sign-in as Connect.
-// CloseForUpdate separately refuses a non-running Global session before stopping it.
+// CloseForUpdate separately requires an explicit disconnect for Global sessions.
 func desktopUpdateReconnect(snapshot tray.Snapshot) bool {
 	return snapshot.Active && (snapshot.Mode == "tun" || snapshot.Mode == "proxy") &&
 		snapshot.State != "stopping" && snapshot.State != "failed" && snapshot.State != "logging-out"
@@ -28,16 +28,7 @@ func desktopUpdateStartArgument(reconnect bool) string {
 // Capture the document offered for restart without letting an external edit
 // silently replace the running session's immutable routing policy.
 func desktopUpdateRevision(path string, snapshot tray.Snapshot) (string, error) {
-	_, revision, err := tray.ReadConfigDocument(path)
-	if desktopUpdateReconnect(snapshot) {
-		if err != nil {
-			return "", err
-		}
-		if snapshot.ActiveRevision == "" || snapshot.ActiveRevision != revision {
-			return "", tray.ErrConfigChanged
-		}
-	}
-	return revision, nil
+	return tray.UpdateRestartRevision(path, snapshot)
 }
 
 func validDesktopUpdateRevision(revision string) bool {
@@ -57,10 +48,10 @@ func validDesktopUpdateRevision(revision string) bool {
 
 func startDesktopConnection(controller interface {
 	Start() error
-	StartRevision(string) error
+	StartUpdateRevision(string) error
 }, revision string) error {
 	if revision != "" {
-		return controller.StartRevision(revision)
+		return controller.StartUpdateRevision(revision)
 	}
 	return controller.Start()
 }

@@ -153,18 +153,28 @@ func runDiscoveryEvents(ctx context.Context, config tailsplit.Config, stream *ev
 	return stream.send(map[string]string{"event": "discovered", "mode": "discovery"})
 }
 
-func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.Compiled, stream *eventStream) (err error) {
+func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.Compiled, stream *eventStream) error {
+	return runEventsWithPreparation(ctx, config, compiled, stream, tailsplit.PrepareConnection)
+}
+
+func runEventsWithPreparation(ctx context.Context, config tailsplit.Config, compiled tailsplit.Compiled, stream *eventStream,
+	prepare func(context.Context, tailsplit.Config, tailsplit.Compiled, func(tailsplit.Status), singlog.PlatformWriter) (tailsplit.Compiled, error)) (err error) {
 	var logWriter singlog.PlatformWriter
 	if stream.captureLogs {
 		logWriter = stream
 	}
 	if len(config.ExitIDs()) > 0 {
-		compiled, err = tailsplit.PrepareConnection(ctx, config, compiled, func(status tailsplit.Status) {
+		compiled, err = prepare(ctx, config, compiled, func(status tailsplit.Status) {
 			_ = stream.send(status)
 		}, logWriter)
 		if err != nil {
 			return err
 		}
+	}
+	// Preparation can recompile to isolate devices or use observed DNS metadata.
+	// Check that final projection before the traffic engine opens any state.
+	if config.ExpectedRulesRevision != "" && config.ExpectedRulesRevision != compiled.RulesRevision {
+		return tailsplit.ErrRulesChanged
 	}
 	engine, err := tailsplit.OpenWithLogWriter(ctx, config, compiled, logWriter)
 	if err != nil {
@@ -184,6 +194,7 @@ func runEvents(ctx context.Context, config tailsplit.Config, compiled tailsplit.
 	}
 	if err := stream.send(map[string]string{
 		"event": "ready", "mode": mode, "routing_mode": config.Rules.Mode,
+		"rules_revision": compiled.RulesRevision,
 	}); err != nil {
 		return err
 	}

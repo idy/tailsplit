@@ -249,8 +249,9 @@ func TestCloseForUpdateIdleAndNonTrafficHelpersDoNotReconnect(t *testing.T) {
 	}
 }
 
-func TestCloseForUpdateUnhealthyGlobalSessionRemainsUntouched(t *testing.T) {
+func TestCloseForUpdateGlobalSessionRequiresExplicitDisconnect(t *testing.T) {
 	for _, state := range []struct{ mode, state, event string }{
+		{"tun", "running", `{"event":"status","backend_state":"Running","exit_online":true,"exit_visible":true}`},
 		{"tun", "blocked", `{"event":"status","backend_state":"Running","exit_online":false,"exit_visible":true}`},
 		{"proxy", "waiting-exit", `{"event":"status","backend_state":"Running","exit_online":false,"exit_visible":true}`},
 		{"proxy", "missing-exit", `{"event":"status","backend_state":"Running","exit_online":false,"exit_visible":false}`},
@@ -288,7 +289,7 @@ func TestCloseForUpdateUnhealthyGlobalSessionRemainsUntouched(t *testing.T) {
 }
 
 func TestCloseForUpdateSuccessfulSnapshotMatchesHelperPolicy(t *testing.T) {
-	for _, mode := range []string{"proxy", "tun-global"} {
+	for _, mode := range []string{"proxy", "tun-split"} {
 		t.Run(mode, func(t *testing.T) {
 			c := testController(t, "normal")
 			_, revision, err := ReadConfigDocument(c.options.ConfigPath)
@@ -299,8 +300,8 @@ func TestCloseForUpdateSuccessfulSnapshotMatchesHelperPolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitState(t, c, "running")
-			if mode == "tun-global" {
-				c.onEvent([]byte(`{"event":"ready","mode":"tun","routing_mode":"global"}`))
+			if mode == "tun-split" {
+				c.onEvent([]byte(`{"event":"ready","mode":"tun","routing_mode":"split"}`))
 				c.onEvent([]byte(`{"event":"status","backend_state":"Running","exit_online":true}`))
 			}
 			before := c.Snapshot()

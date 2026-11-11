@@ -65,8 +65,12 @@ latest-release redirect every five minutes and reuse cached metadata when the ta
 is unchanged. Only a changed tag or a manual check revalidates the API metadata,
 using its ETag when available. This avoids spending the shared unauthenticated API
 quota on routine probes. Checks honor server retry/reset deadlines and back off
-on rate limits; cached offers remain visible. Cache and backoff are process-local,
-and same-tag release-note edits appear after a manual check or app restart.
+on rate limits; cached offers remain visible. Invalid release metadata, such as a
+release whose assets are still publishing, is retried at most every 15 minutes
+for the same tag while five-minute public probes continue. New tags retry
+immediately; a manual check bypasses this local validation delay. Cache and
+backoff are process-local, and same-tag release-note edits appear after a manual
+check or app restart.
 
 `app.check_for_updates` defaults to `true` when omitted. The menu and panel can
 change it immediately without reconnecting the proxy. Checks only discover new
@@ -92,10 +96,12 @@ directories request administrator authorization before shutdown. Failed activati
 or launch handoff restores the previous bundle. Configuration and saved device
 identity are retained. In-app updates restore the connection switch at shutdown:
 active traffic sessions reconnect; disconnected, discovery-only and sign-in-only
-sessions stay disconnected. Global sessions that are blocked or still waiting for
-an exit refuse installation while retaining their current protection: reconnect
-the exit or explicitly disconnect before updating. Reconnection is bound to the
-active configuration revision. An external edit before shutdown stops the update;
+sessions stay disconnected. All active Global sessions refuse installation while
+retaining their current protection: explicitly disconnect before updating, then
+reconnect manually afterward. This also protects against an exit going offline
+during replacement; the desktop cannot keep its TUN across process replacement.
+Split reconnection is bound to the active configuration revision and the helper's
+actually compiled rule projection, including local files and cached subscriptions. An external edit before shutdown stops the update;
 an edit during replacement prevents automatic reconnection until you review the
 saved configuration. An acknowledged disconnect during cleanup also cancels
 reconnection. This one-time restart choice does not change `app.connect_on_start`.

@@ -216,6 +216,38 @@ func TestRunChecksAfterStartupAndSkipsDevelopment(t *testing.T) {
 	}
 }
 
+func TestRunProbesTagsWhileInvalidMetadataWaits(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	f.release.Assets = nil
+	u, log := testUpdater(t, f.serve)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	timers := fakeTimers(u)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	go func() { u.Run(ctx); close(finished) }()
+	startup := nextTimer(t, timers, 10*time.Second)
+	now = now.Add(10 * time.Second)
+	startup.tick <- now
+	interval := nextTimer(t, timers, 5*time.Minute)
+	if log.count() != 1 || u.Snapshot().Available || u.failedMetadata == nil {
+		t.Fatal("initial invalid metadata did not create a validation retry deadline")
+	}
+	for tick := 1; tick <= 3; tick++ {
+		now = now.Add(5 * time.Minute)
+		interval.tick <- now
+		interval = nextTimer(t, timers, 5*time.Minute)
+		// Every tick makes a public probe; only the fifteen-minute tick also
+		// retries metadata. Probes still count as checks during this local wait.
+		if log.count() != 1+tick+tick/3 || !u.Snapshot().LastChecked.Equal(now) || u.Snapshot().Available {
+			t.Fatalf("validation retry changed the five-minute public probe cadence: %+v, requests=%d", u.Snapshot(), log.count())
+		}
+	}
+	cancel()
+	waitSignal(t, finished)
+}
+
 func TestRunKeepsCadenceWhileHonoringRateLimit(t *testing.T) {
 	f := fixture(t, "v0.6.2", "darwin", "arm64")
 	var checks int

@@ -21,6 +21,10 @@ const (
 	releasePageBase   = "https://github.com/idy/tailsplit/releases/tag/"
 	assetURLBase      = "https://github.com/idy/tailsplit/releases/download/"
 
+	// Incomplete releases may take time to finish publishing their assets. Keep
+	// probing tags every five minutes, but retry invalid metadata less often.
+	metadataRetryDelay = 15 * time.Minute
+
 	maxJSONBytes    = 1 << 20
 	maxSumsBytes    = 1 << 20
 	maxNotesBytes   = 64 << 10
@@ -39,11 +43,12 @@ type Updater struct {
 	// sweep removes only older ones, never a package still being installed.
 	issued map[string]bool
 
-	// cached is replaced only after full release validation, under the exclusive
-	// check operation. Rate-limit state is protected by mu.
-	cached     *cachedRelease
-	retryAt    time.Time
-	retryDelay time.Duration
+	// cached and failedMetadata belong to the exclusive check operation. Only
+	// fully validated releases enter cached. Rate-limit state is protected by mu.
+	cached         *cachedRelease
+	failedMetadata *metadataFailure
+	retryAt        time.Time
+	retryDelay     time.Duration
 
 	current         string
 	goos            string
@@ -94,6 +99,14 @@ type cachedRelease struct {
 	result checkResult
 }
 
+// metadataFailure is only a retry hint, never a release or download offer.
+// An empty tag means validation failed before a stable release page was known.
+type metadataFailure struct {
+	tag     string
+	retryAt time.Time
+	err     error
+}
+
 // New configures the public idy/tailsplit release source and desktop platform.
 // CurrentVersion retains version as supplied; discovered versions omit "v".
 // Development, prerelease, and incomplete versions cannot be checked.
@@ -136,8 +149,10 @@ func (u *Updater) SetAutomatic(automatic bool) {
 // five-minute intervals. Disabled and development builds skip timed checks. The
 // preference does not reset that cadence. Only one Run loop can be active.
 // Automatic checks only discover updates; they never download or install them.
-// Once metadata is validated, unchanged tags use the public latest-release
-// redirect instead of the rate-limited API. Use Check to refresh same-tag edits.
+// After a metadata attempt, checks use the public latest-release redirect.
+// Valid unchanged tags reuse the cache; invalid metadata for the same tag is
+// retried after fifteen minutes while public probes continue every five minutes.
+// New tags bypass that validation delay. Use Check to refresh same-tag edits.
 // After the startup delay, Run also removes downloads left by earlier processes.
 func (u *Updater) Run(ctx context.Context) {
 	u.mu.Lock()
@@ -178,9 +193,10 @@ func (u *Updater) Run(ctx context.Context) {
 
 // Check discovers a strictly newer stable desktop release, even when automatic
 // checks are disabled. Manual checks always revalidate API metadata (using its
-// ETag when available), including edits to an existing tag. Both manual and
-// timed checks honor server backoff without making requests or advancing
-// LastChecked during the wait. A failed recheck retains any previous offer.
+// ETag when available), including edits to an existing tag. They bypass the
+// local validation retry delay. Both manual and timed checks honor server
+// backoff without making requests or advancing LastChecked during the wait.
+// A failed recheck retains any previous offer.
 func (u *Updater) Check(ctx context.Context) error {
 	return u.checkForUpdates(ctx, false)
 }
@@ -232,18 +248,23 @@ func (u *Updater) check(ctx context.Context, automatic bool) (checkResult, error
 	if u.source != latestReleaseURL {
 		return checkResult{}, errors.New("update source is not the expected public GitHub release URL")
 	}
-	if automatic && u.cached != nil {
+	var tag string
+	if automatic && (u.cached != nil || u.failedMetadata != nil) {
 		// Unauthenticated API requests consume quota even on a 304. Probe the
 		// public web redirect instead; never follow it or trust it as metadata.
-		tag, err := u.latestTag(ctx)
+		var err error
+		tag, err = u.latestTag(ctx)
 		if err != nil {
 			return checkResult{}, err
 		}
-		if tag == u.cached.tag {
+		if u.cached != nil && tag == u.cached.tag {
 			return u.cached.result, nil
 		}
+		if failed := u.failedMetadata; failed != nil && failed.tag == tag && u.now().Before(failed.retryAt) {
+			return checkResult{}, fmt.Errorf("release metadata retry deferred until %s: %w", failed.retryAt.UTC().Format(time.RFC3339), failed.err)
+		}
 	}
-	return u.fetchRelease(ctx)
+	return u.fetchRelease(ctx, tag)
 }
 
 func (u *Updater) validateRelease(release githubRelease) (checkResult, error) {

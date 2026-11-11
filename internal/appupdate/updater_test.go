@@ -573,8 +573,215 @@ func TestInvalidReplacementDoesNotPoisonConditionalCache(t *testing.T) {
 		t.Fatal("accepted invalid replacement")
 	}
 	requireCheck(t, u)
-	if !u.Snapshot().Available || u.Snapshot().Error != "" {
-		t.Fatal("304 did not restore the last validated offer")
+	if !u.Snapshot().Available || u.Snapshot().Error != "" || u.failedMetadata != nil {
+		t.Fatal("304 did not restore the last validated offer and clear the validation retry hint")
+	}
+}
+
+func TestInvalidMetadataAvoidsSharedIPAPIQuota(t *testing.T) {
+	for _, oldCache := range []bool{false, true} {
+		t.Run(fmt.Sprintf("old_cache=%t", oldCache), func(t *testing.T) {
+			f := fixture(t, "v0.6.2", "darwin", "arm64")
+			var api, probes atomic.Int32
+			now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+			base := now
+			var clients []*Updater
+			for range 6 {
+				u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/idy/tailsplit/releases/latest" {
+						probes.Add(1)
+					} else {
+						api.Add(1)
+						if got := r.Header.Get("If-None-Match"); got != "" && got != `"v0.6.2"` {
+							t.Errorf("unvalidated metadata supplied an ETag: %q", got)
+						}
+						w.Header().Set("ETag", `"`+f.release.Tag+`"`)
+					}
+					f.serve(w, r)
+				})
+				u.now = func() time.Time { return now }
+				if oldCache {
+					requireCheck(t, u)
+				}
+				clients = append(clients, u)
+			}
+			f = fixture(t, "v0.6.3", "darwin", "arm64")
+			f.release.Assets = f.release.Assets[1:] // SHA256SUMS exists, but the desktop package is not uploaded yet.
+			f.release.Notes = "Unvalidated notes must not enter the offer"
+			for _, u := range clients {
+				if err := u.checkForUpdates(context.Background(), true); err == nil {
+					t.Fatal("accepted a release with a missing desktop package")
+				}
+			}
+			initialAPI, initialProbes := api.Load(), probes.Load()
+			for tick := 1; tick <= 12; tick++ {
+				now = base.Add(time.Duration(tick) * 5 * time.Minute)
+				for _, u := range clients {
+					if err := u.checkForUpdates(context.Background(), true); err == nil {
+						t.Fatal("incomplete metadata became a successful check")
+					}
+					state := u.Snapshot()
+					if state.Available != oldCache || state.Checking || state.Error == "" || state.ReleaseNotes == f.release.Notes {
+						t.Fatalf("invalid release changed the validated offer: %+v", state)
+					}
+					if oldCache {
+						if state.LatestVersion != "0.6.2" || u.cached.tag != "v0.6.2" || u.offer.version != "0.6.2" {
+							t.Fatal("incomplete new tag replaced the validated old cache")
+						}
+					} else if u.cached != nil || u.offer != nil || state.LatestVersion != "" {
+						t.Fatal("invalid initial metadata entered the cache")
+					}
+				}
+				if api.Load() != initialAPI+6*int32(tick/3) || probes.Load() != initialProbes+6*int32(tick) {
+					t.Fatalf("tick %d: invalid metadata exhausted quota or suppressed probes: API=%d probes=%d", tick, api.Load(), probes.Load())
+				}
+			}
+			// Even counting the initial failure and the boundary at one hour,
+			// invalid releases stay below 60 API calls across all six clients.
+			if api.Load() >= 60 || probes.Load()-initialProbes != 72 {
+				t.Fatalf("shared-IP regression: API=%d probes=%d", api.Load(), probes.Load())
+			}
+			// Same-tag uploads recover at the retry deadline; earlier checks keep
+			// probing without accepting the repaired metadata prematurely.
+			f = fixture(t, "v0.6.3", "darwin", "arm64")
+			beforeRecovery := api.Load()
+			now = base.Add(65 * time.Minute)
+			for _, u := range clients {
+				if err := u.checkForUpdates(context.Background(), true); err == nil {
+					t.Fatal("automatic metadata retry bypassed its deadline")
+				}
+			}
+			if api.Load() != beforeRecovery {
+				t.Fatal("same-tag repair was fetched before the deadline")
+			}
+			now = base.Add(75 * time.Minute)
+			for _, u := range clients {
+				if err := u.checkForUpdates(context.Background(), true); err != nil {
+					t.Fatal("repaired release did not recover:", err)
+				}
+				if !u.Snapshot().Available || u.Snapshot().LatestVersion != "0.6.3" || u.failedMetadata != nil {
+					t.Fatal("successful recovery did not replace the cache and clear the retry hint")
+				}
+			}
+			if api.Load() != beforeRecovery+6 {
+				t.Fatal("recovery did not perform exactly one metadata fetch per client")
+			}
+		})
+	}
+}
+
+func TestValidationRetryNewTagsAndManualChecks(t *testing.T) {
+	for _, test := range []struct{ manual, oldCache bool }{{false, false}, {false, true}, {true, false}, {true, true}} {
+		t.Run(fmt.Sprintf("manual=%t/old_cache=%t", test.manual, test.oldCache), func(t *testing.T) {
+			f := fixture(t, "v0.6.2", "darwin", "arm64")
+			var api atomic.Int32
+			u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/idy/tailsplit/releases/latest" {
+					api.Add(1)
+				}
+				f.serve(w, r)
+			})
+			now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+			u.now = func() time.Time { return now }
+			if test.oldCache {
+				requireCheck(t, u)
+			}
+			seedAPI := api.Load()
+			f = fixture(t, "v0.6.3", "darwin", "arm64")
+			f.release.Assets = nil
+			if err := u.checkForUpdates(context.Background(), true); err == nil {
+				t.Fatal("accepted invalid metadata")
+			}
+			now = now.Add(5 * time.Minute)
+			if test.manual {
+				u.SetAutomatic(false)
+				// Manual retries bypass only the local validation delay and still
+				// reject an incomplete release rather than treating it as cached.
+				if err := u.Check(context.Background()); err == nil || strings.Contains(err.Error(), "deferred") || api.Load() != seedAPI+2 {
+					t.Fatalf("manual retry was suppressed or accepted bad metadata: %v", err)
+				}
+				f = fixture(t, "v0.6.3", "darwin", "arm64")
+				requireCheck(t, u)
+				if api.Load() != seedAPI+3 || u.Snapshot().Automatic {
+					t.Fatal("manual same-tag repair did not refresh independently of preference")
+				}
+			} else {
+				f = fixture(t, "v0.6.4", "darwin", "arm64")
+				if err := u.checkForUpdates(context.Background(), true); err != nil {
+					t.Fatal("new public tag was suppressed by the old validation delay:", err)
+				}
+				if api.Load() != seedAPI+2 {
+					t.Fatal("new tag did not perform one immediate metadata fetch")
+				}
+			}
+			if !u.Snapshot().Available || u.Snapshot().Error != "" || u.failedMetadata != nil {
+				t.Fatalf("successful check did not clear validation retry state: %+v", u.Snapshot())
+			}
+		})
+	}
+}
+
+func TestMalformedMetadataGetsPublicTagRetryHint(t *testing.T) {
+	var api, probes atomic.Int32
+	u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/idy/tailsplit/releases/latest" {
+			probes.Add(1)
+			w.Header().Set("Location", releasePageBase+"v0.6.2")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		api.Add(1)
+		w.Header().Set("ETag", `"unvalidated"`)
+		_, _ = io.WriteString(w, "{")
+	})
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	if err := u.checkForUpdates(context.Background(), true); err == nil {
+		t.Fatal("accepted malformed initial JSON")
+	}
+	for range 2 {
+		now = now.Add(5 * time.Minute)
+		if err := u.checkForUpdates(context.Background(), true); err == nil {
+			t.Fatal("accepted malformed metadata during public discovery")
+		}
+	}
+	if api.Load() != 2 || probes.Load() != 2 || u.cached != nil || u.failedMetadata.tag != "v0.6.2" {
+		t.Fatal("unparseable metadata failed to adopt a public tag retry hint without caching an offer")
+	}
+}
+
+func TestChangedTagRejectsStaleMetadataAnd304(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNotModified} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			f := fixture(t, "v0.6.2", "darwin", "arm64")
+			var api atomic.Int32
+			u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/idy/tailsplit/releases/latest" {
+					w.Header().Set("Location", releasePageBase+"v0.6.3")
+					w.WriteHeader(http.StatusFound)
+					return
+				}
+				w.Header().Set("ETag", `"old"`)
+				if api.Add(1) > 1 && status == http.StatusNotModified {
+					w.WriteHeader(status)
+					return
+				}
+				f.serve(w, r)
+			})
+			now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+			u.now = func() time.Time { return now }
+			requireCheck(t, u)
+			if err := u.checkForUpdates(context.Background(), true); err == nil {
+				t.Fatal("old metadata was accepted for a different public tag")
+			}
+			now = now.Add(5 * time.Minute)
+			if err := u.checkForUpdates(context.Background(), true); err == nil {
+				t.Fatal("stale metadata did not retain its retry deadline")
+			}
+			if api.Load() != 2 || log.count() != 4 || !u.Snapshot().Available || u.cached.tag != "v0.6.2" || u.failedMetadata.tag != "v0.6.3" {
+				t.Fatal("changed-tag metadata either replaced the old offer or retried the API too soon")
+			}
+		})
 	}
 }
 

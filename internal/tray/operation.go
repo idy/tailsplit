@@ -116,6 +116,9 @@ func (o *Operation) start(mode, focus string) error {
 func (o *Operation) StartRevision(revision string) error {
 	return o.Controller.startRevision(revision, o.ID)
 }
+func (o *Operation) StartUpdateRevision(revision string) error {
+	return o.Controller.startUpdateRevision(revision, o.ID)
+}
 func (o *Operation) AddExit(id string, revision ...string) error {
 	return o.Controller.addExit(id, o.ID, revision...)
 }
