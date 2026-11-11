@@ -6,3 +6,5 @@ package desktopwindow
 func newPopupProofTarget() uintptr  { return 0 }
 func clickPopupProofTarget(uintptr) {}
 func closePopupProofTarget(uintptr) {}
+
+func nativePopupProofState(uintptr) map[string]bool { return nil }

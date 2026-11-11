@@ -84,7 +84,9 @@ resolved first.
 Click the menu-bar or tray icon for a compact popup with connection status,
 a connect/disconnect switch, and read-only routing mode and traffic exit details. Open
 TailSplit from the popup to manage exits and settings; clicking outside, pressing
-Escape or clicking the tray icon again dismisses it. Right-click the icon for a
+Escape or clicking the tray icon again dismisses it. On macOS, the popup stays in
+the current desktop or full-screen Space without activating the main window.
+Right-click the icon for a
 minimal native menu with Open, connection status, Connect/Disconnect and Quit.
 The popup follows the app's language and system appearance. It shows the actual
 running traffic device, including an additional exit when the primary is signed out.
