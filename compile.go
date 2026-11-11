@@ -2,6 +2,7 @@ package tailsplit
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,9 @@ type Compiled struct {
 	JSON      []byte
 	GFWList   *domainrules.RulesInfo
 	GFWSource string
+	// RulesRevision identifies the actual compiled Proxy/Direct projection,
+	// including bundled supplemental rules, without diagnostics or source bytes.
+	RulesRevision string
 	// runtimeExit binds Global's single endpoint to its saved device metadata.
 	// Empty means normal all-device compilation or an explicit focused session.
 	runtimeExit string
@@ -522,7 +526,10 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	if err != nil {
 		return Compiled{}, err
 	}
-	result := Compiled{JSON: append(data, '\n'), GFWSource: source, runtimeExit: runtimeExit, privateExits: privateExits}
+	result := Compiled{
+		JSON: append(data, '\n'), GFWSource: source, RulesRevision: rulesProjectionRevision(projection),
+		runtimeExit: runtimeExit, privateExits: privateExits,
+	}
 	if projection != nil {
 		result.GFWList = &projection.Info
 	}
@@ -615,6 +622,49 @@ func domainRules(projection domainrules.DomainProjection) []object {
 		}
 	}
 	return result
+}
+
+// ErrRulesChanged refuses an update restart whose compiled rules differ from
+// the projection used by the previous connection.
+var ErrRulesChanged = errors.New("routing rules changed; connect again to apply the current rules")
+
+// CurrentRulesRevision identifies the rule projection currently available on
+// disk. Remote subscriptions use only RulesCachePath: this never downloads,
+// refreshes or migrates rules. Empty sources and Global mode ignore rule files.
+func CurrentRulesRevision(config Config) (string, error) {
+	base, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if err := config.normalize(base); err != nil {
+		return "", err
+	}
+	source := config.Rules.GFWList
+	if config.Rules.Mode == RoutingGlobal || source == "" {
+		return rulesProjectionRevision(nil), nil
+	}
+	if source == "builtin" || strings.HasPrefix(source, "https://") {
+		source = RulesCachePath(config)
+	}
+	projection, err := readProjection(source)
+	if err != nil {
+		return "", err
+	}
+	return rulesProjectionRevision(projection), nil
+}
+
+func rulesProjectionRevision(projection *domainrules.Projection) string {
+	// Projection arrays are already canonical, sorted and deduplicated. Exclude
+	// diagnostics so comments and unsupported URL rules cannot change identity.
+	var canonical struct {
+		Proxy  domainrules.DomainProjection
+		Direct domainrules.DomainProjection
+	}
+	if projection != nil {
+		canonical.Proxy, canonical.Direct = projection.Proxy, projection.Direct
+	}
+	data, _ := json.Marshal(canonical) // Fixed string/slice fields cannot fail.
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 func loadProjection(ctx context.Context, config Config) (*domainrules.Projection, string, error) {

@@ -4,11 +4,77 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/tray"
 )
+
+// Identify traffic intent without treating discovery or sign-in as Connect.
+// CloseForUpdate separately requires an explicit disconnect for Global sessions.
+func desktopUpdateReconnect(snapshot tray.Snapshot) bool {
+	return snapshot.Active && (snapshot.Mode == "tun" || snapshot.Mode == "proxy") &&
+		snapshot.State != "stopping" && snapshot.State != "failed" && snapshot.State != "logging-out"
+}
+
+func desktopUpdateStartArgument(reconnect bool) string {
+	if reconnect {
+		return "--start"
+	}
+	return "--no-connect"
+}
+
+// Capture the document offered for restart without letting an external edit
+// silently replace the running session's immutable routing policy.
+func desktopUpdateRevision(path string, snapshot tray.Snapshot) (string, error) {
+	return tray.UpdateRestartRevision(path, snapshot)
+}
+
+func validDesktopUpdateRevision(revision string) bool {
+	if revision == "" {
+		return true // A stopped app with an unreadable configuration can still update.
+	}
+	if len(revision) != 64 {
+		return false
+	}
+	for _, ch := range revision {
+		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func startDesktopConnection(controller interface {
+	Start() error
+	StartUpdateRevision(string) error
+}, revision string) error {
+	if revision != "" {
+		return controller.StartUpdateRevision(revision)
+	}
+	return controller.Start()
+}
+
+// A login browser or a full desktop queue is temporary. Keep the existing
+// installer deadline while allowing that operation to release its gate.
+func retryDesktopUpdate(ctx context.Context, operation func() error) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := operation(); !errors.Is(err, configweb.ErrBusy) {
+			return err
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
 
 // Update work has its own lifetime; downloading never holds the network
 // controller's operation queue. Only preference writes and installation enter it.

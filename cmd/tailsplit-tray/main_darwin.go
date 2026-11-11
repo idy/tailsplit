@@ -140,7 +140,8 @@ func main() {
 	logPath := flag.String("log", filepath.Join(configRoot, "TailSplit", "logs", "tailsplit.log"), "private log file")
 	startImmediately := flag.Bool("start", false, "start the proxy explicitly after opening the app")
 	loginImmediately := flag.Bool("login", false, "start and open the current device login page when ready")
-	noConnect := flag.Bool("no-connect", false, "start disconnected after an update")
+	noConnect := flag.Bool("no-connect", false, "start disconnected regardless of the automatic connection preference")
+	updateRevision := flag.String("update-revision", "", "restore only the routing document confirmed before an update")
 	updateFailed := flag.Bool("update-failed", false, "report a failed update and retained app")
 	openImmediately := flag.Bool("open", false, "show the configuration window at launch")
 	uiListen := flag.String("ui-listen", "", "optional local panel address")
@@ -232,16 +233,17 @@ func main() {
 			return apply(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) }, true)
 		},
 		func(update appupdate.Package) error {
-			return installDarwinUpdate(ctx, update, executable, *config, *logPath, func(commit func() error) error {
+			revision, err := desktopUpdateRevision(*config, controller.Snapshot())
+			if err != nil {
+				return err
+			}
+			return installDarwinUpdate(ctx, update, executable, *config, *logPath, revision, func(commit func(bool) error) error {
 				// A settings save, login or logout is brief: wait for it rather than
 				// abort a confirmed update. The worker waits 90 seconds for this exit.
 				deadline := time.Now().Add(60 * time.Second)
 				for {
 					err := apply(ctx, func() error {
-						if err := controller.Close(); err != nil {
-							return err
-						}
-						return commit()
+						return controller.CloseForUpdate(revision, commit)
 					}, true)
 					if errors.Is(err, configweb.ErrBusy) && time.Now().Before(deadline) {
 						select {
@@ -389,7 +391,7 @@ func main() {
 			loggingOut := false
 			switchingNetwork := false
 			// Prepare an existing privileged service before any device startup.
-			// This also runs after an update's --no-connect relaunch.
+			// Updates restore traffic intent separately from ConnectOnStart.
 			editing := true
 			startupPending := true
 			settingsDone := make(chan error, 1)
@@ -414,7 +416,7 @@ func main() {
 					case "login":
 						return startupOperation.StartLogin()
 					case "connect":
-						return startupOperation.Start()
+						return startDesktopConnection(startupOperation, *updateRevision)
 					case "refresh-exits":
 						return startupOperation.RefreshExitNodes()
 					default:

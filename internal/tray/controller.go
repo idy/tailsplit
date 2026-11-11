@@ -55,11 +55,14 @@ type Snapshot struct {
 	// ActiveRevision identifies the exact source document passed to the traffic
 	// helper. It is empty while no traffic helper owns a session.
 	ActiveRevision string
-	Hostname       string
-	ExitNodes      []tailsplit.ExitNode
-	Active         bool
-	PingAvailable  bool
-	Traffic        *tailsplit.TrafficSnapshot
+	// ActiveRulesRevision identifies the domain projection reported by the
+	// traffic helper after its final compile, independently of mutable rule files.
+	ActiveRulesRevision string
+	Hostname            string
+	ExitNodes           []tailsplit.ExitNode
+	Active              bool
+	PingAvailable       bool
+	Traffic             *tailsplit.TrafficSnapshot
 	// Exits holds additional devices' latest status, keyed by exit ID. The
 	// identity fields above always describe the primary device; State, Active,
 	// Mode and RoutingMode describe the overall connection.
@@ -156,6 +159,7 @@ type Controller struct {
 	revokedOperations   map[string]bool // Revoked native bindings reject future admission.
 	stopGeneration      uint64
 	stopCompletion      *stopCompletion
+	updateShutdown      *updateShutdown
 }
 
 func New(options Options) (*Controller, error) {
@@ -369,7 +373,7 @@ func (c *Controller) startRevision(expected, operation string) error {
 // Every traffic helper receives the exact immutable captured document. A
 // relocated snapshot carries its original path base separately, so neither
 // aliases nor the source byte budget change when its directory is read-only.
-func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expected string) error {
+func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expected string, rulesRevision ...string) error {
 	path, base, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
 	if err != nil {
 		return err
@@ -380,7 +384,11 @@ func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expe
 			return err
 		}
 	}
-	if err := c.startConfigLocked(mode, focus, path, base); err != nil {
+	rules := ""
+	if len(rulesRevision) != 0 {
+		rules = rulesRevision[0]
+	}
+	if err := c.startPreparedConfigLocked(mode, focus, path, base, rules); err != nil {
 		cleanup()
 		return err
 	}
@@ -609,6 +617,14 @@ func (c *Controller) checkStartLocked() error {
 }
 
 func (c *Controller) startConfigLocked(mode, focus, configPath string, configBase ...string) error {
+	base := ""
+	if len(configBase) != 0 {
+		base = configBase[0]
+	}
+	return c.startPreparedConfigLocked(mode, focus, configPath, base, "")
+}
+
+func (c *Controller) startPreparedConfigLocked(mode, focus, configPath, configBase, rulesRevision string) error {
 	freshLogin := mode == "login-new"
 	if freshLogin {
 		mode = "login"
@@ -678,8 +694,11 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string, configBas
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), runCommand, "--events",
 		"--parent-pid", fmt.Sprint(os.Getpid()), "-c", configPath)
-	if len(configBase) != 0 && configBase[0] != "" {
-		args = append(args, "--config-base", configBase[0])
+	if configBase != "" {
+		args = append(args, "--config-base", configBase)
+	}
+	if rulesRevision != "" {
+		args = append(args, "--rules-revision", rulesRevision)
 	}
 	if focus != "" {
 		args = append(args, "--exit", focus)
@@ -707,6 +726,7 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string, configBas
 	c.snapshot.RoutingMode = routingMode
 	c.trafficExit = trafficExit
 	c.activeRevision = ""
+	c.snapshot.ActiveRulesRevision = ""
 	if mode == "proxy" || mode == "tun" {
 		c.activeRevision = revision
 	}
@@ -736,6 +756,7 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string, configBas
 			c.finishPendingAddLocked(err)
 			c.command, c.input = nil, nil
 			c.activeRevision = ""
+			c.snapshot.ActiveRulesRevision = ""
 			c.snapshot.Traffic = nil
 			if !c.stopping && c.snapshot.State == "failed" {
 				// Preserve an actionable error delivered by the elevated core.
@@ -924,6 +945,7 @@ func (c *Controller) onEvent(data []byte) {
 		MagicDNSSuffix string                     `json:"magic_dns_suffix"`
 		Mode           string                     `json:"mode"`
 		RoutingMode    string                     `json:"routing_mode"`
+		RulesRevision  string                     `json:"rules_revision"`
 		Message        string                     `json:"message"`
 		Code           string                     `json:"code"`
 		Phase          string                     `json:"phase"`
@@ -1002,6 +1024,9 @@ func (c *Controller) onEvent(data []byte) {
 		return
 	}
 	if event.Event == "ready" {
+		if c.snapshot.Mode == "proxy" || c.snapshot.Mode == "tun" {
+			c.snapshot.ActiveRulesRevision = event.RulesRevision
+		}
 		c.snapshot.State = "connecting"
 		return
 	}

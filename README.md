@@ -188,8 +188,15 @@ After installation, the original action continues; signing in still leaves traff
 disconnected. The app shows the system-installer wait separately from Tailscale
 authorization. Source-built macOS device login can run locally when neither the service nor a bundled installer exists; an existing or mismatched service must still be repaired. On Windows, a missing service directs users to rerun TailSplit Setup instead of promising an in-app installation.
 
-Configuration and device state are retained across normal updates. The network
-service checks import eligibility per device, reads only still-needed CLI or
+Configuration and device state are retained across normal updates. In-app updates
+also restore the connection switch: an active connection reconnects after the
+restart, while a disconnected app stays disconnected. Reconnection checks the
+same configuration revision, and a disconnect during update cleanup cancels it.
+Active Global sessions require an explicit disconnect before installation to
+retain Kill-Switch protection until you choose to release it. Automatic Split
+reconnection also verifies the actually compiled local/subscription rules. This does not change the
+auto-connect preference for ordinary launches. The network service checks import
+eligibility per device, reads only still-needed CLI or
 fallback copies, and holds their ordinary-user state lease through cleanup. An
 unused primary remains eligible after another device initializes the new service
 cache. Existing service-owned or logged-out devices retain authority, and legacy

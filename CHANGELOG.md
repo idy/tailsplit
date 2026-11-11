@@ -7,6 +7,25 @@
   on one version, and retain the embedded companion for offline use, load failures,
   reduced motion and oversized diagnostic logs.
 
+## 0.9.4
+
+- Restore active Split connections after in-app updates on macOS and Windows,
+  while keeping disconnected apps stopped and preserving ordinary auto-connect
+  preferences. Honor disconnects accepted during update cleanup.
+- Require an explicit disconnect before updating an active Global session, keeping
+  Kill-Switch protection in place until the user chooses to release it.
+- Bind update reconnection to the captured YAML and the rule projection actually
+  compiled by the running helper. Detect local/subscription rule changes before
+  shutdown and before the restarted traffic engine opens.
+- Check for updates ten seconds after startup and every five minutes thereafter.
+  Use public release probes, validated metadata caching and rate-limit backoff;
+  retry incomplete release metadata every fifteen minutes without suppressing
+  five-minute version discovery or explicit manual retries.
+- Retry brief Windows installer shutdown contention and preserve custom
+  configuration and log paths across updates. Retain macOS rollback recovery.
+- Updates initiated by older versions may still require one manual reconnect;
+  connection-state recovery applies to subsequent updates started by this version.
+
 ## 0.9.3
 
 - Add a Home page with a routing topology, per-route upload/download rates and

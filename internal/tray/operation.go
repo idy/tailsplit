@@ -116,6 +116,9 @@ func (o *Operation) start(mode, focus string) error {
 func (o *Operation) StartRevision(revision string) error {
 	return o.Controller.startRevision(revision, o.ID)
 }
+func (o *Operation) StartUpdateRevision(revision string) error {
+	return o.Controller.startUpdateRevision(revision, o.ID)
+}
 func (o *Operation) AddExit(id string, revision ...string) error {
 	return o.Controller.addExit(id, o.ID, revision...)
 }
@@ -174,6 +177,10 @@ func (c *Controller) Cancel(request, operation string) error {
 // must not mutate that event-loop-owned flow from the cancellation goroutine.
 func (c *Controller) CancelWithNotify(request, operation string, notify func([]string)) error {
 	c.mu.Lock()
+	if c.updateShutdown != nil && c.updateShutdown.committed {
+		c.mu.Unlock()
+		return ErrOperationCanceled
+	}
 	bound := c.requestOperations[request]
 	targets := []string{}
 	addTarget := func(id string) {
@@ -212,6 +219,9 @@ func (c *Controller) CancelWithNotify(request, operation string, notify func([]s
 	matched := operation != "" && c.operationID == operation || bound != "" && c.operationID == bound
 	var stop stoppedResources
 	if matched {
+		if c.updateShutdown != nil {
+			c.updateShutdown.reconnect = false
+		}
 		stop = c.captureStopLocked()
 	}
 	c.mu.Unlock()
