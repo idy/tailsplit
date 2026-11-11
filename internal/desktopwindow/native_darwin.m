@@ -11,6 +11,21 @@ void tailsplit_restore_mygo_frame(uintptr_t handle) {
     [window setFrameAutosaveName:@"TailSplitConfigurationWindow"];
 }
 
+// Opt-in proof only. Keep the bit order in nativePopupProofState in sync.
+uint32_t tailsplit_popup_proof_state(uintptr_t handle) {
+    NSWindow *window = (__bridge NSWindow *)(void *)handle;
+    if (window == nil) return 0;
+    NSWindowCollectionBehavior behavior = window.collectionBehavior;
+    return (([window isKindOfClass:[NSPanel class]] &&
+             (window.styleMask & NSWindowStyleMaskNonactivatingPanel) != 0) << 0) |
+           (((behavior & NSWindowCollectionBehaviorCanJoinAllSpaces) != 0) << 1) |
+           (((behavior & NSWindowCollectionBehaviorFullScreenAuxiliary) != 0) << 2) |
+           (window.onActiveSpace << 3) |
+           (((window.occlusionState & NSWindowOcclusionStateVisible) != 0) << 4) |
+           (window.keyWindow << 5) |
+           (NSApp.active << 6);
+}
+
 // Opt-in proof only: an inert, app-local target for a real AppKit outside click.
 // No global input is generated and no application action can be activated.
 uintptr_t tailsplit_new_popup_proof_target(void) {

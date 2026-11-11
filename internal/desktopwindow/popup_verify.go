@@ -28,6 +28,18 @@ func (p *TrayPopup) Verify(anchor *mygo.Tray, directory string) error {
 	}); err != nil {
 		return p.popupProofError("tray anchor was not placed", nil, nil, anchor, directory)
 	}
+	// The external full-screen fixture starts this process first, then enters
+	// its own Space. This separates application startup activation from opening
+	// the popup, matching an already-running menu-bar app.
+	fullscreenProof := os.Getenv("TAILSPLIT_TRAY_PROOF_FULLSCREEN") == "1"
+	if fullscreenProof {
+		if err := os.WriteFile(filepath.Join(directory, "tray-ready"), nil, 0o600); err != nil {
+			return err
+		}
+		if err := waitPopupProofFile(ctx, directory, "fullscreen-ready"); err != nil {
+			return err
+		}
+	}
 	open := func() (*mygo.Window, error) {
 		var a *popupAttempt
 		var frame *mygo.Window
@@ -57,6 +69,13 @@ func (p *TrayPopup) Verify(anchor *mygo.Tray, directory string) error {
 	if err != nil {
 		return err
 	}
+	var nativeState map[string]bool
+	if err := waitPopupProofState(ctx, 2*time.Second, func() bool {
+		mygo.RunOnMain(func() { nativeState = nativePopupProofState(frame.NativeHandle()) })
+		return nativePopupProofReady(nativeState)
+	}); err != nil {
+		return fmt.Errorf("tray popup native presentation failed: %v", nativeState)
+	}
 	value, err := frame.Page().EvalContext(ctx, `(async () => {
 		await document.fonts.ready;
 		const root = document.documentElement;
@@ -77,6 +96,21 @@ func (p *TrayPopup) Verify(anchor *mygo.Tray, directory string) error {
 	if err := os.WriteFile(filepath.Join(directory, "tray-native.png"), picture, 0o600); err != nil {
 		return err
 	}
+	if fullscreenProof {
+		state, err := json.Marshal(nativeState)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(directory, "tray-presented.json"), state, 0o600); err != nil {
+			return err
+		}
+		// Keep this first popup open until the other process confirms it still
+		// owns the foreground full-screen Space. Later outside clicks may
+		// legitimately activate their target.
+		if err := waitPopupProofFile(ctx, directory, "fullscreen-checked"); err != nil {
+			return err
+		}
+	}
 	// The same Toggle path as a second tray click must destroy the native frame,
 	// while the application's native event loop stays alive for the next open.
 	mygo.RunOnMain(func() { p.Toggle(anchor, nil) })
@@ -94,7 +128,7 @@ func (p *TrayPopup) Verify(anchor *mygo.Tray, directory string) error {
 		return errors.New("Escape did not dismiss the popup")
 	}
 	// On macOS, post an AppKit click to an inert window of this process. The
-	// real NSPopover event monitor sees the outside click, without global input
+	// native window handles the outside click, without global input
 	// injection or clicking any desktop/application controls.
 	var target uintptr
 	mygo.RunOnMain(func() { target = newPopupProofTarget() })
@@ -111,7 +145,7 @@ func (p *TrayPopup) Verify(anchor *mygo.Tray, directory string) error {
 		}
 	}
 	report, err := json.MarshalIndent(map[string]any{
-		"webview": value, "second_click_dismissal": true, "escape_bridge_dismissal": true,
+		"webview": value, "native": nativeState, "second_click_dismissal": true, "escape_bridge_dismissal": true,
 		"last_popup_close_keeps_app_alive": true, "outside_click_tested": outsideClickTested,
 		"physical_tray_click_tested": false, "network_actions_tested": false,
 	}, "", "  ")
@@ -119,6 +153,25 @@ func (p *TrayPopup) Verify(anchor *mygo.Tray, directory string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(directory, "tray-verification.json"), append(report, '\n'), 0o600)
+}
+
+func waitPopupProofFile(ctx context.Context, directory, name string) error {
+	return waitPopupProofState(ctx, 10*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join(directory, name))
+		return err == nil
+	})
+}
+
+func nativePopupProofReady(state map[string]bool) bool {
+	if state == nil { // Native presentation introspection is macOS-only.
+		return true
+	}
+	for _, name := range []string{"nonactivating_panel", "joins_all_spaces", "fullscreen_auxiliary", "on_active_space", "visible_on_screen", "key_window"} {
+		if !state[name] {
+			return false
+		}
+	}
+	return true
 }
 
 func waitPopupProofState(ctx context.Context, timeout time.Duration, matches func() bool) error {

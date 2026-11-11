@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.5
+
+- Open the macOS tray popup over other apps' full-screen Spaces without activating
+  TailSplit or switching desktops. Use a rounded, nonactivating native panel with
+  keyboard focus, while retaining repeat-click, Escape and outside-click dismissal.
+
 ## 0.9.4
 
 - Restore active Split connections after in-app updates on macOS and Windows,

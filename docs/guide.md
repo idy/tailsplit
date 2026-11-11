@@ -490,6 +490,19 @@ build and launch targets; desktop tests run with the root `make test` target.
 Windows uses different desktop flags and helper names; use the
 [Windows release build](#windows-desktop) to assemble its installer and prerequisites.
 
+To verify the tray popup over another app's full-screen Space on a logged-in
+macOS desktop, use a fresh output directory after building both binaries:
+
+```sh
+swift scripts/verify-tray-fullscreen.swift bin/tailsplit-tray bin/tailsplit bin/fullscreen-proof
+```
+
+The fixture temporarily opens its own full-screen window, launches an isolated,
+disconnected TailSplit, and checks native visibility, keyboard focus, foreground-app
+preservation, reopening and dismissal. It saves a popup screenshot and JSON report,
+then closes both test processes without touching the installed app or its configuration.
+Physical menu-bar hit testing and network actions are not part of this proof.
+
 The core uses the `with_gvisor` build tag; the Makefile supplies it. `make app`
 creates a local ad-hoc app, ZIP, DMG, checksums and verification receipt. Linux
 CLI Debian packages can be built on Linux with `GOARCH=amd64 make deb` or
