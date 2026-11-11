@@ -190,7 +190,10 @@ authorization. Source-built macOS device login can run locally when neither the 
 
 Configuration and device state are retained across normal updates. In-app updates
 also restore the connection switch: an active connection reconnects after the
-restart, while a disconnected app stays disconnected. This does not change the
+restart, while a disconnected app stays disconnected. Reconnection checks the
+same configuration revision, and a disconnect during update cleanup cancels it.
+Global sessions with an unavailable exit defer installation to retain their
+protection; reconnect or explicitly disconnect first. This does not change the
 auto-connect preference for ordinary launches. The network service checks import
 eligibility per device, reads only still-needed CLI or
 fallback copies, and holds their ordinary-user state lease through cleanup. An

@@ -60,7 +60,7 @@ func verifyDarwinSignature(ctx context.Context, app, requirement string) error {
 	return nil
 }
 
-func installDarwinUpdate(ctx context.Context, update appupdate.Package, executable, config, log string, shutdown func(func(bool) error) error) error {
+func installDarwinUpdate(ctx context.Context, update appupdate.Package, executable, config, log, revision string, shutdown func(func(bool) error) error) error {
 	target, err := installedDarwinApp(executable)
 	if err != nil {
 		return err
@@ -142,7 +142,11 @@ func installDarwinUpdate(ctx context.Context, update appupdate.Package, executab
 			if _, err := os.Stat(filepath.Join(update.Directory, "ready")); err == nil {
 				// The detached worker owns staging and cleanup after this handoff.
 				return shutdown(func(reconnect bool) error {
-					return os.WriteFile(filepath.Join(update.Directory, "proceed"), []byte(desktopUpdateStartArgument(reconnect)+"\n"), 0o600)
+					choice := "--no-connect"
+					if reconnect {
+						choice = revision
+					}
+					return os.WriteFile(filepath.Join(update.Directory, "proceed"), []byte(choice+"\n"), 0o600)
 				})
 			}
 		}

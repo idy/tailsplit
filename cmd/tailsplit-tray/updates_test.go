@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +41,92 @@ func TestDesktopUpdateRestoresTrafficIntent(t *testing.T) {
 				t.Fatalf("got %s, want %s", got, test.argument)
 			}
 		})
+	}
+}
+
+func TestDesktopUpdateRejectsChangedActivePolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nrules:\n  mode: split\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := tray.ReadConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := tray.Snapshot{Active: true, Mode: "tun", State: "running", ActiveRevision: revision}
+	if got, err := desktopUpdateRevision(path, snapshot); err != nil || got != revision {
+		t.Fatal("unchanged active policy could not update:", got, err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\nrules:\n  mode: global\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktopUpdateRevision(path, snapshot); !errors.Is(err, tray.ErrConfigChanged) {
+		t.Fatal("external routing change was silently accepted:", err)
+	}
+	if _, err := desktopUpdateRevision(path, tray.Snapshot{}); err != nil {
+		t.Fatal("idle app could not update:", err)
+	}
+}
+
+func TestDesktopUpdateRevisionValidation(t *testing.T) {
+	for _, test := range []struct {
+		revision string
+		valid    bool
+	}{
+		{"", true}, {strings.Repeat("a", 64), true}, {strings.Repeat("0", 64), true},
+		{"--start", false}, {strings.Repeat("a", 63), false}, {strings.Repeat("z", 64), false},
+		{strings.Repeat("a", 64) + "\nquit", false},
+	} {
+		if got := validDesktopUpdateRevision(test.revision); got != test.valid {
+			t.Fatalf("valid revision %q: got %t", test.revision, got)
+		}
+	}
+}
+
+type updateStartFixture struct {
+	revision string
+	started  bool
+}
+
+func (f *updateStartFixture) Start() error { f.started = true; return nil }
+func (f *updateStartFixture) StartRevision(revision string) error {
+	f.revision = revision
+	return tray.ErrConfigChanged
+}
+
+func TestDesktopUpdateRestartNeverFallsBackToChangedSavedPolicy(t *testing.T) {
+	fixture := &updateStartFixture{}
+	revision := strings.Repeat("a", 64)
+	if err := startDesktopConnection(fixture, revision); !errors.Is(err, tray.ErrConfigChanged) || fixture.started || fixture.revision != revision {
+		t.Fatal("update restart did not retain its configuration guard:", fixture, err)
+	}
+	if err := startDesktopConnection(fixture, ""); err != nil || !fixture.started {
+		t.Fatal("ordinary startup did not use its saved preference:", err)
+	}
+}
+
+func TestDesktopUpdateRetriesBusyShutdownWithinDeadline(t *testing.T) {
+	attempts := 0
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := retryDesktopUpdate(ctx, func() error {
+		attempts++
+		if attempts < 3 {
+			return configweb.ErrBusy
+		}
+		return nil
+	}); err != nil || attempts != 3 {
+		t.Fatal("brief desktop contention aborted update:", attempts, err)
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	attempts = 0
+	if err := retryDesktopUpdate(ctx, func() error { attempts++; return configweb.ErrBusy }); !errors.Is(err, context.DeadlineExceeded) || attempts != 1 {
+		t.Fatal("busy shutdown ignored its deadline:", attempts, err)
+	}
+	failure := errors.New("cleanup failed")
+	if err := retryDesktopUpdate(context.Background(), func() error { return failure }); !errors.Is(err, failure) {
+		t.Fatal("permanent cleanup failure was hidden:", err)
 	}
 }
 

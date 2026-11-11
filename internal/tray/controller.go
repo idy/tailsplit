@@ -156,6 +156,7 @@ type Controller struct {
 	revokedOperations   map[string]bool // Revoked native bindings reject future admission.
 	stopGeneration      uint64
 	stopCompletion      *stopCompletion
+	updateShutdown      *updateShutdown
 }
 
 func New(options Options) (*Controller, error) {

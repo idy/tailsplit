@@ -83,9 +83,14 @@ the app. A signed installation requires the same signing team. Non-writable app
 directories request administrator authorization before shutdown. Failed activation
 or launch handoff restores the previous bundle. Configuration and saved device
 identity are retained. In-app updates restore the connection switch at shutdown:
-active traffic sessions reconnect, including blocked Global sessions or connections
-waiting for an exit; disconnected, discovery-only and sign-in-only sessions stay
-disconnected. This one-time restart choice does not change `app.connect_on_start`.
+active traffic sessions reconnect; disconnected, discovery-only and sign-in-only
+sessions stay disconnected. Global sessions that are blocked or still waiting for
+an exit refuse installation while retaining their current protection: reconnect
+the exit or explicitly disconnect before updating. Reconnection is bound to the
+active configuration revision. An external edit before shutdown stops the update;
+an edit during replacement prevents automatic reconnection until you review the
+saved configuration. An acknowledged disconnect during cleanup also cancels
+reconnection. This one-time restart choice does not change `app.connect_on_start`.
 The same choice is used when macOS relaunches the previous bundle after a failed
 activation. Manual Windows installations still open disconnected. Older updaters
 that always pass `--no-connect` need one manual reconnect after updating to a

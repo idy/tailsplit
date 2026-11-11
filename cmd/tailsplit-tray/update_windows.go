@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -32,7 +34,10 @@ type updateShellExecuteInfo struct {
 	Process    windows.Handle
 }
 
-func launchWindowsUpdate(update appupdate.Package) error {
+func launchWindowsUpdate(update appupdate.Package, revision, config, log string) error {
+	if !validDesktopUpdateRevision(revision) {
+		return fmt.Errorf("invalid update configuration revision")
+	}
 	verb, _ := windows.UTF16PtrFromString("open")
 	file, err := windows.UTF16PtrFromString(update.Path)
 	if err != nil {
@@ -42,7 +47,20 @@ func launchWindowsUpdate(update appupdate.Package) error {
 	if err != nil {
 		return err
 	}
-	parameters, _ := windows.UTF16PtrFromString("/SP- /NORESTART /RestoreConnection=1 /UserSID=" + user.User.Sid.String())
+	config, err = filepath.Abs(config)
+	if err != nil {
+		return err
+	}
+	log, err = filepath.Abs(log)
+	if err != nil {
+		return err
+	}
+	arguments := []string{"/SP-", "/NORESTART", "/RestoreConnection=1", "/UpdateRevision=" + revision,
+		"/UpdateConfig=" + config, "/UpdateLog=" + log, "/UserSID=" + user.User.Sid.String()}
+	for i := range arguments {
+		arguments[i] = windows.EscapeArg(arguments[i])
+	}
+	parameters, _ := windows.UTF16PtrFromString(strings.Join(arguments, " "))
 	info := updateShellExecuteInfo{
 		Mask: 0x40 | 0x100, // SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
 		Verb: verb, File: file, Parameters: parameters, Show: windows.SW_SHOWNORMAL,

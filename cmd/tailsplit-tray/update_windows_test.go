@@ -60,7 +60,7 @@ func runDesktopQuitFixture(pipe string) int {
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
 	command, err := bufio.NewReader(connection).ReadString('\n')
-	if err != nil || command != "quit-update\n" {
+	if err != nil || command != "quit-update "+strings.Repeat("a", 64)+"\n" {
 		return 3
 	}
 	if _, err := io.WriteString(connection, os.Getenv(desktopQuitFixture+"_RESPONSE")); err != nil {
@@ -86,7 +86,9 @@ func TestWindowsUpdateInstallerHandoff(t *testing.T) {
 			record := filepath.Join(t.TempDir(), "arguments.txt")
 			t.Setenv(updateInstallerFixture, record)
 			t.Setenv(updateInstallerFixture+"_EXIT", strconv.Itoa(test.exit))
-			err := launchWindowsUpdate(appupdate.Package{Path: executable, Directory: t.TempDir(), Version: "0.6.3"})
+			config := filepath.Join(t.TempDir(), "custom configuration.yaml")
+			log := filepath.Join(t.TempDir(), "custom log.log")
+			err := launchWindowsUpdate(appupdate.Package{Path: executable, Directory: t.TempDir(), Version: "0.6.3"}, strings.Repeat("a", 64), config, log)
 			if test.exit == 0 && err != nil {
 				t.Fatal("successful installer was reported as failed:", err)
 			}
@@ -94,7 +96,7 @@ func TestWindowsUpdateInstallerHandoff(t *testing.T) {
 				t.Fatal("installer failure was not reported:", err)
 			}
 			arguments, err := os.ReadFile(record)
-			want := "/SP-\n/NORESTART\n/RestoreConnection=1\n/UserSID=" + user.User.Sid.String()
+			want := "/SP-\n/NORESTART\n/RestoreConnection=1\n/UpdateRevision=" + strings.Repeat("a", 64) + "\n/UpdateConfig=" + config + "\n/UpdateLog=" + log + "\n/UserSID=" + user.User.Sid.String()
 			if err != nil || string(arguments) != want {
 				t.Fatalf("installer arguments = %q (%v), want %q", arguments, err, want)
 			}
@@ -137,7 +139,7 @@ func TestWindowsDesktopUpdateQuitStateProtocol(t *testing.T) {
 			if ready, err := bufio.NewReader(output).ReadString('\n'); err != nil || ready != "ready\n" {
 				t.Fatal("desktop fixture did not listen:", ready, err)
 			}
-			reconnect, err := desktopRequest(ctx, pipe, "quit-update", executable, user.User.Sid.String())
+			reconnect, err := desktopRequest(ctx, pipe, "quit-update "+strings.Repeat("a", 64), executable, user.User.Sid.String())
 			if (err != nil) != test.failure || reconnect != test.reconnect {
 				t.Fatalf("reconnect=%t error=%v", reconnect, err)
 			}

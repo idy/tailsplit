@@ -113,7 +113,11 @@ func TestDarwinUpdateWorkerActivationAndRollback(t *testing.T) {
 					t.Fatalf("worker did not stage app: %s", output.String())
 				}
 				if scenario != "no permission to proceed" {
-					if err := os.WriteFile(filepath.Join(work, "proceed"), []byte(desktopUpdateStartArgument(test.reconnect)+"\n"), 0o600); err != nil {
+					choice := "--no-connect"
+					if test.reconnect {
+						choice = strings.Repeat("a", 64)
+					}
+					if err := os.WriteFile(filepath.Join(work, "proceed"), []byte(choice+"\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -144,6 +148,9 @@ func TestDarwinUpdateWorkerActivationAndRollback(t *testing.T) {
 				other := desktopUpdateStartArgument(!test.reconnect)
 				if !bytes.Contains(launches, []byte(argument+"\n")) || bytes.Contains(launches, []byte(other+"\n")) || !bytes.Contains(launches, []byte("config with ' quotes.yaml")) {
 					t.Fatal("relaunch lost connection intent or literal arguments:", string(launches))
+				}
+				if test.reconnect && !bytes.Contains(launches, []byte("--update-revision\n"+strings.Repeat("a", 64)+"\n")) {
+					t.Fatal("relaunch lost the active configuration revision:", string(launches))
 				}
 			}
 			if (scenario == "activation fails" || scenario == "relaunch fails") && !bytes.Contains(launches, []byte("--update-failed")) {

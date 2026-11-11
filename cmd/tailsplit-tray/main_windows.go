@@ -21,6 +21,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/desktopwindow"
 	"github.com/idy/tailsplit/internal/locale"
@@ -113,6 +114,7 @@ func runWindowsDesktop() (runErr error) {
 	background := flags.Bool("background", false, "start in the notification area")
 	startImmediately := flags.Bool("start", false, "start the proxy explicitly after opening the app")
 	noConnect := flags.Bool("no-connect", false, "start disconnected regardless of the automatic connection preference")
+	updateRevision := flags.String("update-revision", "", "restore only the routing document confirmed before an update")
 	config := flags.String("config", filepath.Join(root, "config.yaml"), "user configuration")
 	logPath := flags.String("log", filepath.Join(root, "logs", "tailsplit.log"), "private log")
 	uiListen := flags.String("ui-listen", "", "optional local panel address")
@@ -132,7 +134,10 @@ func runWindowsDesktop() (runErr error) {
 	if *quit || *quitForUpdate {
 		command = "quit"
 		if *quitForUpdate {
-			command = "quit-update"
+			if !validDesktopUpdateRevision(*updateRevision) {
+				return errors.New("invalid update configuration revision")
+			}
+			command = "quit-update " + *updateRevision
 		}
 		// An elevated installer may have been approved by another account. It
 		// may only close the registered user's protected app, never start a UI.
@@ -221,7 +226,13 @@ func runWindowsDesktop() (runErr error) {
 	app.updates = newDesktopUpdates(ctx, version, preferences.CheckForUpdates,
 		func(ctx context.Context, enabled bool) error {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
-		}, launchWindowsUpdate)
+		}, func(update appupdate.Package) error {
+			revision, err := desktopUpdateRevision(*config, controller.Snapshot())
+			if err != nil {
+				return err
+			}
+			return launchWindowsUpdate(update, revision, *config, *logPath)
+		})
 	var showConfiguration func()
 	cancelConnection := app.loginCancellations.callback(controller)
 	page, err := configweb.Start(configweb.Options{
@@ -338,7 +349,9 @@ func runWindowsDesktop() (runErr error) {
 			if action := desktopStartupAction(*config, preferences.ConnectOnStart || *startImmediately, *noConnect); action != "" && !desktopProofMode() {
 				if action == "connect" {
 					// Automatic startup reuses identities but never opens a login browser.
-					_ = app.do(ctx, controller.Start)
+					if err := app.do(ctx, func() error { return startDesktopConnection(controller, *updateRevision) }); err != nil {
+						controller.RecordDesktopEvent("Desktop startup connection failed: " + err.Error())
+					}
 				} else {
 					_ = app.action(ctx, action)
 				}
@@ -562,36 +575,41 @@ func (a *windowsApp) serveDesktop(listener net.Listener) {
 		go func() {
 			defer connection.Close()
 			_ = connection.SetDeadline(time.Now().Add(35 * time.Second))
-			command, err := bufio.NewReader(io.LimitReader(connection, 16)).ReadString('\n')
+			command, err := bufio.NewReader(io.LimitReader(connection, 128)).ReadString('\n')
 			if err != nil {
 				return
 			}
-			switch command {
-			case "show\n":
+			switch {
+			case command == "show\n":
 				if a.showConfiguration() != nil {
 					return
 				}
 				_, _ = io.WriteString(connection, "ok\n")
-			case "quit-update\n":
-				// Sample under the operation gate immediately before cleanup,
-				// so Connect/Disconnect during the Setup wizard is respected.
+			case strings.HasPrefix(command, "quit-update "):
+				revision := strings.TrimSuffix(strings.TrimPrefix(command, "quit-update "), "\n")
+				if !validDesktopUpdateRevision(revision) {
+					return
+				}
 				ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
-				reconnect := false
-				err := a.do(ctx, func() error {
-					reconnect = desktopUpdateReconnect(a.controller.Snapshot())
-					return a.controller.Close()
+				err := retryDesktopUpdate(ctx, func() error {
+					return a.do(ctx, func() error {
+						return a.controller.CloseForUpdate(revision, func(reconnect bool) error {
+							response := "ok\n"
+							if reconnect {
+								response = "ok-start\n"
+							}
+							_, err := io.WriteString(connection, response)
+							return err
+						})
+					})
 				})
 				cancel()
 				if err != nil {
+					a.controller.RecordDesktopEvent("Update shutdown refused: " + err.Error())
 					return
 				}
-				response := "ok\n"
-				if reconnect {
-					response = "ok-start\n"
-				}
-				_, _ = io.WriteString(connection, response)
 				a.shutdown()
-			case "quit\n":
+			case command == "quit\n":
 				if a.controller.Close() != nil {
 					return
 				}
@@ -648,11 +666,11 @@ func desktopRequest(ctx context.Context, pipe, command, executable, expectedUser
 	if err != nil {
 		return false, err
 	}
-	reconnect := command == "quit-update" && response == "ok-start\n"
+	reconnect := strings.HasPrefix(command, "quit-update ") && response == "ok-start\n"
 	if response != "ok\n" && !reconnect {
 		return false, errors.New("desktop operation was not acknowledged")
 	}
-	if command == "quit" || command == "quit-update" {
+	if command == "quit" || strings.HasPrefix(command, "quit-update ") {
 		wait, err := windows.WaitForSingleObject(process, 30000)
 		if err != nil {
 			return false, err
