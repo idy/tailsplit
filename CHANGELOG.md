@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.2
+
+- Share the released Magpie Design System 0.4.3 across the desktop configuration
+  panel and tray popup, with locally bundled fonts, icons, controls and themes.
+  Keep all assets on the panel's own origin and verify vendored file checksums.
+- Align compact titlebar actions with the connection switch using rounded 20px
+  faces and consistent 8px spacing. Remove the Form/YAML titlebar tabs; retain
+  the live YAML preview and open full-source editing beside the configuration
+  file information, with protected drafts and keyboard focus restoration.
+- Preserve dropdown selections when Tab dismisses a menu and keep menus open
+  through unrelated log or sidebar scrolling. Show localized empty-exit labels
+  without repeatedly rebuilding unchanged controls during live polling.
+- Include the tray popup and connection-revision improvements documented in
+  0.9.1, which were not published as a separate tagged release.
+
 ## 0.9.1
 
 - Replace the nested desktop tray menu with a compact popup showing connection
