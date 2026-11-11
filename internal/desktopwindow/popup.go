@@ -87,7 +87,7 @@ func (p *TrayPopup) Toggle(anchor *mygo.Tray, fallback func()) {
 		p.failWithReason(a, "runtime-unavailable")
 		return
 	}
-	origin := "http://127.0.0.1:" + strconv.Itoa(int(p.port))
+	origin := normalizePageOrigin("http://127.0.0.1:" + strconv.Itoa(int(p.port)))
 	// Load only after every policy and lifecycle handler is installed.
 	a.native = mygo.NewFlyout(mygo.FlyoutOptions{
 		Tray: anchor, Placement: mygo.PlacementBottom, Gap: 4,

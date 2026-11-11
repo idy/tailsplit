@@ -66,6 +66,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(diagnostic)
 	path := flags.String("c", "config.yaml", "YAML configuration path")
+	configBase := flags.String("config-base", "", "original base directory for a captured configuration")
 	target := flags.String("id", "", "discovered exit node ID to ping (ping only)")
 	exit := flags.String("exit", "", "limit login, discovery, logout or ping to one exit ID (main is the primary device)")
 	events := flags.Bool("events", false, "emit private connection events on stdout (run only)")
@@ -85,6 +86,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return errors.New("--parent-pid must identify the current parent of a run command")
 	}
 	if command == "init" {
+		if *configBase != "" {
+			return errors.New("--config-base is not supported by init")
+		}
 		file, err := privatefs.CreateFile(*path)
 		if err != nil {
 			return fmt.Errorf("create config without overwriting existing files: %w", err)
@@ -96,12 +100,12 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		fmt.Fprintln(out, "Created", *path)
 		return nil
 	}
-	load := tailsplit.Load
+	load := tailsplit.LoadWithBase
 	if command == "app-login-new" {
 		// This is a staged device-only draft, not an owner of saved rule caches.
-		load = tailsplit.LoadDraft
+		load = tailsplit.LoadDraftWithBase
 	}
-	config, err := load(*path)
+	config, err := load(*path, *configBase)
 	if err != nil {
 		return err
 	}
@@ -142,7 +146,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return errors.New("--id is supported only by ping")
 	}
 	if command == "discover" {
-		return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: *events})
+		stream := newEventStream(ctx, out, *events)
+		defer stream.close()
+		return runDiscoveryEvents(ctx, config, stream)
 	}
 	if command == "app-login" || command == "app-login-new" || command == "app-discover" {
 		executable, err := os.Executable()
@@ -162,17 +168,19 @@ func execute(args []string, out, diagnostic io.Writer) error {
 			return appservice.Forward(ctx, connection, out)
 		}
 		if !errors.Is(err, appservice.ErrNotInstalled) || runtime.GOOS == "windows" {
-			_ = json.NewEncoder(out).Encode(map[string]string{"event": "error", "message": err.Error()})
+			_ = json.NewEncoder(out).Encode(appservice.ErrorEvent(err))
 			return err
 		}
 		// Device authentication alone never installs or starts the TUN service.
+		stream := newEventStream(ctx, out, true)
+		defer stream.close()
 		if command == "app-discover" {
-			return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
+			return runDiscoveryEvents(ctx, config, stream)
 		}
 		if command == "app-login-new" {
-			return runNewLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
+			return runNewLoginEvents(ctx, config, stream)
 		}
-		return runLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(out), captureLogs: true})
+		return runLoginEvents(ctx, config, stream)
 	}
 	if command == "app-run" {
 		return runAppCommand(ctx, config, out, appservice.Launch)
@@ -228,7 +236,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return err
 	default:
 		if *events {
-			return runEvents(ctx, config, compiled, &eventStream{encoder: json.NewEncoder(out)})
+			stream := newEventStream(ctx, out, false)
+			defer stream.close()
+			return runEvents(ctx, config, compiled, stream)
 		}
 		return tailsplit.Run(ctx, config, compiled)
 	}
@@ -284,13 +294,19 @@ func installedService(args []string, diagnostic io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return runEvents(ctx, config, compiled, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+		stream := newEventStream(ctx, output, true)
+		defer stream.close()
+		return runEvents(ctx, config, compiled, stream)
 	}, func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-		return runLoginEvents(ctx, config, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+		stream := newEventStream(ctx, output, true)
+		defer stream.close()
+		return runLoginEvents(ctx, config, stream)
 	}, func(ctx context.Context, config tailsplit.Config, _ io.Writer) error {
 		return tailsplit.LogoutSavedTailnet(ctx, config)
 	}, func(ctx context.Context, config tailsplit.Config, output io.Writer) error {
-		return runDiscoveryEvents(ctx, config, &eventStream{encoder: json.NewEncoder(output), captureLogs: true})
+		stream := newEventStream(ctx, output, true)
+		defer stream.close()
+		return runDiscoveryEvents(ctx, config, stream)
 	})
 }
 

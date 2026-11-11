@@ -33,6 +33,39 @@ func (p *recordedPagePolicy) OnWillDownload(fn func(*mygo.DownloadEvent)) func()
 	return nil
 }
 
+func TestJournalReaderNavigationKeepsExactDocumentAndOrigin(t *testing.T) {
+	for _, origin := range []string{"http://127.0.0.1:80", "http://127.0.0.1", navigationTestOrigin} {
+		t.Run(origin, func(t *testing.T) {
+			defaultPort := origin != navigationTestOrigin
+			for _, test := range []struct {
+				url     string
+				allowed bool
+			}{
+				{"http://127.0.0.1:80" + journalReaderPath, defaultPort},
+				{"http://127.0.0.1" + journalReaderPath, defaultPort},
+				{navigationTestOrigin + journalReaderPath, !defaultPort},
+				{"http://127.0.0.1:81" + journalReaderPath, false},
+				{"http://localhost" + journalReaderPath, false},
+				{"http://127.0.0.1.evil.example" + journalReaderPath, false},
+				{"http://127.0.0.1:80@evil.example" + journalReaderPath, false},
+				{"http://user@127.0.0.1:80" + journalReaderPath, false},
+				{"https://127.0.0.1" + journalReaderPath, false},
+				{origin + "/", false},
+				{origin + "/%6eative-recovery.html", false},
+				{origin + journalReaderPath + "/other", false},
+				{origin + journalReaderPath + "?", false},
+				{origin + journalReaderPath + "?token=fixture", false},
+				{origin + journalReaderPath + "#", false},
+				{origin + journalReaderPath + "#token=fixture", false},
+			} {
+				if allowed := journalReaderAllows(origin, test.url); allowed != test.allowed {
+					t.Errorf("reader navigation to %q allowed = %t; want %t", test.url, allowed, test.allowed)
+				}
+			}
+		})
+	}
+}
+
 func TestConfigurationPagePolicy(t *testing.T) {
 	page := &recordedPagePolicy{}
 	configurePagePolicy(page, 43821)
@@ -45,6 +78,8 @@ func TestConfigurationPagePolicy(t *testing.T) {
 	}{
 		{"http://127.0.0.1:43821/#capability", true},
 		{"http://127.0.0.1:43821/settings", true},
+		{"http://127.0.0.1:43821/native-cancel-arm#scope=old&request=r&operation_id=o", false},
+		{"http://127.0.0.1:43821/%6eative-cancel-arm#scope=old&request=r&operation_id=o", false},
 		{"http://127.0.0.1:43822/", false},
 		{"http://localhost:43821/", false},
 		{"http://127.0.0.1:43821@other.example/", false},

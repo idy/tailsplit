@@ -2,6 +2,7 @@ package tray
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 )
 
@@ -16,6 +17,27 @@ var errPanelURL = errors.New("configuration window URL must use http://127.0.0.1
 // ConfigurationWindowPort validates the capability-bearing local UI URL without
 // echoing it in errors. Desktop hosts share this policy with existing tests.
 func ConfigurationWindowPort(raw string) (uint16, error) { return configurationWindowPort(raw) }
+
+// ConfigurationWindowConnectURL designates the browser fallback opened for one
+// native Connect click. Both the capability and intent stay in the fragment.
+func ConfigurationWindowConnectURL(raw, request string) string {
+	if request == "" {
+		return raw
+	}
+	// This trusted server URL may be unsupported by the native host; tagging
+	// its browser fallback must not require the native navigation policy.
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	fragment, err := url.ParseQuery(parsed.Fragment)
+	if err != nil {
+		return raw
+	}
+	fragment.Set("connect", request)
+	parsed.Fragment, parsed.RawFragment = fragment.Encode(), ""
+	return parsed.String()
+}
 
 // ConfigurationWindowAllows confines WebView navigation to its original origin.
 func ConfigurationWindowAllows(port uint16, raw string) bool {

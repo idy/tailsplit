@@ -19,7 +19,7 @@ func verifyWindow(window *mygo.Window, hasTray bool, directory string) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for !ready {
-		value, err := window.Page().EvalContext(ctx, `Boolean(document.querySelector('#loading')?.hidden && document.querySelector('#desktop-controls')?.hidden === false && document.querySelector('#page-connection')?.hidden === false && document.querySelector('#add-exit')?.disabled === false)`)
+		value, err := window.Page().EvalContext(ctx, `Boolean(document.querySelector('#loading')?.hidden && document.querySelector('#page-home')?.hidden === false && document.querySelector('#add-exit')?.disabled === false && (document.querySelector('#home-setup')?.hidden === false || document.querySelector('#home-toggle-control')?.hidden === false))`)
 		ready = err == nil && value == true
 		if !ready {
 			select {
@@ -31,6 +31,8 @@ func verifyWindow(window *mygo.Window, hasTray bool, directory string) error {
 	}
 	value, err := window.Page().EvalContext(ctx, `(async () => {
 		const check = (condition, message) => { if (!condition) throw new Error(message); };
+		check(!document.querySelector('#page-home').hidden, 'Home is not the initial page');
+		document.querySelector('[data-page="connection"]').click();
 		check(!document.querySelector('#desktop-controls').hidden, 'desktop controls unavailable');
 		check(!document.querySelector('#add-exit').disabled, 'add-exit control unavailable');
 		const root = document.documentElement;

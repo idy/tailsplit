@@ -90,9 +90,12 @@ relaunch. While preparation waits, its authorization state and Cancel connection
 control remain visible; canceling releases the operation gate for offline edits
 and a repair retry. Automatic connection uses the helper's existing readiness
 check instead of repeating the parent's checksum and probe. macOS administrator
-approval remains required. First installation is
-still requested only by an explicit connection; unbundled development binaries
-do not start service installation.
+approval remains required. Explicit Connect, Sign in and Add exit requests also
+check that the service matches the app, opening the bundled Installer if it is
+missing, outdated or unreachable before continuing the requested action. This
+lets a fresh installation authorize its first device before choosing a traffic
+gateway. Background discovery, Ping and logout never open Installer. Unbundled
+development binaries cannot install a service without its package.
 
 ## Windows desktop
 
@@ -204,9 +207,12 @@ Open `TailSplit.app` normally. A fresh installation starts in the menu bar with
 no devices or gateway, so it stays idle until setup. Use Add exit, authorize the
 device and choose its node and default gateway. New configurations enable
 auto-connect for subsequent launches once a gateway is configured; the icon
-turns green while connected. Review your routing settings before connecting. The first connection opens
-the bundled installer for the privileged network service; an administrator
-approves it once. Both connection modes use that service for TUN DNS.
+turns green while connected. Review your routing settings before connecting. The
+first Add exit, Sign in or connection opens the bundled installer if the
+privileged network service is missing or does not match this app; complete its
+administrator approval to continue the original action. The panel distinguishes
+this wait from Tailscale browser authorization. Both connection modes use that
+service for TUN DNS.
 
 - **Application proxy:** applications opt into local HTTP/SOCKS listeners. A
   narrow DNS TUN route is created; the system proxy and default traffic route
