@@ -1,29 +1,20 @@
 import Flutter
-import UIKit
 import XCTest
-
-// If your plugin has been explicitly set to "type: .dynamic" in the Package.swift,
-// you will need to add your plugin as a dependency of RunnerTests within Xcode.
 
 @testable import sing_box_flutter
 
-// This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
-//
-// See https://developer.apple.com/documentation/xctest for more information about using XCTest.
-
 class RunnerTests: XCTestCase {
-
-  func testGetPlatformVersion() {
+  func testGetVersionBeforeInitialization() {
     let plugin = SingBoxFlutterPlugin()
+    let call = FlutterMethodCall(methodName: "getVersion", arguments: nil)
+    let resultExpectation = expectation(description: "Core version is returned without initializing the VPN.")
 
-    let call = FlutterMethodCall(methodName: "getPlatformVersion", arguments: [])
-
-    let resultExpectation = expectation(description: "result block must be called.")
     plugin.handle(call) { result in
-      XCTAssertEqual(result as! String, "iOS " + UIDevice.current.systemVersion)
+      // The bundled core version is pinned in native-core.json. An error or
+      // unsupported-method reply should fail the assertion without crashing.
+      XCTAssertEqual(result as? String, "1.14.4")
       resultExpectation.fulfill()
     }
-    waitForExpectations(timeout: 1)
+    waitForExpectations(timeout: 5)
   }
-
 }

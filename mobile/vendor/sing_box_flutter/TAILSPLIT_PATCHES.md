@@ -131,6 +131,13 @@ These changes preserve source-build behavior but change the build-tool recipe
 fingerprint, so previously selected native artifacts must be rebuilt. Full device
 compilation and a real Linux/KVM emulator smoke run remain separate checks.
 
+## Example channel test
+
+The example's Xcode test calls the supported `getVersion` method before VPN
+initialization and expects the pinned core version `1.14.4`. Optional casting
+makes unsupported-method or error replies fail the assertion without crashing.
+It no longer calls the Flutter template's obsolete `getPlatformVersion` API.
+
 ## Checks
 
 Run the actual host-plugin source against inert OS/channel stubs on macOS:
