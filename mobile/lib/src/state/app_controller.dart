@@ -34,6 +34,7 @@ enum AppProblem {
   permission,
   connect,
   disconnect,
+  tunnelStopped,
   needsSignIn,
   nodeOffline,
   nodeMissing,
@@ -109,12 +110,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     VpnService? vpn,
     TailscaleControlClient Function()? controlClient,
     Future<String> Function(Uri uri)? ruleDownload,
-  })  : _paths = paths, // ignore: prefer_initializing_formals
+    Duration nativeCommandTimeout = const Duration(seconds: 15),
+  })  : _nativeCommandTimeout = nativeCommandTimeout, // ignore: prefer_initializing_formals
+        _paths = paths, // ignore: prefer_initializing_formals
         _vpn = vpn ?? VpnService(),
         _ruleDownload = ruleDownload, // ignore: prefer_initializing_formals
         _newClient = controlClient ?? (() => TailscaleControlClient(os: Platform.isIOS ? 'iOS' : 'android'));
 
   final AppPaths _paths;
+  final Duration _nativeCommandTimeout;
   final VpnService _vpn;
   final TailscaleControlClient Function() _newClient;
   final Future<String> Function(Uri uri)? _ruleDownload;
@@ -170,8 +174,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _nativeOperations = Future<void>.value();
   Future<bool>? _stopRequest;
   bool _nativeStartPending = false;
+  // Independent of displayed status and dismissible errors: only a confirmed
+  // native stop, after every pending start settles, can release this latch.
+  bool _shutdownUnconfirmed = false;
+  int _nativeStopsPending = 0;
   bool _reconnecting = false;
   RoutingMode? _runningMode;
+  bool _tunnelObservedActive = false;
 
   bool get isPreview => previewMode;
   bool get connected => vpnState == VpnConnectionState.connected;
@@ -183,7 +192,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       vpnState == VpnConnectionState.connecting ||
       vpnState == VpnConnectionState.disconnecting;
   bool get busy => removing || signIn != SignInPhase.idle;
-  bool get canConnect => exit?.hasNode == true && !busy;
+  bool get canConnect => exit?.hasNode == true && !busy &&
+      !_shutdownUnconfirmed && !_nativeStartPending && _stopRequest == null;
+  bool get canRetryDisconnect => !busy && _stopRequest == null;
   bool get hasAuthUrl => _authUrl != null || (isPreview && signIn == SignInPhase.browser);
 
   /// The switch reads on while preparing or connected.
@@ -263,7 +274,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         : Platform.environment['TAILSPLIT_PREVIEW_LANG'];
     final seeded = await PreviewData.seed(withNode: screen != 'nonode');
     settings = seeded.settings.copyWith(
-      mode: screen == 'global' ? RoutingMode.global : null,
+      mode: screen == 'global' || screen == 'tunnel-stopped' ? RoutingMode.global : null,
       language: switch (language) {
         'zh' => AppLanguage.zh,
         'en' => AppLanguage.en,
@@ -287,6 +298,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         signIn = SignInPhase.browser;
       case 'connecting':
         connectStep = ConnectStep.rules;
+      case 'tunnel-stopped':
+        _setProblem(AppProblem.tunnelStopped);
       case 'error':
         _setProblem(AppProblem.connect, detail: 'The exit node did not respond within 45 seconds.');
       case 'offline':
@@ -339,6 +352,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   void _onStatus(VpnStatus status) {
     final previous = vpnState;
+    final stopped = status.state == VpnConnectionState.disconnected ||
+        status.state == VpnConnectionState.error;
+    final unexpectedStop = stopped && _tunnelObservedActive &&
+        _stopRequest == null && !_shutdownUnconfirmed;
+    if (status.state == VpnConnectionState.connected) _tunnelObservedActive = true;
+    if (stopped) _tunnelObservedActive = false;
     vpnState = status.state;
     switch (status.state) {
       case VpnConnectionState.error:
@@ -347,7 +366,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           _log('error', 'Connection failed${status.message == null ? '' : ': ${status.message}'}');
         }
       case VpnConnectionState.connected:
-        if (problem == AppProblem.connect || problem == AppProblem.permission) _clearProblem();
+        if (problem == AppProblem.connect || problem == AppProblem.permission ||
+            problem == AppProblem.tunnelStopped) {
+          _clearProblem();
+        }
         if (previous != VpnConnectionState.connected) _log('info', 'Connected.');
       case VpnConnectionState.disconnected:
         if (!_nativeStartPending) _runningMode = null;
@@ -357,6 +379,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         }
       case VpnConnectionState.connecting || VpnConnectionState.disconnecting:
         break;
+    }
+    if (unexpectedStop) {
+      _setProblem(AppProblem.tunnelStopped);
+      _log('warn', 'The VPN stopped unexpectedly. Traffic may use normal networking.');
     }
     notifyListeners();
   }
@@ -676,8 +702,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> connect() async {
     final current = exit;
-    if (current == null || !current.hasNode || preparing || active || busy ||
-        _stopRequest != null || vpnState == VpnConnectionState.disconnecting) {
+    if (current == null || !canConnect || preparing || active ||
+        vpnState == VpnConnectionState.disconnecting) {
       return;
     }
     final connectionSettings = settings;
@@ -840,27 +866,30 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       if (cancelled()) return;
-      _nativeStartPending = true;
-      try {
-        await _serializeNative(() async {
-          if (cancelled()) return;
+      await _serializeNative(() async {
+        if (cancelled()) return;
+        _runningMode = connectionSettings.mode;
+        await _startVpnBounded(config);
+        // A start acknowledgement can arrive after cancellation. Stop inside
+        // this same serialized operation before any later start may run.
+        if (attempt != _connectAttempt) {
+          await _stopVpnConfirmed();
+        } else {
           _runningMode = connectionSettings.mode;
-          await _vpn.start(config);
-          // A start acknowledgement can arrive after cancellation. Stop inside
-          // this same serialized operation before any later start may run.
-          if (attempt != _connectAttempt) {
-            await _stopVpnConfirmed();
-          } else {
-            _runningMode = connectionSettings.mode;
-            needsReconnect = needsReconnect || settings.affectsConnection(connectionSettings) ||
-                exit?.nodeId != profile.nodeId;
-          }
-        });
-      } finally {
-        _nativeStartPending = false;
-      }
+          needsReconnect = needsReconnect || settings.affectsConnection(connectionSettings) ||
+              exit?.nodeId != profile.nodeId;
+        }
+      });
     } catch (error) {
-      if (!cancelled()) {
+      if (_shutdownUnconfirmed) {
+        // The bounded queue is released even if the native acknowledgement is
+        // lost. Stop may cancel native work, but a pending start keeps the latch.
+        final reportStartFailure = !cancelled();
+        if (await disconnect(force: true) && reportStartFailure) {
+          _setProblem(AppProblem.connect, error: error);
+          _log('error', 'Could not start the VPN: ${describeFailure(error)}');
+        }
+      } else if (!cancelled()) {
         _setProblem(AppProblem.connect, error: error);
         _log('error', 'Could not start the VPN: ${describeFailure(error)}');
       }
@@ -880,15 +909,57 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     return next;
   }
 
+  Future<void> _startVpnBounded(String config) async {
+    _nativeStartPending = true;
+    var timedOut = false;
+    try {
+      await Future<void>.sync(() => _vpn.start(config)).whenComplete(() {
+        // A timeout only releases the queue; it cannot cancel a platform call.
+        // Keep starts/removal blocked and compensate when that call settles.
+        if (timedOut) unawaited(_recoverLateStart());
+      }).timeout(_nativeCommandTimeout, onTimeout: () {
+        timedOut = true;
+        throw TimeoutException('The native VPN start did not acknowledge completion.');
+      });
+    } catch (_) {
+      _shutdownUnconfirmed = true;
+      rethrow;
+    } finally {
+      if (!timedOut) _nativeStartPending = false;
+    }
+  }
+
+  Future<void> _recoverLateStart() async {
+    try {
+      await _serializeNative(() async {
+        _nativeStartPending = false;
+        await _stopVpnConfirmed();
+      });
+      if (problem == AppProblem.disconnect) _clearProblem();
+    } catch (error) {
+      _setProblem(AppProblem.disconnect, error: error);
+    } finally {
+      notifyListeners();
+    }
+  }
+
   Future<void> _stopVpnConfirmed() async {
-    await _vpn.stop();
-    await _vpn.waitFor(VpnConnectionState.disconnected);
-    final current = await _vpn.currentStatus().timeout(const Duration(seconds: 15));
+    _shutdownUnconfirmed = true;
+    _nativeStopsPending++;
+    await Future<void>.sync(_vpn.stop).whenComplete(() {
+      _nativeStopsPending--;
+    }).timeout(_nativeCommandTimeout);
+    await _vpn.waitFor(VpnConnectionState.disconnected, timeout: _nativeCommandTimeout)
+        .timeout(_nativeCommandTimeout);
+    final current = await _vpn.currentStatus().timeout(_nativeCommandTimeout);
     _onStatus(current);
-    if (current.state != VpnConnectionState.disconnected) {
-      throw const AppFailure(FailureCause.unknown, 'The VPN has not confirmed disconnection.');
+    if (current.state != VpnConnectionState.disconnected ||
+        _nativeStartPending || _nativeStopsPending != 0) {
+      throw const AppFailure(FailureCause.unknown,
+          'The VPN has not confirmed shutdown of all pending operations.');
     }
     _runningMode = null;
+    _shutdownUnconfirmed = false;
   }
 
   /// Stops the VPN, or cancels an attempt that has not reached it yet. False
@@ -902,7 +973,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     final pending = _stopRequest;
     if (pending != null) return pending;
-    final reachedService = force || _nativeStartPending ||
+    final reachedService = force || _shutdownUnconfirmed || _nativeStartPending ||
         vpnState != VpnConnectionState.disconnected || step == ConnectStep.starting;
     late final Future<bool> request;
     request = _disconnect(reachedService).whenComplete(() {

@@ -137,8 +137,8 @@ class _ConnectionSection extends StatelessWidget {
   }
 }
 
-/// Unboxed pull-down for Rule-based / Global (Kill-Switch), like the desktop
-/// titlebar dropdown. Saves immediately; an active session reconnects.
+/// Unboxed Rule-based / Global pull-down. Saves immediately; a known Split
+/// session reconnects, while a running Global tunnel waits for consent.
 class RoutingMenu extends StatelessWidget {
   const RoutingMenu({super.key, required this.app});
   final AppController app;

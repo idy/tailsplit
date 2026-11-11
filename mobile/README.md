@@ -2,7 +2,10 @@
 
 A Flutter app that brings TailSplit's routing to phones with **one** exit: one
 embedded Tailscale device and one selected exit node. Rule-based (Split) and Global
-routing follow the desktop's semantics. sing-box runs as the system VPN through
+route traffic captured by the active VPN. Global has no direct fallback within
+the tunnel, but **this app does not provide a system kill switch**: when the OS
+stops the VPN or the service fails, ordinary networking may resume. The pinned
+plugin opts out of Android Always-on and does not expose OS lockdown controls. sing-box runs as the system VPN through
 [`sing_box_flutter`](https://github.com/idy/sing-box-flutter); Tailscale sign-in and
 exit-node discovery are implemented in Dart inside this app.
 
@@ -96,7 +99,7 @@ flutter run --dart-define=TAILSPLIT_PREVIEW=true
 Use `TAILSPLIT_PREVIEW_SCREEN` to open a specific state and
 `TAILSPLIT_PREVIEW_LANG=en|zh` to set the preview language. Screen values include
 `picker`, `settings`, `logs`, `empty`, `signin`, `connected`, `connecting`, `global`,
-`reconnect`, `error`, `offline` (selected node offline) and `rules` (first rule-list
+`reconnect`, `error`, `tunnel-stopped`, `offline` (selected node offline) and `rules` (first rule-list
 download failed). These options only take effect in preview builds.
 
 ## Failure handling
@@ -105,7 +108,14 @@ download failed). These options only take effect in preview builds.
   Before starting, it refreshes a netmap older than a minute and refuses an exit
   node that Tailscale reports offline or no longer offers, or a device still
   waiting for admin approval. It never picks another node. Native start/stop
-  commands are serialized; cancelling an in-flight start waits for shutdown.
+  commands are serialized and each native command/status wait is bounded to 15
+  seconds. A timed-out start keeps new starts and identity removal blocked, but
+  releases the command queue for stop retries. A late start response triggers a
+  compensating stop; neither stale status nor dismissing an error releases the
+  shutdown latch. A stop is confirmed only after all outstanding commands settle.
+- **Unexpected VPN loss** shows a warning that traffic may use normal networking.
+  It does not switch routing modes or claim that a retry blocks traffic; an OS
+  process kill can prevent the UI warning from appearing.
 - **Reconnect and removal** require confirmed native disconnection before a new
   start, sign-in or identity deletion. A stop failure retains the saved identity
   and reports a retryable error. Changes to a running Global tunnel (or a restored
@@ -142,9 +152,10 @@ step) and the Exit Node, picker and Settings screens at the accessibility-extra-
 text size were also captured on that simulator. A native XCUITest also verifies
 that changing a running Global preview to Split leaves a pending reconnect,
 that Reconnect displays the protection-gap confirmation, and that cancelling
-keeps the preview connected.
+keeps the preview connected. A second native XCUITest checks the unexpected-stop
+warning and the Global routing limitation on both Exit Node and Settings.
 
-Static analysis is clean. The default test run passes 101 tests and skips six
+Static analysis is clean. The default test run passes 108 tests and skips six
 checks that require external Go helper services; `test/hardening_test.dart` covers
 cancelled connects, offline/missing nodes, logged-out or expired session recovery,
 failed sign-in saves, storage errors, the rule-list cache, resolver and CIDR parsing,
@@ -154,7 +165,7 @@ pending status queries, stale snapshots, explicit timeouts and listener cleanup.
 shutdown before removal/reconnect, and Global protection consent.
 `test/navigation_review_test.dart` checks disabled menus, Android Back handling
 and iOS edge-swipe navigation. Release and Android configuration guards pass
-21 Python tests. Android debug and iOS simulator/unsigned device builds passed
+37 Python tests. Android debug and iOS simulator/unsigned device builds passed
 [PR CI](https://github.com/idy/tailsplit/actions/runs/42974106036).
 `test/cleanup_test.dart` checks bounded log ordering and notifications, inactive-tab
 updates, theme reuse and control-error categories independent of diagnostic wording. Generated Split and

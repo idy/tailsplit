@@ -38,6 +38,14 @@ post_install do |installer|
     flutter_additional_ios_build_settings(target)
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      # Host and PacketTunnel use different subspecs with the same module/resource
+      # product names. Archive otherwise flattens both into UninstalledProducts.
+      # Namespace archive intermediates by target without changing the module or
+      # bundle name that each app/extension embed phase expects.
+      if target.name.start_with?('sing_box_flutter')
+        config.build_settings['UNINSTALLED_PRODUCTS_DIR'] =
+          '$(PROJECT_TEMP_DIR)/UninstalledProducts/$(TARGET_NAME)'
+      end
     end
   end
 end

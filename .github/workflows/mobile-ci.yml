@@ -119,5 +119,5 @@ jobs:
           pod install --project-directory=ios
       - name: Build simulator app
         run: flutter build ios --simulator --debug --no-codesign --no-pub
-      - name: Build unsigned device app
-        run: flutter build ios --release --no-codesign --no-pub
+      - name: Build unsigned device archive
+        run: flutter build ipa --release --no-codesign --no-pub

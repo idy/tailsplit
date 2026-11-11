@@ -71,7 +71,9 @@ class ProblemCard extends StatelessWidget {
       AppProblem.permission => (s.connectionFailed, s.vpnPermissionDenied, s.retry, app.canConnect ? app.connect : null),
       AppProblem.connect => (s.connectionFailed, detail, s.retry, app.canConnect && !app.switchOn ? app.connect : null),
       AppProblem.disconnect => (s.errorDisconnect, s.errorDisconnectBody, s.retry,
-          app.transitioning ? null : () => app.disconnect(force: true)),
+          app.canRetryDisconnect ? () => app.disconnect(force: true) : null),
+      AppProblem.tunnelStopped => (s.tunnelStopped, s.tunnelStoppedBody, s.retry,
+          app.canConnect && !app.switchOn ? app.connect : null),
       AppProblem.needsSignIn => (s.signedOut, s.needsSignInAgain, s.signIn,
           app.busy ? null : () => signInWithConsent(context, app)),
       AppProblem.nodeOffline => (

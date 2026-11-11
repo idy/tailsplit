@@ -42,11 +42,11 @@ class S {
       _('Add an exit to connect.', '添加出口后即可连接。');
   String get routing => _('Routing', '路由');
   String get ruleBased => _('Rule-based', '规则分流');
-  String get global => _('Global (Kill-Switch)', '全局（Kill-Switch）');
+  String get global => globalShort;
   String get globalShort => _('Global', '全局');
   String get routingFooter => _(
-        'Rule-based sends matched domains and IPs through the exit. Global sends all traffic through it and blocks traffic if the exit goes offline; disconnecting restores normal networking.',
-        '规则分流只让匹配的域名和 IP 经过出口。全局模式让所有流量经过出口，出口离线时阻断流量；断开连接即恢复正常网络。',
+        'Rule-based sends matched domains and IPs through the exit. Global sends captured traffic through the exit without direct fallback while the VPN is running. If the VPN stops or fails, normal networking may resume. A system kill switch is not supported.',
+        '规则分流让匹配的域名和 IP 经过出口。VPN 运行时，全局模式让接管的流量经过出口，不回退直连。VPN 停止或故障后可能恢复正常网络；当前版本不支持系统级断网保护。',
       );
 
   // Exit
@@ -130,8 +130,8 @@ class S {
   String entries(int n) => _(n == 1 ? '1 entry' : '$n entries', '$n 条');
   String get none => _('None', '无');
   String get globalHidesSplit => _(
-        'Global mode keeps these rules saved and ignores them until you return to Rule-based.',
-        '全局模式保留这些规则，回到规则分流后重新生效。',
+        'Global keeps these rules saved until you return to Rule-based. It has no direct fallback while the VPN is running, but does not provide a system kill switch: traffic may go direct if the VPN stops or fails.',
+        '全局模式保留这些规则，回到规则分流后重新生效。VPN 运行时不回退直连，但不提供系统级断网保护：VPN 停止或故障后流量可能直连。',
       );
   String get dns => _('DNS', 'DNS');
   String get proxyDns => _('Proxy DNS', '代理 DNS');
@@ -192,6 +192,11 @@ class S {
   String get needsSignInAgain => _(
         'This device was signed out of the Tailnet. Sign in again.',
         '这台设备已退出 Tailnet，请重新登录。',
+      );
+  String get tunnelStopped => _('VPN stopped unexpectedly', 'VPN 意外停止');
+  String get tunnelStoppedBody => _(
+        'Traffic may now use normal networking. Reconnect to restore VPN routing. This app cannot block traffic after the system stops the VPN.',
+        '流量现在可能直接访问网络。请重新连接以恢复 VPN 路由；系统停止 VPN 后，本应用无法继续阻断流量。',
       );
   String get errorDisconnect => _('Couldn\'t disconnect', '无法断开连接');
   String get errorDisconnectBody => _(
