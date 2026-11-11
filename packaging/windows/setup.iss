@@ -69,7 +69,7 @@ Source: "{#RuntimeFile}"; DestName: "webview2-runtime.exe"; Flags: dontcopy noco
 Name: "{commonprograms}\TailSplit"; Filename: "{app}\TailSplit.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\TailSplit.exe"; Parameters: "--no-connect"; WorkingDir: "{app}"; Description: "Open TailSplit (disconnected)"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: MayLaunchGUI
+Filename: "{app}\TailSplit.exe"; Parameters: "{code:DesktopLaunchParameters}"; WorkingDir: "{app}"; Description: "Open TailSplit"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: MayLaunchGUI
 
 ; Service state, the registered desktop SID, and user config/device state are
 ; deliberately not [Registry] or [UninstallDelete] entries. The service helper
@@ -94,6 +94,7 @@ const
   ErrorServiceNotActive = 1062;
   ErrorServiceMarkedForDelete = 1072;
   PayloadCount = 10;
+  DesktopReconnectExitCode = 10;
 
 type
   TServiceStatus = record
@@ -116,6 +117,8 @@ var
   SnapshotActive: Boolean;
   InstallComplete: Boolean;
   ServiceInstallSucceeded: Boolean;
+  ReconnectDesktop: Boolean;
+  RestartRevision: String;
   RecoveryInProgress: Boolean;
   OriginalFailure: String;
   FailureExitCode: Integer;
@@ -165,6 +168,24 @@ end;
 function MayLaunchGUI: Boolean;
 begin
   Result := ServiceInstallSucceeded and (OriginalFailure = '');
+end;
+
+function DesktopLaunchParameters(Param: String): String;
+var
+  UpdateConfig, UpdateLog: String;
+begin
+  if ReconnectDesktop then
+    Result := '--start --update-revision=' + RestartRevision
+  else
+    Result := '--no-connect';
+  { These paths are only arguments to the original user's GUI. Setup never
+    opens, modifies or executes caller-supplied paths with administrator rights. }
+  if ExpandConstant('{param:RestoreConnection|0}') = '1' then begin
+    UpdateConfig := ExpandConstant('{param:UpdateConfig|}');
+    UpdateLog := ExpandConstant('{param:UpdateLog|}');
+    if UpdateConfig <> '' then Result := Result + ' --config ' + AddQuotes(UpdateConfig);
+    if UpdateLog <> '' then Result := Result + ' --log ' + AddQuotes(UpdateLog);
+  end;
 end;
 
 function FixedAppDir: String;
@@ -413,15 +434,33 @@ end;
 procedure QuitDesktopGUI;
 var
   ExitCode: Integer;
-  GUI: String;
+  GUI, QuitParameters: String;
+  RestoreConnection: Boolean;
+  Index: Integer;
 begin
+  ReconnectDesktop := False;
   GUI := FixedAppDir + '\TailSplit.exe';
   if not FileExists(GUI) then Exit;
-  { This fixed --quit invocation is control-only. The installed GUI resolves
-    the registered desktop SID from protected HKLM, authenticates that user's
-    GUI pipe/server image, reports teardown errors, and awaits GUI process exit.
-    Normal GUI launches still run only as the original ordinary desktop user. }
-  if not Exec(GUI, '--quit', FixedAppDir, SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+  { Both quit commands are control-only. The installed GUI resolves the
+    registered desktop SID from protected HKLM, authenticates its pipe/server
+    image and awaits process exit. In-app updates report traffic intent only
+    after successful cleanup; ordinary installs/uninstalls remain disconnected. }
+  RestoreConnection := (not IsUninstaller) and (ExpandConstant('{param:RestoreConnection|0}') = '1');
+  QuitParameters := '--quit';
+  if RestoreConnection then begin
+    RestartRevision := ExpandConstant('{param:UpdateRevision|}');
+    if (RestartRevision <> '') and (Length(RestartRevision) <> 64) then
+      RaiseException('Invalid update configuration revision.');
+    for Index := 1 to Length(RestartRevision) do
+      if Pos(RestartRevision[Index], '0123456789abcdef') = 0 then
+        RaiseException('Invalid update configuration revision.');
+    QuitParameters := '--quit-for-update --update-revision=' + RestartRevision;
+  end;
+  if not Exec(GUI, QuitParameters, FixedAppDir, SW_HIDE, ewWaitUntilTerminated, ExitCode) then
+    RaiseException('TailSplit could not quit the registered desktop GUI.');
+  if RestoreConnection and (ExitCode = DesktopReconnectExitCode) then
+    ReconnectDesktop := True
+  else if ExitCode <> 0 then
     RaiseException('TailSplit could not disconnect and quit the registered desktop GUI (exit ' + IntToStr(ExitCode) + ').');
 end;
 

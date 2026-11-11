@@ -21,6 +21,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
 	"github.com/idy/tailsplit/internal/desktopwindow"
 	"github.com/idy/tailsplit/internal/locale"
@@ -35,6 +36,12 @@ import (
 
 var version = "dev"
 var commit = "unknown"
+
+// Only a control-only update quit sets this process result. Setup consumes it
+// immediately; no restart intent is left in user preferences or on disk.
+var desktopUpdateShouldReconnect bool
+
+const desktopUpdateReconnectExitCode = 10
 
 type windowsOperation struct {
 	ctx   context.Context
@@ -68,7 +75,7 @@ func main() {
 	if err := runWindowsDesktop(); err != nil {
 		maintenance := false
 		for _, arg := range os.Args[1:] {
-			if arg == "--quit" || arg == "-quit" {
+			if arg == "--quit" || arg == "-quit" || arg == "--quit-for-update" || arg == "-quit-for-update" {
 				maintenance = true
 			}
 		}
@@ -78,6 +85,9 @@ func main() {
 			windowsError(err.Error())
 		}
 		os.Exit(1)
+	}
+	if desktopUpdateShouldReconnect {
+		os.Exit(desktopUpdateReconnectExitCode)
 	}
 }
 
@@ -100,8 +110,11 @@ func runWindowsDesktop() (runErr error) {
 	flags := flag.NewFlagSet("TailSplit", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	quit := flags.Bool("quit", false, "gracefully quit the existing desktop app")
+	quitForUpdate := flags.Bool("quit-for-update", false, "quit and report connection intent to the update installer")
 	background := flags.Bool("background", false, "start in the notification area")
-	noConnect := flags.Bool("no-connect", false, "start disconnected after installation")
+	startImmediately := flags.Bool("start", false, "start the proxy explicitly after opening the app")
+	noConnect := flags.Bool("no-connect", false, "start disconnected regardless of the automatic connection preference")
+	updateRevision := flags.String("update-revision", "", "restore only the routing document confirmed before an update")
 	config := flags.String("config", filepath.Join(root, "config.yaml"), "user configuration")
 	logPath := flags.String("log", filepath.Join(root, "logs", "tailsplit.log"), "private log")
 	uiListen := flags.String("ui-listen", "", "optional local panel address")
@@ -118,8 +131,14 @@ func runWindowsDesktop() (runErr error) {
 		return errors.New("unexpected desktop application argument")
 	}
 	command := "show"
-	if *quit {
+	if *quit || *quitForUpdate {
 		command = "quit"
+		if *quitForUpdate {
+			if !validDesktopUpdateRevision(*updateRevision) {
+				return errors.New("invalid update configuration revision")
+			}
+			command = "quit-update " + *updateRevision
+		}
 		// An elevated installer may have been approved by another account. It
 		// may only close the registered user's protected app, never start a UI.
 		if windows.GetCurrentProcessToken().IsElevated() {
@@ -137,12 +156,13 @@ func runWindowsDesktop() (runErr error) {
 		}
 	}
 	ctx, cancelRequest := context.WithTimeout(context.Background(), 35*time.Second)
-	err = desktopRequest(ctx, pipeName, command, executable, sid)
+	reconnect, err := desktopRequest(ctx, pipeName, command, executable, sid)
 	cancelRequest()
 	if err == nil {
+		desktopUpdateShouldReconnect = *quitForUpdate && reconnect
 		return nil
 	}
-	if *quit {
+	if *quit || *quitForUpdate {
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 			return nil
 		}
@@ -206,7 +226,13 @@ func runWindowsDesktop() (runErr error) {
 	app.updates = newDesktopUpdates(ctx, version, preferences.CheckForUpdates,
 		func(ctx context.Context, enabled bool) error {
 			return app.do(ctx, func() error { return tray.SetCheckForUpdates(*config, enabled) })
-		}, launchWindowsUpdate)
+		}, func(update appupdate.Package) error {
+			revision, err := desktopUpdateRevision(*config, controller.Snapshot())
+			if err != nil {
+				return err
+			}
+			return launchWindowsUpdate(update, revision, *config, *logPath)
+		})
 	var showConfiguration func()
 	cancelConnection := app.loginCancellations.callback(controller)
 	page, err := configweb.Start(configweb.Options{
@@ -320,10 +346,12 @@ func runWindowsDesktop() (runErr error) {
 		preferences, _ := tray.ReadPreferences(*config)
 		// Load the saved device's login and exits even when startup must stay disconnected.
 		go func() {
-			if action := desktopStartupAction(*config, preferences.ConnectOnStart, *noConnect); action != "" && !desktopProofMode() {
+			if action := desktopStartupAction(*config, preferences.ConnectOnStart || *startImmediately, *noConnect); action != "" && !desktopProofMode() {
 				if action == "connect" {
 					// Automatic startup reuses identities but never opens a login browser.
-					_ = app.do(ctx, controller.Start)
+					if err := app.do(ctx, func() error { return startDesktopConnection(controller, *updateRevision) }); err != nil {
+						controller.RecordDesktopEvent("Desktop startup connection failed: " + err.Error())
+					}
 				} else {
 					_ = app.action(ctx, action)
 				}
@@ -547,17 +575,41 @@ func (a *windowsApp) serveDesktop(listener net.Listener) {
 		go func() {
 			defer connection.Close()
 			_ = connection.SetDeadline(time.Now().Add(35 * time.Second))
-			command, err := bufio.NewReader(io.LimitReader(connection, 16)).ReadString('\n')
+			command, err := bufio.NewReader(io.LimitReader(connection, 128)).ReadString('\n')
 			if err != nil {
 				return
 			}
-			switch command {
-			case "show\n":
+			switch {
+			case command == "show\n":
 				if a.showConfiguration() != nil {
 					return
 				}
 				_, _ = io.WriteString(connection, "ok\n")
-			case "quit\n":
+			case strings.HasPrefix(command, "quit-update "):
+				revision := strings.TrimSuffix(strings.TrimPrefix(command, "quit-update "), "\n")
+				if !validDesktopUpdateRevision(revision) {
+					return
+				}
+				ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+				err := retryDesktopUpdate(ctx, func() error {
+					return a.do(ctx, func() error {
+						return a.controller.CloseForUpdate(revision, func(reconnect bool) error {
+							response := "ok\n"
+							if reconnect {
+								response = "ok-start\n"
+							}
+							_, err := io.WriteString(connection, response)
+							return err
+						})
+					})
+				})
+				cancel()
+				if err != nil {
+					a.controller.RecordDesktopEvent("Update shutdown refused: " + err.Error())
+					return
+				}
+				a.shutdown()
+			case command == "quit\n":
 				if a.controller.Close() != nil {
 					return
 				}
@@ -568,65 +620,66 @@ func (a *windowsApp) serveDesktop(listener net.Listener) {
 	}
 }
 
-func desktopRequest(ctx context.Context, pipe, command, executable, expectedUser string) error {
+func desktopRequest(ctx context.Context, pipe, command, executable, expectedUser string) (bool, error) {
 	connection, err := winio.DialPipeAccess(ctx, pipe, 0x12019b)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer connection.Close()
 	file, ok := connection.(interface{ Fd() uintptr })
 	if !ok {
-		return errors.New("invalid desktop control channel")
+		return false, errors.New("invalid desktop control channel")
 	}
 	var pid uint32
 	if err := windows.GetNamedPipeServerProcessId(windows.Handle(file.Fd()), &pid); err != nil {
-		return err
+		return false, err
 	}
 	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, pid)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer windows.CloseHandle(process)
 	var token windows.Token
 	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
-		return err
+		return false, err
 	}
 	defer token.Close()
 	user, err := token.GetTokenUser()
 	if err != nil || user.User.Sid.String() != expectedUser {
-		return errors.New("desktop control channel has an unexpected owner")
+		return false, errors.New("desktop control channel has an unexpected owner")
 	}
 	path := make([]uint16, 32768)
 	size := uint32(len(path))
 	if err := windows.QueryFullProcessImageName(process, 0, &path[0], &size); err != nil {
-		return err
+		return false, err
 	}
 	if !strings.EqualFold(windows.UTF16ToString(path[:size]), executable) {
-		return errors.New("another program owns the TailSplit desktop channel")
+		return false, errors.New("another program owns the TailSplit desktop channel")
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = connection.SetDeadline(deadline)
 	}
 	if _, err := io.WriteString(connection, command+"\n"); err != nil {
-		return err
+		return false, err
 	}
 	response, err := bufio.NewReader(io.LimitReader(connection, 16)).ReadString('\n')
 	if err != nil {
-		return err
+		return false, err
 	}
-	if response != "ok\n" {
-		return errors.New("desktop operation was not acknowledged")
+	reconnect := strings.HasPrefix(command, "quit-update ") && response == "ok-start\n"
+	if response != "ok\n" && !reconnect {
+		return false, errors.New("desktop operation was not acknowledged")
 	}
-	if command == "quit" {
+	if command == "quit" || strings.HasPrefix(command, "quit-update ") {
 		wait, err := windows.WaitForSingleObject(process, 30000)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if wait != windows.WAIT_OBJECT_0 {
-			return errors.New("TailSplit is still closing; do not replace its running files")
+			return false, errors.New("TailSplit is still closing; do not replace its running files")
 		}
 	}
-	return nil
+	return reconnect, nil
 }
 
 func initializeWindowsConfig(path string) error {

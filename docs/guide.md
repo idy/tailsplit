@@ -54,11 +54,23 @@ shell installer above. Configuration and device login are retained. In-app updat
 work from 0.7.1 onward; Windows 0.7.0 is unaffected.
 
 Packaged macOS and Windows apps check the stable GitHub Release ten seconds after
-startup and every six hours while running. Choose **Check for updates…** in the
+startup and every five minutes while running. Choose **Check for updates…** in the
 tray menu (under **Settings and Tools** on macOS), or open **Settings → About & updates** in the configuration panel. The title-row update button shows
 download percentage and installation state without adding a second row. The panel's App Updates settings show the installed
 version, release notes, last check and errors. Development builds skip
 automatic checks; prereleases and older versions are never offered.
+
+After validating release metadata once, automatic checks inspect GitHub's public
+latest-release redirect every five minutes and reuse cached metadata when the tag
+is unchanged. Only a changed tag or a manual check revalidates the API metadata,
+using its ETag when available. This avoids spending the shared unauthenticated API
+quota on routine probes. Checks honor server retry/reset deadlines and back off
+on rate limits; cached offers remain visible. Invalid release metadata, such as a
+release whose assets are still publishing, is retried at most every 15 minutes
+for the same tag while five-minute public probes continue. New tags retry
+immediately; a manual check bypasses this local validation delay. Cache and
+backoff are process-local, and same-tag release-note edits appear after a manual
+check or app restart.
 
 `app.check_for_updates` defaults to `true` when omitted. The menu and panel can
 change it immediately without reconnecting the proxy. Checks only discover new
@@ -82,8 +94,22 @@ bundle on the destination filesystem, then disconnects, replaces and relaunches
 the app. A signed installation requires the same signing team. Non-writable app
 directories request administrator authorization before shutdown. Failed activation
 or launch handoff restores the previous bundle. Configuration and saved device
-identity are retained; the restarted app stays disconnected. On startup, macOS
-checks an already installed network service before restoring device status. A
+identity are retained. In-app updates restore the connection switch at shutdown:
+active traffic sessions reconnect; disconnected, discovery-only and sign-in-only
+sessions stay disconnected. All active Global sessions refuse installation while
+retaining their current protection: explicitly disconnect before updating, then
+reconnect manually afterward. This also protects against an exit going offline
+during replacement; the desktop cannot keep its TUN across process replacement.
+Split reconnection is bound to the active configuration revision and the helper's
+actually compiled rule projection, including local files and cached subscriptions. An external edit before shutdown stops the update;
+an edit during replacement prevents automatic reconnection until you review the
+saved configuration. An acknowledged disconnect during cleanup also cancels
+reconnection. This one-time restart choice does not change `app.connect_on_start`.
+The same choice is used when macOS relaunches the previous bundle after a failed
+activation. Manual Windows installations still open disconnected. Older updaters
+that always pass `--no-connect` need one manual reconnect after updating to a
+version with connection-state recovery. On startup, macOS checks an already
+installed network service before restoring device status. A
 matching live service is reused; an outdated or unreachable installed service
 opens the bundled Installer at restart, including after a `--no-connect` update
 relaunch. While preparation waits, its authorization state and Cancel connection

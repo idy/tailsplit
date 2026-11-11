@@ -32,6 +32,9 @@ type Config struct {
 	// Focus scopes login, discovery, logout and ping to one exit ("main" is the
 	// primary endpoint). It is never stored in YAML; the service re-derives paths.
 	Focus string `yaml:"-"`
+	// ExpectedRulesRevision binds an update restart to its running rule projection.
+	// It crosses the app-service JSON boundary but is never stored in YAML.
+	ExpectedRulesRevision string `yaml:"-"`
 
 	// includePending keeps exits without a selected node in device-only
 	// sessions, so they can log in and list nodes before one is chosen.

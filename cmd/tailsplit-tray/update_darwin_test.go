@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +17,21 @@ import (
 )
 
 func TestDarwinUpdateWorkerActivationAndRollback(t *testing.T) {
-	for _, scenario := range []string{"activate", "no permission to proceed", "activation fails", "relaunch fails", "signature fails"} {
-		t.Run(scenario, func(t *testing.T) {
+	var scenarios []struct {
+		name      string
+		reconnect bool
+	}
+	for _, name := range []string{"activate", "no permission to proceed", "activation fails", "relaunch fails", "signature fails"} {
+		for _, reconnect := range []bool{false, true} {
+			scenarios = append(scenarios, struct {
+				name      string
+				reconnect bool
+			}{name, reconnect})
+		}
+	}
+	for _, test := range scenarios {
+		scenario := test.name
+		t.Run(fmt.Sprintf("%s/reconnect=%t", scenario, test.reconnect), func(t *testing.T) {
 			root := t.TempDir()
 			work := filepath.Join(root, "private download")
 			target := filepath.Join(root, "Applications", "TailSplit.app")
@@ -99,7 +113,11 @@ func TestDarwinUpdateWorkerActivationAndRollback(t *testing.T) {
 					t.Fatalf("worker did not stage app: %s", output.String())
 				}
 				if scenario != "no permission to proceed" {
-					if err := os.WriteFile(filepath.Join(work, "proceed"), nil, 0o600); err != nil {
+					choice := "--no-connect"
+					if test.reconnect {
+						choice = strings.Repeat("a", 64)
+					}
+					if err := os.WriteFile(filepath.Join(work, "proceed"), []byte(choice+"\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -125,8 +143,15 @@ func TestDarwinUpdateWorkerActivationAndRollback(t *testing.T) {
 				t.Fatal("worker left staging directories:", stages)
 			}
 			launches, _ := os.ReadFile(launchLog)
-			if scenario == "activate" && (!bytes.Contains(launches, []byte("--no-connect")) || !bytes.Contains(launches, []byte("config with ' quotes.yaml"))) {
-				t.Fatal("relaunch lost literal arguments:", string(launches))
+			if scenario == "activate" || scenario == "activation fails" || scenario == "relaunch fails" {
+				argument := desktopUpdateStartArgument(test.reconnect)
+				other := desktopUpdateStartArgument(!test.reconnect)
+				if !bytes.Contains(launches, []byte(argument+"\n")) || bytes.Contains(launches, []byte(other+"\n")) || !bytes.Contains(launches, []byte("config with ' quotes.yaml")) {
+					t.Fatal("relaunch lost connection intent or literal arguments:", string(launches))
+				}
+				if test.reconnect && !bytes.Contains(launches, []byte("--update-revision\n"+strings.Repeat("a", 64)+"\n")) {
+					t.Fatal("relaunch lost the active configuration revision:", string(launches))
+				}
 			}
 			if (scenario == "activation fails" || scenario == "relaunch fails") && !bytes.Contains(launches, []byte("--update-failed")) {
 				t.Fatal("old app did not receive failure notification")
