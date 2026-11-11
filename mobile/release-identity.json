@@ -1,0 +1,9 @@
+{
+  "name": "TailSplit",
+  "bundle_id": "dev.idy.tailsplit",
+  "packet_tunnel_bundle_id": "dev.idy.tailsplit.PacketTunnel",
+  "app_group": "group.dev.idy.tailsplit",
+  "team_id": "BGL4WMWD3W",
+  "organization": "TERMITOC PTE. LTD.",
+  "account_type": "organization"
+}
