@@ -140,6 +140,8 @@
     '编辑方式': 'Editor mode',
     '表单编辑': 'Form',
     'YAML 原文': 'YAML source',
+    '编辑 YAML': 'Edit YAML',
+    '返回设置': 'Back to settings',
     '重新读取': 'Reload',
     '语言': 'Language',
     '界面语言': 'Interface language',

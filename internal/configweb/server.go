@@ -177,8 +177,18 @@ func (s *Server) handler() http.Handler {
 			return
 		}
 		switch r.URL.Path {
-		case "/", "/app.js", "/i18n.js", "/select.js", "/style.css", "/companion.js",
+		case "/", "/ui.js", "/app.js", "/i18n.js", "/select.js", "/style.css", "/companion.js",
 			"/tray.html", "/tray.js", "/tray.css",
+			"/vendor/magpie/css/magpie.css", "/vendor/magpie/css/tokens.css",
+			"/vendor/magpie/css/fonts.css", "/vendor/magpie/css/base.css", "/vendor/magpie/css/Magpie-MIT.txt",
+			"/vendor/magpie/css/components.css", "/vendor/magpie/css/layout.css",
+			"/vendor/magpie/js/select.js",
+			"/vendor/magpie/icons/icons.svg", "/vendor/magpie/icons/caret-down.svg",
+			"/vendor/magpie/icons/check.svg", "/vendor/magpie/icons/spinner.svg",
+			"/vendor/magpie/fonts/montserrat-latin.woff2", "/vendor/magpie/fonts/monda-latin.woff2",
+			"/vendor/magpie/fonts/lato-regular-latin.woff2", "/vendor/magpie/fonts/lato-bold-latin.woff2",
+			"/vendor/magpie/fonts/Montserrat-OFL.txt", "/vendor/magpie/fonts/Monda-OFL.txt",
+			"/vendor/magpie/fonts/Lato-OFL.txt", "/vendor/magpie/icons/LICENSE", "/vendor/magpie/LICENSE",
 			"/vendor/peetty/peetty.global.js", "/vendor/peetty/peetty.css", "/vendor/peetty/LICENSE.txt",
 			"/fonts/montserrat-latin.woff2", "/fonts/monda-latin.woff2",
 			"/fonts/lato-regular-latin.woff2", "/fonts/lato-bold-latin.woff2",

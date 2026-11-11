@@ -240,6 +240,20 @@ See the [build guide](docs/guide.md#build-and-test) for platform-specific comman
 The production macOS and Windows desktop uses MyGo v0.8.3 for its window and
 tray. Its entry point is `cmd/tailsplit-tray`, with `internal/desktopwindow` and
 `internal/desktoptray` hosting the existing configuration UI and controls.
+The embedded configuration panel uses a local copy of
+[Magpie Design System](https://github.com/idy/magpie-design-system) for
+its tokens, components, fonts and dropdown behavior. The vendored source is
+pinned to commit `46ba098239979506a4ccc14721aac044483c66bc` (v0.4.3),
+including the text dropdown and preference-row variants extracted upstream.
+This is the published v0.4.3 release. Assets are pinned with
+SHA-256 hashes under `internal/configweb/assets/vendor/magpie/`; run
+`node scripts/vendor-magpie.mjs --check` to verify them, or omit `--check` to
+restore the pinned files. Node.js 18+ is needed only for this maintenance
+command and the frontend regression tests. The shipped panel needs no CDN,
+package installation or frontend build step. `assets/ui.js` loads its modules
+in dependency order, and `assets/style.css` holds TailSplit's layout and
+product-specific states.
+
 On macOS, `make run-tray` builds the CLI helper and `bin/tailsplit-tray`, then
 opens the configuration window with automatic connection disabled for that launch.
 `make test` checks the desktop packages in the root module. See the

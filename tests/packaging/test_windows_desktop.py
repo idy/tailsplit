@@ -422,7 +422,7 @@ class NativeUIContractTests(unittest.TestCase):
         # The first destination is now Exit Nodes and the header owns Refresh.
         # Older upgrade fixtures may still expose a dedicated node page.
         self.assertNotRegex(html, r'data-page="nodes"')
-        header = html.split('<header class="titlebar"', 1)[1].split('</header>', 1)[0]
+        header = re.search(r'<header\b[^>]*\bid="titlebar"[^>]*>(.*?)</header>', html, re.S).group(1)
         self.assertRegex(header, r'<button\b[^>]*data-desktop-action="refresh-exits"[^>]*aria-label="刷新"')
         self.assertIn("'出口节点列表': 'Exit nodes'", translations)
         self.assertIn("'出口节点列表': '出口节点'", translations)

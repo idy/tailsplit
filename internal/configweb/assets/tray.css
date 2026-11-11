@@ -4,28 +4,28 @@ html { width: 100%; height: auto; min-height: 0; overflow: auto; }
 body { display: block; width: 100%; height: auto; min-height: 0; overflow: visible; }
 .popup-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 0; }
 .popup-header h1 { font-size: 1rem; font-weight: 600; line-height: 1.4; }
-.popup-header .icon-button { color: var(--muted); }
+.popup-header .icon-button { color: var(--mds-muted); }
 .popup-main { padding: 0 20px 18px; }
 .popup-connection { display: flex; align-items: center; gap: 16px; min-height: 90px; padding: 20px 0; }
 .popup-state { flex: 1; min-width: 0; }
 .popup-status { display: flex; align-items: center; gap: 8px; }
-.popup-status strong { font-family: var(--font-title); font-size: 1rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
-#status-dot { width: 8px; height: 8px; border: 1.5px solid var(--muted); border-radius: 50%; flex: 0 0 auto; }
-#status-dot[data-tone="good"] { border-color: var(--good); background: var(--good); }
-#status-dot[data-tone="warn"] { border-color: var(--warn); background: var(--warn); }
-#status-dot[data-tone="error"] { border-color: var(--error); background: var(--error); }
-#connection-detail { margin: 5px 0 0 16px; color: var(--muted); font-size: var(--type-note); overflow-wrap: anywhere; }
+.popup-status strong { font-family: var(--mds-font-heading); font-size: 1rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+#status-dot { width: 8px; height: 8px; border: 1.5px solid var(--mds-muted); border-radius: 50%; flex: 0 0 auto; }
+#status-dot[data-tone="good"] { border-color: var(--mds-good); background: var(--mds-good); }
+#status-dot[data-tone="warn"] { border-color: var(--mds-warn); background: var(--mds-warn); }
+#status-dot[data-tone="error"] { border-color: var(--mds-error); background: var(--mds-error); }
+#connection-detail { margin: 5px 0 0 16px; color: var(--mds-muted); font-size: var(--mds-text-note); overflow-wrap: anywhere; }
 .popup-connection .connection-switch { flex: 0 0 auto; }
-.popup-details { border-radius: var(--radius-panel); background: var(--surface); overflow: hidden; }
-.popup-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 11px 14px; font-family: var(--font); text-align: left; }
-.popup-label { flex: 0 0 auto; color: var(--muted); margin-right: auto; }
+.popup-details { border-radius: var(--mds-radius-lg); background: var(--mds-surface); overflow: hidden; }
+.popup-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 11px 14px; font-family: var(--mds-font); text-align: left; }
+.popup-label { flex: 0 0 auto; color: var(--mds-muted); margin-right: auto; }
 #routing-mode { text-align: right; }
-.popup-exit { border-top: 1px solid var(--line); }
+.popup-exit { border-top: 1px solid var(--mds-line); }
 .popup-exit-value { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
-.popup-footer { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-top: 1px solid var(--line); }
-.popup-link { border: 0; border-radius: 6px; background: transparent; color: var(--muted); padding: 7px 8px; min-height: 32px; }
-.popup-link:hover { color: var(--ink); background: var(--hover); }
-.popup-error { margin-top: 12px; color: var(--error); font-size: var(--type-note); overflow-wrap: anywhere; }
+.popup-footer { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-top: 1px solid var(--mds-line); }
+.popup-link { border: 0; border-radius: 6px; background: transparent; color: var(--mds-muted); padding: 7px 8px; min-height: 32px; }
+.popup-link:hover { color: var(--mds-ink); background: var(--mds-hover); }
+.popup-error { margin-top: 12px; color: var(--mds-error); font-size: var(--mds-text-note); overflow-wrap: anywhere; }
 .popup-error .link-button { margin-top: 6px; }
-.popup-preview { margin-top: 12px; color: var(--muted); font-size: var(--type-caption); }
+.popup-preview { margin-top: 12px; color: var(--mds-muted); font-size: var(--mds-text-caption); }
 @media (pointer: coarse) { .popup-link, .popup-header .icon-button, #setup, #retry { min-height: 44px; } }
