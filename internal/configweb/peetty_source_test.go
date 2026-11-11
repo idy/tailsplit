@@ -18,7 +18,7 @@ func TestPeettyRejectsCoordinatedCDNTampering(t *testing.T) {
 			config := filepath.Join(t.TempDir(), "config.yaml")
 			cdn := &peettyCDNFixture{versions: []string{"0.3.1"}, files: map[string]map[string][]byte{"v0.3.1": peettyTestFiles("red", false)}}
 			u := newPeettyUpdates(config)
-			u.client = cdn.client(t)
+			cdn.attach(t, u)
 			if err := u.check(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -54,7 +54,7 @@ func TestPeettyRejectsCoordinatedCDNTampering(t *testing.T) {
 func TestPeettySourceResolvesAnnotatedTagsAndPinsDeliveryToCommit(t *testing.T) {
 	cdn := &peettyCDNFixture{versions: []string{"0.3.1"}, annotated: true, files: map[string]map[string][]byte{"v0.3.1": peettyTestFiles("red", false)}}
 	u := newPeettyUpdates(filepath.Join(t.TempDir(), "config.yaml"))
-	u.client = cdn.client(t)
+	cdn.attach(t, u)
 	if err := u.check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPeettyRejectsLegacySelfConsistentCDNCache(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "config.yaml")
 	cdn := &peettyCDNFixture{versions: []string{"0.3.1"}, files: map[string]map[string][]byte{"v0.3.1": peettyTestFiles("red", false)}}
 	u := newPeettyUpdates(config)
-	u.client = cdn.client(t)
+	cdn.attach(t, u)
 	if err := u.check(context.Background()); err != nil {
 		t.Fatal(err)
 	}

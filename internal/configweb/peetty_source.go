@@ -13,7 +13,7 @@ import (
 const (
 	peettyGitHubAPI   = "https://api.github.com/repos/idy/peetty"
 	peettySourceBase  = "https://raw.githubusercontent.com/idy/peetty/"
-	peettyCacheFormat = 2
+	peettyCacheFormat = 3
 )
 
 func peettyCommitID(value string) bool {

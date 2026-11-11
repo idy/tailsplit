@@ -46,6 +46,11 @@ func peettyTestCommit(version string) string {
 	return fmt.Sprintf("%x", digest[:20])
 }
 
+func (cdn *peettyCDNFixture) attach(t *testing.T, updater *peettyUpdates) {
+	updater.client = cdn.client(t)
+	updater.sourceClient = updater.client
+}
+
 func (cdn *peettyCDNFixture) client(t *testing.T) *http.Client {
 	t.Helper()
 	return &http.Client{Transport: peettyTransport(func(request *http.Request) (*http.Response, error) {
@@ -126,7 +131,7 @@ func TestPeettyUpdatesPinStableAssetsAndRestoreOfflineCache(t *testing.T) {
 		files:    map[string]map[string][]byte{"v0.3.2": peettyTestFiles("red", true)},
 	}
 	u := newPeettyUpdates(config)
-	u.client = cdn.client(t)
+	cdn.attach(t, u)
 	if err := u.check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +159,7 @@ func TestPeettyFailedUpdatesKeepActiveAndPersistedVersion(t *testing.T) {
 			config := filepath.Join(t.TempDir(), "config.yaml")
 			cdn := &peettyCDNFixture{versions: []string{"0.3.1"}, files: map[string]map[string][]byte{"v0.3.1": peettyTestFiles("red", false)}}
 			u := newPeettyUpdates(config)
-			u.client = cdn.client(t)
+			cdn.attach(t, u)
 			if err := u.check(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +200,7 @@ func TestPeettyPageAndOldAssetsKeepSameReleaseDuringUpdate(t *testing.T) {
 	server, config, _ := testServer(t)
 	cdn := &peettyCDNFixture{versions: []string{"0.3.1"}, files: map[string]map[string][]byte{"v0.3.1": peettyTestFiles("red", false)}}
 	u := newPeettyUpdates(config)
-	u.client = cdn.client(t)
+	cdn.attach(t, u)
 	server.peetty = u
 	if err := u.check(context.Background()); err != nil {
 		t.Fatal(err)
@@ -238,7 +243,7 @@ func TestPeettyCorruptCacheIsIgnoredAndCanceledChecksDoNotPublish(t *testing.T) 
 	config := filepath.Join(t.TempDir(), "config.yaml")
 	cdn := &peettyCDNFixture{versions: []string{"0.3.1"}, files: map[string]map[string][]byte{"v0.3.1": peettyTestFiles("red", false)}}
 	u := newPeettyUpdates(config)
-	u.client = cdn.client(t)
+	cdn.attach(t, u)
 	if err := u.check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +278,7 @@ func TestPeettyDoesNotLoadOrReplaceCacheThroughDirectorySymlink(t *testing.T) {
 	config := filepath.Join(root, "original.yaml")
 	cdn := &peettyCDNFixture{versions: []string{"0.3.1"}, files: map[string]map[string][]byte{"v0.3.1": peettyTestFiles("red", false)}}
 	u := newPeettyUpdates(config)
-	u.client = cdn.client(t)
+	cdn.attach(t, u)
 	if err := u.check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +290,7 @@ func TestPeettyDoesNotLoadOrReplaceCacheThroughDirectorySymlink(t *testing.T) {
 	if other.snapshot() != nil {
 		t.Fatal("cache was loaded through an unsafe directory alias")
 	}
-	other.client = cdn.client(t)
+	cdn.attach(t, other)
 	if err := other.check(context.Background()); err == nil {
 		t.Fatal("cache was written through an unsafe directory alias")
 	}

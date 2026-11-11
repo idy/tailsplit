@@ -191,12 +191,16 @@ commit, and atomically caches the verified browser bundle and license notices in
 `<config-path>.peetty/current.json`. New configuration pages use the downloaded
 version without a TailSplit app update; already open pages keep their version.
 Network or validation failures keep the last complete cache, and the embedded
-build remains available offline. Source verification trusts GitHub HTTPS and
-control of the publisher repository; it does not claim signed-release provenance.
-Offline reuse trusts the owner-only cache; older CDN-only cache formats are
-rejected. Reduced motion, oversized page text (including YAML and logs), or a
-failed CDN companion use the embedded build with TailSplit's compatibility fixes. All browser requests stay on the local origin; CSP permits only the
-selected release's exact stylesheet.
+build remains available offline. Publisher TLS uses an application-pinned Mozilla
+public CA bundle (`github.com/breml/rootcerts` v0.3.8), independently of system or
+CDN trust. Certificates added to the OS trust store cannot authorize publisher
+responses. GitHub and control of the publisher repository remain trusted;
+upstream releases do not provide signed-release provenance. Offline reuse trusts
+the owner-only cache; caches established using system TLS trust are rejected.
+Reduced motion, oversized page text (including YAML and logs), or a failed CDN
+companion use the embedded build with TailSplit's compatibility fixes. All
+browser requests stay on the local origin; CSP permits only the selected
+release's exact stylesheet.
 
 ## CLI
 

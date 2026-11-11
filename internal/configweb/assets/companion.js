@@ -6,12 +6,14 @@
   const retryButton = document.querySelector('#page-companion-retry');
   const locale = window.TailSplitI18n;
   const preferences = window.TailSplitCompanionPreferences;
+  const hostByPet = new WeakMap();
   let enabled = false;
   let ready = false;
   let saving = false;
   let suspended = false;
   let loading = null;
   let errorKey = '';
+  let errorKind = '';
   let retryAction = null;
   let pet = null;
   let generation = 0;
@@ -28,8 +30,12 @@
     retryButton.hidden = !retryAction;
   }
 
-  function showError(key, retry = null) {
+  function showError(key, retry = null, kind = 'companion') {
+    // Saving a preference is the user's outstanding operation. A subsequent
+    // failed mount must not replace its explanation or its retry action.
+    if (key && kind === 'companion' && errorKind === 'preference') return;
     errorKey = key;
+    errorKind = key ? kind : '';
     retryAction = retry;
     renderError();
   }
@@ -63,6 +69,11 @@
   function dispose(instance) {
     try { if (typeof instance?.destroy === 'function') instance.destroy(); }
     catch (_) { /* A broken CDN cleanup must not prevent embedded recovery. */ }
+    finally {
+      // The adapter owns this exact host, even if destroy throws before removal.
+      hostByPet.get(instance)?.remove();
+      hostByPet.delete(instance);
+    }
   }
 
   // Upstream can abandon a scan on any oversized text node, including YAML
@@ -87,6 +98,7 @@
     const current = ++generation;
     let next = null;
     let fallbackAttempted = false;
+    const previousHosts = new Set(document.querySelectorAll('peetty-companion'));
     try {
       if (!bundled && needsBundled()) {
         fallbackAttempted = true;
@@ -106,12 +118,19 @@
         dispose(next);
         return;
       }
-      document.querySelector('peetty-companion').shadowRoot
-        .querySelector('[data-action="hide"]').addEventListener('click', () => { void save(false); });
+      const host = document.querySelector('peetty-companion');
+      if (!host) throw new Error('Missing companion host.');
+      hostByPet.set(next, host);
+      host.shadowRoot.querySelector('[data-action="hide"]').addEventListener('click', () => { void save(false); });
     } catch (_) {
       dispose(next);
       if (current !== generation) return;
       if (pet === next) pet = null;
+      // A failed mount may have inserted a host before rejecting. Remove only
+      // its additions, and never run this sweep for a canceled generation.
+      for (const host of document.querySelectorAll('peetty-companion')) {
+        if (!previousHosts.has(host)) host.remove();
+      }
       if (!bundled && !fallbackAttempted) {
         try {
           await useBundled();
@@ -150,7 +169,7 @@
       enabled = readEnabled(await preferences.save(value));
     } catch (_) {
       enabled = previous;
-      showError('无法保存页面小人偏好，请重试。', () => save(value));
+      showError('无法保存页面小人偏好，请重试。', () => save(value), 'preference');
     } finally {
       saving = false;
       toggle.disabled = false;
@@ -170,7 +189,7 @@
         showError('');
         void sync();
       } catch (_) {
-        showError('无法读取页面小人偏好，请重试。', load);
+        showError('无法读取页面小人偏好，请重试。', load, 'preference');
       } finally { loading = null; }
     })();
     return loading;

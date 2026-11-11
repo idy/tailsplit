@@ -18,6 +18,7 @@ async function setup(options = {}) {
   const preview = { textContent: options.yaml || '' };
   const content = [log, preview, ...(options.texts || []).map((textContent) => ({ textContent }))];
   document.body = {};
+  document.querySelectorAll = () => [...overlays].map((instance) => instance.host);
   document.createTreeWalker = () => {
     let index = 0;
     return { nextNode() {
@@ -41,13 +42,17 @@ async function setup(options = {}) {
     const pending = new Promise((resolve) => { finish = resolve; });
     const hide = new EventTarget();
     const instance = {
-      host: { shadowRoot: { querySelector: () => hide } }, hide, finish,
+      host: { shadowRoot: { querySelector: () => hide }, remove: () => { overlays.delete(instance); } }, hide, finish,
       // Model a mount whose asynchronous work completes after early disposal.
       mount: () => pending.then(() => {
-        if (options.mountRejects && instances[0] === instance) throw new Error('Mount failed');
+        if (options.mountRejects && instances[0] === instance) {
+          if (options.partialMount) overlays.add(instance);
+          throw new Error('Mount failed');
+        }
         overlays.add(instance);
       }),
       destroy: () => {
+        if (options.destroyBeforeRemoval && instances[0] === instance) throw new Error('Cleanup failed before removing host');
         overlays.delete(instance);
         if (options.destroyThrows && instances[0] === instance) throw new Error('Cleanup failed');
       },
@@ -381,6 +386,56 @@ test('script load without a fresh embedded SDK stays retryable', async () => {
   await flush();
   assert.equal(state.overlays.size, 1);
   assert.equal(state.error.hidden, true);
+});
+
+test('cleanup throwing before host removal cannot leave the fallback wired to a stale host', async () => {
+  const state = await setup({ updated: true, destroyBeforeRemoval: true });
+  state.instances[0].finish();
+  await flush();
+  const oldHost = state.instances[0].host;
+  state.motion.matches = true;
+  state.motion.dispatchEvent(new Event('change'));
+  assert.equal(state.overlays.size, 0, 'adapter must remove the old host even when SDK cleanup throws');
+  state.scripts[0].finishLoad();
+  await flush();
+  state.instances[1].finish();
+  await flush();
+  assert.notEqual(state.document.querySelector('peetty-companion'), oldHost);
+  state.instances[1].hide.dispatchEvent(new Event('click'));
+  await flush();
+  assert.equal(state.saved.enabled, false, 'the embedded hide action must save the preference');
+  assert.equal(state.overlays.size, 0);
+});
+
+test('partial failed mounts are removed even if cleanup throws before removal', async () => {
+  const state = await setup({ updated: true, mountRejects: true, partialMount: true, destroyBeforeRemoval: true });
+  state.instances[0].finish();
+  await flush();
+  assert.equal(state.overlays.size, 0);
+  state.scripts[0].finishLoad();
+  await flush();
+  state.instances[1].finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+});
+
+test('a consistently failing SDK and shared fallback load preserve a failed preference save', async () => {
+  const values = [];
+  const state = await setup({ updated: true, createThrows: true, preferences: {
+    load: async () => ({ enabled: true }),
+    save: async (value) => { values.push(value); throw new Error('disk full'); },
+  } });
+  assert.equal(state.scripts.length, 1);
+  state.setEnabled(false);
+  await flush();
+  assert.match(state.error.textContent, /无法保存/);
+  assert.equal(state.scripts.length, 1, 'new generation must wait on the shared fallback load');
+  state.scripts[0].onerror();
+  await flush();
+  assert.match(state.error.textContent, /无法保存/);
+  state.retry.dispatchEvent(new Event('click'));
+  await flush();
+  assert.deepEqual(values, [false, false], 'retry must repeat the preference write, not a mount');
 });
 
 test('changing reduced motion switches an active CDN companion to the embedded runtime', async () => {

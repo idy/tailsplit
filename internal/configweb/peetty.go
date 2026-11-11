@@ -46,11 +46,12 @@ type peettyRelease struct {
 var peettyStylesheet = regexp.MustCompile("(?s)(?:var|let|const)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*=\\s*`(\\n:host \\{ all: initial; \\}[^`]*\\n)`[;,]")
 
 type peettyUpdates struct {
-	mu       sync.RWMutex
-	active   *peettyRelease
-	releases map[string]*peettyRelease
-	path     string
-	client   *http.Client
+	mu           sync.RWMutex
+	active       *peettyRelease
+	releases     map[string]*peettyRelease
+	path         string
+	client       *http.Client
+	sourceClient *http.Client
 }
 
 func newPeettyUpdates(configPath string) *peettyUpdates {
@@ -63,7 +64,8 @@ func newPeettyUpdates(configPath string) *peettyUpdates {
 		client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("Peetty CDN redirects are not allowed")
 		}},
-		releases: make(map[string]*peettyRelease),
+		releases:     make(map[string]*peettyRelease),
+		sourceClient: newPeettySourceClient(),
 	}
 	if privatefs.EnsureDir(filepath.Dir(u.path)) == nil && privatefs.CheckFile(u.path) == nil {
 		if data, err := readPeettyFile(u.path, peettyCacheLimit); err == nil {
@@ -164,7 +166,14 @@ func (u *peettyUpdates) fetch(ctx context.Context, source string, limit int64) (
 		return nil, err
 	}
 	request.Header.Set("User-Agent", "TailSplit-Peetty-Updater")
-	response, err := u.client.Do(request)
+	client := u.client
+	if strings.HasPrefix(source, peettyGitHubAPI+"/") || strings.HasPrefix(source, peettySourceBase) {
+		client = u.sourceClient
+		if client == nil {
+			return nil, errors.New("independent Peetty source verifier is unavailable")
+		}
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -179,8 +188,8 @@ func (u *peettyUpdates) fetch(ctx context.Context, source string, limit int64) (
 // that stylesheet without unsafe-inline, upstream source downloads or rewrites
 // of minified JavaScript. Unknown build formats keep the last usable release.
 func preparePeettyRelease(release *peettyRelease) error {
-	// Format 2 is written only after verification against the publisher's GitHub
-	// commit. Older CDN-only caches cannot establish that trust. Offline reuse
+	// Format 3 requires publisher verification anchored in the application's
+	// fixed CA bundle. Caches established using system TLS trust are rejected. Offline reuse
 	// trusts the owner-only cache, as it does other local application state.
 	if release.Format != peettyCacheFormat || !peettyCommitID(release.Commit) || !compatiblePeettyVersion(release.Version) || len(release.Files) < 2 || len(release.Files) > 3 || len(release.Hashes) != len(release.Files) {
 		return errors.New("invalid Peetty release")
