@@ -1248,6 +1248,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> updateSettings(MobileSettings next, {bool applyNow = false}) async {
     final previous = settings;
     settings = next;
+    // Queue persistence before listeners can re-enter or rule metadata can
+    // suspend this update. JsonStore then preserves the settings call order.
+    final save = isPreview ? Future<bool>.value(true) : _writeSettings(next);
     final changed = previous.affectsConnection(next);
     if (switchOn && changed) needsReconnect = true;
     notifyListeners();
@@ -1256,7 +1259,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await _loadRuleInfo();
       notifyListeners();
     }
-    if (!isPreview) await _writeSettings(next);
+    await save;
     if (applyNow && switchOn && changed) await reconnect();
   }
 
