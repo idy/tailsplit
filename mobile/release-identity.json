@@ -1,9 +1,21 @@
 {
-  "name": "TailSplit",
-  "bundle_id": "dev.idy.tailsplit",
-  "packet_tunnel_bundle_id": "dev.idy.tailsplit.PacketTunnel",
-  "app_group": "group.dev.idy.tailsplit",
   "team_id": "BGL4WMWD3W",
   "organization": "TERMITOC PTE. LTD.",
-  "account_type": "organization"
+  "account_type": "organization",
+  "channels": {
+    "beta": {
+      "name": "TailSplit Beta",
+      "bundle_id": "dev.idy.tailsplit.beta",
+      "packet_tunnel_bundle_id": "dev.idy.tailsplit.beta.PacketTunnel",
+      "app_group": "group.dev.idy.tailsplit.beta",
+      "app_store": false
+    },
+    "app-store": {
+      "name": "TailSplit",
+      "bundle_id": "dev.idy.tailsplit",
+      "packet_tunnel_bundle_id": "dev.idy.tailsplit.PacketTunnel",
+      "app_group": "group.dev.idy.tailsplit",
+      "app_store": true
+    }
+  }
 }

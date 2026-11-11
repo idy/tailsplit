@@ -1,0 +1,5 @@
+creation_rules:
+  - path_regex: ^mobile/credentials/apple-distribution\.json\.sops$
+    age: >-
+      age1e5r39x4fawhec08gzxk0da3r9ear8kjy33kjclya82w9w9w979ascsdxes,
+      age1tfep5a4hyypean47pznwlk2kphf0c4qns67gve2pt9yflq40pfns8xassa
