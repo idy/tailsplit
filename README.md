@@ -103,7 +103,9 @@ are preserved. Snapshot creation and cleanup share a short directory lock so an
 in-progress write cannot be mistaken for an orphan. Native startup can read a
 symlinked configuration. If its source directory is read-only or write-protected,
 the fixed per-user `TailSplit/connection-snapshots` directory under the OS user
-configuration directory holds the traffic snapshot. Its entire canonical parent
+cache directory holds the traffic snapshot, independently of the default
+configuration directory (on macOS, `~/Library/Caches` versus
+`~/Library/Application Support`). Its entire canonical parent
 chain must prevent replacement by other users, including macOS extended ACL and
 Windows ACL grants; unsafe paths are rejected without changing their permissions. Captured YAML bytes and the 1 MiB limit stay unchanged;
 the original base directory is passed separately so relative paths keep their

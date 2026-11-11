@@ -22,13 +22,16 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	key := "XDG_CONFIG_HOME"
-	if runtime.GOOS == "darwin" {
-		key = "HOME"
-	} else if runtime.GOOS == "windows" {
-		key = "APPDATA"
+	var envErr error
+	switch runtime.GOOS {
+	case "darwin":
+		envErr = os.Setenv("HOME", root)
+	case "windows":
+		envErr = errors.Join(os.Setenv("APPDATA", filepath.Join(root, "config")), os.Setenv("LOCALAPPDATA", filepath.Join(root, "cache")))
+	default:
+		envErr = errors.Join(os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config")), os.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache")))
 	}
-	if err := errors.Join(os.Setenv(key, root), os.Setenv("TAILSPLIT_TEST_CONFIG_ROOT", root)); err != nil {
+	if err := errors.Join(envErr, os.Setenv("TAILSPLIT_TEST_CONFIG_ROOT", root)); err != nil {
 		_ = os.RemoveAll(root)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

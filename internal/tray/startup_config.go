@@ -72,7 +72,7 @@ func startupConfig(configPath string, data []byte) (tailsplit.Config, error) {
 
 // Keep snapshot discovery independent of custom log paths and mutable YAML.
 func connectionSnapshotFallbackPath() (string, error) {
-	root, err := os.UserConfigDir()
+	root, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
@@ -80,7 +80,7 @@ func connectionSnapshotFallbackPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Resolve OS/user path aliases only in the config base, then use that exact
+	// Resolve OS/user path aliases only in the cache base, then use that exact
 	// canonical pathname for creation and helper loading. App-owned descendants
 	// are never followed through links. StableDir checks the entire resulting
 	// ancestry before using or creating any of them.

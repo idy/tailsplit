@@ -102,13 +102,15 @@ func isolateStartupSnapshotRoot(t *testing.T) {
 	case "darwin":
 		t.Setenv("HOME", root)
 	case "windows":
-		t.Setenv("APPDATA", root)
+		t.Setenv("APPDATA", filepath.Join(root, "config"))
+		t.Setenv("LOCALAPPDATA", filepath.Join(root, "cache"))
 	default:
-		t.Setenv("XDG_CONFIG_HOME", root)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+		t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
 	}
 }
 
-func startupTestController(t *testing.T, configPath, stateDir, rulePath, mode string) *Controller {
+func startupTestController(t *testing.T, configPath, stateDir, rulePath, mode string, logPaths ...string) *Controller {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("production-argument fixture uses a POSIX executable wrapper")
@@ -123,8 +125,12 @@ func startupTestController(t *testing.T, configPath, stateDir, rulePath, mode st
 	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexec "+quoted+" -test.run=^TestStartupConfigHelperProcess$ -- \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	logPath := filepath.Join(directory, "logs", "core.log")
+	if len(logPaths) > 0 {
+		logPath = logPaths[0]
+	}
 	controller, err := New(Options{
-		Helper: helper, ConfigPath: configPath, LogPath: filepath.Join(directory, "logs", "core.log"),
+		Helper: helper, ConfigPath: configPath, LogPath: logPath,
 		ExtraEnv: []string{"TAILSPLIT_STARTUP_HELPER=" + mode,
 			"TAILSPLIT_STARTUP_STATE=" + stateDir, "TAILSPLIT_STARTUP_RULES=" + rulePath,
 			"TAILSPLIT_STARTUP_BASE=" + filepath.Dir(configPath)},
