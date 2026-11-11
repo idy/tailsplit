@@ -46,7 +46,7 @@ func previewOptions(configPath, listen string, desktop bool) configweb.Options {
 	snapshot := tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}
 	operations := newPreviewOperations()
 	options := configweb.Options{
-		ConfigPath: configPath, Listen: listen, Preview: true,
+		ConfigPath: configPath, Listen: listen, Preview: true, CompanionUpdates: true,
 		Apply: func(ctx context.Context, check func(tray.Snapshot) error, update func() error) error {
 			mutex.Lock()
 			defer mutex.Unlock()

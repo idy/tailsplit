@@ -3,6 +3,7 @@ module github.com/idy/tailsplit
 go 1.27.3
 
 require (
+	github.com/breml/rootcerts v0.3.8
 	github.com/ebitengine/purego v0.11.1
 	github.com/egoist/mygo v0.8.3
 	github.com/miekg/dns v1.1.72

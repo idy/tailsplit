@@ -269,7 +269,8 @@ func main() {
 	cancelConnection := loginCancellations.callback(controller)
 	configurationPage, configurationErr := configweb.Start(configweb.Options{
 		Language: uiLanguage, ConfigPath: *config, Listen: *uiListen, Snapshot: controller.Snapshot,
-		PingExit: controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
+		CompanionUpdates: true,
+		PingExit:         controller.PingExitNode, ClaimConnectRequest: controller.ClaimConnectRequest,
 		ClaimConnectOperation: controller.ClaimConnectOperation,
 		ObserveNativeConnectRequest: observeLiveNativeConnectRequests(controller, panelReady, func() bool {
 			return configurationWindow != nil && configurationWindow.CanReceiveConnectRequest()

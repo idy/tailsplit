@@ -10,7 +10,7 @@ import (
 func TestCompanionAssetsAreLocalAndKeepRestrictiveCSP(t *testing.T) {
 	server, _, _ := testServer(t)
 	for _, path := range []string{
-		"/companion.js", "/vendor/peetty/peetty.global.js",
+		"/companion.js", "/vendor/peetty/peetty.global.js", "/vendor/peetty/fallback.js",
 		"/vendor/peetty/peetty.css", "/vendor/peetty/LICENSE.txt",
 	} {
 		t.Run(path, func(t *testing.T) {
