@@ -754,7 +754,7 @@
   let quickOperation = '';
   const newOperationID = () => window.crypto.randomUUID();
   let globalConsentPending = false;
-  const isDesktopBusy = () => desktopPending !== '' || globalConsentPending || Boolean(pendingSetupCancel);
+  const isDesktopBusy = () => desktopPending !== '' || globalConsentPending || Boolean(pendingSetupCancel) || setupCancelSending;
   let desktopLive = null;
   let connectionLost = false;
   let quickBusy = false;
@@ -1077,6 +1077,7 @@
     forgetBrowserConnect(request);
   }
   async function consumeNativeConnect() {
+    if (setupCancelSending) return;
     if (adoptSharedSetupCancel()) return;
     if (!sharedCancelReadable) { notice('操作未完成', t('当前步骤未完成，请重试。')); return; }
     const generation = setupCancelGeneration;
@@ -1172,36 +1173,37 @@
     return mygoWindow && confirmation && ack?.scope === nativeJournalScope &&
       ack.request === confirmation.cancel.request && ack.operation_id === (confirmation.cancel.operation_id || '');
   }
-  window.addEventListener('tailsplit-native-cancel-admitted', event => {
-    if (matchesNativeCancelAck(event.detail)) nativeCancelConfirmation.admit();
-  });
   window.addEventListener('tailsplit-native-cancel-ack', event => {
     const confirmation = nativeCancelConfirmation;
     const ack = event.detail;
     if (!matchesNativeCancelAck(ack, confirmation)) return;
-    confirmation.admit();
     confirmation.resolve();
   });
-  async function deliverNativeCancel(cancel, requireAdmission = false) {
-    let confirmed = false, resolveAck, admit;
+  async function retainNativeCancel(cancel) {
+    if (!nativeJournalScope) throw new Error(nativeCancelUnavailable());
+    let timer;
+    try {
+      const retained = await Promise.race([
+        window.mygo.call('TailSplitPanel.RetainCancel', nativeJournalScope, cancel.request, cancel.operation_id || ''),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(t('取消尚未由宿主接收，请重试。'))), 1000); }),
+      ]);
+      if (retained?.scope !== nativeJournalScope || retained.request !== cancel.request || retained.operation_id !== (cancel.operation_id || '')) {
+        throw new Error(t('取消尚未由宿主接收，请重试。'));
+      }
+    } finally { clearTimeout(timer); }
+  }
+  async function deliverNativeCancel(cancel) {
+    let confirmed = false, resolveAck;
     const ack = new Promise(resolve => { resolveAck = () => { confirmed = true; resolve(); }; });
-    const admitted = new Promise(resolve => { admit = resolve; });
-    const confirmation = { cancel, resolve: resolveAck, admit };
+    const confirmation = { cancel, resolve: resolveAck };
     const host = nativeCancelHost && Boolean(nativeJournalScope);
     if (host) nativeCancelConfirmation = confirmation;
     try {
-      // A currently confirmed journal permits immediate IPC/HTTP fallback.
-      // Without one, historical commitment permits only requesting admission.
+      // RetainCancel has already committed this exact intent to the host.
+      // Journals and these transports are additional delivery paths only.
       if (host) {
         const fragment = new URLSearchParams({ scope: nativeJournalScope, request: cancel.request, operation_id: cancel.operation_id || '' });
         try { location.assign(`/native-cancel#${fragment}`); } catch (_) { /* The original transports remain available. */ }
-      }
-      if (requireAdmission) {
-        if (!host) throw new Error(nativeCancelUnavailable());
-        let timer;
-        try { await Promise.race([admitted, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(t('取消尚未由宿主接收，请重试。'))), 1000); })]); }
-        finally { clearTimeout(timer); }
-        if (confirmed) return;
       }
       const legacy = (async () => {
         let timer;
@@ -1222,12 +1224,12 @@
       }
     } finally { if (nativeCancelConfirmation === confirmation) nativeCancelConfirmation = null; }
   }
-  async function dispatchSetupCancel() {
+  async function dispatchSetupCancel(retained = false) {
     if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
     const cancel = pendingSetupCancel;
     const journalReady = mygoWindow && journalNativeCancel(cancel);
     if (journalReady) setupCancelCommitted = true;
-    if (mygoWindow && !journalReady && !(setupCancelCommitted && nativeCancelHost && nativeJournalScope)) {
+    if (mygoWindow && !retained && !journalReady && !(setupCancelCommitted && nativeCancelHost && nativeJournalScope)) {
       setupCancelError = nativeCancelUnavailable();
       renderConnectionCenter();
       return false;
@@ -1240,8 +1242,10 @@
     try {
       // The controller revokes this exact operation, including commands still
       // awaiting admission. A retry must never stop a different, newer session.
-      if (mygoWindow) await deliverNativeCancel(cancel, !journalReady);
-      else await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
+      if (mygoWindow) {
+        if (!retained) await retainNativeCancel(cancel);
+        await deliverNativeCancel(cancel);
+      } else await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
       if (cancel.request) markNativeConnectHandled(cancel.request);
       rememberSetupCancel(null);
       return !pendingSetupCancel;
@@ -1251,22 +1255,33 @@
     } finally { setupCancelSending = false; renderConnectionCenter(); }
   }
   async function cancelConnectionSetup() {
+    if (setupCancelSending) return;
+    if (pendingSetupCancel) {
+      if (await dispatchSetupCancel()) await refreshState();
+      renderConnectionCenter(); return;
+    }
     const target = currentCancelTarget();
-    // Refuse an unprotected native cancellation before invalidating setup or
-    // dispatching any command, including when reload lost its metadata.
-    const confirmed = mygoWindow && target && (target === pendingSetupCancel && setupCancelCommitted || journalNativeCancel(target));
+    const confirmed = mygoWindow && target && journalNativeCancel(target);
     if (mygoWindow && target && !confirmed) {
       operationError = { title: '操作未完成', detail: nativeCancelUnavailable() };
       clearNotice(); renderConnectionCenter(); return;
     }
-    const canceledRequest = target?.request || '';
-    const operationID = target?.operation_id || '';
     setupCancelGeneration++;
+    // Do not accept or invalidate a new native intent until a host-owned copy
+    // exists. A failed/lost receipt leaves this attempt explicitly unconfirmed.
+    if (mygoWindow && target) {
+      setupCancelSending = true; renderConnectionCenter();
+      try { await retainNativeCancel(target); }
+      catch (error) {
+        operationError = { title: '操作未完成', detail: error };
+        setupFailed(error); clearNotice(); return;
+      } finally { setupCancelSending = false; renderConnectionCenter(); }
+    }
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
     if (exitDialog.open) exitDialog.close();
-    if (!pendingSetupCancel && (operationID || canceledRequest)) rememberSetupCancel({ request: canceledRequest, operation_id: operationID || '' }, Boolean(confirmed));
-    if (await dispatchSetupCancel()) await refreshState();
+    if (target) rememberSetupCancel(target, Boolean(confirmed));
+    if (await dispatchSetupCancel(Boolean(mygoWindow && target))) await refreshState();
     renderConnectionCenter();
   }
   async function beginConnectionSetup(exit = '', operationID = '') {

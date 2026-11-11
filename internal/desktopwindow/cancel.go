@@ -30,6 +30,30 @@ func (panelCancelService) Cancel(ctx context.Context, request, operation string)
 	return panelCancellation.cancelFrom(ctx, mygo.CallerWindow(ctx), mygo.CallerPage(ctx), request, operation)
 }
 
+// RetainCancel acknowledges only after the host owns the explicit intent. The
+// panel must obtain this receipt before accepting cancellation locally; neither
+// renderer storage nor a later navigation is responsible for keeping it alive.
+func (panelCancelService) RetainCancel(ctx context.Context, scope, request, operation string) (journalCancellation, error) {
+	return panelCancellation.retainFrom(mygo.CallerWindow(ctx), mygo.CallerPage(ctx), scope, request, operation)
+}
+
+func (b *cancellationBindings) retainFrom(frame *mygo.Window, page *mygo.Page, scope, request, operation string) (journalCancellation, error) {
+	if scope == "" || request == "" && operation == "" || len(request)+len(operation) > 1024 {
+		return journalCancellation{}, errors.New("无法读取操作请求。")
+	}
+	b.mu.Lock()
+	binding, known := b.windows[frame]
+	b.mu.Unlock()
+	if !known || page == nil || binding.page != page || binding.window == nil || binding.window.journalScope != scope {
+		return journalCancellation{}, errors.New("无法读取操作请求。")
+	}
+	record := journalCancellation{Scope: scope, Request: request, OperationID: operation}
+	if !binding.window.nativeCancellationInbox().enqueue(record) {
+		return journalCancellation{}, ErrNotReady
+	}
+	return record, nil
+}
+
 // SetCancelHandler installs the same guarded cancellation used by the local API.
 // Only this window's main page can invoke it; MyGo additionally enforces the
 // exact TrustedOrigins configured before that page loads.

@@ -232,7 +232,20 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
       return response({ valid: true });
     },
   };
-  if (window.mygo) window.mygo.call = async (method, id, operation) => {
+  app.retentionCalls = [];
+  app.retainedCancellations = localeOptions.retainedCancellations || new Map();
+  app.retentionOverride = localeOptions.retentionOverride || (() => undefined);
+  if (window.mygo) window.mygo.call = async (method, ...args) => {
+    if (method === 'TailSplitPanel.RetainCancel') {
+      const [scope, request, operation_id] = args;
+      const record = { scope, request, operation_id };
+      app.retentionCalls.push(record);
+      const overridden = app.retentionOverride(record);
+      const receipt = overridden === undefined ? record : await overridden;
+      if (receipt?.scope === scope && receipt.request === request && receipt.operation_id === operation_id) app.retainedCancellations.set(JSON.stringify(record), record);
+      return receipt;
+    }
+    const [id, operation] = args;
     assert.equal(method, 'TailSplitPanel.Cancel');
     const request = { path: '/api/cancel', method: 'NATIVE', transport: 'native', bridgeMethod: method, data: { request: id, operation_id: operation } };
     requests.push(request); app.nativeCalls.push(request);
@@ -4507,54 +4520,76 @@ async function evictedNativeCancellationFixture() {
   return { app, options };
 }
 
-test('an evicted journal cannot authorize legacy retry until the host admits the exact target', async () => {
+test('accepted cancellation already has a host copy before journal eviction or a missing retry navigation', async () => {
   const { app } = await evictedNativeCancellationFixture();
+  assert.equal(app.retainedCancellations.size, 1);
+  const retained = [...app.retainedCancellations.values()][0];
+  assert.deepEqual(retained, { scope: 'native-eviction-scope', request: '', operation_id: 'evicted-owner' });
+  const receipt = deferred();
+  app.retentionOverride = () => receipt.promise;
   const legacyBefore = app.requests.filter(request => request.path === '/api/cancel').length;
   const retry = app.$('#connection-setup-cancel').emit('click');
   await settle();
-  const target = app.nativeNavigations.at(-1);
   assert.equal(app.cookies.size, 0);
   assert.equal(app.requests.filter(request => request.path === '/api/cancel').length, legacyBefore);
-  assert.equal(app.snapshot.active, true);
-  for (const wrong of [{ ...target, scope: 'foreign-scope' }, { ...target, operation_id: 'newer-owner' }, { ...target, request: 'other-request' }]) {
-    await app.admitNavigation(wrong);
-    assert.equal(app.requests.filter(request => request.path === '/api/cancel').length, legacyBefore);
-  }
-  await app.admitNavigation(target);
+  assert.equal(app.retainedCancellations.size, 1, 'the original host copy exists throughout the retry wait');
+  receipt.resolve(retained);
   await retry;
   assert.equal(app.snapshot.active, false);
   assert.equal(app.nativeCalls.length, 2);
   assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
 });
 
-test('stale write history with missing admission leaves cancellation pending without IPC or HTTP retry', async () => {
+test('failed host-retention recheck preserves an accepted intent without unprotected legacy retry', async () => {
   const { app } = await evictedNativeCancellationFixture();
   const legacyBefore = app.requests.filter(request => request.path === '/api/cancel').length;
+  app.retentionOverride = () => deferred().promise;
   const retry = app.$('#connection-setup-cancel').emit('click');
   await settle(); await app.flushTimers(); await retry;
   assert.equal(app.snapshot.active, true);
-  assert.equal(app.cookies.size, 0);
   assert.equal(app.requests.filter(request => request.path === '/api/cancel').length, legacyBefore);
+  assert.equal(app.retainedCancellations.size, 1);
   assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
   assert.match(app.$('#connection-setup-detail').textContent, /尚未由宿主接收/);
-  app.navigationOverride = record => { app.admitNavigation(record); return true; };
+  app.retentionOverride = () => undefined;
   await app.$('#connection-setup-cancel').emit('click');
   assert.equal(app.snapshot.active, false);
 });
 
-test('a restored historical receipt cannot authorize an evicted journal but exact host completion can finish it', async () => {
+test('restored pending intent rechecks host retention rather than trusting its historical receipt', async () => {
   const { app } = await evictedNativeCancellationFixture();
-  const reload = await page(app.snapshot, 'mygo-windows', { page: 'home', hash: '#', storage: app.storage, cookies: app.cookies, unreadableCookies: true, rejectCookies: true }, app.config);
-  assert.equal(reload.nativeNavigations.length, 1, 'history permits only requesting admission');
+  const receipt = deferred();
+  const reload = await page(app.snapshot, 'mygo-windows', { page: 'home', hash: '#', storage: app.storage, cookies: app.cookies,
+    unreadableCookies: true, rejectCookies: true, retainedCancellations: app.retainedCancellations, retentionOverride: () => receipt.promise }, app.config);
+  assert.equal(reload.retentionCalls.length, 1);
+  assert.equal(reload.retainedCancellations.size, 1);
   assert.equal(reload.nativeCalls.length, 0);
   assert.equal(reload.requests.some(request => request.path === '/api/cancel'), false);
   assert.equal(reload.snapshot.active, true);
-  assert.equal(reload.storage.has('tailsplit-setup-cancel'), true);
-  await reload.ackNavigation(reload.nativeNavigations.at(-1));
+  receipt.resolve(reload.retentionCalls[0]);
   await settle();
-  assert.equal(reload.nativeCalls.length, 0, 'completed host acknowledgment also implies admission');
-  assert.equal(reload.snapshot.active, false, JSON.stringify({ navigations: reload.nativeNavigations, operation: reload.snapshot.operation_id, disabled: reload.$('#connection-setup-cancel').disabled, detail: reload.$('#connection-setup-detail').textContent }));
+  assert.equal(reload.nativeCalls.length, 1);
+  assert.equal(reload.snapshot.active, false);
   assert.equal(reload.storage.has('tailsplit-setup-cancel'), false);
+});
+
+for (const failure of ['rejected', 'stalled', 'wrong-target']) test(`native cancellation is not accepted locally before ${failure} host retention`, async () => {
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'not-yet-retained' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-retain-scope&journal_backup=0&cancel_host=1' }, guidedDocument());
+  app.retentionOverride = record => {
+    if (failure === 'stalled') return deferred().promise;
+    if (failure === 'wrong-target') return { ...record, operation_id: 'unrelated-owner' };
+    throw new Error('synthetic retention failure');
+  };
+  const cancel = app.$('#connection-setup-cancel').emit('click');
+  await settle();
+  if (failure === 'stalled') await app.flushTimers();
+  await cancel;
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false, 'no accepted marker may precede host ownership');
+  assert.equal(app.nativeCalls.length, 0);
+  assert.equal(app.nativeNavigations.length, 0);
+  assert.equal(app.retainedCancellations.size, 0);
 });
 
 test('stale commitment without a usable native host or current journal cannot start delivery', async () => {
