@@ -2,8 +2,11 @@ package desktopwindow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
+	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,6 +96,143 @@ func TestNativeCancellationNavigationOnlyAcceptsRegisteredMainPage(t *testing.T)
 	}
 	if calls.Load() != 1 {
 		t.Fatal("accepted navigation was not delivered exactly", calls.Load())
+	}
+}
+
+func TestNativeCancellationDefaultPortNavigationAndReceipts(t *testing.T) {
+	for _, origin := range []string{"http://127.0.0.1:80", "http://127.0.0.1"} {
+		t.Run(origin, func(t *testing.T) {
+			for _, test := range []struct {
+				name, source, destination string
+				allowed                   bool
+			}{
+				{"both-explicit", "http://127.0.0.1:80", "http://127.0.0.1:80", true},
+				{"both-normalized", "http://127.0.0.1", "http://127.0.0.1", true},
+				{"source-normalized", "http://127.0.0.1", "http://127.0.0.1:80", true},
+				{"target-normalized", "http://127.0.0.1:80", "http://127.0.0.1", true},
+				{"source-port", "http://127.0.0.1:81", origin, false},
+				{"target-port", origin, "http://127.0.0.1:81", false},
+				{"source-host", "http://localhost", origin, false},
+				{"target-host", origin, "http://localhost", false},
+				{"source-prefix", "http://127.0.0.1.evil.example", origin, false},
+				{"target-prefix", origin, "http://127.0.0.1.evil.example", false},
+				{"target-userinfo-spoof", origin, "http://127.0.0.1:80@evil.example", false},
+				{"source-userinfo", "http://user@127.0.0.1:80", origin, false},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					ctx, stop := context.WithCancel(context.Background())
+					defer stop()
+					target := journalCancellation{Scope: "scope", Request: "request&operation_id=other", OperationID: "owner+percent%26"}
+					delivered, admitted, acknowledged := make(chan journalCancellation, 1), make(chan journalCancellation, 1), make(chan journalCancellation, 1)
+					w := &Window{done: make(chan struct{}), journalScope: target.Scope, journalContext: ctx, cancelHandler: func(_ context.Context, request, operation string) error {
+						delivered <- journalCancellation{Scope: target.Scope, Request: request, OperationID: operation}
+						return nil
+					}}
+					inbox := w.nativeCancellationInbox()
+					inbox.admittedAck = func(record journalCancellation) { admitted <- record }
+					inbox.ack = func(record journalCancellation) { acknowledged <- record }
+					frame, page := &mygo.Window{}, &mygo.Page{}
+					bindings := cancellationBindings{windows: make(map[*mygo.Window]cancellationBinding)}
+					bindings.register(frame, page, w)
+					raw := strings.Replace(cancellationNavigationURL(target.Scope, target.Request, target.OperationID), navigationTestOrigin, test.destination, 1)
+					event := &mygo.NavigateEvent{URL: raw}
+					if accepted := bindings.cancellationNavigation(w, frame, page, origin, test.source+"/", false, event); accepted != test.allowed || !event.DefaultPrevented() {
+						t.Fatal("wrong default-port navigation admission or attempted HTTP navigation", accepted, test.allowed)
+					}
+					for _, receipt := range []chan journalCancellation{admitted, delivered, acknowledged} {
+						if !test.allowed {
+							select {
+							case record := <-receipt:
+								t.Fatal("foreign origin reached cancellation inbox", record)
+							default:
+							}
+							continue
+						}
+						select {
+						case record := <-receipt:
+							if record != target {
+								t.Fatal("normalization changed exact receipt target", record)
+							}
+						case <-time.After(time.Second):
+							t.Fatal("same-origin navigation did not produce exact receipt")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNativeCancellationEventScriptsAndReadinessMatchBrowserOrigin(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("browser origin script checks require Node.js")
+	}
+	target := journalCancellation{Scope: "scope", Request: "request&operation_id=other", OperationID: "owner+percent%26"}
+	type receipt struct {
+		Type   string              `json:"type"`
+		Detail journalCancellation `json:"detail"`
+	}
+	for _, test := range []struct {
+		name, origin, pageURL        string
+		originAllowed, eventsAllowed bool
+	}{
+		{"explicit-default", "http://127.0.0.1:80", "http://127.0.0.1:80/", true, true},
+		{"browser-normalized", "http://127.0.0.1:80", "http://127.0.0.1/", true, true},
+		{"normalized-origin", "http://127.0.0.1", "http://127.0.0.1:80/", true, true},
+		{"nondefault", navigationTestOrigin, navigationTestOrigin + "/", true, true},
+		{"different-port", "http://127.0.0.1:80", "http://127.0.0.1:81/", false, false},
+		{"different-host", "http://127.0.0.1:80", "http://localhost/", false, false},
+		{"prefix-spoof", "http://127.0.0.1:80", "http://127.0.0.1.evil.example/", false, false},
+		{"userinfo-spoof", "http://127.0.0.1:80", "http://127.0.0.1:80@evil.example/", false, false},
+		{"different-scheme", "http://127.0.0.1:80", "https://127.0.0.1/", false, false},
+		{"nondefault-missing-port", navigationTestOrigin, "http://127.0.0.1/", false, false},
+		{"keeper-path", "http://127.0.0.1:80", "http://127.0.0.1" + journalReaderPath, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var readinessCode string
+			if err := probePageReadiness(context.Background(), func(_ context.Context, code string) (any, error) {
+				readinessCode = code
+				return true, nil
+			}, test.origin, time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+			input, err := json.Marshal(struct {
+				URL   string   `json:"url"`
+				Codes []string `json:"codes"`
+			}{test.pageURL, []string{readinessCode, nativeCancellationEventCode(test.origin, "tailsplit-native-cancel-admitted", target), nativeCancellationEventCode(test.origin, "tailsplit-native-cancel-ack", target)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			const harness = `const input=JSON.parse(process.argv[1]),events=[];
+			global.location=new URL(input.url);global.document={readyState:'complete'};
+			global.CustomEvent=class{constructor(type,options){this.type=type;this.detail=options.detail}};
+			global.window={dispatchEvent:event=>{events.push(event);return true}};
+			process.stdout.write(JSON.stringify({values:input.codes.map(code=>eval(code)),events}));`
+			ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+			defer stop()
+			output, err := exec.CommandContext(ctx, node, "-e", harness, string(input)).CombinedOutput()
+			if err != nil {
+				t.Fatalf("browser origin fixture failed: %v: %s", err, output)
+			}
+			var result struct {
+				Values []bool    `json:"values"`
+				Events []receipt `json:"events"`
+			}
+			if err := json.Unmarshal(output, &result); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(result.Values, []bool{test.originAllowed, test.eventsAllowed, test.eventsAllowed}) {
+				t.Fatal("scripts disagreed with browser origin/path", result.Values)
+			}
+			wantEvents := []receipt{}
+			if test.eventsAllowed {
+				wantEvents = []receipt{{Type: "tailsplit-native-cancel-admitted", Detail: target}, {Type: "tailsplit-native-cancel-ack", Detail: target}}
+			}
+			if !reflect.DeepEqual(result.Events, wantEvents) {
+				t.Fatal("scripts emitted missing or retargeted cancellation receipts", result.Events)
+			}
+		})
 	}
 }
 

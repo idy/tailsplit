@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os/exec"
 	"reflect"
@@ -426,6 +427,56 @@ func TestNativeRecoveryReaderNegotiatesUsabilityWithVerifiedScopedProbe(t *testi
 				if !strings.HasPrefix(name, cancelJournalPrefix+"scope-probe-") {
 					t.Fatal("probe read unscoped data", name)
 				}
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryReaderNormalizesDefaultPortWithoutExpandingOrigin(t *testing.T) {
+	for _, test := range []struct {
+		name, origin, browserOrigin string
+		allowed                     bool
+	}{
+		{"explicit-default", "http://127.0.0.1:80", "http://127.0.0.1", true},
+		{"normalized-default", "http://127.0.0.1", "http://127.0.0.1", true},
+		{"nondefault", navigationTestOrigin, navigationTestOrigin, true},
+		{"different-port", "http://127.0.0.1:80", "http://127.0.0.1:81", false},
+		{"different-host", "http://127.0.0.1:80", "http://localhost", false},
+		{"host-prefix-spoof", "http://127.0.0.1:80", "http://127.0.0.1.evil.example", false},
+		{"different-scheme", "http://127.0.0.1:80", "https://127.0.0.1", false},
+		{"nondefault-missing-port", navigationTestOrigin, "http://127.0.0.1", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entry := journalCookie(t, "scope", "entry", "request", "owner")
+			foreign := journalCookie(t, "other", "entry", "", "foreign-owner")
+			state := &scriptStorageState{Origin: test.browserOrigin, Path: journalReaderPath, Ready: true, Marker: true, Store: map[string]string{entry.Name: entry.Value, foreign.Name: foreign.Value, "tailsplit-config-token": "fixture-must-not-read"}}
+			original := maps.Clone(state.Store)
+			reader := newJournalStorageReader("scope", test.origin, scriptStorageEval(t, state))
+			readyErr := reader.ready(context.Background())
+			usable, negotiateErr := reader.negotiate(context.Background())
+			entries, listErr := reader.list(context.Background())
+			reads := append([]string(nil), state.Reads...)
+			removeErr := reader.remove(context.Background(), journalStorageEntry{Name: entry.Name, Value: entry.Value})
+			if !test.allowed {
+				for _, err := range []error{readyErr, negotiateErr, listErr, removeErr} {
+					if !errors.Is(err, errJournalReaderNotReady) {
+						t.Fatal("foreign origin passed recovery guard", err)
+					}
+				}
+				if usable || len(entries) != 0 || len(reads) != 0 || len(state.Reads) != 0 || !reflect.DeepEqual(state.Store, original) {
+					t.Fatal("foreign origin accessed recovery storage", entries, reads, state.Reads)
+				}
+				return
+			}
+			if readyErr != nil || negotiateErr != nil || listErr != nil || removeErr != nil || !usable {
+				t.Fatal("same origin could not negotiate/read/acknowledge recovery", readyErr, negotiateErr, listErr, removeErr, usable)
+			}
+			if !reflect.DeepEqual(entries, []journalStorageEntry{{Name: entry.Name, Value: entry.Value}}) || !reflect.DeepEqual(reads, []string{entry.Name}) {
+				t.Fatal("normalization bypassed scoped reads", entries, reads)
+			}
+			delete(original, entry.Name)
+			if !reflect.DeepEqual(state.Store, original) {
+				t.Fatal("normalization changed unrelated storage", state.Store)
 			}
 		})
 	}

@@ -143,6 +143,7 @@ type Controller struct {
 	trafficExit   string // Selected traffic device for this running session.
 	pendingAdd    *pendingExitAddition
 	preparation   *servicePreparation
+	action        *operationAction
 
 	activeRevision      string            // Source document held by the current traffic helper.
 	connectRequest      string            // Unconsumed native intent, independent of status restores.
@@ -465,7 +466,6 @@ func (c *Controller) ReconfigureChecked(check func(Snapshot) error, update func(
 // A guarded save may inherit an idle setup owner, but cannot take an active
 // connection from another operation. Internal stop/update/restart retains owner.
 func (c *Controller) ReconfigureOperation(operation string, check func(Snapshot) error, update func() error) error {
-	guarded := operation != ""
 	c.mu.Lock()
 	if err := c.operationAllowedLocked(operation); err != nil {
 		c.mu.Unlock()
@@ -482,6 +482,11 @@ func (c *Controller) ReconfigureOperation(operation string, check func(Snapshot)
 		}
 		c.ownOperationLocked(operation)
 	}
+	// An unguarded idle save after a prior disconnect is a fresh operation.
+	// Its new identity still lets cancellation during this save revoke admission.
+	if operation == "" && (c.operationID == "" || c.operationAllowedLocked(c.operationID) != nil) {
+		c.ownOperationLocked("")
+	}
 	operation = c.operationID
 	c.reconfiguring = true
 	before := c.snapshot.clone()
@@ -490,7 +495,13 @@ func (c *Controller) ReconfigureOperation(operation string, check func(Snapshot)
 	before.TrafficExit, before.ConnectRequest = c.trafficExit, c.connectRequest
 	before.PingAvailable = c.pingAvailableLocked()
 	c.mu.Unlock()
-	defer c.endReconfigure()
+	var action *operationAction
+	defer func() {
+		c.mu.Lock()
+		c.reconfiguring = false
+		c.finishOperationActionLocked(action)
+		c.mu.Unlock()
+	}()
 	if check != nil {
 		if err := check(before); err != nil {
 			return err
@@ -498,7 +509,7 @@ func (c *Controller) ReconfigureOperation(operation string, check func(Snapshot)
 	}
 	reconnect := before.Active && (before.Mode == "tun" || before.Mode == "proxy")
 	c.mu.Lock()
-	if operation != c.operationID || guarded && c.operationAllowedLocked(operation) != nil {
+	if operation != c.operationID || c.operationAllowedLocked(operation) != nil {
 		c.mu.Unlock()
 		return ErrOperationCanceled
 	}
@@ -507,12 +518,19 @@ func (c *Controller) ReconfigureOperation(operation string, check func(Snapshot)
 	if err := c.waitStopped(stop); err != nil {
 		return err
 	}
-	err := update()
+	c.mu.Lock()
+	action, err := c.admitOperationActionLocked(operation)
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	err = update()
 	if reconnect {
 		err = errors.Join(err, c.startReconfigured(operation))
-	} else if err == nil {
+	} else {
 		c.mu.Lock()
-		if c.operationID == operation && c.command == nil && (c.snapshot.State == "failed" || c.snapshot.State == "stopped" && c.snapshot.Error != "") {
+		err = errors.Join(err, c.operationAllowedLocked(operation))
+		if err == nil && c.operationID == operation && c.command == nil && (c.snapshot.State == "failed" || c.snapshot.State == "stopped" && c.snapshot.Error != "") {
 			c.reset(Snapshot{State: "stopped"})
 		}
 		c.mu.Unlock()
@@ -774,10 +792,10 @@ func (c *Controller) Logout() error {
 
 // LogoutExit signs out one device. Other devices keep their logins.
 func (c *Controller) LogoutExit(id string) error {
-	return c.logoutExit(id, c.Stop)
+	return c.ForOperation("").LogoutExit(id)
 }
 
-func (c *Controller) logoutExit(id string, stop func() error) error {
+func (c *Controller) logoutExit(id string, operation *Operation) error {
 	focus := id
 	if focus == "" {
 		focus = tailsplit.MainExit
@@ -786,21 +804,32 @@ func (c *Controller) logoutExit(id string, stop func() error) error {
 		id = ""
 	}
 	c.mu.Lock()
-	if c.closed || c.loggingOut {
+	if err := c.operationAllowedLocked(operation.ID); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if c.closed || c.loggingOut || c.action != nil {
 		c.mu.Unlock()
 		return errors.New("the app is closing or logout is already in progress")
 	}
 	c.loggingOut = true
 	c.mu.Unlock()
+	var action *operationAction
 	defer func() {
 		c.mu.Lock()
 		c.loggingOut = false
+		c.finishOperationActionLocked(action)
 		c.mu.Unlock()
 	}()
-	if err := stop(); err != nil {
+	if err := operation.Stop(); err != nil {
 		return err
 	}
 	c.mu.Lock()
+	action, err := c.admitOperationActionLocked(operation.ID)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	previous := c.snapshot
 	if id == "" {
 		c.reset(Snapshot{State: "logging-out"})
@@ -835,10 +864,10 @@ func (c *Controller) logoutExit(id string, stop func() error) error {
 		previous.Exits = c.snapshot.Exits
 		c.snapshot = previous
 		c.setExit(id, ExitSnapshot{BackendState: "NeedsLogin"})
-		return nil
+	} else {
+		c.reset(Snapshot{State: "stopped", BackendState: "NeedsLogin"})
 	}
-	c.reset(Snapshot{State: "stopped", BackendState: "NeedsLogin"})
-	return nil
+	return c.operationAllowedLocked(operation.ID)
 }
 
 // RemoveExit performs a local device logout and revision-checked config
@@ -869,17 +898,7 @@ func (c *Controller) removeExit(id, revision string, logout func(string) error) 
 // SwitchNetwork leaves the proxy disconnected and requests a fresh interactive
 // device authorization. Desktop callers serialize it with other user actions.
 func (c *Controller) SwitchNetwork() error {
-	save, err := prepareNetworkSwitch(c.options.ConfigPath)
-	if err != nil {
-		return err
-	}
-	if err := c.Logout(); err != nil {
-		return err
-	}
-	if err := save(); err != nil {
-		return err
-	}
-	return c.StartLogin()
+	return c.ForOperation("").SwitchNetwork()
 }
 
 func (c *Controller) Close() error {

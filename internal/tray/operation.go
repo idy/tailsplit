@@ -137,13 +137,17 @@ func (o *Operation) Stop() error {
 		c.mu.Unlock()
 		return ErrOperationCanceled
 	}
+	if c.action != nil {
+		c.mu.Unlock()
+		return tailsplit.ErrPingBusy
+	}
 	c.ownOperationLocked(o.ID)
 	stop := c.captureStopLocked()
 	c.mu.Unlock()
 	return c.waitStopped(stop)
 }
 func (o *Operation) Logout() error              { return o.LogoutExit("") }
-func (o *Operation) LogoutExit(id string) error { return o.Controller.logoutExit(id, o.Stop) }
+func (o *Operation) LogoutExit(id string) error { return o.Controller.logoutExit(id, o) }
 func (o *Operation) SwitchNetwork() error {
 	save, err := prepareNetworkSwitch(o.options.ConfigPath)
 	if err != nil {
@@ -152,7 +156,7 @@ func (o *Operation) SwitchNetwork() error {
 	if err := o.Logout(); err != nil {
 		return err
 	}
-	if err := save(); err != nil {
+	if err := o.Controller.ReconfigureOperation(o.ID, nil, save); err != nil {
 		return err
 	}
 	return o.StartLogin()
@@ -222,12 +226,41 @@ func (c *Controller) CancelWithNotify(request, operation string, notify func([]s
 
 func (c *Controller) CancelOperation(id string) error { return c.Cancel("", id) }
 
+// An action is registered under the cancellation lock only after old helper
+// cleanup. Cancellation either rejects its admission or joins its real finish;
+// callbacks and logout subprocesses run without holding the controller lock.
+type operationAction struct {
+	done chan struct{}
+}
+
+func (c *Controller) admitOperationActionLocked(operation string) (*operationAction, error) {
+	if c.closed || c.operationID != operation || c.operationAllowedLocked(operation) != nil {
+		return nil, ErrOperationCanceled
+	}
+	if c.action != nil {
+		return nil, tailsplit.ErrPingBusy
+	}
+	action := &operationAction{done: make(chan struct{})}
+	c.action = action
+	return action, nil
+}
+
+func (c *Controller) finishOperationActionLocked(action *operationAction) {
+	if action == nil {
+		return
+	}
+	if c.action == action {
+		c.action = nil
+	}
+	close(action.done)
+}
+
 type stoppedResources struct {
-	command                         *exec.Cmd
-	input                           io.WriteCloser
-	done, pingDone, preparationDone <-chan struct{}
-	generation                      uint64
-	completion                      *stopCompletion
+	command                                     *exec.Cmd
+	input                                       io.WriteCloser
+	done, pingDone, preparationDone, actionDone <-chan struct{}
+	generation                                  uint64
+	completion                                  *stopCompletion
 }
 
 // All retries joining the same captured cleanup share one completion watcher.
@@ -242,6 +275,9 @@ func (c *Controller) captureStopLocked() stoppedResources {
 	stop := stoppedResources{command: c.command, input: c.input, done: c.done, pingDone: c.pingDone}
 	if c.command == nil {
 		stop.done = nil
+	}
+	if c.action != nil {
+		stop.actionDone = c.action.done
 	}
 	c.stopping = true
 	if c.pingCancel != nil {
@@ -258,7 +294,7 @@ func (c *Controller) captureStopLocked() stoppedResources {
 	}
 	if previous := c.stopCompletion; previous != nil {
 		resources := previous.resources
-		if resources.command == stop.command && resources.done == stop.done && resources.pingDone == stop.pingDone && resources.preparationDone == stop.preparationDone {
+		if resources.command == stop.command && resources.done == stop.done && resources.pingDone == stop.pingDone && resources.preparationDone == stop.preparationDone && resources.actionDone == stop.actionDone {
 			select {
 			case <-previous.done:
 			default:
@@ -285,6 +321,9 @@ func (c *Controller) waitStopped(stop stoppedResources) error {
 			}
 			if stop.preparationDone != nil {
 				<-stop.preparationDone
+			}
+			if stop.actionDone != nil {
+				<-stop.actionDone
 			}
 			c.mu.Lock()
 			if c.stopGeneration == stop.generation && c.stopCompletion == stop.completion {

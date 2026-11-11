@@ -164,15 +164,11 @@ func (i *nativeCancellationInbox) deliver() {
 }
 
 func sameCancellationOrigin(candidate *url.URL, origin string) bool {
-	base, err := url.Parse(origin)
-	if err != nil || candidate.User != nil || candidate.Opaque != "" || candidate.Scheme != base.Scheme {
+	if candidate.User != nil || candidate.Opaque != "" {
 		return false
 	}
-	if candidate.Host == base.Host {
-		return true
-	}
-	// WebKit omits the default HTTP port in its navigation URLs.
-	return base.Scheme == "http" && base.Port() == "80" && candidate.Host == base.Hostname()
+	expected := normalizePageOrigin(origin)
+	return expected != "" && normalizePageOrigin(candidate.Scheme+"://"+candidate.Host) == expected
 }
 
 func parseNativeCancellation(origin, scope, raw string) (journalCancellation, bool) {
@@ -266,7 +262,7 @@ func (b *cancellationBindings) cancellationNavigation(w *Window, frame *mygo.Win
 
 func nativeCancellationEventCode(origin, event string, record journalCancellation) string {
 	data, _ := json.Marshal(record)
-	return `(() => { if (location.origin === ` + strconv.Quote(origin) + ` && location.pathname === '/') return window.dispatchEvent(new CustomEvent(` + strconv.Quote(event) + `,{detail:` + string(data) + `})); return false; })()`
+	return `(() => { if (location.origin === ` + strconv.Quote(normalizePageOrigin(origin)) + ` && location.pathname === '/') return window.dispatchEvent(new CustomEvent(` + strconv.Quote(event) + `,{detail:` + string(data) + `})); return false; })()`
 }
 
 func (w *Window) registerCancellationNavigation(frame *mygo.Window, page *mygo.Page, origin string) {

@@ -35,7 +35,7 @@ func newPageLoad() *pageLoad {
 func probePageReadiness(ctx context.Context, eval func(context.Context, string) (any, error), origin string, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	code := `document.readyState === 'complete' && location.origin === ` + strconv.Quote(origin)
+	code := `document.readyState === 'complete' && location.origin === ` + strconv.Quote(normalizePageOrigin(origin))
 	var lastError error
 	failure := func() error {
 		if errors.Is(ctx.Err(), context.Canceled) {

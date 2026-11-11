@@ -144,7 +144,7 @@ func (w *Window) createWindow() {
 			inset := (height - 14) / 2
 			trafficLights = &mygo.Point{X: inset, Y: inset}
 		}
-		origin := "http://127.0.0.1:" + strconv.Itoa(int(w.port))
+		origin := normalizePageOrigin("http://127.0.0.1:" + strconv.Itoa(int(w.port)))
 		// Leave URL empty: no page may load before all policies and lifecycle
 		// handlers are registered, including permission and download denial.
 		session := mygo.NewEphemeralSession()
@@ -171,7 +171,7 @@ func (w *Window) createWindow() {
 		readerURL := origin + journalReaderPath
 		configurePagePolicy(keeper.Page(), w.port)
 		keeper.Page().OnWillNavigate(func(event *mygo.NavigateEvent) {
-			if event.URL != readerURL {
+			if !journalReaderAllows(origin, event.URL) {
 				event.PreventDefault()
 			}
 		})

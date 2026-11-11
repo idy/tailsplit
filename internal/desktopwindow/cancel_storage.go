@@ -19,6 +19,11 @@ import (
 const journalReaderPath = "/native-recovery.html"
 const journalReaderTimeout = 2 * time.Second
 
+func journalReaderAllows(origin, raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && sameCancellationOrigin(parsed, origin) && parsed.Path == journalReaderPath && parsed.EscapedPath() == journalReaderPath && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == "" && !strings.Contains(raw, "#")
+}
+
 var errJournalReaderNotReady = errors.New("native recovery store is not ready")
 var errJournalEntryChanged = errors.New("native recovery entry changed before acknowledgment")
 
@@ -47,7 +52,7 @@ type journalStorageResult struct {
 func newJournalStorageReader(scope, origin string, eval func(context.Context, string) (any, error)) *journalStorage {
 	prefix := cancelJournalPrefix + scope + "-"
 	probeName, probeValue := prefix+"probe-"+rand.Text(), rand.Text()
-	guard := `location.origin === ` + strconv.Quote(origin) + ` && location.pathname === ` + strconv.Quote(journalReaderPath) +
+	guard := `location.origin === ` + strconv.Quote(normalizePageOrigin(origin)) + ` && location.pathname === ` + strconv.Quote(journalReaderPath) +
 		` && document.readyState === 'complete' && document.querySelector('meta[name="tailsplit-native-recovery"]')?.content === '1'`
 	call := func(ctx context.Context, body string) (journalStorageResult, error) {
 		ctx, stop := context.WithTimeout(ctx, journalReaderTimeout)

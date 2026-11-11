@@ -27,6 +27,8 @@ func TestCanceledOperationRejectsAdmissionBeforeItsFirstAction(t *testing.T) {
 		"revision connect": func() error { return op.StartRevision(revision) },
 		"login":            op.StartLogin,
 		"focused login":    func() error { return op.StartExitLogin("office") },
+		"logout":           op.Logout,
+		"focused logout":   func() error { return op.LogoutExit("office") },
 		"discovery":        op.RefreshExitNodes,
 		"add":              func() error { return op.AddExit("office", revision) },
 		"prepare": func() error {
@@ -324,6 +326,9 @@ func TestCancelDuringReconfigureUpdateCannotRestartCapturedOwner(t *testing.T) {
 			if got := c.Snapshot(); got.Active || got.OperationID != "connection" {
 				t.Fatal("save lost captured owner", got)
 			}
+			// A blocked admitted update must keep cancellation pending. Release it
+			// only after the bounded wait reports that cleanup is still underway.
+			c.stopWait = 20 * time.Millisecond
 			var err error
 			if legacyStop {
 				err = c.Stop()
@@ -331,14 +336,17 @@ func TestCancelDuringReconfigureUpdateCannotRestartCapturedOwner(t *testing.T) {
 				err = c.CancelOperation("connection")
 			}
 			close(release)
-			if err != nil {
-				t.Fatal(err)
+			if err == nil {
+				t.Fatal("cancellation completed before the admitted update")
 			}
 			if err := <-result; !errors.Is(err, ErrOperationCanceled) {
 				t.Fatal("save restart ignored cancellation", err)
 			}
 			if c.Snapshot().Active {
 				t.Fatal("save restarted canceled connection", c.Snapshot())
+			}
+			if err := c.CancelOperation("connection"); err != nil {
+				t.Fatal("completed update left cancellation pending", err)
 			}
 			if err := c.ForOperation("new-connection").Start(); err != nil {
 				t.Fatal(err)

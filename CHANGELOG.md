@@ -10,14 +10,17 @@
   and saving. Report required actions instead of leaving the switch unresponsive.
 - Back up invalid configuration before narrow automatic repair or an explicit
   rebuild. Preserve unsaved drafts and report concurrent edits as conflicts.
+  Create private backups without inheriting public macOS ACL grants.
 - Keep cancellation bound to its exact setup or connection across native-window
   reloads and renderer failures. Retain committed requests until completion,
   preserve protected HTTP fallback, and keep established Global sessions running
-  when no explicit cancellation was requested.
+  when no explicit cancellation was requested. Reject delayed logout or settings
+  changes after cancellation and wait for already admitted changes to finish.
 - Preserve native startup from symlinked or read-only configuration, including
   the default config directory. Keep captured YAML bytes, size limits, relative
   paths and revisions intact; reclaim orphaned snapshots from independent private
   user-cache storage with parent-path, ACL and lifetime-lock checks.
+- Keep native recovery working when the panel uses the default HTTP port 80.
 - Include the macOS titlebar traffic-light alignment fix from the latest main.
 
 ## 0.9.2
