@@ -3,6 +3,7 @@ package tray
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -74,6 +75,43 @@ func TestBrowserLaunchUsesTheFreshInstanceAndDoesNotExposeTheLinkInErrors(t *tes
 			return nil
 		}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBrowserURLRefreshPreservesRetryResultAndWaitsForValidSnapshot(t *testing.T) {
+	const oldURL = "https://login.tailscale.com/a/old"
+	err := openLoginPage(context.Background(), oldURL, "", func(context.Context, string, ...string) error { return errors.Join(ErrLoginURLChanged) })
+	if !errors.Is(err, ErrLoginURLChanged) || errors.Is(err, ErrOperationCanceled) {
+		t.Fatal("browser wrapper hid retryable URL refresh", err)
+	}
+	var flow LoginFlow
+	flow.RequestOperation("intent", "owner")
+	flow.NextBrowserRequest(Snapshot{OperationID: "owner", BackendState: "NeedsLogin", LoginURL: oldURL})
+	flow.Complete(err)
+	if flow.NextBrowserRequest(Snapshot{OperationID: "owner", BackendState: "NeedsLogin"}).URL != "" || flow.Opening() {
+		t.Fatal("refresh launched before its replacement URL was valid")
+	}
+	latest := flow.NextBrowserRequest(Snapshot{OperationID: "owner", BackendState: "NeedsLogin", LoginURL: "https://login.tailscale.com/a/new"})
+	if latest.URL != "https://login.tailscale.com/a/new" || latest.OperationID != "intent" || latest.OwnerID != "owner" {
+		t.Fatal("refresh lost pending browser identity", latest)
+	}
+}
+
+func TestExpectedLoginURLRefreshDoesNotRecordBrowserFailure(t *testing.T) {
+	c := preparationController(t)
+	before, err := os.ReadFile(c.options.LogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.RecordLoginBrowserResult(errors.Join(ErrLoginURLChanged))
+	after, err := os.ReadFile(c.options.LogPath)
+	if err != nil || string(after) != string(before) {
+		t.Fatal("expected URL refresh was recorded as browser success/failure", err, string(after))
+	}
+	c.RecordLoginBrowserResult(errors.New("fixture browser failure"))
+	after, err = os.ReadFile(c.options.LogPath)
+	if err != nil || !strings.Contains(string(after), "Could not open the Tailscale login browser") {
+		t.Fatal("ordinary browser failure reporting was suppressed", err, string(after))
 	}
 }
 

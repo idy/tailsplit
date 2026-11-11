@@ -54,11 +54,23 @@ shell installer above. Configuration and device login are retained. In-app updat
 work from 0.7.1 onward; Windows 0.7.0 is unaffected.
 
 Packaged macOS and Windows apps check the stable GitHub Release ten seconds after
-startup and every six hours while running. Choose **Check for updates…** in the
+startup and every five minutes while running. Choose **Check for updates…** in the
 tray menu (under **Settings and Tools** on macOS), or open **Settings → About & updates** in the configuration panel. The title-row update button shows
 download percentage and installation state without adding a second row. The panel's App Updates settings show the installed
 version, release notes, last check and errors. Development builds skip
 automatic checks; prereleases and older versions are never offered.
+
+After validating release metadata once, automatic checks inspect GitHub's public
+latest-release redirect every five minutes and reuse cached metadata when the tag
+is unchanged. Only a changed tag or a manual check revalidates the API metadata,
+using its ETag when available. This avoids spending the shared unauthenticated API
+quota on routine probes. Checks honor server retry/reset deadlines and back off
+on rate limits; cached offers remain visible. Invalid release metadata, such as a
+release whose assets are still publishing, is retried at most every 15 minutes
+for the same tag while five-minute public probes continue. New tags retry
+immediately; a manual check bypasses this local validation delay. Cache and
+backoff are process-local, and same-tag release-note edits appear after a manual
+check or app restart.
 
 `app.check_for_updates` defaults to `true` when omitted. The menu and panel can
 change it immediately without reconnecting the proxy. Checks only discover new
@@ -82,17 +94,34 @@ bundle on the destination filesystem, then disconnects, replaces and relaunches
 the app. A signed installation requires the same signing team. Non-writable app
 directories request administrator authorization before shutdown. Failed activation
 or launch handoff restores the previous bundle. Configuration and saved device
-identity are retained; the restarted app stays disconnected. On startup, macOS
-checks an already installed network service before restoring device status. A
+identity are retained. In-app updates restore the connection switch at shutdown:
+active traffic sessions reconnect; disconnected, discovery-only and sign-in-only
+sessions stay disconnected. All active Global sessions refuse installation while
+retaining their current protection: explicitly disconnect before updating, then
+reconnect manually afterward. This also protects against an exit going offline
+during replacement; the desktop cannot keep its TUN across process replacement.
+Split reconnection is bound to the active configuration revision and the helper's
+actually compiled rule projection, including local files and cached subscriptions. An external edit before shutdown stops the update;
+an edit during replacement prevents automatic reconnection until you review the
+saved configuration. An acknowledged disconnect during cleanup also cancels
+reconnection. This one-time restart choice does not change `app.connect_on_start`.
+The same choice is used when macOS relaunches the previous bundle after a failed
+activation. Manual Windows installations still open disconnected. Older updaters
+that always pass `--no-connect` need one manual reconnect after updating to a
+version with connection-state recovery. On startup, macOS checks an already
+installed network service before restoring device status. A
 matching live service is reused; an outdated or unreachable installed service
 opens the bundled Installer at restart, including after a `--no-connect` update
 relaunch. While preparation waits, its authorization state and Cancel connection
 control remain visible; canceling releases the operation gate for offline edits
 and a repair retry. Automatic connection uses the helper's existing readiness
 check instead of repeating the parent's checksum and probe. macOS administrator
-approval remains required. First installation is
-still requested only by an explicit connection; unbundled development binaries
-do not start service installation.
+approval remains required. Explicit Connect, Sign in and Add exit requests also
+check that the service matches the app, opening the bundled Installer if it is
+missing, outdated or unreachable before continuing the requested action. This
+lets a fresh installation authorize its first device before choosing a traffic
+gateway. Background discovery, Ping and logout never open Installer. Unbundled
+development binaries cannot install a service without its package.
 
 ## Windows desktop
 
@@ -204,9 +233,12 @@ Open `TailSplit.app` normally. A fresh installation starts in the menu bar with
 no devices or gateway, so it stays idle until setup. Use Add exit, authorize the
 device and choose its node and default gateway. New configurations enable
 auto-connect for subsequent launches once a gateway is configured; the icon
-turns green while connected. Review your routing settings before connecting. The first connection opens
-the bundled installer for the privileged network service; an administrator
-approves it once. Both connection modes use that service for TUN DNS.
+turns green while connected. Review your routing settings before connecting. The
+first Add exit, Sign in or connection opens the bundled installer if the
+privileged network service is missing or does not match this app; complete its
+administrator approval to continue the original action. The panel distinguishes
+this wait from Tailscale browser authorization. Both connection modes use that
+service for TUN DNS.
 
 - **Application proxy:** applications opt into local HTTP/SOCKS listeners. A
   narrow DNS TUN route is created; the system proxy and default traffic route
@@ -457,6 +489,19 @@ compatibility targets `make build-mygo` and `make run-mygo` call the production
 build and launch targets; desktop tests run with the root `make test` target.
 Windows uses different desktop flags and helper names; use the
 [Windows release build](#windows-desktop) to assemble its installer and prerequisites.
+
+To verify the tray popup over another app's full-screen Space on a logged-in
+macOS desktop, use a fresh output directory after building both binaries:
+
+```sh
+swift scripts/verify-tray-fullscreen.swift bin/tailsplit-tray bin/tailsplit bin/fullscreen-proof
+```
+
+The fixture temporarily opens its own full-screen window, launches an isolated,
+disconnected TailSplit, and checks native visibility, keyboard focus, foreground-app
+preservation, reopening and dismissal. It saves a popup screenshot and JSON report,
+then closes both test processes without touching the installed app or its configuration.
+Physical menu-bar hit testing and network actions are not part of this proof.
 
 The core uses the `with_gvisor` build tag; the Makefile supplies it. `make app`
 creates a local ad-hoc app, ZIP, DMG, checksums and verification receipt. Linux

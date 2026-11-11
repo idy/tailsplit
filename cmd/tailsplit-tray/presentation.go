@@ -19,6 +19,17 @@ func connectionPresentationForLanguage(snapshot tray.Snapshot, language string) 
 // sign-in while a different device carries traffic, so its backend state must
 // not override the controller's connection state or connect/disconnect action.
 func connectionPresentation(snapshot tray.Snapshot) connectionView {
+	backend := snapshot.BackendState
+	if owner := snapshot.LoginExitID(); owner != tailsplit.MainExit {
+		backend = snapshot.Exits[owner].BackendState
+	}
+	if backend == "NeedsMachineAuth" && snapshot.State != "failed" && snapshot.State != "stopping" &&
+		(!snapshot.Active || snapshot.Mode == "login" || snapshot.Mode == "discovery") {
+		if snapshot.Active {
+			return connectionView{"等待管理员批准设备", "取消登录"}
+		}
+		return connectionView{"等待管理员批准设备", "连接"}
+	}
 	if !snapshot.Active {
 		if snapshot.State == "failed" {
 			return connectionView{"连接失败，查看日志", "连接"}

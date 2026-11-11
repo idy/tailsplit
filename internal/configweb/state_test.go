@@ -33,7 +33,7 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 			server.options.Snapshot = func() tray.Snapshot {
 				return tray.Snapshot{
 					State: "running", Active: true, Mode: "tun", RoutingMode: "global",
-					BackendState: "Running", Hostname: "preview-laptop",
+					BackendState: "Running", Hostname: "preview-laptop", ActiveRevision: revision, OperationID: "live-operation",
 					ExitNode: "preview-exit", NetworkName: "preview-tailnet.example",
 					LoginURL:  "https://login.tailscale.com/a/" + authKey,
 					ExitNodes: []tailsplit.ExitNode{{ID: "100.64.0.10", Name: "preview-exit", Online: true, Selected: true}},
@@ -54,12 +54,12 @@ func TestStateExposesOnlySafeConnectionMetadata(t *testing.T) {
 				"state": "running", "active": true, "mode": "tun", "routing_mode": "global",
 				"backend_state": "Running", "hostname": "preview-laptop", "phase": "",
 				"exit": "preview-exit", "network": "preview-tailnet.example", "magic_dns_suffix": "",
-				"error": "", "revision": revision, "preview": false,
+				"error": "", "error_code": "", "added_exit": "", "added_revision": "", "connect_request": "", "revision": revision, "active_revision": revision, "operation_id": "live-operation", "preview": false,
 				"desktop": false, "startup": false, "logs_available": logsAvailable, "ping_available": false,
 				"exit_nodes": []any{map[string]any{
 					"id": "100.64.0.10", "name": "preview-exit", "online": true, "selected": true,
 				}},
-				"exits": map[string]any{}, "focus": "", "traffic_exit": "",
+				"exits": map[string]any{}, "focus": "", "traffic_exit": "", "traffic": nil,
 				"open_panel_available": false, "quit_available": false,
 			}
 			if !reflect.DeepEqual(state, want) {

@@ -63,6 +63,15 @@ func (c *desktopLoginFixture) Stop() error {
 	return nil
 }
 
+func TestDesktopCanceledLoginPreservesOperationRejection(t *testing.T) {
+	var flow tray.LoginFlow
+	flow.Request()
+	err := finishDesktopExitLogin(&flow, tray.ErrOperationCanceled)
+	if !errors.Is(err, tray.ErrOperationCanceled) || flow.ShowMessage() || flow.Next(tray.Snapshot{LoginURL: "https://login.tailscale.com/a/canceled"}) != "" {
+		t.Fatal("canceled native login lost its guarded error or browser revocation", err, flow.Message())
+	}
+}
+
 func TestRequiredExitLoginHelperProcess(t *testing.T) {
 	if os.Getenv("TAILSPLIT_REQUIRED_LOGIN_HELPER") != "1" {
 		return

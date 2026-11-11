@@ -48,7 +48,9 @@ func TestNewLoginEventsUseFreshAuthenticationAndOrdinaryLoginMode(t *testing.T) 
 	config := tailsplit.Config{StateDir: filepath.Join(t.TempDir(), "untouched"), Focus: tailsplit.MainExit, Tailscale: &tailsplit.TailscaleConfig{}}
 	// This scope is legal for ordinary saved login but forbidden for a fresh
 	// addition. The fresh wrapper must reject it before constructing any engine.
-	err := runNewLoginEvents(t.Context(), config, &eventStream{encoder: json.NewEncoder(&out)})
+	stream := newEventStream(t.Context(), &out, false)
+	defer stream.close()
+	err := runNewLoginEvents(t.Context(), config, stream)
 	if err == nil || !strings.Contains(err.Error(), "configured additional exit") || strings.Contains(out.String(), `"event":"authenticated"`) {
 		t.Fatal("new login used ordinary saved authentication", out.String(), err)
 	}
@@ -61,12 +63,15 @@ func TestNewLoginEventsUseFreshAuthenticationAndOrdinaryLoginMode(t *testing.T) 
 		config.Focus = "new-exit"
 		config.Exits = []tailsplit.ExitConfig{{ID: "new-exit"}}
 		config.TUN.Enabled = true
-		err := runLoginEventsWith(context.Background(), config, &eventStream{encoder: json.NewEncoder(&out)},
-			func(_ context.Context, received tailsplit.Config, report func(tailsplit.Status), _ singlog.PlatformWriter) error {
+		stream := newEventStream(t.Context(), &out, true)
+		defer stream.close()
+		err := runLoginEventsWith(t.Context(), config, stream,
+			func(_ context.Context, received tailsplit.Config, report func(tailsplit.Status), log singlog.PlatformWriter) error {
 				if received.TUN.Enabled || received.Focus != "new-exit" || len(received.Exits) != 1 {
 					t.Error("authentication changed its target or enabled traffic")
 				}
 				report(tailsplit.Status{Event: "status", Exit: "new-exit", BackendState: "Running"})
+				log.WriteMessage(singlog.LevelInfo, "authentication fixture")
 				if fail {
 					return fixtureErr
 				}
@@ -76,6 +81,7 @@ func TestNewLoginEventsUseFreshAuthenticationAndOrdinaryLoginMode(t *testing.T) 
 			t.Fatal("authentication result was lost", err)
 		}
 		decoder := json.NewDecoder(&out)
+		var events []string
 		authenticated := false
 		for {
 			var event map[string]any
@@ -84,6 +90,7 @@ func TestNewLoginEventsUseFreshAuthenticationAndOrdinaryLoginMode(t *testing.T) 
 			} else if err != nil {
 				t.Fatal(err)
 			}
+			events = append(events, event["event"].(string))
 			if event["mode"] != nil && event["mode"] != "login" {
 				t.Fatal("internal fresh-login operation leaked into public login mode", event)
 			}
@@ -93,6 +100,13 @@ func TestNewLoginEventsUseFreshAuthenticationAndOrdinaryLoginMode(t *testing.T) 
 		}
 		if authenticated == fail {
 			t.Fatal("terminal authentication did not match the completed operation", fail)
+		}
+		want := "preflight,status,log,authenticated"
+		if fail {
+			want = "preflight,status,log,error"
+		}
+		if got := strings.Join(events, ","); got != want {
+			t.Fatal("login events were dropped or reordered:", got)
 		}
 	}
 }

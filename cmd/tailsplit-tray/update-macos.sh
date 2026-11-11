@@ -13,14 +13,19 @@ expected_version=$8
 stage=
 previous=0
 activated=0
+connection_arg=--no-connect
+connection_revision=
 
 launch_app() {
     app=$1
     shift
+    if [ -n "$connection_revision" ]; then
+        set -- --update-revision "$connection_revision" "$@"
+    fi
     if [ "$(/usr/bin/id -u)" -eq 0 ]; then
-        /bin/launchctl asuser "$user_id" /usr/bin/sudo -u "#$user_id" /usr/bin/open -n "$app" --args --config "$config" --log "$log" --no-connect "$@"
+        /bin/launchctl asuser "$user_id" /usr/bin/sudo -u "#$user_id" /usr/bin/open -n "$app" --args --config "$config" --log "$log" "$connection_arg" "$@"
     else
-        /usr/bin/open -n "$app" --args --config "$config" --log "$log" --no-connect "$@"
+        /usr/bin/open -n "$app" --args --config "$config" --log "$log" "$connection_arg" "$@"
     fi
 }
 
@@ -62,6 +67,16 @@ while /bin/kill -0 "$parent_pid" 2>/dev/null; do
     /bin/sleep 1
 done
 [ -f "$work/proceed" ] || exit 1
+choice=$(/bin/cat "$work/proceed")
+case "$choice" in
+    --no-connect) connection_arg=--no-connect ;;
+    *[!0-9a-f]*|'') exit 1 ;;
+    *)
+        [ "${#choice}" -eq 64 ] || exit 1
+        connection_revision=$choice
+        connection_arg=--start
+        ;;
+esac
 [ -d "$target" ] && [ ! -L "$target" ]
 /bin/mv "$target" "$stage/previous.app"
 previous=1

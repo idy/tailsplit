@@ -3,6 +3,8 @@ package tray
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -39,14 +42,27 @@ type Snapshot struct {
 	RoutingMode    string
 	// TrafficExit is the logical device selected by the current helper, which
 	// can differ from configuration saved since that helper started.
-	TrafficExit   string
-	Phase         string
-	BackendState  string
-	Error         string
-	Hostname      string
-	ExitNodes     []tailsplit.ExitNode
-	Active        bool
-	PingAvailable bool
+	TrafficExit    string
+	Phase          string
+	BackendState   string
+	Error          string
+	ErrorCode      string
+	AddedExit      string
+	AddedRevision  string
+	ConnectRequest string
+	// OperationID is the immutable identity of the logical setup/connection owner.
+	OperationID string
+	// ActiveRevision identifies the exact source document passed to the traffic
+	// helper. It is empty while no traffic helper owns a session.
+	ActiveRevision string
+	// ActiveRulesRevision identifies the domain projection reported by the
+	// traffic helper after its final compile, independently of mutable rule files.
+	ActiveRulesRevision string
+	Hostname            string
+	ExitNodes           []tailsplit.ExitNode
+	Active              bool
+	PingAvailable       bool
+	Traffic             *tailsplit.TrafficSnapshot
 	// Exits holds additional devices' latest status, keyed by exit ID. The
 	// identity fields above always describe the primary device; State, Active,
 	// Mode and RoutingMode describe the overall connection.
@@ -82,6 +98,15 @@ func (s Snapshot) LoginExitID() string {
 
 func (s Snapshot) clone() Snapshot {
 	s.ExitNodes = append([]tailsplit.ExitNode(nil), s.ExitNodes...)
+	if s.Traffic != nil {
+		traffic := *s.Traffic
+		traffic.PrivateExits = slices.Clone(s.Traffic.PrivateExits)
+		traffic.Routes = make(map[string]tailsplit.TrafficCounters, len(s.Traffic.Routes))
+		for id, counters := range s.Traffic.Routes {
+			traffic.Routes[id] = counters
+		}
+		s.Traffic = &traffic
+	}
 	if s.Exits != nil {
 		exits := make(map[string]ExitSnapshot, len(s.Exits))
 		for id, exit := range s.Exits {
@@ -121,6 +146,20 @@ type Controller struct {
 	trafficExit   string // Selected traffic device for this running session.
 	pendingAdd    *pendingExitAddition
 	preparation   *servicePreparation
+	action        *operationAction
+
+	activeRevision      string            // Source document held by the current traffic helper.
+	connectRequest      string            // Unconsumed native intent, independent of status restores.
+	operationID         string            // Logical owner survives helper exit and internal restarts.
+	canceledOperations  map[string]bool   // Lifetime tombstones also cover pre-admission cancellation.
+	requestOperations   map[string]string // Retained native request -> operation binding.
+	nativeOffers        map[string]bool   // Exact pending intents exposed in a live native panel.
+	interruptedRequests map[string]bool
+	revokedRequests     map[string]bool
+	revokedOperations   map[string]bool // Revoked native bindings reject future admission.
+	stopGeneration      uint64
+	stopCompletion      *stopCompletion
+	updateShutdown      *updateShutdown
 }
 
 func New(options Options) (*Controller, error) {
@@ -132,7 +171,7 @@ func New(options Options) (*Controller, error) {
 		return nil, err
 	}
 	controller := &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}
-	if err := cleanupConnectionSnapshots(options.ConfigPath); err != nil {
+	if err := cleanupStartupConnectionSnapshots(options.ConfigPath); err != nil {
 		controller.RecordDesktopEvent("Could not clean orphaned connection snapshots: " + err.Error())
 	}
 	return controller, nil
@@ -144,11 +183,133 @@ func (c *Controller) Snapshot() Snapshot {
 	snapshot := c.snapshot.clone()
 	snapshot.Active = c.command != nil || c.loggingOut || c.preparation != nil
 	snapshot.TrafficExit = c.trafficExit
+	snapshot.ActiveRevision = c.activeRevision
+	snapshot.ConnectRequest = c.connectRequest
+	snapshot.OperationID = c.operationID
 	snapshot.PingAvailable = c.pingAvailableLocked()
 	return snapshot
 }
 
+// RequestConnectionSetup lets a native Connect click enter the same guided
+// path as the window switch. It never starts a helper or changes configuration.
+func (c *Controller) RequestConnectionSetup() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.connectRequest = rand.Text()
+	if c.requestOperations == nil {
+		c.requestOperations = make(map[string]string)
+	}
+	c.requestOperations[c.connectRequest] = c.connectRequest
+}
+
+// ClaimConnectRequest acknowledges one native request before a consumer enters
+// guided setup. Clearing it under the controller lock prevents another tab or
+// WebView from replaying the same intent after setup is canceled or disconnected.
+// A stale acknowledgement must never consume a newer native click.
+func (c *Controller) ClaimConnectRequest(request string) bool {
+	return c.ClaimConnectOperation(request, request)
+}
+
+// Preserve the binding after consumption so a delayed claim cannot rebind a
+// revoked native request to a fresh operation and revive canceled setup.
+func (c *Controller) ClaimConnectOperation(request, operation string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.claimConnectOperationLocked(request, operation)
+}
+
+func (c *Controller) claimConnectOperationLocked(request, operation string) bool {
+	if operation == "" {
+		operation = request
+	}
+	if request == "" || operation == "" || request != c.connectRequest || c.revokedRequests[request] || c.canceledOperations[request] || c.operationAllowedLocked(operation) != nil {
+		return false
+	}
+	if c.requestOperations == nil {
+		c.requestOperations = make(map[string]string)
+	}
+	c.requestOperations[request] = operation
+	c.connectRequest = ""
+	return true
+}
+
+// OfferNativeConnectRequest runs immediately before exposing the interactive
+// native panel. Cold load failures and dead windows never make this offer.
+// Optional predicates run under the controller lock and must only read bounded
+// lifecycle state, so a queued offer cannot survive its renderer's death.
+func (c *Controller) OfferNativeConnectRequest(live ...func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	for _, predicate := range live {
+		if predicate != nil && !predicate() {
+			return
+		}
+	}
+	c.offerNativeConnectRequestLocked(c.connectRequest)
+}
+
+// Observing a native state response may offer only its exact snapshot request;
+// an old response must not reserve a newer click for a failed native window.
+func (c *Controller) ObserveNativeConnectRequest(request string, live ...func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	for _, predicate := range live {
+		if predicate != nil && !predicate() {
+			return
+		}
+	}
+	c.offerNativeConnectRequestLocked(request)
+}
+
+func (c *Controller) offerNativeConnectRequestLocked(request string) {
+	if request == "" || request != c.connectRequest {
+		return
+	}
+	if c.nativeOffers == nil {
+		c.nativeOffers = make(map[string]bool)
+	}
+	c.nativeOffers[request] = true
+}
+
+// An unclaimed request exposed natively cannot silently resume in independent
+// browser storage after both cancellation transports fail. Retire only that
+// pending offer; this never stops a helper or revokes an unrelated supplied ID.
+func (c *Controller) ClaimPanelConnectOperation(request, operation string, native bool) (bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if request != "" && c.interruptedRequests[request] {
+		return false, true
+	}
+	if request == "" || request != c.connectRequest {
+		return false, false
+	}
+	if !native && c.nativeOffers[request] {
+		if c.interruptedRequests == nil {
+			c.interruptedRequests = make(map[string]bool)
+		}
+		if c.revokedRequests == nil {
+			c.revokedRequests = make(map[string]bool)
+		}
+		if c.revokedOperations == nil {
+			c.revokedOperations = make(map[string]bool)
+		}
+		c.interruptedRequests[request], c.revokedRequests[request], c.revokedOperations[request] = true, true, true
+		c.connectRequest = ""
+		return false, true
+	}
+	return c.claimConnectOperationLocked(request, operation), false
+}
+
 func (c *Controller) RecordLoginBrowserResult(err error) {
+	if errors.Is(err, ErrLoginURLChanged) {
+		return
+	}
 	message := "Requested a new default-browser window for Tailscale login.\n"
 	if err != nil {
 		message = "Could not open the Tailscale login browser; use Copy login link.\n"
@@ -177,13 +338,23 @@ func (c *Controller) Start() error {
 }
 
 // StartRevision binds an explicit UI connection to the displayed document. The
-// child reads a private snapshot beside the original (preserving relative paths),
-// so an external edit after dispatch cannot change its gateway or routing mode.
+// child reads a private snapshot preserving the original path base, so an
+// external edit after dispatch cannot change its gateway or routing mode.
 func (c *Controller) StartRevision(expected string) error {
+	return c.startRevision(expected, "")
+}
+
+func (c *Controller) startRevision(expected, operation string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.operationAllowedLocked(operation); err != nil {
+		return err
+	}
 	if c.reconfiguring {
 		return tailsplit.ErrPingBusy
+	}
+	if err := c.checkStartLocked(); err != nil {
+		return err
 	}
 	data, revision, err := ReadConfigDocument(c.options.ConfigPath)
 	if err != nil {
@@ -192,18 +363,36 @@ func (c *Controller) StartRevision(expected string) error {
 	if expected == "" || expected != revision {
 		return ErrConfigChanged
 	}
-	path, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
+	if err := c.startConnectionLocked("proxy", "", data, expected); err != nil {
+		return err
+	}
+	c.ownOperationLocked(operation)
+	return nil
+}
+
+// Every traffic helper receives the exact immutable captured document. A
+// relocated snapshot carries its original path base separately, so neither
+// aliases nor the source byte budget change when its directory is read-only.
+func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expected string, rulesRevision ...string) error {
+	path, base, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
 	if err != nil {
 		return err
 	}
-	if err := CheckConfigRevision(c.options.ConfigPath, expected); err != nil {
+	if expected != "" {
+		if err := CheckConfigRevision(c.options.ConfigPath, expected); err != nil {
+			cleanup()
+			return err
+		}
+	}
+	rules := ""
+	if len(rulesRevision) != 0 {
+		rules = rulesRevision[0]
+	}
+	if err := c.startPreparedConfigLocked(mode, focus, path, base, rules); err != nil {
 		cleanup()
 		return err
 	}
-	if err := c.startConfigLocked("proxy", "", path); err != nil {
-		cleanup()
-		return err
-	}
+	c.activeRevision = fmt.Sprintf("%x", sha256.Sum256(data))
 	done := c.done
 	go func() { <-done; cleanup() }()
 	return nil
@@ -214,7 +403,7 @@ func (c *Controller) StartRevision(expected string) error {
 func (c *Controller) beginReconfigure() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.loggingOut || c.reconfiguring || c.preparation != nil {
+	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || c.preparation != nil {
 		return tailsplit.ErrPingBusy
 	}
 	c.reconfiguring = true
@@ -230,17 +419,22 @@ func (c *Controller) endReconfigure() {
 // Restart is also available after a failed or stopped session. Reconfigure
 // intentionally preserves a disconnected state and cannot implement Retry.
 func (c *Controller) Restart() error {
+	return c.ForOperation("").Restart()
+}
+
+func (o *Operation) Restart() error {
+	c := o.Controller
 	if err := c.beginReconfigure(); err != nil {
 		return err
 	}
 	defer c.endReconfigure()
-	if err := c.Stop(); err != nil {
+	if err := o.Stop(); err != nil {
 		return err
 	}
-	return c.startReconfigured()
+	return c.startReconfigured(o.ID)
 }
 
-// StartLogin authenticates the embedded device without installing a service or
+// StartLogin authenticates the embedded device, preparing its service if needed, without
 // creating a TUN. Connecting the network is a separate, explicit Start action.
 func (c *Controller) StartLogin() error {
 	return c.start("login", tailsplit.MainExit)
@@ -274,23 +468,80 @@ func (c *Controller) Reconfigure(update func() error) error {
 // stopping it. Independent starts cannot change that decision until the update
 // and any internal restart finish. A rejected check leaves the helper untouched.
 func (c *Controller) ReconfigureChecked(check func(Snapshot) error, update func() error) error {
-	if err := c.beginReconfigure(); err != nil {
+	return c.ReconfigureOperation("", check, update)
+}
+
+// A guarded save may inherit an idle setup owner, but cannot take an active
+// connection from another operation. Internal stop/update/restart retains owner.
+func (c *Controller) ReconfigureOperation(operation string, check func(Snapshot) error, update func() error) error {
+	c.mu.Lock()
+	if err := c.operationAllowedLocked(operation); err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	defer c.endReconfigure()
-	before := c.Snapshot()
+	if c.closed || c.stopping || c.loggingOut || c.reconfiguring || c.preparation != nil {
+		c.mu.Unlock()
+		return tailsplit.ErrPingBusy
+	}
+	if operation != "" && operation != c.operationID {
+		if c.command != nil {
+			c.mu.Unlock()
+			return ErrOperationCanceled
+		}
+		c.ownOperationLocked(operation)
+	}
+	// An unguarded idle save after a prior disconnect is a fresh operation.
+	// Its new identity still lets cancellation during this save revoke admission.
+	if operation == "" && (c.operationID == "" || c.operationAllowedLocked(c.operationID) != nil) {
+		c.ownOperationLocked("")
+	}
+	operation = c.operationID
+	c.reconfiguring = true
+	before := c.snapshot.clone()
+	before.Active = c.command != nil || c.loggingOut || c.preparation != nil
+	before.OperationID, before.ActiveRevision = c.operationID, c.activeRevision
+	before.TrafficExit, before.ConnectRequest = c.trafficExit, c.connectRequest
+	before.PingAvailable = c.pingAvailableLocked()
+	c.mu.Unlock()
+	var action *operationAction
+	defer func() {
+		c.mu.Lock()
+		c.reconfiguring = false
+		c.finishOperationActionLocked(action)
+		c.mu.Unlock()
+	}()
 	if check != nil {
 		if err := check(before); err != nil {
 			return err
 		}
 	}
 	reconnect := before.Active && (before.Mode == "tun" || before.Mode == "proxy")
-	if err := c.Stop(); err != nil {
+	c.mu.Lock()
+	if operation != c.operationID || c.operationAllowedLocked(operation) != nil {
+		c.mu.Unlock()
+		return ErrOperationCanceled
+	}
+	stop := c.captureStopLocked()
+	c.mu.Unlock()
+	if err := c.waitStopped(stop); err != nil {
 		return err
 	}
-	err := update()
+	c.mu.Lock()
+	action, err := c.admitOperationActionLocked(operation)
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	err = update()
 	if reconnect {
-		err = errors.Join(err, c.startReconfigured())
+		err = errors.Join(err, c.startReconfigured(operation))
+	} else {
+		c.mu.Lock()
+		err = errors.Join(err, c.operationAllowedLocked(operation))
+		if err == nil && c.operationID == operation && c.command == nil && (c.snapshot.State == "failed" || c.snapshot.State == "stopped" && c.snapshot.Error != "") {
+			c.reset(Snapshot{State: "stopped"})
+		}
+		c.mu.Unlock()
 	}
 	return err
 }
@@ -305,22 +556,49 @@ func (c *Controller) start(mode, focus string) error {
 }
 
 // Only the owner of the reconfiguration gate may bypass the public-start guard.
-func (c *Controller) startReconfigured() error {
+func (c *Controller) startReconfigured(operation string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.startLocked("proxy", "")
+	if c.operationID != operation {
+		return ErrOperationCanceled
+	}
+	if err := c.operationAllowedLocked(operation); err != nil {
+		return err
+	}
+	return c.startOperationLocked("proxy", "", operation)
 }
 
 func (c *Controller) startLocked(mode, focus string) error {
-	return c.startConfigLocked(mode, focus, c.options.ConfigPath)
+	return c.startOperationLocked(mode, focus, "")
 }
 
-func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
-	freshLogin := mode == "login-new"
-	if freshLogin {
-		mode = "login"
+func (c *Controller) startOperationLocked(mode, focus, operation string) error {
+	if err := c.operationAllowedLocked(operation); err != nil {
+		return err
 	}
-	if c.preparation != nil {
+	if err := c.checkStartLocked(); err != nil {
+		return err
+	}
+	var err error
+	if mode == "proxy" || mode == "tun" {
+		var data []byte
+		data, _, err = readStartupConfigDocument(c.options.ConfigPath)
+		if err == nil {
+			err = c.startConnectionLocked(mode, focus, data, "")
+		}
+	} else {
+		err = c.startConfigLocked(mode, focus, c.options.ConfigPath)
+	}
+	if err == nil {
+		c.ownOperationLocked(operation)
+	}
+	return err
+}
+
+// Check the operation gates before touching configuration. A busy helper or
+// scoped Ping retains ownership even if its saved document is missing/changed.
+func (c *Controller) checkStartLocked() error {
+	if c.preparation != nil || c.stopping {
 		return tailsplit.ErrPingBusy
 	}
 	if c.closed {
@@ -335,11 +613,39 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	if c.loggingOut {
 		return errors.New("embedded Tailscale logout is in progress")
 	}
+	return nil
+}
+
+func (c *Controller) startConfigLocked(mode, focus, configPath string, configBase ...string) error {
+	base := ""
+	if len(configBase) != 0 {
+		base = configBase[0]
+	}
+	return c.startPreparedConfigLocked(mode, focus, configPath, base, "")
+}
+
+func (c *Controller) startPreparedConfigLocked(mode, focus, configPath, configBase, rulesRevision string) error {
+	freshLogin := mode == "login-new"
+	if freshLogin {
+		mode = "login"
+	}
+	if err := c.checkStartLocked(); err != nil {
+		return err
+	}
 	runCommand := "run"
 	routingMode := tailsplit.RoutingSplit
 	trafficExit := tailsplit.MainExit
 	if mode == "discovery" {
 		runCommand = "discover"
+	}
+	var data []byte
+	var revision string
+	if len(c.options.HelperArgs) == 0 || mode == "proxy" || mode == "tun" {
+		var err error
+		data, revision, err = readStartupConfigDocument(configPath)
+		if err != nil {
+			return err
+		}
 	}
 	if len(c.options.HelperArgs) == 0 {
 		if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
@@ -349,10 +655,6 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 			} else if mode == "discovery" {
 				runCommand = "app-discover"
 			}
-		}
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return err
 		}
 		var config struct {
 			TUN struct {
@@ -392,11 +694,17 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), runCommand, "--events",
 		"--parent-pid", fmt.Sprint(os.Getpid()), "-c", configPath)
+	if configBase != "" {
+		args = append(args, "--config-base", configBase)
+	}
+	if rulesRevision != "" {
+		args = append(args, "--rules-revision", rulesRevision)
+	}
 	if focus != "" {
 		args = append(args, "--exit", focus)
 	}
 	command := exec.Command(c.options.Helper, args...)
-	command.Dir = filepath.Dir(configPath)
+	command.Dir = filepath.Dir(c.options.ConfigPath)
 	command.Env = append(os.Environ(), c.options.ExtraEnv...)
 	command.Stderr = c.log
 	command.Stdout = &eventWriter{callback: c.onEvent}
@@ -414,9 +722,15 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	}
 	c.snapshot.State, c.snapshot.Mode = "starting", mode
 	c.snapshot.Focus = focus
+	c.snapshot.Traffic = nil
 	c.snapshot.RoutingMode = routingMode
 	c.trafficExit = trafficExit
-	c.snapshot.Error, c.snapshot.LoginURL = "", ""
+	c.activeRevision = ""
+	c.snapshot.ActiveRulesRevision = ""
+	if mode == "proxy" || mode == "tun" {
+		c.activeRevision = revision
+	}
+	c.snapshot.Error, c.snapshot.ErrorCode, c.snapshot.LoginURL = "", "", ""
 	if mode == "proxy" || mode == "tun" || mode == "discovery" {
 		// A new traffic/discovery helper must observe every device afresh. An
 		// optional endpoint can be omitted without ever producing SDK status.
@@ -441,6 +755,9 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 		if c.command == command {
 			c.finishPendingAddLocked(err)
 			c.command, c.input = nil, nil
+			c.activeRevision = ""
+			c.snapshot.ActiveRulesRevision = ""
+			c.snapshot.Traffic = nil
 			if !c.stopping && c.snapshot.State == "failed" {
 				// Preserve an actionable error delivered by the elevated core.
 			} else if !c.stopping && err == nil && (c.snapshot.State == "authenticated" ||
@@ -455,7 +772,6 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 				c.snapshot.State, c.snapshot.Mode, c.snapshot.LoginURL = "stopped", "", ""
 			}
 			c.snapshot.Focus = ""
-			c.stopping = false
 		}
 		close(done)
 		c.mu.Unlock()
@@ -485,57 +801,10 @@ func (c *Controller) invalidateDeviceStatuses(routingMode, trafficExit string, t
 
 func (c *Controller) Stop() error {
 	c.mu.Lock()
-	c.stopping = true
-	if c.pingCancel != nil {
-		c.pingCancel()
-	}
-	pingDone := c.pingDone
-	var preparationDone <-chan struct{}
-	if c.preparation != nil {
-		c.preparation.cancel()
-		preparationDone = c.preparation.done
-		c.snapshot.State = "stopping"
-	}
-	command, done, input := c.command, c.done, c.input
-	if command != nil {
-		c.snapshot.State = "stopping"
-	}
+	c.markCanceledLocked(c.operationID)
+	stop := c.captureStopLocked()
 	c.mu.Unlock()
-	// Stop the network session even when a failed Ping is still recovering its
-	// channel. Waiting for Ping first can prevent the active engine from closing.
-	if command != nil {
-		if err := requestProcessStop(command, input); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return err
-		}
-	}
-	timer := time.NewTimer(c.stopWait)
-	defer timer.Stop()
-	for done != nil || pingDone != nil || preparationDone != nil {
-		select {
-		case <-done:
-			done = nil
-		case <-pingDone:
-			pingDone = nil
-		case <-preparationDone:
-			preparationDone = nil
-		case <-timer.C:
-			// The helper owns the saved-state lease until service cleanup is
-			// confirmed. Killing it here would release that lease too early.
-			c.mu.Lock()
-			if c.command == nil {
-				c.stopping = false
-			}
-			c.mu.Unlock()
-			if pingDone != nil {
-				return tailsplit.ErrPingBusy
-			}
-			return errors.New("network service cleanup is still in progress")
-		}
-	}
-	c.mu.Lock()
-	c.stopping = false
-	c.mu.Unlock()
-	return nil
+	return c.waitStopped(stop)
 }
 
 func (c *Controller) Logout() error {
@@ -544,6 +813,10 @@ func (c *Controller) Logout() error {
 
 // LogoutExit signs out one device. Other devices keep their logins.
 func (c *Controller) LogoutExit(id string) error {
+	return c.ForOperation("").LogoutExit(id)
+}
+
+func (c *Controller) logoutExit(id string, operation *Operation) error {
 	focus := id
 	if focus == "" {
 		focus = tailsplit.MainExit
@@ -552,21 +825,32 @@ func (c *Controller) LogoutExit(id string) error {
 		id = ""
 	}
 	c.mu.Lock()
-	if c.closed || c.loggingOut {
+	if err := c.operationAllowedLocked(operation.ID); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if c.closed || c.loggingOut || c.action != nil {
 		c.mu.Unlock()
 		return errors.New("the app is closing or logout is already in progress")
 	}
 	c.loggingOut = true
 	c.mu.Unlock()
+	var action *operationAction
 	defer func() {
 		c.mu.Lock()
 		c.loggingOut = false
+		c.finishOperationActionLocked(action)
 		c.mu.Unlock()
 	}()
-	if err := c.Stop(); err != nil {
+	if err := operation.Stop(); err != nil {
 		return err
 	}
 	c.mu.Lock()
+	action, err := c.admitOperationActionLocked(operation.ID)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	previous := c.snapshot
 	if id == "" {
 		c.reset(Snapshot{State: "logging-out"})
@@ -601,10 +885,10 @@ func (c *Controller) LogoutExit(id string) error {
 		previous.Exits = c.snapshot.Exits
 		c.snapshot = previous
 		c.setExit(id, ExitSnapshot{BackendState: "NeedsLogin"})
-		return nil
+	} else {
+		c.reset(Snapshot{State: "stopped", BackendState: "NeedsLogin"})
 	}
-	c.reset(Snapshot{State: "stopped", BackendState: "NeedsLogin"})
-	return nil
+	return c.operationAllowedLocked(operation.ID)
 }
 
 // RemoveExit performs a local device logout and revision-checked config
@@ -635,17 +919,7 @@ func (c *Controller) removeExit(id, revision string, logout func(string) error) 
 // SwitchNetwork leaves the proxy disconnected and requests a fresh interactive
 // device authorization. Desktop callers serialize it with other user actions.
 func (c *Controller) SwitchNetwork() error {
-	save, err := prepareNetworkSwitch(c.options.ConfigPath)
-	if err != nil {
-		return err
-	}
-	if err := c.Logout(); err != nil {
-		return err
-	}
-	if err := save(); err != nil {
-		return err
-	}
-	return c.StartLogin()
+	return c.ForOperation("").SwitchNetwork()
 }
 
 func (c *Controller) Close() error {
@@ -661,22 +935,25 @@ func (c *Controller) Close() error {
 
 func (c *Controller) onEvent(data []byte) {
 	var event struct {
-		Event          string               `json:"event"`
-		BackendState   string               `json:"backend_state"`
-		AuthURL        string               `json:"auth_url"`
-		ExitNode       string               `json:"exit_node"`
-		ExitOnline     bool                 `json:"exit_online"`
-		ExitVisible    bool                 `json:"exit_visible"`
-		NetworkName    string               `json:"network_name"`
-		MagicDNSSuffix string               `json:"magic_dns_suffix"`
-		Mode           string               `json:"mode"`
-		RoutingMode    string               `json:"routing_mode"`
-		Message        string               `json:"message"`
-		Phase          string               `json:"phase"`
-		Hostname       string               `json:"hostname"`
-		ExitNodes      []tailsplit.ExitNode `json:"exit_nodes"`
-		PingAvailable  bool                 `json:"ping_available"`
-		Exit           string               `json:"exit"`
+		Event          string                     `json:"event"`
+		BackendState   string                     `json:"backend_state"`
+		AuthURL        string                     `json:"auth_url"`
+		ExitNode       string                     `json:"exit_node"`
+		ExitOnline     bool                       `json:"exit_online"`
+		ExitVisible    bool                       `json:"exit_visible"`
+		NetworkName    string                     `json:"network_name"`
+		MagicDNSSuffix string                     `json:"magic_dns_suffix"`
+		Mode           string                     `json:"mode"`
+		RoutingMode    string                     `json:"routing_mode"`
+		RulesRevision  string                     `json:"rules_revision"`
+		Message        string                     `json:"message"`
+		Code           string                     `json:"code"`
+		Phase          string                     `json:"phase"`
+		Hostname       string                     `json:"hostname"`
+		ExitNodes      []tailsplit.ExitNode       `json:"exit_nodes"`
+		PingAvailable  bool                       `json:"ping_available"`
+		Exit           string                     `json:"exit"`
+		Traffic        *tailsplit.TrafficSnapshot `json:"traffic"`
 	}
 	if json.Unmarshal(data, &event) != nil {
 		return
@@ -690,6 +967,13 @@ func (c *Controller) onEvent(data []byte) {
 	if c.command == nil || c.stopping || c.snapshot.State == "failed" {
 		// A preflight error ends this session. Late status or ready events during
 		// cleanup must not replace its actionable error before the helper exits.
+		return
+	}
+	if event.Event == "traffic" {
+		if (c.snapshot.Mode == "proxy" || c.snapshot.Mode == "tun") && event.Traffic != nil &&
+			event.Traffic.SessionID != "" && !event.Traffic.SampledAt.IsZero() && event.Traffic.Routes != nil {
+			c.snapshot.Traffic = event.Traffic
+		}
 		return
 	}
 	if event.Mode != "" {
@@ -735,10 +1019,14 @@ func (c *Controller) onEvent(data []byte) {
 		c.snapshot.State = "failed"
 		c.snapshot.LoginURL = ""
 		c.snapshot.Error = RedactLog(event.Message)
+		c.snapshot.ErrorCode = event.Code
 		_, _ = io.WriteString(c.log, c.snapshot.Error+"\n")
 		return
 	}
 	if event.Event == "ready" {
+		if c.snapshot.Mode == "proxy" || c.snapshot.Mode == "tun" {
+			c.snapshot.ActiveRulesRevision = event.RulesRevision
+		}
 		c.snapshot.State = "connecting"
 		return
 	}

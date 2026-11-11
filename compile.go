@@ -2,6 +2,7 @@ package tailsplit
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,9 +26,15 @@ type Compiled struct {
 	JSON      []byte
 	GFWList   *domainrules.RulesInfo
 	GFWSource string
+	// RulesRevision identifies the actual compiled Proxy/Direct projection,
+	// including bundled supplemental rules, without diagnostics or source bytes.
+	RulesRevision string
 	// runtimeExit binds Global's single endpoint to its saved device metadata.
 	// Empty means normal all-device compilation or an explicit focused session.
 	runtimeExit string
+	// privateExits lists compiled private-name owners by logical device ID.
+	// Blocked owners remain present: their namespaces are reserved and rejected.
+	privateExits []string
 }
 
 // Compile loads local or cached rules, downloading a remote source when its
@@ -161,8 +168,8 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	directDNS := resolver("dns-direct", config.DNS.Direct)
 	servers := []object{directDNS}
 	type tailnetSuffix struct {
-		suffix, server, outbound string
-		blocked                  bool
+		suffix, server, outbound, owner string
+		blocked                         bool
 	}
 	var tailnetSuffixes []tailnetSuffix
 	// MagicDNS and custom domains share longest-suffix precedence in both DNS
@@ -175,7 +182,7 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 			suffix = strings.ToLower(suffix)
 			if !ownedSuffixes[suffix] {
 				ownedSuffixes[suffix] = true
-				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, "dns-tailnet", "tailnet", primaryBlocked})
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, "dns-tailnet", "tailnet", primaryID, primaryBlocked})
 			}
 		}
 		// Custom names keep real answers, including Tailscale Service VIPs.
@@ -186,7 +193,7 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 		for _, suffix := range config.Tailscale.Domains {
 			if !ownedSuffixes[suffix] {
 				ownedSuffixes[suffix] = true
-				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, server, "tailnet", primaryBlocked})
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, server, "tailnet", primaryID, primaryBlocked})
 			}
 		}
 	}
@@ -219,8 +226,19 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 						"accept_default_resolvers": false, "accept_search_domain": false,
 					})
 				}
-				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, tag, ExitTag(exit.ID), blocked})
+				tailnetSuffixes = append(tailnetSuffixes, tailnetSuffix{suffix, tag, ExitTag(exit.ID), exit.ID, blocked})
 			}
+		}
+	}
+	// Capture the same canonicalized, deduplicated ownership used below, before
+	// longest-suffix sorting. Keep a compact, stable list in device policy order,
+	// including blocked owners rather than transferring their names to a duplicate.
+	privateExits := []string{}
+	privateOwners := make(map[string]bool)
+	for _, suffix := range tailnetSuffixes {
+		if !privateOwners[suffix.owner] {
+			privateOwners[suffix.owner] = true
+			privateExits = append(privateExits, suffix.owner)
 		}
 	}
 	slices.SortStableFunc(tailnetSuffixes, func(a, b tailnetSuffix) int {
@@ -508,7 +526,10 @@ func compileWithOptions(ctx context.Context, config Config, options compileOptio
 	if err != nil {
 		return Compiled{}, err
 	}
-	result := Compiled{JSON: append(data, '\n'), GFWSource: source, runtimeExit: runtimeExit}
+	result := Compiled{
+		JSON: append(data, '\n'), GFWSource: source, RulesRevision: rulesProjectionRevision(projection),
+		runtimeExit: runtimeExit, privateExits: privateExits,
+	}
 	if projection != nil {
 		result.GFWList = &projection.Info
 	}
@@ -601,6 +622,49 @@ func domainRules(projection domainrules.DomainProjection) []object {
 		}
 	}
 	return result
+}
+
+// ErrRulesChanged refuses an update restart whose compiled rules differ from
+// the projection used by the previous connection.
+var ErrRulesChanged = errors.New("routing rules changed; connect again to apply the current rules")
+
+// CurrentRulesRevision identifies the rule projection currently available on
+// disk. Remote subscriptions use only RulesCachePath: this never downloads,
+// refreshes or migrates rules. Empty sources and Global mode ignore rule files.
+func CurrentRulesRevision(config Config) (string, error) {
+	base, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if err := config.normalize(base); err != nil {
+		return "", err
+	}
+	source := config.Rules.GFWList
+	if config.Rules.Mode == RoutingGlobal || source == "" {
+		return rulesProjectionRevision(nil), nil
+	}
+	if source == "builtin" || strings.HasPrefix(source, "https://") {
+		source = RulesCachePath(config)
+	}
+	projection, err := readProjection(source)
+	if err != nil {
+		return "", err
+	}
+	return rulesProjectionRevision(projection), nil
+}
+
+func rulesProjectionRevision(projection *domainrules.Projection) string {
+	// Projection arrays are already canonical, sorted and deduplicated. Exclude
+	// diagnostics so comments and unsupported URL rules cannot change identity.
+	var canonical struct {
+		Proxy  domainrules.DomainProjection
+		Direct domainrules.DomainProjection
+	}
+	if projection != nil {
+		canonical.Proxy, canonical.Direct = projection.Proxy, projection.Direct
+	}
+	data, _ := json.Marshal(canonical) // Fixed string/slice fields cannot fail.
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 func loadProjection(ctx context.Context, config Config) (*domainrules.Projection, string, error) {

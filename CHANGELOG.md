@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.5
+
+- Open the macOS tray popup over other apps' full-screen Spaces without activating
+  TailSplit or switching desktops. Use a rounded, nonactivating native panel with
+  keyboard focus, while retaining repeat-click, Escape and outside-click dismissal.
+
+## 0.9.4
+
+- Restore active Split connections after in-app updates on macOS and Windows,
+  while keeping disconnected apps stopped and preserving ordinary auto-connect
+  preferences. Honor disconnects accepted during update cleanup.
+- Require an explicit disconnect before updating an active Global session, keeping
+  Kill-Switch protection in place until the user chooses to release it.
+- Bind update reconnection to the captured YAML and the rule projection actually
+  compiled by the running helper. Detect local/subscription rule changes before
+  shutdown and before the restarted traffic engine opens.
+- Check for updates ten seconds after startup and every five minutes thereafter.
+  Use public release probes, validated metadata caching and rate-limit backoff;
+  retry incomplete release metadata every fifteen minutes without suppressing
+  five-minute version discovery or explicit manual retries.
+- Retry brief Windows installer shutdown contention and preserve custom
+  configuration and log paths across updates. Retain macOS rollback recovery.
+- Updates initiated by older versions may still require one manual reconnect;
+  connection-state recovery applies to subsequent updates started by this version.
+
+## 0.9.3
+
+- Add a Home page with a routing topology, per-route upload/download rates and
+  activity animations driven by fresh measured traffic. Show Set up before the
+  first connection and retain the shared Magpie controls and themes.
+- Guide first-time connection through network-service installation or update,
+  Tailscale sign-in, administrator device approval, online exit-node selection
+  and saving. Report required actions instead of leaving the switch unresponsive.
+- Back up invalid configuration before narrow automatic repair or an explicit
+  rebuild. Preserve unsaved drafts and report concurrent edits as conflicts.
+  Create private backups without inheriting public macOS ACL grants.
+- Keep cancellation bound to its exact setup or connection across native-window
+  reloads and renderer failures. Retain committed requests until completion,
+  preserve protected HTTP fallback, and keep established Global sessions running
+  when no explicit cancellation was requested. Reject delayed logout or settings
+  changes after cancellation and wait for already admitted changes to finish.
+- Preserve native startup from symlinked or read-only configuration, including
+  the default config directory. Keep captured YAML bytes, size limits, relative
+  paths and revisions intact; reclaim orphaned snapshots from independent private
+  user-cache storage with parent-path, ACL and lifetime-lock checks.
+- Keep native recovery working when the panel uses the default HTTP port 80.
+- Include the macOS titlebar traffic-light alignment fix from the latest main.
+
 ## 0.9.2
 
 - Share the released Magpie Design System 0.4.3 across the desktop configuration

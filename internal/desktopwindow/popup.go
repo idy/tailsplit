@@ -87,16 +87,24 @@ func (p *TrayPopup) Toggle(anchor *mygo.Tray, fallback func()) {
 		p.failWithReason(a, "runtime-unavailable")
 		return
 	}
-	origin := "http://127.0.0.1:" + strconv.Itoa(int(p.port))
+	origin := normalizePageOrigin("http://127.0.0.1:" + strconv.Itoa(int(p.port)))
 	// Load only after every policy and lifecycle handler is installed.
 	a.native = mygo.NewFlyout(mygo.FlyoutOptions{
 		Tray: anchor, Placement: mygo.PlacementBottom, Gap: 4,
 		Width: 360, Height: 320, FitContent: true,
 		MinWidth: 360, MaxWidth: 360, MinHeight: 240, MaxHeight: 420,
-		Hidden: true, Focusable: true, Shadow: true, Popover: runtime.GOOS == "darwin",
+		Hidden: true, Focusable: true, Shadow: true, CornerRadius: 12,
 		Page: mygo.PageOptions{Session: mygo.NewEphemeralSession(), TrustedOrigins: []string{origin}, DevTools: mygo.DevToolsDisabled},
 	})
 	frame := a.native
+	if runtime.GOOS == "darwin" {
+		// MyGo's plain flyout is a nonactivating NSPanel with full-screen
+		// auxiliary behavior. Its NSPopover path activates the app before
+		// showing, which can leave another app's full-screen Space. Join the
+		// current Space before showing, including when our main window is open
+		// on a different desktop. The panel still takes keyboard focus.
+		frame.SetVisibleOnAllWorkspaces(true)
+	}
 	configurePagePolicy(frame.Page(), p.port)
 	frame.OnClosed(func() { p.closed(a) })
 	frame.Page().OnDidFinishLoad(func() { a.finished = true })
@@ -132,8 +140,8 @@ func (p *TrayPopup) Toggle(anchor *mygo.Tray, fallback func()) {
 			a.loaded = true
 			a.load.cancel()
 			frame.Show()
-			// AppKit can decline to show a popover whose status item has no
-			// usable anchor. A loaded but invisible popup must also fall back.
+			// A loaded page alone does not prove the native popup was shown.
+			// Fall back if the window never became visible.
 			time.AfterFunc(time.Second, func() {
 				mygo.RunOnMain(func() {
 					if p.current(a) && !frame.IsVisible() {

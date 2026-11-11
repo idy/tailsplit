@@ -34,7 +34,7 @@ func CreateDir(path string) error {
 }
 
 func CreateFile(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	return createPrivateFile(path)
 }
 
 func CheckFile(path string) error {
@@ -45,5 +45,5 @@ func CheckFile(path string) error {
 	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		return errors.New("private file must be regular with owner-only permissions (chmod 600)")
 	}
-	return nil
+	return checkPrivateFileACL(path)
 }

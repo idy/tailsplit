@@ -162,19 +162,19 @@ func TestRunPreferenceSchedulingAndManualCheck(t *testing.T) {
 		t.Fatal("scheduler checked before startup delay")
 	}
 	startup.tick <- time.Now()
-	interval := nextTimer(t, timers, 6*time.Hour)
+	interval := nextTimer(t, timers, 5*time.Minute)
 	if log.count() != 0 || !u.Snapshot().LastChecked.IsZero() {
 		t.Fatal("disabled automatic check was not skipped")
 	}
 	u.SetAutomatic(true)
 	interval.tick <- time.Now()
-	interval = nextTimer(t, timers, 6*time.Hour)
+	interval = nextTimer(t, timers, 5*time.Minute)
 	if log.count() != 1 || !u.Snapshot().Available {
 		t.Fatal("enabled periodic check did not discover update")
 	}
 	u.SetAutomatic(false)
 	interval.tick <- time.Now()
-	nextTimer(t, timers, 6*time.Hour)
+	nextTimer(t, timers, 5*time.Minute)
 	if log.count() != 1 {
 		t.Fatal("disabled periodic check made a request")
 	}
@@ -200,9 +200,9 @@ func TestRunChecksAfterStartupAndSkipsDevelopment(t *testing.T) {
 			go func() { u.Run(ctx); close(finished) }()
 			startup := nextTimer(t, timers, 10*time.Second)
 			startup.tick <- time.Now()
-			interval := nextTimer(t, timers, 6*time.Hour)
+			interval := nextTimer(t, timers, 5*time.Minute)
 			interval.tick <- time.Now()
-			nextTimer(t, timers, 6*time.Hour)
+			nextTimer(t, timers, 5*time.Minute)
 			wanted := 0
 			if version == "0.6.1" {
 				wanted = 2
@@ -213,6 +213,111 @@ func TestRunChecksAfterStartupAndSkipsDevelopment(t *testing.T) {
 			cancel()
 			waitSignal(t, finished)
 		})
+	}
+}
+
+func TestRunProbesTagsWhileInvalidMetadataWaits(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	f.release.Assets = nil
+	u, log := testUpdater(t, f.serve)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	timers := fakeTimers(u)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	go func() { u.Run(ctx); close(finished) }()
+	startup := nextTimer(t, timers, 10*time.Second)
+	now = now.Add(10 * time.Second)
+	startup.tick <- now
+	interval := nextTimer(t, timers, 5*time.Minute)
+	if log.count() != 1 || u.Snapshot().Available || u.failedMetadata == nil {
+		t.Fatal("initial invalid metadata did not create a validation retry deadline")
+	}
+	for tick := 1; tick <= 3; tick++ {
+		now = now.Add(5 * time.Minute)
+		interval.tick <- now
+		interval = nextTimer(t, timers, 5*time.Minute)
+		// Every tick makes a public probe; only the fifteen-minute tick also
+		// retries metadata. Probes still count as checks during this local wait.
+		if log.count() != 1+tick+tick/3 || !u.Snapshot().LastChecked.Equal(now) || u.Snapshot().Available {
+			t.Fatalf("validation retry changed the five-minute public probe cadence: %+v, requests=%d", u.Snapshot(), log.count())
+		}
+	}
+	cancel()
+	waitSignal(t, finished)
+}
+
+func TestRunKeepsCadenceWhileHonoringRateLimit(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var checks int
+	u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		checks++
+		if checks == 1 {
+			w.Header().Set("Retry-After", "1200")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		f.serve(w, r)
+	})
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	timers := fakeTimers(u)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	go func() { u.Run(ctx); close(finished) }()
+	startup := nextTimer(t, timers, 10*time.Second)
+	now = now.Add(10 * time.Second)
+	startup.tick <- now
+	interval := nextTimer(t, timers, 5*time.Minute)
+	lastChecked := u.Snapshot().LastChecked
+	for range 3 {
+		now = now.Add(5 * time.Minute)
+		interval.tick <- now
+		interval = nextTimer(t, timers, 5*time.Minute)
+		if log.count() != 1 || !u.Snapshot().LastChecked.Equal(lastChecked) {
+			t.Fatal("scheduled check bypassed the server's twenty-minute backoff")
+		}
+	}
+	if err := u.Check(ctx); err == nil || log.count() != 1 {
+		t.Fatal("manual check bypassed server backoff")
+	}
+	now = now.Add(5 * time.Minute)
+	interval.tick <- now
+	nextTimer(t, timers, 5*time.Minute)
+	if log.count() != 2 || !u.Snapshot().Available || !u.Snapshot().LastChecked.Equal(now) {
+		t.Fatalf("scheduled checks did not resume on the original cadence: %+v", u.Snapshot())
+	}
+	cancel()
+	waitSignal(t, finished)
+}
+
+func TestRateLimitDoesNotBlockOfferedDownload(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var checks int
+	u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/idy/tailsplit/releases/latest" {
+			checks++
+			if checks > 1 {
+				w.Header().Set("Retry-After", "1200")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+		}
+		f.serve(w, r)
+	})
+	requireCheck(t, u)
+	if err := u.Check(context.Background()); err == nil {
+		t.Fatal("accepted rate-limited check")
+	}
+	pkg, err := u.Download(context.Background())
+	if err != nil {
+		t.Fatal("API backoff prevented downloading the validated offer:", err)
+	}
+	defer pkg.Cleanup()
+	if log.count() != 4 {
+		t.Fatal("download made unexpected requests while checks were rate limited")
 	}
 }
 
@@ -244,7 +349,7 @@ func TestRunRemovesStaleDownloadsAfterStartup(t *testing.T) {
 		t.Fatal("stale download was removed before the startup delay:", err)
 	}
 	startup.tick <- time.Now()
-	nextTimer(t, timers, 6*time.Hour)
+	nextTimer(t, timers, 5*time.Minute)
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("download left by an earlier process remained:", err)
 	}

@@ -45,18 +45,28 @@ type Options struct {
 	Snapshot   func() tray.Snapshot
 	// Apply must run check against its current snapshot under the same operation
 	// gate as update, before stopping a helper or changing the saved document.
-	Apply  func(context.Context, func(tray.Snapshot) error, func() error) error
+	Apply func(context.Context, func(tray.Snapshot) error, func() error) error
+	// Action/Connect/AddExit/Apply honor tray.OperationID(ctx) when nonempty.
+	// Cancel must be supplied before the API accepts guarded operations.
 	Action func(context.Context, string) error
+	Cancel func(context.Context, string, string) error
 	// Connect rechecks the displayed revision under the desktop operation gate
 	// before starting either authentication or traffic.
-	Connect      func(context.Context, string) error
-	AddExit      func(context.Context, string, string) error
-	RemoveExit   func(context.Context, string, string) error
-	PingExit     func(context.Context, string) (tailsplit.ExitPingResult, error)
-	Logs         func() (string, error)
-	Startup      func() bool
-	UpdateState  func() appupdate.State
-	UpdateAction func(context.Context, string) error
+	Connect func(context.Context, string) error
+	// ClaimConnectRequest atomically acknowledges a native Connect intent across
+	// all tabs and WebViews. Only one consumer may enter guided setup for an ID.
+	ClaimConnectRequest   func(string) bool
+	ClaimConnectOperation func(string, string) bool
+	// Native offer policy is independent of HTTP/IPC cancellation delivery.
+	ObserveNativeConnectRequest func(string)
+	ClaimPanelConnectOperation  func(string, string, bool) (bool, bool)
+	AddExit                     func(context.Context, string, string) error
+	RemoveExit                  func(context.Context, string, string) error
+	PingExit                    func(context.Context, string) (tailsplit.ExitPingResult, error)
+	Logs                        func() (string, error)
+	Startup                     func() bool
+	UpdateState                 func() appupdate.State
+	UpdateAction                func(context.Context, string) error
 	// Popup actions only reveal the retained window or request normal app cleanup.
 	OpenPanel func()
 	Quit      func()
@@ -71,19 +81,21 @@ type Server struct {
 }
 
 type document struct {
-	YAML     string         `json:"yaml"`
-	Revision string         `json:"revision,omitempty"`
-	Path     string         `json:"path,omitempty"`
-	Values   map[string]any `json:"values"`
-	Valid    bool           `json:"valid"`
-	Parsed   bool           `json:"parsed"`
-	Error    string         `json:"error,omitempty"`
+	YAML       string         `json:"yaml"`
+	Revision   string         `json:"revision,omitempty"`
+	Path       string         `json:"path,omitempty"`
+	Values     map[string]any `json:"values"`
+	Valid      bool           `json:"valid"`
+	Parsed     bool           `json:"parsed"`
+	Error      string         `json:"error,omitempty"`
+	Repairable bool           `json:"repairable,omitempty"`
 }
 
 type editRequest struct {
-	YAML     string                     `json:"yaml"`
-	Revision string                     `json:"revision,omitempty"`
-	Changes  map[string]json.RawMessage `json:"changes,omitempty"`
+	YAML        string                     `json:"yaml"`
+	Revision    string                     `json:"revision,omitempty"`
+	OperationID string                     `json:"operation_id,omitempty"`
+	Changes     map[string]json.RawMessage `json:"changes,omitempty"`
 }
 
 func Start(options Options) (*Server, error) {
@@ -142,7 +154,11 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/preview", s.preview)
 	mux.HandleFunc("POST /api/validate", s.validate)
 	mux.HandleFunc("POST /api/config", s.save)
+	mux.HandleFunc("POST /api/config-rebuild", s.rebuildConfig)
+	mux.HandleFunc("POST /api/config-repair", s.repairConfig)
 	mux.HandleFunc("POST /api/action", s.desktopAction)
+	mux.HandleFunc("POST /api/cancel", s.cancelOperation)
+	mux.HandleFunc("POST /api/connect-request", s.claimConnectRequest)
 	mux.HandleFunc("POST /api/exit-ping", s.exitPing)
 	mux.HandleFunc("POST /api/exit-remove", s.removeExit)
 	mux.HandleFunc("POST /api/update-action", s.updateAction)
@@ -178,7 +194,7 @@ func (s *Server) handler() http.Handler {
 		}
 		switch r.URL.Path {
 		case "/", "/ui.js", "/app.js", "/i18n.js", "/select.js", "/style.css", "/companion.js",
-			"/tray.html", "/tray.js", "/tray.css",
+			"/tray.html", "/tray.js", "/tray.css", "/native-recovery.html",
 			"/vendor/magpie/css/magpie.css", "/vendor/magpie/css/tokens.css",
 			"/vendor/magpie/css/fonts.css", "/vendor/magpie/css/base.css", "/vendor/magpie/css/Magpie-MIT.txt",
 			"/vendor/magpie/css/components.css", "/vendor/magpie/css/layout.css",
@@ -239,6 +255,10 @@ func (s *Server) describe(data []byte) document {
 	}
 	if err != nil {
 		doc.Error = err.Error()
+		if repaired, repairErr := tray.PrepareConfigRepair(s.options.ConfigPath, data); repairErr == nil {
+			_, repairErr = s.candidateConfig(repaired)
+			doc.Repairable = repairErr == nil
+		}
 		return doc
 	}
 	doc.Valid = true
@@ -295,10 +315,13 @@ func (s *Server) readConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) readState(w http.ResponseWriter, r *http.Request) {
 	var snapshot tray.Snapshot
 	if s.options.Snapshot != nil {
 		snapshot = s.options.Snapshot()
+	}
+	if r.Header.Get("X-TailSplit-Panel") == "native" && s.options.ObserveNativeConnectRequest != nil {
+		s.options.ObserveNativeConnectRequest(snapshot.ConnectRequest)
 	}
 	_, revision, _ := tray.ReadConfigDocument(s.options.ConfigPath)
 	// LoginURL and other authentication state never enter the browser API.
@@ -307,11 +330,13 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		"exit": snapshot.ExitNode, "network": snapshot.NetworkName, "magic_dns_suffix": snapshot.MagicDNSSuffix,
 		"hostname": snapshot.Hostname, "backend_state": snapshot.BackendState, "phase": snapshot.Phase,
 		"routing_mode": snapshot.RoutingMode, "logs_available": s.options.Logs != nil,
-		"error": snapshot.Error, "revision": revision, "preview": s.options.Preview,
+		"error": snapshot.Error, "error_code": snapshot.ErrorCode, "revision": revision, "active_revision": snapshot.ActiveRevision, "preview": s.options.Preview,
+		"added_exit": snapshot.AddedExit, "added_revision": snapshot.AddedRevision, "connect_request": snapshot.ConnectRequest, "operation_id": snapshot.OperationID,
 		"exit_nodes": snapshot.ExitNodes, "desktop": s.options.Action != nil,
 		"ping_available": s.options.PingExit != nil && snapshot.PingAvailable,
 		"startup":        s.options.Startup != nil && s.options.Startup(),
 		"exits":          exitStates(snapshot), "focus": snapshot.Focus,
+		"traffic":              activeTraffic(snapshot),
 		"traffic_exit":         snapshot.TrafficExit,
 		"open_panel_available": s.options.OpenPanel != nil,
 		"quit_available":       s.options.Quit != nil,
@@ -320,6 +345,14 @@ func (s *Server) readState(w http.ResponseWriter, _ *http.Request) {
 		state["updates"] = s.options.UpdateState()
 	}
 	writeJSON(w, http.StatusOK, state)
+}
+
+// No telemetry means unavailable, rather than an invented zero-byte route.
+func activeTraffic(snapshot tray.Snapshot) *tailsplit.TrafficSnapshot {
+	if !snapshot.Active || snapshot.Mode != "proxy" && snapshot.Mode != "tun" || snapshot.State == "failed" || snapshot.State == "stopping" {
+		return nil
+	}
+	return snapshot.Traffic
 }
 
 // exitStates exposes additional devices' credential-free status by exit ID.
@@ -529,6 +562,13 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if edit.OperationID != "" {
+		if s.options.Cancel == nil {
+			http.NotFound(w, r)
+			return
+		}
+		r = r.WithContext(tray.WithOperationID(r.Context(), edit.OperationID))
+	}
 	data, err := applyChanges(edit)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "validation", err.Error())
@@ -592,13 +632,28 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 			status, code = http.StatusUnprocessableEntity, "validation"
 		} else if errors.Is(err, tray.ErrConfigChanged) {
 			status, code = http.StatusConflict, "conflict"
-		} else if errors.Is(err, ErrBusy) {
+		} else if errors.Is(err, tray.ErrOperationCanceled) {
+			status, code = http.StatusConflict, "canceled"
+		} else if errors.Is(err, ErrBusy) || errors.Is(err, tailsplit.ErrPingBusy) {
 			status, code = http.StatusConflict, "busy"
 		}
 		fail(w, status, code, "无法应用配置："+err.Error())
 		return
 	}
-	s.readConfig(w, r)
+	// Do not acknowledge an unrelated external edit as the document just saved.
+	// Guided Connect must receive the exact revision its node confirmation wrote.
+	current, revision, err := tray.ReadConfigDocument(s.options.ConfigPath)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "read", err.Error())
+		return
+	}
+	if !bytes.Equal(current, data) {
+		fail(w, http.StatusConflict, "conflict", "配置文件已由其他操作修改，请重新读取后再保存。")
+		return
+	}
+	doc := s.describe(data)
+	doc.Revision, doc.Path = revision, s.options.ConfigPath
+	writeJSON(w, http.StatusOK, doc)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -37,21 +38,69 @@ func lockConnectionSnapshotDirectory(configPath string) (func() error, error) {
 	return tailsplit.LockSavedState(filepath.Join(filepath.Dir(configPath), ".tailsplit-connection-lock"))
 }
 
-func createConnectionSnapshot(configPath string, data []byte) (string, func(), error) {
+func createConnectionSnapshot(configPath string, data []byte) (path, base string, cleanup func(), err error) {
+	// Validate captured bytes against the original argument directory without
+	// re-encoding them: compact YAML and aliases must keep the same byte budget.
+	if _, err := startupConfig(configPath, data); err != nil {
+		return "", "", nil, err
+	}
+	path, cleanup, err = createConnectionSnapshotBeside(configPath, data)
+	if err == nil || !snapshotDirectoryUnavailable(err) {
+		return path, "", cleanup, err
+	}
+	// This root belongs to the desktop, independently of mutable YAML state_dir.
+	// Never publish an unindexed snapshot elsewhere if it is unavailable.
+	fallbackPath, err := connectionSnapshotFallbackPath()
+	if err != nil {
+		return "", "", nil, err
+	}
+	base, err = filepath.Abs(filepath.Dir(configPath))
+	if err != nil {
+		return "", "", nil, err
+	}
+	directory := filepath.Dir(fallbackPath)
+	if err := privatefs.StableDir(directory, true); err != nil {
+		return "", "", nil, err
+	}
+	if err := cleanupConnectionSnapshotsAt(configPath, fallbackPath); err != nil {
+		return "", "", nil, err
+	}
+	path, cleanup, err = createConnectionSnapshotBeside(fallbackPath, data)
+	return path, base, cleanup, err
+}
+
+func createConnectionSnapshotBeside(configPath string, data []byte) (string, func(), error) {
 	unlockDirectory, err := lockConnectionSnapshotDirectory(configPath)
 	if err != nil {
 		return "", nil, err
 	}
 	defer unlockDirectory()
-	path, _, err := configCandidatePrefix(configPath, data, fmt.Sprintf("%s%d-", connectionSnapshotPrefix, os.Getpid()))
+	path := filepath.Join(filepath.Dir(configPath), fmt.Sprintf("%s%d-%s", connectionSnapshotPrefix, os.Getpid(), rand.Text()))
+	file, err := privatefs.CreateFile(path)
 	if err != nil {
+		return "", nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = file.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return "", nil, err
+	}
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		return "", nil, err
+	}
+	if err := privatefs.CheckFile(path); err != nil {
 		return "", nil, err
 	}
 	lease, err := lockConnectionSnapshot(path)
 	if err != nil {
-		_ = os.Remove(path)
 		return "", nil, err
 	}
+	keep = true
 	cleanup := sync.OnceFunc(func() {
 		_ = unlockConnectionSnapshot(lease)
 		_ = os.Remove(path)
@@ -63,7 +112,11 @@ func createConnectionSnapshot(configPath string, data []byte) (string, func(), e
 // snapshots, foreign files and links are never adopted. The OS releases a dead
 // creator's lock, even when an unrelated live process has since reused its PID.
 func cleanupConnectionSnapshots(configPath string) error {
-	directory := filepath.Dir(configPath)
+	return cleanupConnectionSnapshotsAt(configPath, configPath)
+}
+
+func cleanupConnectionSnapshotsAt(configPath, snapshotPath string) error {
+	directory := filepath.Dir(snapshotPath)
 	entries, err := os.ReadDir(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -81,7 +134,7 @@ func cleanupConnectionSnapshots(configPath string) error {
 	if !found {
 		return nil // Do not create snapshot metadata for unrelated desktop operations.
 	}
-	unlockDirectory, err := lockConnectionSnapshotDirectory(configPath)
+	unlockDirectory, err := lockConnectionSnapshotDirectory(snapshotPath)
 	if err != nil {
 		return err
 	}

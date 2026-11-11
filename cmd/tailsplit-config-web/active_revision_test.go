@@ -1,0 +1,193 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+
+	"github.com/idy/tailsplit/internal/tray"
+)
+
+func TestDesktopPreviewBindsActiveRevisionUntilDisconnect(t *testing.T) {
+	options := testDesktopPreview(t)
+	previewAction(t, options, "login")
+	original, revision, err := tray.ReadConfigDocument(options.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := options.Connect(context.Background(), revision); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := options.Snapshot(); !snapshot.Active || snapshot.ActiveRevision != revision {
+		t.Fatalf("preview connection did not record its revision: %+v", snapshot)
+	}
+	if err := os.WriteFile(options.ConfigPath, append(original, []byte("# external change\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, changed, err := tray.ReadConfigDocument(options.ConfigPath)
+	if err != nil || changed == revision {
+		t.Fatalf("external edit did not change revision: %q, %v", changed, err)
+	}
+	if snapshot := previewAction(t, options, "refresh-exits"); snapshot.ActiveRevision != revision {
+		t.Fatal("a read-only refresh acknowledged unapplied configuration", snapshot)
+	}
+	if err := options.Connect(context.Background(), revision); !errors.Is(err, tray.ErrConfigChanged) {
+		t.Fatal("stale preview connect was not rejected", err)
+	}
+	if snapshot := previewAction(t, options, "disconnect"); snapshot.ActiveRevision != "" {
+		t.Fatal("disconnect retained the active revision", snapshot)
+	}
+	if err := options.Connect(context.Background(), changed); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := options.Snapshot(); snapshot.ActiveRevision != changed {
+		t.Fatal("reconnect retained an old revision", snapshot)
+	}
+	previewAction(t, options, "disconnect")
+	if snapshot := previewAction(t, options, "login"); snapshot.ActiveRevision != "" {
+		t.Fatal("device-only login invented a traffic revision", snapshot)
+	}
+}
+
+func TestDesktopPreviewGuardsCanceledOperationsAcrossLoginSaveAndConnect(t *testing.T) {
+	options := testDesktopPreview(t)
+	canceledCtx := tray.WithOperationID(context.Background(), "canceled-before-admission")
+	if err := options.Cancel(context.Background(), "", tray.OperationID(canceledCtx)); err != nil {
+		t.Fatal(err)
+	}
+	if err := options.Action(canceledCtx, "login"); !errors.Is(err, tray.ErrOperationCanceled) {
+		t.Fatal("preview admitted canceled setup", err)
+	}
+	ctx := tray.WithOperationID(context.Background(), "guided-setup")
+	if err := options.Action(ctx, "login"); err != nil {
+		t.Fatal(err)
+	}
+	if options.Snapshot().OperationID != "guided-setup" {
+		t.Fatal("login lost owner", options.Snapshot())
+	}
+	if err := options.Apply(ctx, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, _ := tray.ReadConfigDocument(options.ConfigPath)
+	if err := options.Connect(ctx, revision); err != nil {
+		t.Fatal(err)
+	}
+	if got := options.Snapshot(); !got.Active || got.OperationID != "guided-setup" {
+		t.Fatal(got)
+	}
+	if err := options.Cancel(context.Background(), "old-native-request", "canceled-before-admission"); err != nil {
+		t.Fatal(err)
+	}
+	if got := options.Snapshot(); !got.Active || got.OperationID != "guided-setup" {
+		t.Fatal("stale cancel stopped new preview", got)
+	}
+	if err := options.Cancel(context.Background(), "", "guided-setup"); err != nil {
+		t.Fatal(err)
+	}
+	if options.Snapshot().Active {
+		t.Fatal("preview cancel retained connection")
+	}
+	if err := options.Connect(ctx, revision); !errors.Is(err, tray.ErrOperationCanceled) {
+		t.Fatal("late preview action revived canceled setup", err)
+	}
+	if err := options.Apply(ctx, nil, func() error { t.Error("canceled save ran"); return nil }); !errors.Is(err, tray.ErrOperationCanceled) {
+		t.Fatal(err)
+	}
+	fresh := tray.WithOperationID(context.Background(), "explicit-retry")
+	if err := options.Connect(fresh, revision); err != nil {
+		t.Fatal("fresh preview retry failed", err)
+	}
+}
+
+func TestDesktopPreviewNativeBindingCancelUsesBoundOwnerDespiteStaleSnapshot(t *testing.T) {
+	for _, newer := range []bool{false, true} {
+		operations := newPreviewOperations()
+		snapshot := tray.Snapshot{ConnectRequest: "native-request"}
+		if !operations.claim(&snapshot, "native-request", "bound-owner") {
+			t.Fatal("claim failed")
+		}
+		operations.own(&snapshot, "bound-owner")
+		snapshot.State, snapshot.Mode, snapshot.Active, snapshot.ActiveRevision = "running", "proxy", true, "revision"
+		if newer {
+			operations.own(&snapshot, "newer-owner")
+		}
+		snapshot.ConnectRequest = "newer-request"
+		operations.cancel(&snapshot, "native-request", "stale-snapshot-owner")
+		if snapshot.Active != newer || snapshot.ConnectRequest != "newer-request" || newer && snapshot.OperationID != "newer-owner" {
+			t.Fatal("preview native binding canceled wrong owner", snapshot)
+		}
+		if operations.allowed("bound-owner") || operations.allowed("stale-snapshot-owner") {
+			t.Fatal("preview cancellation lost admission tombstone")
+		}
+	}
+	operations := newPreviewOperations()
+	snapshot := tray.Snapshot{ConnectRequest: "request-only"}
+	if !operations.claim(&snapshot, "request-only", "bound-owner") {
+		t.Fatal("claim failed")
+	}
+	operations.own(&snapshot, "bound-owner")
+	snapshot.Active = true
+	operations.cancel(&snapshot, "request-only", "")
+	if snapshot.Active {
+		t.Fatal("request-only preview cancel retained admitted bound owner")
+	}
+	operations.own(&snapshot, "browser-owner")
+	snapshot.Active = true
+	operations.cancel(&snapshot, "browser-owner", "")
+	if !snapshot.Active || !operations.allowed("browser-owner") {
+		t.Fatal("unknown request poisoned arbitrary preview operation")
+	}
+}
+
+func TestDesktopPreviewNativeOfferFailsClosedWithoutAffectingTrafficOrFreshRequests(t *testing.T) {
+	operations := newPreviewOperations()
+	snapshot := tray.Snapshot{ConnectRequest: "offered", OperationID: "unrelated-traffic", Active: true, ActiveRevision: "running-revision"}
+	operations.offer(&snapshot, "offered")
+	if claimed, interrupted := operations.claimPanel(&snapshot, "offered", "unrelated-traffic", false); claimed || !interrupted {
+		t.Fatal(claimed, interrupted)
+	}
+	if !snapshot.Active || snapshot.ActiveRevision != "running-revision" || !operations.allowed("unrelated-traffic") || operations.allowed("offered") {
+		t.Fatal("preview fallback touched unrelated traffic or retained an interrupted admission", snapshot)
+	}
+	snapshot.ConnectRequest = "cold-failure"
+	if claimed, interrupted := operations.claimPanel(&snapshot, "cold-failure", "cold-failure", false); !claimed || interrupted {
+		t.Fatal("cold fallback was blocked", claimed, interrupted)
+	}
+	snapshot.ConnectRequest = "fresh-after-dead-window"
+	operations.offer(&snapshot, "offered")
+	if claimed, interrupted := operations.claimPanel(&snapshot, "fresh-after-dead-window", "fresh-after-dead-window", false); !claimed || interrupted {
+		t.Fatal("old native observation reserved fresh retry", claimed, interrupted)
+	}
+	snapshot.ConnectRequest = "live-native"
+	operations.offer(&snapshot, "live-native")
+	if claimed, interrupted := operations.claimPanel(&snapshot, "live-native", "live-native", true); !claimed || interrupted {
+		t.Fatal("preview native claim was blocked", claimed, interrupted)
+	}
+}
+
+func TestDesktopPreviewApplyAdvancesActiveRevision(t *testing.T) {
+	options := testDesktopPreview(t)
+	previewAction(t, options, "login")
+	before := previewAction(t, options, "connect")
+	if err := options.Apply(context.Background(), nil, func() error {
+		data, revision, err := tray.ReadConfigDocument(options.ConfigPath)
+		if err != nil {
+			return err
+		}
+		updated, err := tray.PatchConfigDocument(data, tray.ConfigChange{Key: "log_level", Value: "debug"})
+		if err != nil {
+			return err
+		}
+		return tray.SaveConfigDocument(options.ConfigPath, revision, updated)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := tray.ReadConfigDocument(options.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := options.Snapshot(); snapshot.ActiveRevision == "" || snapshot.ActiveRevision == before.ActiveRevision || snapshot.ActiveRevision != revision {
+		t.Fatalf("applied preview retained the wrong running revision: %+v", snapshot)
+	}
+}
