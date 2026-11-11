@@ -1,0 +1,3 @@
+// The extension's version must match the host app's Flutter build name/number.
+#include? "../Pods/Target Support Files/Pods-PacketTunnel/Pods-PacketTunnel.release.xcconfig"
+#include "../Flutter/Generated.xcconfig"

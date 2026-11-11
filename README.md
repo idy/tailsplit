@@ -58,6 +58,13 @@ Windows executables are unsigned; verify the release checksums before installati
 See the [guide](docs/guide.md#install) for installer options and
 [CLI setup](docs/guide.md#cli-configuration).
 
+## Mobile
+
+The [iOS and Android client](mobile/README.md) supports multiple signed-in
+Tailscale networks with one selected exit at a time. See its README for setup
+and current limitations. Mobile installers are separate from the desktop
+packages above.
+
 ## Documentation
 
 - [Desktop setup and configuration](docs/guide.md#macos-app)
@@ -65,6 +72,7 @@ See the [guide](docs/guide.md#install) for installer options and
 - [CLI, DNS and rule sources](docs/guide.md#cli-configuration)
 - [Updates and migration](docs/guide.md#desktop-updates)
 - [Detailed desktop behavior](docs/desktop-reference.md)
+- [Mobile setup and builds](mobile/README.md)
 
 <details>
 <summary>Building from source</summary>
@@ -82,6 +90,16 @@ platform-specific builds and additional checks.
 The app and routing core live in `cmd/` and `internal/`; `site/` holds the public
 website, and `packaging/` and `scripts/` contain installers and release tools.
 Start with [config.example.yaml](config.example.yaml) for CLI configuration.
+The Flutter client in `mobile/` uses one active Tailscale exit.
+
+The [mobile app](mobile/README.md) uses `sing_box_flutter` for the system VPN and
+implements Tailscale sign-in in Dart. It has native platform controls, English
+and Chinese, and a separate mobile build workflow. iOS distribution is configured
+for the LetSolo **TERMITOC PTE. LTD.** organization; see
+[mobile CI and publication](mobile/docs/release.md) for credentials, capabilities
+and the manual IPA/TestFlight workflow. Real-device VPN and signed store
+publication remain separate verification steps; mobile installers are not part
+of the desktop release assets above.
 
 </details>
 

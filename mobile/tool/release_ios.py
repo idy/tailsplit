@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""Sign a transferred unsigned archive on a fresh runner, verify it, and optionally upload."""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import secrets
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import unicodedata
+from xml.parsers.expat import ExpatError
+import zipfile
+
+MOBILE = Path(__file__).resolve().parents[1]
+TEAM = "BGL4WMWD3W"
+SECRET = "BGL4WMWD3W_APPLE_CREDENTIALS"
+
+
+# Tools come from the fresh signing venv or macOS, never the artifact or checkout.
+TOOLS = {name: f"/usr/bin/{name}" for name in ("security", "codesign", "xcodebuild")}
+TOOLS.update({name: str(Path(sys.executable).parent / name) for name in ("keychain", "app-store-connect")})
+MAX_ZIP_BYTES = 8 * 1024 ** 3
+
+
+def sanitized_env():
+    """Limit incidental credential exposure; separate runners provide isolation."""
+    env = {key: os.environ[key] for key in ("HOME", "RUNNER_TEMP", "TMPDIR", "LANG", "DEVELOPER_DIR")
+           if key in os.environ}
+    env["PATH"] = f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/sbin:/sbin"
+    return env
+
+
+def run(*args, env=None, capture=False, check=True):
+    return subprocess.run((TOOLS[args[0]], *args[1:]), cwd=os.environ["RUNNER_TEMP"],
+                          env=sanitized_env() if env is None else env, check=check,
+                          stdout=subprocess.PIPE if capture else None,
+                          stderr=subprocess.PIPE if capture else None).stdout
+
+
+def extract_zip(source, destination, allowed_roots):
+    """Copy regular ZIP members into a NEW directory, without honoring links or metadata.
+
+    Validate the entire manifest first, including case/Unicode aliases on macOS.
+    No extractall/ditto/unzip, executable hooks, special files, or outside paths.
+    Apply this to both the outer Actions ZIP and the inner archive (and final IPA).
+    """
+    if not stat.S_ISREG(source.lstat().st_mode):
+        raise ValueError("Expected a regular ZIP file")
+    with zipfile.ZipFile(source) as archive:
+        members = archive.infolist()
+        if len(members) > 100_000 or sum(item.file_size for item in members) > MAX_ZIP_BYTES:
+            raise ValueError("ZIP exceeds release size limits")
+        seen, aliases, kinds = set(), {}, {}
+        for item in members:
+            name = item.filename.rstrip("/") if item.is_dir() else item.filename
+            parts = name.split("/")
+            mode = item.external_attr >> 16
+            kind = stat.S_IFMT(mode)
+            if (item.orig_filename != item.filename or not name
+                    or item.filename != name + ("/" if item.is_dir() else "")
+                    or any(part in ("", ".", "..") for part in parts)
+                    or any(c in name for c in ("\\", ":"))
+                    or any(ord(c) < 32 or ord(c) == 127 for c in name)
+                    or parts[0] not in allowed_roots or name in seen
+                    or item.flag_bits & 1
+                    or kind not in (0, stat.S_IFDIR if item.is_dir() else stat.S_IFREG)):
+                raise ValueError("Unsafe or duplicate ZIP member")
+            seen.add(name)
+            for index in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:index])
+                canonical = unicodedata.normalize("NFD", prefix).casefold()
+                is_directory = index < len(parts) or item.is_dir()
+                if aliases.setdefault(canonical, prefix) != prefix or kinds.setdefault(prefix, is_directory) != is_directory:
+                    raise ValueError("Aliased or conflicting ZIP paths")
+        destination.mkdir(mode=0o700)  # Must not already exist, even as a symlink.
+        for item in members:
+            target = destination.joinpath(*item.filename.rstrip("/").split("/"))
+            if item.is_dir():
+                target.mkdir(mode=0o700, parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with archive.open(item) as incoming, target.open("xb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+                target.chmod(0o700 if (item.external_attr >> 16) & 0o111 else 0o600)
+
+
+def validate_executable(path, info):
+    executable = info.get("CFBundleExecutable", "")
+    if not isinstance(executable, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", executable) or executable in (".", ".."):
+        raise ValueError("Unsafe bundle executable path")
+    with (path / executable).open("rb") as binary:
+        if binary.read(4) not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+            raise ValueError("Expected an iOS Mach-O executable")
+
+
+def bundle_info(path, bundle_id, build_number):
+    info = plistlib.loads((path / "Info.plist").read_bytes())
+    if info.get("CFBundleIdentifier") != bundle_id or info.get("CFBundleVersion") != build_number:
+        raise ValueError("Archive bundle identity or build number does not match this release")
+    version = info.get("CFBundleShortVersionString", "")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", version):
+        raise ValueError("Invalid archive application version")
+    validate_executable(path, info)
+    return info
+
+
+def prepare_archive(artifact, work, config, build_number):
+    transfer = work / "transfer"
+    extract_zip(artifact, transfer, {"unsigned.xcarchive.zip"})
+    if sorted(path.name for path in transfer.iterdir()) != ["unsigned.xcarchive.zip"]:
+        raise ValueError("Expected exactly one transferred archive ZIP")
+    unpacked = work / "unsigned"
+    extract_zip(transfer / "unsigned.xcarchive.zip", unpacked, {"Runner.xcarchive"})
+    archive = unpacked / "Runner.xcarchive"
+    if not archive.is_dir() or {p.name for p in archive.iterdir()} - {"Info.plist", "Products", "dSYMs", "BCSymbolMaps"}:
+        raise ValueError("Unexpected archive contents")
+    # Do not let archive metadata choose external products, scripts or export paths.
+    products = archive / "Products"
+    apps = products / "Applications"
+    if {p.name for p in products.iterdir()} != {"Applications"} or {p.name for p in apps.iterdir()} != {"Runner.app"}:
+        raise ValueError("Expected only the Runner archive product")
+    app = apps / "Runner.app"
+    info = bundle_info(app, config["bundle_id"], build_number)
+    plugins = app / "PlugIns"
+    if {p.name for p in plugins.iterdir()} != {"PacketTunnel.appex"}:
+        raise ValueError("Expected the single PacketTunnel extension")
+    extension = plugins / "PacketTunnel.appex"
+    bundle_info(extension, config["packet_tunnel_bundle_id"], build_number)
+    for path in app.rglob("*"):
+        if path.suffix in (".app", ".appex") and path != extension:
+            raise ValueError("Unexpected nested application or extension")
+        if path.is_dir() and path.suffix in (".framework", ".bundle"):
+            embedded_info = plistlib.loads((path / "Info.plist").read_bytes())
+            if "CFBundleExecutable" in embedded_info:
+                validate_executable(path, embedded_info)
+            elif path.suffix == ".framework":
+                raise ValueError("Framework is missing its executable")
+    # Reconstruct rather than trust ApplicationPath, IconPaths, SchemeName, etc.
+    metadata = {
+        "ArchiveVersion": 2, "Name": "Runner", "SchemeName": "Runner",
+        "CreationDate": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        "ApplicationProperties": {
+            "ApplicationPath": "Applications/Runner.app",
+            "Architectures": ["arm64"],
+            "CFBundleIdentifier": config["bundle_id"],
+            "CFBundleShortVersionString": info["CFBundleShortVersionString"],
+            "CFBundleVersion": build_number,
+        },
+    }
+    (archive / "Info.plist").write_bytes(plistlib.dumps(metadata))
+    return archive
+
+
+def identity():
+    value = json.loads((MOBILE / "release-identity.json").read_text())
+    expected = {"team_id": TEAM, "organization": "TERMITOC PTE. LTD.",
+                "bundle_id": "dev.idy.tailsplit", "packet_tunnel_bundle_id": "dev.idy.tailsplit.PacketTunnel",
+                "app_group": "group.dev.idy.tailsplit"}
+    if any(value.get(key) != item for key, item in expected.items()):
+        raise ValueError("iOS publication requires the exact Termitoc TailSplit identity")
+    return value
+
+
+def credentials(raw):
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError(f"Configure {SECRET} with the LetSolo organization credentials") from None
+    fields = ("issuer_id", "api_key_id", "api_private_key", "certificate_private_key")
+    if not isinstance(value, dict) or any(not isinstance(value.get(k), str) or not value[k].strip() for k in fields):
+        raise ValueError(f"{SECRET} requires: {', '.join(fields)}")
+    if value.get("team_id", TEAM) != TEAM:
+        raise ValueError("The supplied Apple credentials identify a different team")
+    return {key: value[key] for key in fields}
+
+
+def validate_entitlements(entitlements, bundle_id, app_group, source):
+    if not isinstance(entitlements, dict):
+        raise ValueError(f"{source} must contain an entitlement dictionary")
+    if entitlements.get("com.apple.developer.team-identifier") != TEAM:
+        raise ValueError(f"{source} has a different Apple team")
+    if entitlements.get("application-identifier") != f"{TEAM}.{bundle_id}":
+        raise ValueError(f"{source} does not match the exact application identifier")
+    # Distribution profiles and signatures may omit this development-only entitlement.
+    if entitlements.get("get-task-allow", False) is not False:
+        raise ValueError(f"{source} must not allow debugging")
+    groups = entitlements.get("com.apple.security.application-groups", [])
+    if not isinstance(groups, list) or app_group not in groups:
+        raise ValueError(f"{source} is missing the shared App Group")
+    extensions = entitlements.get("com.apple.developer.networking.networkextension", [])
+    if not isinstance(extensions, list) or "packet-tunnel-provider" not in extensions:
+        raise ValueError(f"{source} is missing the Packet Tunnel capability")
+
+
+def validate_profile(profile, bundle_id, app_group):
+    """Reject personal-team, development, wildcard and incomplete VPN profiles."""
+    if profile.get("TeamIdentifier") != [TEAM]:
+        raise ValueError("Provisioning profile belongs to a different Apple team")
+    validate_entitlements(profile.get("Entitlements", {}), bundle_id, app_group, "Provisioning profile")
+    if profile.get("ProvisionedDevices") or profile.get("ProvisionsAllDevices"):
+        raise ValueError("An App Store distribution profile is required")
+    expiry = profile.get("ExpirationDate")
+    if not isinstance(expiry, dt.datetime) or expiry.replace(tzinfo=dt.timezone.utc) <= dt.datetime.now(dt.timezone.utc):
+        raise ValueError("Provisioning profile is expired or has no expiry")
+
+
+def decode_profile(path):
+    return plistlib.loads(run("security", "cms", "-D", "-i", str(path), capture=True))
+
+
+def verify_bundle(path, bundle_id, app_group):
+    info = plistlib.loads((path / "Info.plist").read_bytes())
+    if info.get("CFBundleIdentifier") != bundle_id:
+        raise ValueError("The exported app has an unexpected bundle identifier")
+    validate_profile(decode_profile(path / "embedded.mobileprovision"), bundle_id, app_group)
+    run("codesign", "--verify", "--deep", "--strict", str(path))
+    # codesign writes metadata to stderr and the requested XML entitlements to stdout.
+    signed = subprocess.run([TOOLS["codesign"], "-d", "--verbose=4", "--entitlements", "-", "--xml", str(path)],
+                            cwd=os.environ["RUNNER_TEMP"], check=True, capture_output=True, env=sanitized_env())
+    if f"TeamIdentifier={TEAM}".encode() not in signed.stderr.splitlines():
+        raise ValueError("The exported app was not signed by Termitoc")
+    try:
+        entitlements = plistlib.loads(signed.stdout)
+    except (ValueError, ExpatError):
+        raise ValueError("The exported app has missing or invalid signed entitlements") from None
+    validate_entitlements(entitlements, bundle_id, app_group, "Signed entitlements")
+
+
+def release(artifact, output, publish=False):
+    config = identity()
+    values = credentials(os.environ.get(SECRET))
+    env = sanitized_env()
+    api_env = {
+        **env,
+        "APP_STORE_CONNECT_ISSUER_ID": values["issuer_id"],
+        "APP_STORE_CONNECT_KEY_IDENTIFIER": values["api_key_id"],
+        "APP_STORE_CONNECT_PRIVATE_KEY": values["api_private_key"],
+        "APP_STORE_CONNECT_DISABLE_JWT_CACHE": "true",
+    }
+    signing_env = {**api_env, "CERTIFICATE_PRIVATE_KEY": values["certificate_private_key"]}
+    keychain_env = {**env, "KEYCHAIN_PASSWORD": secrets.token_urlsafe(32)}
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        for value in [*values.values(), keychain_env["KEYCHAIN_PASSWORD"]]:
+            escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            print(f"::add-mask::{escaped}", flush=True)
+    build_number = os.environ.get("GITHUB_RUN_NUMBER", "")
+    if not re.fullmatch(r"[1-9][0-9]*", build_number):
+        raise ValueError("A positive GitHub Actions build number is required")
+    bundles = (config["bundle_id"], config["packet_tunnel_bundle_id"])
+    with tempfile.TemporaryDirectory(prefix="tailsplit-ios-signing-", dir=os.environ["RUNNER_TEMP"]) as folder:
+        work = Path(folder)
+        archive = prepare_archive(artifact, work, config, build_number)
+        # Output is outside the artifact and must be new. Only a verified IPA is copied here.
+        output.mkdir(mode=0o700)
+        keychain = work / "release.keychain-db"
+        profiles = work / "profiles"
+        certificates = work / "certificates"
+        profiles.mkdir(mode=0o700)
+        certificates.mkdir(mode=0o700)
+        previous = run("security", "default-keychain", "-d", "user", capture=True).decode().strip().strip('"')
+        installed_profiles = []
+        try:
+            # Only trusted signing/export tools run on this VM; compilation already
+            # finished on another VM that never had these credentials or keychain.
+            run("keychain", "initialize", "--path", str(keychain), "--password", "@env:KEYCHAIN_PASSWORD", env=keychain_env)
+            for bundle in bundles:
+                run("app-store-connect", "fetch-signing-files", bundle,
+                    "--strict-match-identifier", "--platform", "IOS", "--type", "IOS_APP_STORE",
+                    "--certificates-dir", str(certificates), "--profiles-dir", str(profiles),
+                    "--certificate-key", "@env:CERTIFICATE_PRIVATE_KEY", "--create", env=signing_env)
+            selected = {}
+            for path in sorted(profiles.glob("*.mobileprovision")):
+                profile = decode_profile(path)
+                application = profile.get("Entitlements", {}).get("application-identifier", "")
+                bundle = application.removeprefix(f"{TEAM}.")
+                if bundle not in bundles:
+                    raise ValueError("Fetched a profile outside the TailSplit application")
+                validate_profile(profile, bundle, config["app_group"])
+                uuid = profile.get("UUID", "")
+                if not isinstance(uuid, str) or not re.fullmatch(r"[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}", uuid):
+                    raise ValueError("Provisioning profile has an invalid UUID")
+                if bundle not in selected:
+                    selected[bundle] = (uuid, path)
+            if set(selected) != set(bundles) or len({uuid for uuid, _ in selected.values()}) != len(bundles):
+                raise ValueError("Both Runner and PacketTunnel need distinct valid Termitoc App Store profiles")
+            # Xcode 16+ profile location; do not invoke xcode-project or modify a project.
+            profile_directory = Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles"
+            profile_directory.mkdir(parents=True, exist_ok=True)
+            for uuid, path in selected.values():
+                target = profile_directory / f"{uuid}.mobileprovision"
+                with target.open("xb") as destination:
+                    installed_profiles.append(target)
+                    destination.write(path.read_bytes())
+            run("keychain", "add-certificates", "--path", str(keychain),
+                "--certificate", str(certificates / "*.p12"), env=keychain_env)
+            options = work / "ExportOptions.plist"
+            options.write_bytes(plistlib.dumps({
+                "method": "app-store-connect", "destination": "export", "teamID": TEAM,
+                "signingStyle": "manual", "signingCertificate": "Apple Distribution",
+                "provisioningProfiles": {bundle: uuid for bundle, (uuid, _) in selected.items()},
+                "manageAppVersionAndBuildNumber": False,
+            }))
+            export = work / "ipa"
+            run("xcodebuild", "-exportArchive", "-archivePath", str(archive),
+                "-exportPath", str(export), "-exportOptionsPlist", str(options), env=env)
+            packages = list(export.glob("*.ipa"))
+            if len(packages) != 1:
+                raise ValueError("Expected exactly one exported IPA")
+            extracted = work / "exported"
+            extract_zip(packages[0], extracted, {"Payload", "SwiftSupport", "Symbols", "BCSymbolMaps", "iTunesMetadata.plist"})
+            apps = list((extracted / "Payload").glob("*.app"))
+            if len(apps) != 1:
+                raise ValueError("Expected one application in the exported IPA")
+            app = apps[0]
+            verify_bundle(app, bundles[0], config["app_group"])
+            extensions = list((app / "PlugIns").glob("*.appex"))
+            if len(extensions) != 1:
+                raise ValueError("Expected the single PacketTunnel extension")
+            verify_bundle(extensions[0], bundles[1], config["app_group"])
+            print(f"Verified IPA: {config['organization']} ({TEAM}), Runner and PacketTunnel")
+            verified = output / "TailSplit.ipa"
+            shutil.copyfile(packages[0], verified)
+            if publish:
+                # Upload for internal TestFlight processing. Public App Store/beta
+                # review submission remains a separate, explicit Apple action.
+                run("app-store-connect", "publish", "--path", str(verified),
+                    "--enable-package-validation", env=api_env)
+        finally:
+            for path in installed_profiles:
+                path.unlink(missing_ok=True)
+            if previous:
+                run("security", "default-keychain", "-d", "user", "-s", previous, check=False, env=env)
+            if keychain.exists():
+                run("keychain", "delete", "--path", str(keychain), check=False, env=env)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--artifact", type=Path, required=True, help="Unextracted Actions artifact ZIP")
+    parser.add_argument("--output", type=Path, required=True, help="New directory for the verified IPA")
+    parser.add_argument("--publish", action="store_true", help="Upload the verified IPA to App Store Connect")
+    args = parser.parse_args()
+    try:
+        release(args.artifact.absolute(), args.output.absolute(), args.publish)
+    except (ValueError, KeyError, OSError, zipfile.BadZipFile, ExpatError, subprocess.CalledProcessError) as error:
+        # Do not include private configuration payloads or command environments.
+        if isinstance(error, ValueError):
+            parser.exit(1, f"Release stopped: {error}\n")
+        parser.exit(1, "Release stopped: archive validation, signing or publication step failed.\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,106 @@
+{
+  "MapSessionHandle": "fake-session",
+  "Seq": 1,
+  "Node": {
+    "ID": 1001,
+    "StableID": "nSELF1001CNTRL",
+    "Name": "tailsplit-ios.tail4f2a1c.ts.net.",
+    "User": 4242,
+    "Key": "nodekey:936171aff1b077c1a6e0f3a3a1b2c3d4e5f60718293a4b5c6d7e8f9011223344",
+    "KeyExpiry": "2027-05-09T07:00:00Z",
+    "Machine": "mkey:7146902f7ff030ca4f7eb6c6f649edef0a4704b055ca7d07f6d82b87d35fc356",
+    "Addresses": ["100.101.7.42/32", "fd7a:115c:a1e0::1/128"],
+    "AllowedIPs": ["100.101.7.42/32", "fd7a:115c:a1e0::1/128"],
+    "HomeDERP": 1,
+    "Hostinfo": {"OS": "iOS", "Hostname": "tailsplit-ios"},
+    "Created": "2026-11-10T07:00:00Z",
+    "Cap": 142,
+    "MachineAuthorized": true,
+    "CapMap": {
+      "tailnet-display-name": ["Alice's Tailnet"],
+      "https://tailscale.com/cap/file-sharing": null
+    }
+  },
+  "DERPMap": {"Regions": {}},
+  "Peers": [
+    {
+      "ID": 2003,
+      "StableID": "nLAPTOP2003CNTRL",
+      "Name": "laptop.tail4f2a1c.ts.net.",
+      "User": 4242,
+      "Addresses": ["100.70.1.30/32"],
+      "Hostinfo": {"OS": "macOS", "Hostname": "laptop"},
+      "Online": true
+    },
+    {
+      "ID": 2002,
+      "StableID": "nSG2002CNTRL",
+      "Name": "sg-relay.tail4f2a1c.ts.net.",
+      "User": 4242,
+      "Addresses": ["100.91.60.2/32"],
+      "AllowedIPs": ["100.91.60.2/32", "0.0.0.0/0"],
+      "Hostinfo": {"OS": "linux", "Hostname": "sg-relay"},
+      "LastSeen": "2026-11-10T04:00:00Z",
+      "Online": false
+    },
+    {
+      "ID": 2001,
+      "StableID": "nTOKYO2001CNTRL",
+      "Name": "Tokyo-VPS.tail4f2a1c.ts.net.",
+      "User": 4242,
+      "Addresses": ["100.88.12.4/32", "fd7a:115c:a1e0::88/128"],
+      "AllowedIPs": ["100.88.12.4/32", "fd7a:115c:a1e0::88/128", "0.0.0.0/0", "::/0"],
+      "Hostinfo": {"OS": "linux", "Hostname": "tokyo-vps"},
+      "Online": true
+    },
+    {
+      "ID": 2004,
+      "StableID": "nROUTER2004CNTRL",
+      "Name": "office-router.tail4f2a1c.ts.net.",
+      "User": 4242,
+      "Addresses": ["100.64.3.9/32"],
+      "AllowedIPs": ["100.64.3.9/32", "10.0.0.0/8"],
+      "PrimaryRoutes": ["10.0.0.0/8"],
+      "Hostinfo": {"OS": "linux"},
+      "Online": true
+    },
+    {
+      "ID": 2005,
+      "StableID": "nBOB2005CNTRL",
+      "Name": "bob-box.tail9999.ts.net.",
+      "User": 5151,
+      "Sharer": 5151,
+      "Addresses": ["100.99.1.1/32"],
+      "AllowedIPs": ["100.99.1.1/32", "::/0"],
+      "Hostinfo": {"OS": "windows", "Hostname": "bob-box"},
+      "Online": true
+    },
+    {
+      "ID": 2006,
+      "StableID": "nMULLVAD2006CNTRL",
+      "Name": "de-fra-wg-001.mullvad.ts.net.",
+      "User": 4242,
+      "Addresses": ["10.64.1.2/32"],
+      "AllowedIPs": ["0.0.0.0/0", "::/0"],
+      "IsWireGuardOnly": true
+    },
+    {
+      "ID": 2007,
+      "StableID": "nNONAME2007CNTRL",
+      "Name": "",
+      "User": 4242,
+      "Addresses": ["100.65.0.7/32"],
+      "AllowedIPs": ["100.65.0.7/32", "0.0.0.0/0", "::/0"],
+      "Hostinfo": {"Hostname": "unnamed-exit", "OS": ""},
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "Online": false
+    }
+  ],
+  "DNSConfig": {"Domains": ["tail4f2a1c.ts.net"]},
+  "Domain": "alice@example.com",
+  "UserProfiles": [
+    {"ID": 5151, "LoginName": "bob@example.org", "DisplayName": "Bob"},
+    {"ID": 4242, "LoginName": "alice@example.com", "DisplayName": "Alice Example", "ProfilePicURL": "https://example.com/alice.png"}
+  ],
+  "ControlTime": "2026-11-10T07:30:00Z"
+}

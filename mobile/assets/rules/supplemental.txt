@@ -1,0 +1,49 @@
+[AutoProxy 0.2.9]
+! Application dependency rules; explicit GFWList exceptions take precedence.
+! ||domain includes subdomains; |hostname| matches only that host.
+
+! ChatGPT resources.
+||oaistatic.com
+||oaiusercontent.com
+||oaistatsig.com
+|cdn.openaimerge.com|
+
+! Claude resources.
+||claudemcpclient.com
+||clau.de
+|servd-anthropic-website.b-cdn.net|
+
+! Authentication and verification.
+||auth0.com
+|cdn.workos.com|
+|setup.workos.com|
+|forwarder.workos.com|
+|images.workoscdn.com|
+|workos.imgix.net|
+|challenges.cloudflare.com|
+|openai-api.arkoselabs.com|
+|client-api.arkoselabs.com|
+||hcaptcha.com
+
+! Payments.
+||stripe.com
+||stripe.network
+||stripecdn.com
+||link.com
+
+! Support and diagnostics.
+||ct.sendgrid.net
+||intercom.io
+||intercomcdn.com
+|o207216.ingest.sentry.io|
+|o33249.ingest.sentry.io|
+|rum.browser-intake-datadoghq.com|
+|humb.apple.com|
+
+! Feature configuration and voice.
+|api.statsig.com|
+|events.statsigapi.net|
+||featuregates.org
+|chatgpt.livekit.cloud|
+|host.livekit.cloud|
+|turn.livekit.cloud|
