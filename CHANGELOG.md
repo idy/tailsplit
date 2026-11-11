@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.3
+
+- Add a Home page with a routing topology, per-route upload/download rates and
+  activity animations driven by fresh measured traffic. Show Set up before the
+  first connection and retain the shared Magpie controls and themes.
+- Guide first-time connection through network-service installation or update,
+  Tailscale sign-in, administrator device approval, online exit-node selection
+  and saving. Report required actions instead of leaving the switch unresponsive.
+- Back up invalid configuration before narrow automatic repair or an explicit
+  rebuild. Preserve unsaved drafts and report concurrent edits as conflicts.
+- Keep cancellation bound to its exact setup or connection across native-window
+  reloads and renderer failures. Retain committed requests until completion,
+  preserve protected HTTP fallback, and keep established Global sessions running
+  when no explicit cancellation was requested.
+- Preserve native startup from symlinked or read-only configuration, including
+  the default config directory. Keep captured YAML bytes, size limits, relative
+  paths and revisions intact; reclaim orphaned snapshots from independent private
+  user-cache storage with parent-path, ACL and lifetime-lock checks.
+- Include the macOS titlebar traffic-light alignment fix from the latest main.
+
 ## 0.9.2
 
 - Share the released Magpie Design System 0.4.3 across the desktop configuration
