@@ -32,7 +32,7 @@ type peettyCDNFixture struct {
 
 func peettyTestFiles(color string, notices bool) map[string][]byte {
 	files := map[string][]byte{
-		"cdn/peetty.global.js": []byte("var css=`\n:host { all: initial; }\n.pet { color: " + color + "; }\n`;document.createElement(\"style\");function createPeetty(){};var tag=\"peetty-companion\";"),
+		"cdn/peetty.global.js": []byte("var css=`\n:host { all: initial; }\n.pet { color: " + color + "; }\n`;document.createElement(\"style\");function createPeetty(){document.createElement(\"peetty-companion\")};"),
 		"cdn/LICENSE":          []byte("MIT License"),
 	}
 	if notices {
@@ -223,8 +223,14 @@ func TestPeettyPageAndOldAssetsKeepSameReleaseDuringUpdate(t *testing.T) {
 	}
 	for _, version := range []string{"v0.3.1", "v0.3.2"} {
 		status, body := request(t, server, "GET", peettyAssetBase+version+"/peetty.global.js", nil, nil)
-		if status != http.StatusOK || !bytes.Equal(body, cdn.files[version]["cdn/peetty.global.js"]) {
+		if status != http.StatusOK || !bytes.Equal(body, peettyBrowserBundle(cdn.files[version]["cdn/peetty.global.js"], "Peetty")) {
 			t.Fatalf("open page lost its immutable %s assets: HTTP %d", version, status)
+		}
+		if version == first.Version {
+			digest := sha256.Sum256(body)
+			if !bytes.Contains(page, []byte(`integrity="sha256-`+base64.StdEncoding.EncodeToString(digest[:])+`"`)) {
+				t.Fatal("page integrity does not cover the served SDK facade")
+			}
 		}
 	}
 	for _, path := range []string{
@@ -296,6 +302,20 @@ func TestPeettyDoesNotLoadOrReplaceCacheThroughDirectorySymlink(t *testing.T) {
 	}
 	if newPeettyUpdates(config).snapshot() == nil {
 		t.Fatal("rejecting the alias damaged the original cache")
+	}
+}
+
+func TestPeettyRejectsUntrackedHostCreation(t *testing.T) {
+	for _, replacement := range []string{`window.document.createElement("peetty-companion")`, `globalThis.document.createElement("peetty-companion")`} {
+		release := &peettyRelease{Format: peettyCacheFormat, Commit: peettyTestCommit("v0.3.1"), Version: "v0.3.1", Files: peettyTestFiles("red", false), Hashes: make(map[string]string)}
+		release.Files["cdn/peetty.global.js"] = bytes.ReplaceAll(release.Files["cdn/peetty.global.js"], []byte(`document.createElement("peetty-companion")`), []byte(replacement))
+		for name, body := range release.Files {
+			digest := sha256.Sum256(body)
+			release.Hashes[name] = base64.StdEncoding.EncodeToString(digest[:])
+		}
+		if err := preparePeettyRelease(release); err == nil {
+			t.Fatalf("host creation bypassing the document facade was accepted: %s", replacement)
+		}
 	}
 }
 

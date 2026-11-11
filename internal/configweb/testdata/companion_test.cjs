@@ -13,11 +13,16 @@ async function setup(options = {}) {
   const retry = new EventTarget();
   const document = new EventTarget();
   document.hidden = false;
-  const overlays = new Set();
+  let notifyHosts = () => {};
+  const overlays = new class extends Set {
+    add(instance) { super.add(instance); queueMicrotask(() => notifyHosts(instance.host)); return this; }
+    delete(instance) { const removed = super.delete(instance); if (removed) queueMicrotask(() => notifyHosts(instance.host)); return removed; }
+  }();
   const log = { textContent: options.log || '' };
   const preview = { textContent: options.yaml || '' };
   const content = [log, preview, ...(options.texts || []).map((textContent) => ({ textContent }))];
   document.body = {};
+  document.documentElement = {};
   document.querySelectorAll = () => [...overlays].map((instance) => instance.host);
   document.createTreeWalker = () => {
     let index = 0;
@@ -37,12 +42,17 @@ async function setup(options = {}) {
   const window = new EventTarget();
   window.TailSplitI18n = { language: 'en', t: (key) => key, subscribe() {} };
   window.TailSplitCompanionPreferences = preferences;
-  window.Peetty = { createPeetty() {
+  const timers = new Map();
+  let nextTimer = 0;
+  window.setTimeout = (callback) => { timers.set(++nextTimer, callback); return nextTimer; };
+  window.clearTimeout = (id) => { timers.delete(id); };
+  const expireTimers = () => { for (const [id, callback] of [...timers]) { timers.delete(id); callback(); } };
+  window.Peetty = { createPeetty(_options, onHost = () => {}) {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
     const hide = new EventTarget();
     const instance = {
-      host: { shadowRoot: { querySelector: () => hide }, remove: () => { overlays.delete(instance); } }, hide, finish,
+      host: { insertionRoot: options.outsideBody ? document.documentElement : document.body, shadowRoot: { querySelector: () => hide }, remove: () => { overlays.delete(instance); } }, hide, finish,
       // Model a mount whose asynchronous work completes after early disposal.
       mount: () => pending.then(() => {
         if (options.mountRejects && instances[0] === instance) {
@@ -60,6 +70,7 @@ async function setup(options = {}) {
     };
     if (options.destroyMissing && instances.length === 0) instance.destroy = undefined;
     if (options.destroyNonCallable && instances.length === 0) instance.destroy = 'invalid';
+    onHost(instance.host);
     instances.push(instance);
     return instance;
   } };
@@ -68,9 +79,15 @@ async function setup(options = {}) {
   motion.matches = !!options.reducedMotion;
   window.matchMedia = () => motion;
   let logChanged = () => {};
+  const observations = [];
   window.MutationObserver = class {
-    constructor(callback) { logChanged = callback; }
-    observe() {}
+    constructor(callback) { this.callback = callback; logChanged = callback; }
+    observe(root) {
+      observations.push(root);
+      notifyHosts = (host) => {
+        if (root === document.documentElement || host.insertionRoot === root) this.callback();
+      };
+    }
   };
   document.createElement = () => ({ remove() {} });
   document.head = { append(script) {
@@ -86,7 +103,7 @@ async function setup(options = {}) {
   const setEnabled = (enabled) => { toggle.checked = enabled; toggle.dispatchEvent(new Event('change')); };
   const setHidden = (hidden) => { document.hidden = hidden; document.dispatchEvent(new Event('visibilitychange')); };
   await flush();
-  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden, scripts, motion, log, preview, logChanged, factory };
+  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden, scripts, motion, log, preview, logChanged, factory, timers, expireTimers, observations };
 }
 
 for (const interruption of ['toggle off', 'document hidden', 'page hidden']) {
@@ -101,20 +118,17 @@ for (const interruption of ['toggle off', 'document hidden', 'page hidden']) {
   });
 }
 
-test('canceled old mount cleans up before a replacement receives the Hide action', async () => {
+test('late old mount cannot claim the replacement Hide action', async () => {
   const state = await setup();
   state.setEnabled(false);
   await flush();
   state.setEnabled(true);
   await flush();
-  assert.equal(state.instances.length, 1, 'the replacement waits for the old mount');
-  const old = state.instances[0];
-  old.finish();
-  await flush();
-  assert.equal(state.instances.length, 2);
-  assert.equal(state.overlays.size, 0);
-  const active = state.instances[1];
+  assert.equal(state.instances.length, 2, 'replacement must not wait for a canceled mount');
+  const [old, active] = state.instances;
   active.finish();
+  await flush();
+  old.finish();
   await flush();
   assert.deepEqual([...state.overlays], [active]);
   active.hide.dispatchEvent(new Event('click'));
@@ -129,11 +143,10 @@ test('a page restored before its old mount settles keeps only the restored compa
   state.window.dispatchEvent(new Event('pagehide'));
   state.window.dispatchEvent(new Event('pageshow'));
   await flush();
-  assert.equal(state.instances.length, 1);
-  state.instances[0].finish();
-  await flush();
   assert.equal(state.instances.length, 2);
   state.instances[1].finish();
+  await flush();
+  state.instances[0].finish();
   await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
   assert.equal(state.toggle.checked, true);
@@ -175,13 +188,13 @@ test('failed saves restore the persisted visibility and expose a retryable error
   assert.equal(state.toggle.disabled, false);
   assert.equal(state.error.hidden, false);
   assert.match(state.error.textContent, /无法保存/);
-  assert.equal(state.instances.length, 1);
-  state.instances[0].finish();
-  await flush();
   assert.equal(state.instances.length, 2);
   state.instances[1].finish();
   await flush();
+  state.instances[0].finish();
+  await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
+  assert.match(state.error.textContent, /无法保存/);
 });
 
 for (const recovery of ['retry button', 'visible panel']) {
@@ -275,11 +288,10 @@ test('late updated mount is removed when diagnostic logs trigger compatibility f
   assert.equal(state.scripts.length, 1, 'concurrent fallback requests share one script load');
   state.scripts[0].finishLoad();
   await flush();
-  assert.equal(state.instances.length, 1);
-  old.finish();
-  await flush();
   assert.equal(state.instances.length, 2);
   state.instances[1].finish();
+  await flush();
+  old.finish();
   await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
 });
@@ -470,17 +482,15 @@ for (const interruption of ['disabled', 'document hidden', 'page hidden']) {
   });
 }
 
-test('replacement waits for canceled mount cleanup and keeps only its own host', async () => {
+test('replacement starts without waiting for a canceled mount and keeps only its own host', async () => {
   const state = await setup({ updated: true, mountRejects: true, partialMount: true, destroyBeforeRemoval: true });
   state.setHidden(true);
   state.setHidden(false);
   await flush();
-  assert.equal(state.instances.length, 1, 'SDK mounts must not overlap');
-  state.instances[0].finish();
-  await flush();
-  assert.equal(state.instances.length, 2);
-  assert.equal(state.overlays.size, 0, 'old host must be removed before the replacement starts');
+  assert.equal(state.instances.length, 2, 'a canceled SDK promise must not block replacement');
   state.instances[1].finish();
+  await flush();
+  state.instances[0].finish();
   await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
   state.instances[1].hide.dispatchEvent(new Event('click'));
@@ -500,17 +510,89 @@ test('body observation removes hosts added by canceled mounts before they settle
   assert.equal(state.overlays.size, 0);
 });
 
-test('obsolete queued generations never mount after repeated visibility changes', async () => {
+test('multiple stalled canceled mounts cannot remove the current companion', async () => {
   const state = await setup({ updated: true, destroyBeforeRemoval: true });
   for (let i = 0; i < 3; i++) { state.setHidden(true); state.setHidden(false); }
   await flush();
-  assert.equal(state.instances.length, 1);
-  state.instances[0].finish();
+  assert.equal(state.instances.length, 4);
+  const active = state.instances.at(-1);
+  active.finish();
+  await flush();
+  for (const old of state.instances.slice(0, -1)) old.finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [active]);
+  assert.equal(state.timers.size, 0);
+});
+
+test('document-root observation removes late hosts outside body without waiting for a canceled promise', async () => {
+  const state = await setup({ updated: true, outsideBody: true, destroyBeforeRemoval: true });
+  assert.deepEqual(state.observations, [state.document.documentElement]);
+  state.setHidden(true);
+  state.overlays.add(state.instances[0]);
+  await flush();
+  assert.equal(state.overlays.size, 0);
+  state.setHidden(false);
   await flush();
   assert.equal(state.instances.length, 2);
   state.instances[1].finish();
   await flush();
+  state.overlays.add(state.instances[0]);
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]], 'old root must not claim or remove the current host');
+  assert.equal(state.timers.size, 0);
+});
+
+test('a stalled CDN mount times out into the embedded SDK and late failures stay isolated', async () => {
+  const state = await setup({ updated: true, outsideBody: true, mountRejects: true, partialMount: true, destroyBeforeRemoval: true });
+  state.expireTimers();
+  await flush();
+  assert.equal(state.scripts.length, 1);
+  state.scripts[0].finishLoad();
+  await flush();
+  state.instances[1].finish();
+  await flush();
+  state.instances[0].finish();
+  await flush();
   assert.deepEqual([...state.overlays], [state.instances[1]]);
+  assert.equal(state.error.hidden, true);
+  assert.equal(state.timers.size, 0);
+});
+
+test('an embedded mount timeout exposes a retry that does not wait for its stalled predecessor', async () => {
+  const state = await setup({ outsideBody: true, destroyBeforeRemoval: true });
+  state.expireTimers();
+  await flush();
+  assert.equal(state.error.hidden, false);
+  assert.equal(state.retry.hidden, false);
+  state.retry.dispatchEvent(new Event('click'));
+  await flush();
+  assert.equal(state.instances.length, 2);
+  state.instances[1].finish();
+  await flush();
+  state.instances[0].finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+  assert.equal(state.error.hidden, true);
+  assert.equal(state.timers.size, 0);
+});
+
+test('fallback script timeout is retryable and ignores a late load', async () => {
+  const state = await setup({ updated: true, reducedMotion: true });
+  state.expireTimers();
+  await flush();
+  assert.equal(state.error.hidden, false);
+  state.retry.dispatchEvent(new Event('click'));
+  assert.equal(state.scripts.length, 2);
+  state.scripts[1].finishLoad();
+  await flush();
+  state.instances[0].finish();
+  await flush();
+  state.scripts[0].finishLoad();
+  await flush();
+  assert.equal(state.instances.length, 1);
+  assert.equal(state.overlays.size, 1);
+  assert.equal(state.error.hidden, true);
+  assert.equal(state.timers.size, 0);
 });
 
 test('changing reduced motion switches an active CDN companion to the embedded runtime', async () => {

@@ -66,7 +66,10 @@ adaptation remains the offline and compatibility fallback. Dynamic releases are
 verified against source bytes fetched directly from the publisher's GitHub
 repository at the resolved tag commit, independently of the delivery CDN. Exact
 stylesheet CSP hashes permit the upstream shadow-root stylesheet without
-inline-style exceptions.
+inline-style exceptions. Served scripts wrap the verified upstream bytes in a
+TailSplit document facade that reports companion elements at creation; the
+cached upstream files remain unmodified. Script integrity covers the complete
+served wrapper and upstream code.
 
 ## Publisher verification certificate roots
 

@@ -200,7 +200,9 @@ the owner-only cache; caches established using system TLS trust are rejected.
 Reduced motion, oversized page text (including YAML and logs), or a failed CDN
 companion use the embedded build with TailSplit's compatibility fixes. All
 browser requests stay on the local origin; CSP permits only the selected
-release's exact stylesheet.
+release's exact stylesheet. A local SDK facade records each instance's hosts at
+creation, so cancellation and ten-second mount/load deadlines can release
+recovery immediately while late hosts remain safely removable.
 
 ## CLI
 

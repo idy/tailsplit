@@ -43,6 +43,8 @@ type peettyRelease struct {
 	style   string
 }
 
+var peettyHostCreation = regexp.MustCompile(`(?:^|[^\w$.])document\.createElement\("peetty-companion"\)`)
+
 var peettyStylesheet = regexp.MustCompile("(?s)(?:var|let|const)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*=\\s*`(\\n:host \\{ all: initial; \\}[^`]*\\n)`[;,]")
 
 type peettyUpdates struct {
@@ -212,7 +214,7 @@ func preparePeettyRelease(release *peettyRelease) error {
 	styles := peettyStylesheet.FindAllSubmatch(bundle, -1)
 	if len(styles) != 1 || bytes.Contains(styles[0][1], []byte("${")) || bytes.ContainsAny(styles[0][1], "\\") ||
 		bytes.Count(bundle, []byte(`createElement("style")`)) != 1 ||
-		!bytes.Contains(bundle, []byte("createPeetty")) || !bytes.Contains(bundle, []byte("peetty-companion")) {
+		!bytes.Contains(bundle, []byte("createPeetty")) || len(peettyHostCreation.FindAllIndex(bundle, -1)) != 1 {
 		return errors.New("unsupported Peetty browser bundle or stylesheet")
 	}
 	digest := sha256.Sum256(styles[0][1])
@@ -276,7 +278,7 @@ func readPeettyBounded(reader io.Reader, limit int64) ([]byte, error) {
 }
 
 func (release *peettyRelease) scriptTag() string {
-	digest := sha256.Sum256(release.Files["cdn/peetty.global.js"])
+	digest := sha256.Sum256(release.browserScript())
 	return `<script src="` + peettyAssetBase + release.Version + `/peetty.global.js" data-peetty-release="` + release.Version +
 		`" integrity="sha256-` + base64.StdEncoding.EncodeToString(digest[:]) + `" defer></script>`
 }
@@ -294,11 +296,13 @@ func (u *peettyUpdates) serveAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	body := release.Files["cdn/"+name]
 	if name == "peetty.global.js" {
+		body = release.browserScript()
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	} else {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
 	w.Header().Set("X-Peetty-Version", version)
-	_, _ = w.Write(release.Files["cdn/"+name])
+	_, _ = w.Write(body)
 }

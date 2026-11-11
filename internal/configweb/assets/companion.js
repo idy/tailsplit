@@ -6,9 +6,9 @@
   const retryButton = document.querySelector('#page-companion-retry');
   const locale = window.TailSplitI18n;
   const preferences = window.TailSplitCompanionPreferences;
-  const hostsByPet = new WeakMap();
-  let mountTail = Promise.resolve();
-  let mountLease = null;
+  const leasesByPet = new WeakMap();
+  const hostOwners = new WeakMap();
+  const timeoutMS = 10000;
   let enabled = false;
   let ready = false;
   let saving = false;
@@ -33,8 +33,6 @@
   }
 
   function showError(key, retry = null, kind = 'companion') {
-    // Saving a preference is the user's outstanding operation. A subsequent
-    // failed mount must not replace its explanation or its retry action.
     if (key && kind === 'companion' && errorKind === 'preference') return;
     errorKey = key;
     errorKind = key ? kind : '';
@@ -50,86 +48,101 @@
   function useBundled() {
     if (bundled) return Promise.resolve();
     if (fallbackLoading) return fallbackLoading;
-    fallbackLoading = new Promise((resolve, reject) => {
+    const pending = new Promise((resolve, reject) => {
       const script = document.createElement('script');
       const previous = window.TailSplitBundledPeetty;
-      const fail = () => { script.remove(); fallbackLoading = null; reject(new Error('Companion fallback unavailable.')); };
+      let settled = false;
+      let timer = null;
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        script.remove();
+        reject(new Error('Companion fallback unavailable.'));
+      };
       script.src = '/vendor/peetty/fallback.js';
       script.onload = () => {
+        if (settled) return;
         const loaded = window.TailSplitBundledPeetty;
         if (!loaded || loaded === previous || typeof loaded.createPeetty !== 'function') { fail(); return; }
+        settled = true;
+        window.clearTimeout(timer);
         sdk = loaded;
         bundled = true;
         resolve();
       };
       script.onerror = fail;
-      document.head.append(script);
+      timer = window.setTimeout(fail, timeoutMS);
+      try { document.head.append(script); } catch (_) { fail(); }
     });
-    return fallbackLoading;
+    fallbackLoading = pending;
+    void pending.catch(() => { if (fallbackLoading === pending) fallbackLoading = null; });
+    return pending;
   }
 
-  function rememberHosts(lease) {
-    for (const host of document.querySelectorAll('peetty-companion')) {
-      if (!lease.previous.has(host)) lease.hosts.add(host);
+  // The server's SDK facade reports hosts at creation, before insertion. Each
+  // callback retains its own lease even after cancellation or a mount timeout.
+  function registerHost(lease, host) {
+    hostOwners.set(host, lease);
+    if (lease.cancelled) {
+      void Promise.resolve().then(() => { if (hostOwners.get(host) === lease) host.remove(); });
+    } else lease.hosts.add(host);
+  }
+
+  function disposeLease(lease) {
+    lease.cancelled = true;
+    window.clearTimeout(lease.timer);
+    lease.release();
+    if (!lease.disposed) {
+      lease.disposed = true;
+      try { if (typeof lease.instance?.destroy === 'function') lease.instance.destroy(); }
+      catch (_) { /* Host ownership does not depend on successful SDK cleanup. */ }
     }
-  }
-
-  function removeHosts(hosts) {
-    for (const host of hosts || []) host.remove();
+    for (const host of lease.hosts) host.remove();
+    lease.hosts.clear();
+    leasesByPet.delete(lease.instance);
   }
 
   function dispose(instance) {
-    if (mountLease && mountLease.instance === instance) rememberHosts(mountLease);
-    try { if (typeof instance?.destroy === 'function') instance.destroy(); }
-    catch (_) { /* A broken CDN cleanup must not prevent embedded recovery. */ }
-    finally {
-      removeHosts(hostsByPet.get(instance));
-      hostsByPet.delete(instance);
-    }
+    const lease = leasesByPet.get(instance);
+    if (lease) disposeLease(lease);
   }
 
-  // Only one SDK mount may own new DOM hosts at a time. Its lease survives
-  // cancellation until the mount settles and its additions have been removed.
-  // This makes cleanup independent of the SDK's private instance fields and
-  // prevents an old mount from claiming or deleting a replacement's host.
   async function mountOne(current) {
     if (current !== generation || !ready || !enabled || suspended || document.hidden || saving) return;
-    const lease = { current, instance: null, previous: new Set(document.querySelectorAll('peetty-companion')), hosts: new Set() };
-    mountLease = lease;
-    let next = null;
+    const lease = { instance: null, hosts: new Set(), cancelled: false, disposed: false, timer: null, release: null };
+    const cancelled = new Promise((resolve) => { lease.release = resolve; });
     let committed = false;
     try {
-      next = sdk.createPeetty({
+      const next = sdk.createPeetty({
         figure: 'miru', size: 88, activity: 'lively',
         language: locale.language, greet: false, chat: false, zIndex: 20,
-      });
+      }, (host) => registerHost(lease, host));
       lease.instance = next;
       if (!next || typeof next.mount !== 'function' || typeof next.destroy !== 'function' || typeof next.setLanguage !== 'function') {
         throw new Error('Incompatible companion instance.');
       }
-      hostsByPet.set(next, lease.hosts);
+      leasesByPet.set(next, lease);
       pet = next;
-      await next.mount();
-      rememberHosts(lease);
-      if (current !== generation || pet !== next) return;
+      const deadline = new Promise((_, reject) => {
+        lease.timer = window.setTimeout(() => reject(new Error('Companion mount timed out.')), timeoutMS);
+      });
+      await Promise.race([next.mount(), cancelled, deadline]);
+      if (lease.cancelled || current !== generation || pet !== next) return;
       const live = new Set(document.querySelectorAll('peetty-companion'));
       const host = [...lease.hosts].find((candidate) => live.has(candidate) && candidate.shadowRoot?.querySelector('[data-action="hide"]'));
       if (!host) throw new Error('Missing companion host.');
       host.shadowRoot.querySelector('[data-action="hide"]').addEventListener('click', () => { void save(false); });
       committed = true;
     } finally {
-      rememberHosts(lease);
-      if (!committed || current !== generation || pet !== next) {
-        dispose(next);
-        removeHosts(lease.hosts);
-        if (pet === next) pet = null;
+      window.clearTimeout(lease.timer);
+      if (!committed || lease.cancelled || current !== generation || pet !== lease.instance) {
+        disposeLease(lease);
+        if (pet === lease.instance) pet = null;
       }
-      mountLease = null;
     }
   }
 
-  // Upstream can abandon a scan on any oversized text node, including YAML
-  // comments and values. Inspect text nodes rather than total container text.
   function needsBundled() {
     if (reducedMotion?.matches) return true;
     const walker = document.createTreeWalker(document.body, 4 /* SHOW_TEXT */);
@@ -155,9 +168,7 @@
         await useBundled();
       }
       if (current !== generation) return;
-      const task = mountTail.then(() => mountOne(current));
-      mountTail = task.catch(() => {});
-      await task;
+      await mountOne(current);
     } catch (_) {
       if (current !== generation) return;
       if (!bundled && !fallbackAttempted) {
@@ -183,12 +194,11 @@
   reducedMotion?.addEventListener('change', checkCompatibility);
   if (window.MutationObserver) {
     new window.MutationObserver(() => {
-      if (mountLease) {
-        rememberHosts(mountLease);
-        if (mountLease.current !== generation) removeHosts(mountLease.hosts);
+      for (const host of document.querySelectorAll('peetty-companion')) {
+        if (hostOwners.get(host)?.cancelled) host.remove();
       }
       checkCompatibility();
-    }).observe(document.body, { childList: true, characterData: true, subtree: true });
+    }).observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   }
 
   async function save(value) {
