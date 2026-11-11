@@ -91,7 +91,11 @@
     const unavailable = Boolean(loadError);
     text('#status', t(unavailable ? '状态不可用' : view.status));
     text('#connection-detail', t(unavailable ? '请重试或打开主界面' : pending ? '正在处理…' : view.detail));
-    $('#status-dot').dataset.tone = unavailable ? 'error' : view.tone;
+    const tone = unavailable ? 'error' : view.tone;
+    $('#status-dot').dataset.tone = tone;
+    $('.popup-state').dataset.tone = tone;
+    $('.popup-state').dataset.compact = String(!unavailable && !pending && !view.setup && ['已连接', '未连接'].includes(view.status));
+    $('#connect').dataset.tone = tone;
     $('#connect').hidden = view.setup && !unavailable;
     $('#setup').hidden = !view.setup || unavailable;
     $('#setup').disabled = pending;
