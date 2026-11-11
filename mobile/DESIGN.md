@@ -88,7 +88,7 @@ components:
 
 TailSplit retains the user-pinned desktop identity: neutral grouped surfaces, blue actions, text-backed semantic states, a plain green node check, and a fixed deep-gray diagnostic terminal. This mobile boundary implements one embedded Tailscale device with one selected exit node. Native phone controls carry that identity; the desktop web typography and geometry are not transplanted into touch controls.
 
-The implementation uses native UIKit Liquid Glass through `adaptive_platform_ui` for supported iOS controls on iOS 26+, with Cupertino fallback. The page content, inset grouped lists and node sheet include Flutter Cupertino widgets. Material 3 implementations also exist in source; Android has not been built or tested. This record describes the phone adaptation, not a new identity for TailSplit or a desktop redesign.
+The implementation uses native UIKit Liquid Glass through `adaptive_platform_ui` for supported iOS controls on iOS 26+, with Cupertino fallback. The page content, inset grouped lists and node sheet include Flutter Cupertino widgets. Material 3 implementations also exist in source; the Android debug build passed CI, while Android device layouts remain unverified. This record describes the phone adaptation, not a new identity for TailSplit or a desktop redesign.
 
 **Key Characteristics:**
 
@@ -198,7 +198,7 @@ The native tab bar orders Exit Node, Logs, Settings. The selected iOS tab uses d
 
 Connection state pairs readable text with a neutral, green, amber or red power icon and an explicit switch. Routing uses an unboxed current-value menu. In Settings, the adaptive Rule-based / Global segmented control sits independently above the routing card list, which starts with Rule source. Global mode hides the Split-only card and shows its explanation below the standalone control. Signing in, selecting a node and connecting remain separate steps. The app has a single exit; desktop multi-exit controls are outside this mobile implementation.
 
-Ordinary settings save immediately and may expose Reconnect to apply while connected. Routing mode changes request reconnection immediately through their own controller path. These are source behaviors; the supplied preview captures do not verify traffic consequences.
+Ordinary settings save immediately and may expose Reconnect to apply while connected. Routing mode and node changes reconnect a known Split session after confirmed shutdown. A running Global session, or a restored session whose runtime mode is unknown, retains its tunnel and marks the change pending. Reconnect and reauthentication require confirmation explaining that stopping the VPN restores normal networking and traffic may go direct until connection succeeds, including on failure. Cancelling the prompt retains the tunnel. A shutdown failure keeps the identity and exposes a retryable problem instead of removing the exit or starting a replacement. These UI behaviors do not verify real VPN traffic protection.
 
 While a connection is preparing, the group footer names the step (checking the exit node, loading the rule list, starting the VPN) and says the switch cancels; the switch stays enabled for that purpose. The preflight refreshes a netmap older than a minute and refuses to connect through a node Tailscale reports offline or no longer offers, or while the device awaits admin approval. It never substitutes another node.
 

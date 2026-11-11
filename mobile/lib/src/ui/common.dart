@@ -60,7 +60,7 @@ class ProblemCard extends StatelessWidget {
     final (String title, String? body, String action, VoidCallback? onAction) = switch (problem) {
       AppProblem.signIn when signingIn =>
         (s.errorSignIn, detail, s.openSignInAgain, app.openSignInPage),
-      AppProblem.signIn => (s.errorSignIn, detail, s.retry, app.signInExit),
+      AppProblem.signIn => (s.errorSignIn, detail, s.retry, () => signInWithConsent(context, app)),
       AppProblem.refresh => (s.errorRefresh, detail, s.retry, app.refreshing ? null : app.refresh),
       AppProblem.rules => (
           s.errorRules,
@@ -70,7 +70,10 @@ class ProblemCard extends StatelessWidget {
         ),
       AppProblem.permission => (s.connectionFailed, s.vpnPermissionDenied, s.retry, app.canConnect ? app.connect : null),
       AppProblem.connect => (s.connectionFailed, detail, s.retry, app.canConnect && !app.switchOn ? app.connect : null),
-      AppProblem.needsSignIn => (s.signedOut, s.needsSignInAgain, s.signIn, app.busy ? null : app.signInExit),
+      AppProblem.disconnect => (s.errorDisconnect, s.errorDisconnectBody, s.retry,
+          app.transitioning ? null : () => app.disconnect(force: true)),
+      AppProblem.needsSignIn => (s.signedOut, s.needsSignInAgain, s.signIn,
+          app.busy ? null : () => signInWithConsent(context, app)),
       AppProblem.nodeOffline => (
           s.errorNodeOffline(subject),
           s.errorNodeOfflineBody,
@@ -179,6 +182,18 @@ class _DismissButton extends StatelessWidget {
       );
 }
 
+Future<bool> _confirmProtectionGap(BuildContext context) {
+  final s = S.of(context);
+  return confirmDialog(context, title: s.protectionGapTitle,
+      message: s.protectionGapBody, confirm: s.stopAndContinue, cancel: s.cancel);
+}
+
+Future<void> signInWithConsent(BuildContext context, AppController app) async {
+  final needsConsent = app.reconnectRequiresConsent;
+  if (needsConsent && !await _confirmProtectionGap(context)) return;
+  if (context.mounted) await app.signInExit(allowProtectionGap: needsConsent);
+}
+
 /// Settings saved while connected wait for an explicit reconnect, like the
 /// desktop's Save & apply actionbar.
 class ReconnectBar extends StatelessWidget {
@@ -211,7 +226,11 @@ class ReconnectBar extends StatelessWidget {
             ),
             TextAction(
               label: s.reconnect,
-              onPressed: app.transitioning || app.busy ? null : app.reconnect,
+              onPressed: app.transitioning || app.busy ? null : () async {
+                final needsConsent = app.reconnectRequiresConsent;
+                if (needsConsent && !await _confirmProtectionGap(context)) return;
+                if (context.mounted) await app.reconnect(allowProtectionGap: needsConsent);
+              },
             ),
           ],
         ),

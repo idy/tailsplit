@@ -104,7 +104,15 @@ download failed). These options only take effect in preview builds.
 - **Connecting** names its step and can be cancelled by turning the switch off.
   Before starting, it refreshes a netmap older than a minute and refuses an exit
   node that Tailscale reports offline or no longer offers, or a device still
-  waiting for admin approval. It never picks another node.
+  waiting for admin approval. It never picks another node. Native start/stop
+  commands are serialized; cancelling an in-flight start waits for shutdown.
+- **Reconnect and removal** require confirmed native disconnection before a new
+  start, sign-in or identity deletion. A stop failure retains the saved identity
+  and reports a retryable error. Changes to a running Global tunnel (or a restored
+  tunnel whose mode is unknown) stay pending until the user confirms that stopping
+  the VPN can expose direct traffic during reconnection, including if it fails.
+- **Direct IPv6 disabled** rejects literal and cached IPv6 destinations on direct
+  routes as well as suppressing direct AAAA answers; Tailnet/proxy IPv6 remains available.
 - **Rule lists** download on first use and are then reused from a per-source
   saved copy, so a blocked or slow GitHub does not delay every connection.
   Settings › Routing › Rule list updates it explicitly; a failed or invalid
@@ -131,14 +139,23 @@ use explicitly labelled simulated data.
 
 The failure states (offline node, first rule-list download failure, connecting
 step) and the Exit Node, picker and Settings screens at the accessibility-extra-large
-text size were also captured on that simulator.
+text size were also captured on that simulator. A native XCUITest also verifies
+that changing a running Global preview to Split leaves a pending reconnect,
+that Reconnect displays the protection-gap confirmation, and that cancelling
+keeps the preview connected.
 
-Static analysis is clean. The default test run passes 81 tests and skips six
+Static analysis is clean. The default test run passes 101 tests and skips six
 checks that require external Go helper services; `test/hardening_test.dart` covers
 cancelled connects, offline/missing nodes, logged-out or expired session recovery,
 failed sign-in saves, storage errors, the rule-list cache, resolver and CIDR parsing,
 and damaged settings. `test/vpn_service_test.dart` covers fast disconnect events,
-pending status queries, explicit timeouts and listener cleanup.
+pending status queries, stale snapshots, explicit timeouts and listener cleanup.
+`test/vpn_lifecycle_review_test.dart` covers serialized cancellation, confirmed
+shutdown before removal/reconnect, and Global protection consent.
+`test/navigation_review_test.dart` checks disabled menus, Android Back handling
+and iOS edge-swipe navigation. Release and Android configuration guards pass
+21 Python tests. Android debug and iOS simulator/unsigned device builds passed
+[PR CI](https://github.com/idy/tailsplit/actions/runs/42974106036).
 `test/cleanup_test.dart` checks bounded log ordering and notifications, inactive-tab
 updates, theme reuse and control-error categories independent of diagnostic wording. Generated Split and
 Global configurations were also instantiated with the desktop's pinned sing-box

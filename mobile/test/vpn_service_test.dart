@@ -54,6 +54,33 @@ void main() {
     await pumpEventQueue();
   });
 
+  test('a late disconnected snapshot cannot override a newer transition event', () async {
+    final snapshot = Completer<VpnStatus>();
+    vpn.readSnapshot = () => snapshot.future;
+    var completed = false;
+    final waiting = vpn.waitFor(VpnConnectionState.disconnected)
+        .then((_) => completed = true);
+    vpn.updates.add(const VpnStatus(state: VpnConnectionState.disconnecting));
+    snapshot.complete(disconnected);
+    await pumpEventQueue();
+    expect(completed, isFalse);
+    vpn.updates.add(disconnected);
+    await waiting;
+    expect(vpn.updates.hasListener, isFalse);
+  });
+
+  test('a newer stream state supersedes a failed snapshot query', () async {
+    final snapshot = Completer<VpnStatus>();
+    vpn.readSnapshot = () => snapshot.future;
+    final waiting = vpn.waitFor(VpnConnectionState.disconnected);
+    vpn.updates.add(connected);
+    snapshot.completeError(StateError('superseded query'));
+    await pumpEventQueue();
+    vpn.updates.add(disconnected);
+    await waiting;
+    expect(vpn.updates.hasListener, isFalse);
+  });
+
   test('nonmatching events do not finish the wait', () async {
     vpn.readSnapshot = () async => connected;
     var completed = false;

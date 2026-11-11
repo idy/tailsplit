@@ -193,6 +193,21 @@ class S {
         'This device was signed out of the Tailnet. Sign in again.',
         '这台设备已退出 Tailnet，请重新登录。',
       );
+  String get errorDisconnect => _('Couldn\'t disconnect', '无法断开连接');
+  String get errorDisconnectBody => _(
+        'The VPN has not confirmed it stopped. Your exit and identity are retained. Try disconnecting again.',
+        'VPN 尚未确认停止，出口和身份信息仍保留。请重新尝试断开连接。',
+      );
+  String get protectionGapTitle => _('Pause VPN protection?', '暂停 VPN 保护？');
+  String get protectionGapBody => _(
+        'This stops the current tunnel and restores normal networking. Traffic may go direct until you connect again, including if the next connection fails.',
+        '这会停止当前隧道并恢复系统网络。重新连接前（包括连接失败时），流量可能直接访问网络。',
+      );
+  String get stopAndContinue => _('Stop and continue', '断开并继续');
+  String get pickerFooterProtected => _(
+        'Saving keeps the current tunnel active. Confirm a reconnect separately to apply the change.',
+        '保存后保持当前隧道连接，另行确认重连后才会生效。',
+      );
   String get retry => _('Retry', '重试');
   String get ok => _('OK', '好');
 

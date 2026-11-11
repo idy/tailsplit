@@ -54,10 +54,19 @@ class VpnService {
       if (!reached.isCompleted) reached.completeError(error, stack);
     }
 
-    final subscription = status.listen(observe, onError: fail);
+    var receivedEvent = false;
+    final subscription = status.listen((status) {
+      receivedEvent = true;
+      observe(status);
+    }, onError: fail);
     try {
+      // Events take precedence over a snapshot captured before they arrived.
       // A matching event also completes the wait if the snapshot query stalls.
-      unawaited(currentStatus().then(observe, onError: fail));
+      unawaited(currentStatus().then((snapshot) {
+        if (!receivedEvent) observe(snapshot);
+      }, onError: (Object error, StackTrace stack) {
+        if (!receivedEvent) fail(error, stack);
+      }));
       await reached.future.timeout(timeout);
     } finally {
       await subscription.cancel();

@@ -33,6 +33,7 @@ enum AppProblem {
   rules,
   permission,
   connect,
+  disconnect,
   needsSignIn,
   nodeOffline,
   nodeMissing,
@@ -166,6 +167,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   int _signInAttempt = 0;
   bool _observing = false;
   bool _disposed = false;
+  Future<void> _nativeOperations = Future<void>.value();
+  Future<bool>? _stopRequest;
+  bool _nativeStartPending = false;
+  bool _reconnecting = false;
+  RoutingMode? _runningMode;
 
   bool get isPreview => previewMode;
   bool get connected => vpnState == VpnConnectionState.connected;
@@ -173,7 +179,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       vpnState == VpnConnectionState.connected ||
       vpnState == VpnConnectionState.connecting;
   bool get transitioning =>
-      preparing ||
+      preparing || _stopRequest != null ||
       vpnState == VpnConnectionState.connecting ||
       vpnState == VpnConnectionState.disconnecting;
   bool get busy => removing || signIn != SignInPhase.idle;
@@ -185,9 +191,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Turning the switch off also cancels an attempt still preparing.
   bool get canToggleConnection {
-    if (busy || vpnState == VpnConnectionState.disconnecting) return false;
+    if (busy || _stopRequest != null || vpnState == VpnConnectionState.disconnecting) return false;
     return switchOn || canConnect;
   }
+
+  /// Automatic applies must keep Global protection active. A tunnel restored
+  /// from the OS has an unknown runtime mode and takes the same safe path.
+  bool get reconnectRequiresConsent => _runningMode != RoutingMode.split &&
+      (vpnState != VpnConnectionState.disconnected || _nativeStartPending);
 
   String? get _ruleUrl => switch (settings.source) {
         RuleSource.builtin => RuleLists.defaultUrl,
@@ -267,8 +278,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     switch (screen) {
       case 'connected' || 'global':
         vpnState = VpnConnectionState.connected;
+        _runningMode = settings.mode;
       case 'reconnect':
         vpnState = VpnConnectionState.connected;
+        _runningMode = settings.mode;
         needsReconnect = true;
       case 'signin':
         signIn = SignInPhase.browser;
@@ -337,6 +350,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         if (problem == AppProblem.connect || problem == AppProblem.permission) _clearProblem();
         if (previous != VpnConnectionState.connected) _log('info', 'Connected.');
       case VpnConnectionState.disconnected:
+        if (!_nativeStartPending) _runningMode = null;
         needsReconnect = false;
         if (previous == VpnConnectionState.connected || previous == VpnConnectionState.disconnecting) {
           _log('info', 'Disconnected.');
@@ -352,13 +366,23 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   static String defaultHostname() => Platform.isIOS ? 'tailsplit-ios' : 'tailsplit-android';
 
   /// Signs in a new device, or the existing device after it was signed out.
-  Future<void> signInExit() async {
+  Future<void> signInExit({bool allowProtectionGap = false}) async {
     if (busy) return;
+    if (reconnectRequiresConsent && !allowProtectionGap) {
+      needsReconnect = true;
+      notifyListeners();
+      return;
+    }
     final attempt = ++_signInAttempt;
     _clearProblem();
-    if (switchOn) await disconnect();
     signIn = SignInPhase.starting;
     notifyListeners();
+    if ((switchOn || exit != null) && !await disconnect(force: true)) {
+      signIn = SignInPhase.idle;
+      notifyListeners();
+      return;
+    }
+    if (attempt != _signInAttempt) return;
     _log('info', 'Starting Tailscale sign-in.');
     if (isPreview) {
       await Future<void>.delayed(const Duration(milliseconds: 700));
@@ -563,7 +587,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   static bool selectable(TailnetPeer peer) => peer.online && exitAddress(peer) != null;
 
   /// Saves the chosen node; false when it could not be saved, leaving the
-  /// previous choice. An active session reconnects in the background.
+  /// previous choice. Split reconnects in the background; Global waits for consent.
   Future<bool> confirmNode(TailnetPeer peer) async {
     final current = exit;
     final address = exitAddress(peer);
@@ -585,14 +609,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
-  Future<void> removeExit() async {
+  Future<bool> removeExit() async {
     final current = exit;
-    if (current == null || busy) return;
+    if (current == null || busy) return false;
     removing = true;
     notifyListeners();
     Object? storageError;
     try {
-      if (switchOn) await disconnect();
+      // Never log out or remove state until native shutdown is confirmed.
+      if (!await disconnect(force: true)) return false;
       if (!isPreview) {
         final client = _newClient();
         try {
@@ -617,6 +642,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _clearProblem();
       if (storageError != null) _setProblem(AppProblem.storage, error: storageError);
       _log('info', 'Exit removed.');
+      return true;
     } finally {
       removing = false;
       notifyListeners();
@@ -640,11 +666,21 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Connection ─────────────────────────────────────────────────────────
 
-  Future<void> setConnected(bool value) => value ? connect() : disconnect();
+  Future<void> setConnected(bool value) async {
+    if (value) {
+      await connect();
+    } else {
+      await disconnect();
+    }
+  }
 
   Future<void> connect() async {
     final current = exit;
-    if (current == null || !current.hasNode || preparing || active || busy) return;
+    if (current == null || !current.hasNode || preparing || active || busy ||
+        _stopRequest != null || vpnState == VpnConnectionState.disconnecting) {
+      return;
+    }
+    final connectionSettings = settings;
     final attempt = ++_connectAttempt;
     bool cancelled() => attempt != _connectAttempt || _disposed;
     connectStep = ConnectStep.checking;
@@ -666,6 +702,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         await Future<void>.delayed(const Duration(milliseconds: 600));
         if (cancelled()) return;
         vpnState = VpnConnectionState.connected;
+        _runningMode = connectionSettings.mode;
         _log('info', 'Connected (simulated).');
         return;
       }
@@ -758,10 +795,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
       // 2. Rule list: cached after the first download.
       RuleProjection? rules;
-      if (settings.mode == RoutingMode.split && settings.source != RuleSource.none) {
+      if (connectionSettings.mode == RoutingMode.split && connectionSettings.source != RuleSource.none) {
         connectStep = ConnectStep.rules;
         notifyListeners();
-        final url = _ruleUrl;
+        final url = connectionSettings.source == RuleSource.builtin
+            ? RuleLists.defaultUrl
+            : connectionSettings.customSourceUrl.isEmpty ? null : connectionSettings.customSourceUrl;
         try {
           if (url == null) {
             throw const RuleListException('no custom rule list URL', cause: FailureCause.invalid);
@@ -782,7 +821,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       connectStep = ConnectStep.starting;
       notifyListeners();
       final config = ConfigBuilder.build(
-        settings: settings,
+        settings: connectionSettings,
         rules: rules,
         exit: ExitRuntime(
           hostname: identity.hostname,
@@ -801,7 +840,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       if (cancelled()) return;
-      await _vpn.start(config);
+      _nativeStartPending = true;
+      try {
+        await _serializeNative(() async {
+          if (cancelled()) return;
+          _runningMode = connectionSettings.mode;
+          await _vpn.start(config);
+          // A start acknowledgement can arrive after cancellation. Stop inside
+          // this same serialized operation before any later start may run.
+          if (attempt != _connectAttempt) {
+            await _stopVpnConfirmed();
+          } else {
+            _runningMode = connectionSettings.mode;
+            needsReconnect = needsReconnect || settings.affectsConnection(connectionSettings) ||
+                exit?.nodeId != profile.nodeId;
+          }
+        });
+      } finally {
+        _nativeStartPending = false;
+      }
     } catch (error) {
       if (!cancelled()) {
         _setProblem(AppProblem.connect, error: error);
@@ -815,56 +872,98 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Stops the VPN, or cancels an attempt that has not reached it yet.
-  Future<void> disconnect() async {
+  /// A native start and every subsequent stop share one ordered queue. Failed
+  /// commands release the queue but do not grant permission to remove state.
+  Future<T> _serializeNative<T>(Future<T> Function() operation) {
+    final next = _nativeOperations.then((_) => operation());
+    _nativeOperations = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return next;
+  }
+
+  Future<void> _stopVpnConfirmed() async {
+    await _vpn.stop();
+    await _vpn.waitFor(VpnConnectionState.disconnected);
+    final current = await _vpn.currentStatus().timeout(const Duration(seconds: 15));
+    _onStatus(current);
+    if (current.state != VpnConnectionState.disconnected) {
+      throw const AppFailure(FailureCause.unknown, 'The VPN has not confirmed disconnection.');
+    }
+    _runningMode = null;
+  }
+
+  /// Stops the VPN, or cancels an attempt that has not reached it yet. False
+  /// means the service could still own its identity and no replacement may start.
+  Future<bool> disconnect({bool force = false}) {
     final step = connectStep;
     _connectAttempt++;
     if (preparing) {
       connectStep = null;
       _log('info', 'Connection cancelled.');
-      notifyListeners();
     }
+    final pending = _stopRequest;
+    if (pending != null) return pending;
+    final reachedService = force || _nativeStartPending ||
+        vpnState != VpnConnectionState.disconnected || step == ConnectStep.starting;
+    late final Future<bool> request;
+    request = _disconnect(reachedService).whenComplete(() {
+      if (identical(_stopRequest, request)) _stopRequest = null;
+      notifyListeners();
+    });
+    _stopRequest = request;
+    notifyListeners();
+    return request;
+  }
+
+  Future<bool> _disconnect(bool reachedService) async {
     if (isPreview) {
-      if (vpnState == VpnConnectionState.disconnected) return;
-      vpnState = VpnConnectionState.disconnecting;
-      notifyListeners();
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      vpnState = VpnConnectionState.disconnected;
-      needsReconnect = false;
-      _log('info', 'Disconnected (simulated).');
-      notifyListeners();
-      return;
-    }
-    // Before the start step nothing reached the native service.
-    final reachedService = vpnState != VpnConnectionState.disconnected || step == ConnectStep.starting;
-    if (!reachedService) return;
-    try {
-      await _vpn.stop();
-      await _vpn.waitFor(VpnConnectionState.disconnected);
       if (vpnState != VpnConnectionState.disconnected) {
-        _onStatus(await _vpn.currentStatus());
+        vpnState = VpnConnectionState.disconnecting;
+        notifyListeners();
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        _onStatus(const VpnStatus(state: VpnConnectionState.disconnected));
       }
+      _runningMode = null;
+      return true;
+    }
+    // Cancelling preflight does not touch a service it never started. Identity
+    // removal and sign-in use force=true even if the UI's state says stopped.
+    if (!reachedService) return true;
+    try {
+      await _serializeNative(_stopVpnConfirmed);
+      if (problem == AppProblem.disconnect) _clearProblem();
+      return true;
     } catch (error) {
-      _log('warn', 'Disconnect reported: ${describeFailure(error)}');
+      _setProblem(AppProblem.disconnect, error: error);
+      _log('warn', 'Disconnect failed: ${describeFailure(error)}');
+      return false;
     }
   }
 
-  Future<void> reconnect() async {
-    await disconnect();
-    if (active) {
-      // The service did not stop in time; keep the pending change visible.
+  Future<void> reconnect({bool allowProtectionGap = false}) async {
+    if (_reconnecting) return;
+    if (reconnectRequiresConsent && !allowProtectionGap) {
+      // Keep the current Global tunnel alive until the user confirms a gap.
       needsReconnect = true;
-      _log('warn', 'The VPN did not stop in time; reconnect again to apply changes.');
       notifyListeners();
       return;
     }
-    await connect();
+    _reconnecting = true;
+    try {
+      if (!await disconnect(force: true)) {
+        needsReconnect = true;
+        return;
+      }
+      await connect();
+    } finally {
+      _reconnecting = false;
+      notifyListeners();
+    }
   }
 
   // ── Settings ───────────────────────────────────────────────────────────
 
-  /// Saves immediately. Routing changes reconnect an active session at once;
-  /// other connection settings wait for an explicit Reconnect.
+  /// Saves immediately. Apply-now changes reconnect Split after shutdown;
+  /// Global and other connection settings wait for an explicit Reconnect.
   Future<void> updateSettings(MobileSettings next, {bool applyNow = false}) async {
     final previous = settings;
     settings = next;

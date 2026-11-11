@@ -123,6 +123,14 @@ abstract final class ConfigBuilder {
       });
     }
 
+    // DNS policy cannot catch IPv6 literals or cached answers. Guard every
+    // direct-routing branch before it accepts a destination, while keeping
+    // Tailnet/proxy IPv6 routes available.
+    List<Map<String, Object?>> directRoutes(Map<String, Object?> match) => [
+          if (noDirectIpv6) {...match, 'ip_version': 6, 'action': 'reject'},
+          {...match, 'action': 'route', 'outbound': 'direct'},
+        ];
+
     final routes = <Map<String, Object?>>[
       {'inbound': ['tun-in'], 'port': 53, 'action': 'hijack-dns'},
       {
@@ -135,14 +143,16 @@ abstract final class ConfigBuilder {
         {'domain_suffix': [suffix], 'action': 'resolve', 'server': 'dns-tailnet'},
         {'domain_suffix': [suffix], 'action': 'route', 'outbound': exitTag},
       ],
-      for (final match in directMatchers) {...match, 'action': 'route', 'outbound': 'direct'},
+      for (final match in directMatchers) ...directRoutes(match),
       if (!global && settings.directIps.isNotEmpty)
-        {'ip_cidr': settings.directIps, 'action': 'route', 'outbound': 'direct'},
+        ...directRoutes({'ip_cidr': settings.directIps}),
       {'ip_cidr': tailnetRanges, 'action': 'route', 'outbound': exitTag},
       if (!global && settings.proxyIps.isNotEmpty)
         {'ip_cidr': settings.proxyIps, 'action': 'route', 'outbound': exitTag},
       for (final match in proxyMatchers) {...match, 'action': 'route', 'outbound': exitTag},
-      if (!global) {'ip_is_private': true, 'action': 'route', 'outbound': 'direct'},
+      if (!global) ...directRoutes({'ip_is_private': true}),
+      if (!global && !throughExit && noDirectIpv6)
+        {'ip_version': 6, 'action': 'reject'},
     ];
 
     final direct = <String, Object?>{

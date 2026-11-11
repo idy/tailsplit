@@ -71,6 +71,14 @@ class _RootShellState extends State<RootShell> {
     setState(() => _index = index);
   }
 
+  Future<void> _popTab(int index, Object? result) async {
+    final navigator = _navigators[index].currentState;
+    if (navigator == null || await navigator.maybePop(result)) return;
+    if (mounted && _index == index && index != 0) {
+      setState(() => _index = 0);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
@@ -79,15 +87,9 @@ class _RootShellState extends State<RootShell> {
     dynamic icon(String symbol, IconData cupertino, IconData material) =>
         PlatformInfo.isIOS26OrHigher() ? symbol : (isCupertino ? cupertino : material);
     return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        final navigator = _navigators[_index].currentState;
-        if (navigator != null && navigator.canPop()) {
-          navigator.pop();
-        } else if (_index != 0) {
-          setState(() => _index = 0);
-        }
-      },
+      // Other tabs return to Exit first. At Exit's root, Android may leave
+      // the activity; its nested handler blocks that only for detail routes.
+      canPop: isCupertino || _index == 0,
       child: AdaptiveScaffold(
         bottomNavigationBar: AdaptiveBottomNavigationBar(
           useNativeBottomBar: true,
@@ -118,11 +120,19 @@ class _RootShellState extends State<RootShell> {
             for (final (i, page) in _pages.indexed)
               TickerMode(
                 enabled: i == _index,
-                child: Navigator(
-                  key: _navigators[i],
-                  onGenerateRoute: (_) => isCupertino
-                      ? CupertinoPageRoute<void>(builder: (_) => page)
-                      : MaterialPageRoute<void>(builder: (_) => page),
+                child: NavigatorPopHandler<Object?>(
+                  enabled: !isCupertino && i == _index,
+                  // Disabled handlers still receive blocked-pop callbacks.
+                  // Only the active Android tab may act on one.
+                  onPopWithResult: !isCupertino && i == _index
+                      ? (result) => _popTab(i, result)
+                      : null,
+                  child: Navigator(
+                    key: _navigators[i],
+                    onGenerateRoute: (_) => isCupertino
+                        ? CupertinoPageRoute<void>(builder: (_) => page)
+                        : MaterialPageRoute<void>(builder: (_) => page),
+                  ),
                 ),
               ),
           ],

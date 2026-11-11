@@ -103,7 +103,9 @@ class _ConnectionSection extends StatelessWidget {
             ? s.chooseNodeToConnect
             : step != null
                 ? '$step ${s.turnOffToCancel}'
-                : s.via(exit.displayName(exit.nodeName));
+                : app.active && app.needsReconnect
+                    ? s.reconnectToApply
+                    : s.via(exit.displayName(exit.nodeName));
     return NativeSection(
       header: s.connection,
       footer: Column(
@@ -199,7 +201,7 @@ class _AddExitSection extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               if (!waiting)
-                PrimaryButton(label: s.addExit, onPressed: app.signInExit)
+                PrimaryButton(label: s.addExit, onPressed: () => signInWithConsent(context, app))
               else
                 Row(
                   children: [
@@ -288,7 +290,7 @@ class _ExitSection extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w500),
           ),
           trailing: signedOut
-              ? TextAction(label: s.signIn, onPressed: app.signInExit)
+              ? TextAction(label: s.signIn, onPressed: () => signInWithConsent(context, app))
               : null,
           chevron: !signedOut,
           enabled: !app.removing,
@@ -350,23 +352,22 @@ class ChoiceMenu<T> extends StatelessWidget {
           icon: value == selected ? 'checkmark' : null,
         ),
     ];
-    if (PlatformInfo.isIOS26OrHigher()) {
-      return IgnorePointer(
-        ignoring: !enabled,
-        child: Opacity(
-          opacity: enabled ? 1 : .45,
-          child: AdaptivePopupMenuButton.widget<T>(
-            items: items,
-            onSelected: (index, entry) => onSelected(options[index].$1),
-            child: _MenuLabel(label: label),
-          ),
-        ),
-      );
-    }
-    return AdaptivePopupMenuButton.widget<T>(
+    final nativeMenu = PlatformInfo.isIOS26OrHigher();
+    final menu = AdaptivePopupMenuButton.widget<T>(
       items: items,
-      onSelected: (index, entry) => onSelected(options[index].$1),
-      child: _MenuLabel(label: label, enabled: enabled),
+      onSelected: (index, entry) {
+        if (enabled) onSelected(options[index].$1);
+      },
+      child: _MenuLabel(label: label, enabled: nativeMenu || enabled),
+    );
+    // Both the UIKit menu and the older action-sheet trigger must be inert.
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      child: IgnorePointer(
+        ignoring: !enabled,
+        child: nativeMenu ? Opacity(opacity: enabled ? 1 : .45, child: menu) : menu,
+      ),
     );
   }
 }

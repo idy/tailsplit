@@ -1,0 +1,216 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:tailsplit_mobile/src/model/exit_profile.dart';
+import 'package:tailsplit_mobile/src/model/settings.dart';
+import 'package:tailsplit_mobile/src/services/storage.dart';
+import 'package:tailsplit_mobile/src/services/vpn.dart';
+import 'package:tailsplit_mobile/src/state/app_controller.dart';
+import 'package:tailsplit_mobile/src/tailscale/tailscale.dart';
+
+class ControlledVpn extends VpnService {
+  final events = StreamController<VpnStatus>.broadcast(sync: true);
+  final startEntered = Completer<void>();
+  Completer<void>? startGate;
+  Object? stopError;
+  bool lingerOnStop = false;
+  int starts = 0;
+  int stops = 0;
+  VpnConnectionState state = VpnConnectionState.disconnected;
+
+  void emit(VpnConnectionState next) {
+    state = next;
+    events.add(VpnStatus(state: next));
+  }
+
+  @override
+  Stream<VpnStatus> get status => events.stream;
+  @override
+  Stream<SingBoxLog> get logs => const Stream.empty();
+  @override
+  Future<void> initialize() async {}
+  @override
+  Future<String> coreVersion() async => 'test';
+  @override
+  Future<VpnStatus> currentStatus() async => VpnStatus(state: state);
+  @override
+  Future<void> check(String config) async {}
+  @override
+  Future<bool> requestPermission() async => true;
+  @override
+  Future<void> start(String config) async {
+    starts++;
+    if (!startEntered.isCompleted) startEntered.complete();
+    await startGate?.future;
+    emit(VpnConnectionState.connected);
+  }
+  @override
+  Future<void> stop() async {
+    stops++;
+    if (stopError != null) throw stopError!;
+    emit(lingerOnStop ? VpnConnectionState.disconnecting : VpnConnectionState.disconnected);
+  }
+  @override
+  Future<void> waitFor(VpnConnectionState state, {Duration timeout = const Duration(seconds: 15)}) =>
+      super.waitFor(state, timeout: const Duration(milliseconds: 40));
+}
+
+class LifecycleClient implements TailscaleControlClient {
+  LifecycleClient(this.snapshot);
+  final TailnetSnapshot snapshot;
+  int logouts = 0;
+
+  @override
+  Future<TailnetSnapshot> fetchSnapshot(TailscaleIdentity identity) async => snapshot;
+  @override
+  Future<void> logout(TailscaleIdentity identity) async { logouts++; }
+  @override
+  Future<void> close() async {}
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+const node = TailnetPeer(stableId: 'one', name: 'one', fqdn: 'one.test.ts.net',
+    addresses: ['100.64.0.1'], online: true, isExitNode: true);
+const otherNode = TailnetPeer(stableId: 'two', name: 'two', fqdn: 'two.test.ts.net',
+    addresses: ['100.64.0.2'], online: true, isExitNode: true);
+
+Future<({AppController app, ControlledVpn vpn, LifecycleClient client, Directory root})> fixture({
+  RoutingMode mode = RoutingMode.split,
+  bool restoredConnection = false,
+}) async {
+  final root = await Directory.systemTemp.createTemp('tailsplit-lifecycle');
+  final snapshot = TailnetSnapshot(selfName: 'phone', selfFqdn: 'phone.test.ts.net',
+      selfAddresses: const ['100.64.0.3'], networkName: 'test', magicDnsSuffix: 'test.ts.net',
+      userLoginName: 'test@example.com', userDisplayName: 'Test', stableNodeId: 'phone',
+      exitNodes: const [node, otherNode], fetchedAt: DateTime.now());
+  final client = LifecycleClient(snapshot);
+  final vpn = ControlledVpn();
+  if (restoredConnection) vpn.state = VpnConnectionState.connected;
+  final app = AppController(paths: AppPaths.at(root, root), vpn: vpn, controlClient: () => client);
+  app.settings = MobileSettings(source: RuleSource.none, mode: mode);
+  app.exit = ExitProfile(identity: await TailscaleIdentity.generate(hostname: 'phone'),
+      snapshot: snapshot, nodeId: node.stableId, nodeName: node.name, nodeAddress: node.addresses.first);
+  addTearDown(() async {
+    app.dispose();
+    await vpn.events.close();
+    await root.delete(recursive: true);
+  });
+  final refreshed = Completer<void>();
+  void listener() {
+    if (!app.refreshing && !refreshed.isCompleted) refreshed.complete();
+  }
+  await app.load();
+  if (app.refreshing) {
+    app.addListener(listener);
+    await refreshed.future.timeout(const Duration(seconds: 5));
+    app.removeListener(listener);
+  }
+  return (app: app, vpn: vpn, client: client, root: root);
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('cancel waits for an in-flight start then leaves the native service stopped', () async {
+    final f = await fixture();
+    f.vpn.startGate = Completer<void>();
+    final connecting = f.app.connect();
+    await f.vpn.startEntered.future.timeout(const Duration(seconds: 5));
+    final stopping = f.app.disconnect();
+    await pumpEventQueue();
+    expect(f.vpn.stops, 0, reason: 'Stop cannot overtake the pending native start.');
+    f.vpn.startGate!.complete();
+    await connecting;
+    expect(await stopping, isTrue);
+    expect(f.vpn.state, VpnConnectionState.disconnected);
+    expect(f.app.vpnState, VpnConnectionState.disconnected);
+    expect(f.app.preparing, isFalse);
+  });
+
+  test('removal waits for pending start shutdown before logging out or deleting state', () async {
+    final f = await fixture();
+    f.vpn.startGate = Completer<void>();
+    final connecting = f.app.connect();
+    await f.vpn.startEntered.future.timeout(const Duration(seconds: 5));
+    final state = File('${f.root.path}/tailscale/tailscaled.state');
+    expect(await state.exists(), isTrue);
+    final removing = f.app.removeExit();
+    await pumpEventQueue();
+    expect(f.client.logouts, 0);
+    expect(await state.exists(), isTrue);
+    f.vpn.startGate!.complete();
+    await connecting;
+    expect(await removing, isTrue);
+    expect(f.vpn.state, VpnConnectionState.disconnected);
+    expect(f.client.logouts, 1);
+    expect(await state.exists(), isFalse);
+    expect(f.app.exit, isNull);
+  });
+
+  test('a stop failure retains the exit and identity and blocks reconnect', () async {
+    final f = await fixture();
+    await f.app.connect();
+    final state = File('${f.root.path}/tailscale/tailscaled.state');
+    final original = await state.readAsString();
+    f.vpn.stopError = StateError('native stop failed');
+    expect(await f.app.removeExit(), isFalse);
+    expect(f.client.logouts, 0);
+    expect(f.app.exit!.nodeId, node.stableId);
+    expect(await state.readAsString(), original);
+    expect(f.app.problem, AppProblem.disconnect);
+    await f.app.reconnect();
+    expect(f.vpn.starts, 1);
+    expect(f.app.needsReconnect, isTrue);
+  });
+
+  test('disconnecting timeout never permits identity removal or another start', () async {
+    final f = await fixture();
+    await f.app.connect();
+    f.vpn.lingerOnStop = true;
+    expect(await f.app.removeExit(), isFalse);
+    expect(f.app.vpnState, VpnConnectionState.disconnecting);
+    expect(f.client.logouts, 0);
+    expect(f.app.exit, isNotNull);
+    await f.app.connect();
+    await f.app.reconnect();
+    expect(f.vpn.starts, 1);
+    expect(f.app.needsReconnect, isTrue);
+  });
+
+  test('Global node and mode applies keep protection until explicit consent', () async {
+    final f = await fixture(mode: RoutingMode.global);
+    await f.app.connect();
+    expect(f.app.reconnectRequiresConsent, isTrue);
+    expect(await f.app.confirmNode(otherNode), isTrue);
+    await pumpEventQueue();
+    expect(f.vpn.stops, 0);
+    expect(f.app.needsReconnect, isTrue);
+    await f.app.setRoutingMode(RoutingMode.split);
+    expect(f.vpn.stops, 0, reason: 'The running Global mode wins over the newly saved mode.');
+    expect(f.app.reconnectRequiresConsent, isTrue);
+    await f.app.reconnect(allowProtectionGap: true);
+    expect(f.vpn.stops, 1);
+    expect(f.vpn.starts, 2);
+    expect(f.app.reconnectRequiresConsent, isFalse);
+    expect(f.app.needsReconnect, isFalse);
+  });
+
+  test('Split applies still reconnect automatically after a confirmed stop', () async {
+    final f = await fixture();
+    await f.app.connect();
+    await f.app.setRoutingMode(RoutingMode.global);
+    expect(f.vpn.stops, 1);
+    expect(f.vpn.starts, 2);
+    expect(f.app.reconnectRequiresConsent, isTrue);
+  });
+
+  test('restored connections with unknown runtime mode require consent', () async {
+    final f = await fixture(restoredConnection: true);
+    await f.app.updateSettings(f.app.settings.copyWith(fakeIp: false), applyNow: true);
+    expect(f.vpn.stops, 0);
+    expect(f.app.needsReconnect, isTrue);
+    expect(f.app.reconnectRequiresConsent, isTrue);
+  });
+}

@@ -76,7 +76,16 @@ The workflow uses the same Codemagic signing approach as LetSolo:
 4. Build a release IPA without preview flags, using the Actions run number.
 5. Inspect the exported app and extension, validate their embedded profiles,
    verify code signatures, and require the actual signer team to be Termitoc.
+   Decode each bundle's signed entitlements independently of its profile: require
+   the exact application/team identity, shared App Group and Packet Tunnel
+   capability, and reject debug-enabled signatures.
 6. Upload only when requested, then remove temporary signing material/keychain.
+
+Flutter, Xcode and read-only verification commands receive an environment without
+Apple API private keys, certificate private keys or the keychain password. Only
+signing-file retrieval receives both API and certificate credentials; upload
+receives API credentials, and keychain operations receive the temporary password.
+The build signs through the prepared keychain without inheriting those secrets.
 
 Missing or mismatched inputs fail the release. There is no fallback to personal
 signing, ad-hoc signing, a development profile or a different organization. Only

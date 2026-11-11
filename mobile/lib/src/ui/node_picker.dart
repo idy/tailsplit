@@ -117,8 +117,8 @@ class _NodePickerState extends State<NodePicker> {
       );
       if (!ok || !context.mounted) return;
       final navigator = Navigator.of(context);
-      await app.removeExit();
-      if (mounted && navigator.canPop()) navigator.pop();
+      final removed = await app.removeExit();
+      if (removed && mounted && navigator.canPop()) navigator.pop();
     }
 
     final identity = [
@@ -128,6 +128,7 @@ class _NodePickerState extends State<NodePicker> {
     ];
 
     final list = <Widget>[
+      const ProblemCard(only: {AppProblem.disconnect}),
       if (_saveFailed)
         Padding(
           padding: const EdgeInsets.fromLTRB(36, 0, 36, 12),
@@ -141,7 +142,9 @@ class _NodePickerState extends State<NodePicker> {
         footer: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(app.switchOn ? s.pickerFooterActive : s.pickerFooterIdle),
+            Text(app.reconnectRequiresConsent
+                ? s.pickerFooterProtected
+                : app.switchOn ? s.pickerFooterActive : s.pickerFooterIdle),
             if (snapshot != null)
               Text(app.refreshing ? s.refreshing : s.updated(relativeTime(s, snapshot.fetchedAt))),
           ],
