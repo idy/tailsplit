@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.6
+
+- Refine the tray popup with the TailSplit mark and connection switch in the
+  header, a prominent connected status, compact routing details and equal-width
+  Open TailSplit and Quit buttons. Preserve setup and error guidance, accessible
+  status details, English/Chinese localization and light/dark appearance.
+- Update the page companion independently of TailSplit through compatible stable
+  Peetty CDN releases. Cache verified resources atomically, keep each open page
+  on one version, and retain the embedded companion for offline use, load failures,
+  reduced motion and oversized diagnostic logs.
+
 ## 0.9.5
 
 - Open the macOS tray popup over other apps' full-screen Spaces without activating
