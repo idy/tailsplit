@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	latestReleaseURL = "https://api.github.com/repos/idy/tailsplit/releases/latest"
-	releasePageBase  = "https://github.com/idy/tailsplit/releases/tag/"
-	assetURLBase     = "https://github.com/idy/tailsplit/releases/download/"
+	latestReleaseURL  = "https://api.github.com/repos/idy/tailsplit/releases/latest"
+	latestReleasePage = "https://github.com/idy/tailsplit/releases/latest"
+	releasePageBase   = "https://github.com/idy/tailsplit/releases/tag/"
+	assetURLBase      = "https://github.com/idy/tailsplit/releases/download/"
 
 	maxJSONBytes    = 1 << 20
 	maxSumsBytes    = 1 << 20
@@ -37,6 +38,12 @@ type Updater struct {
 	// issued holds the private directories this Updater created. The startup
 	// sweep removes only older ones, never a package still being installed.
 	issued map[string]bool
+
+	// cached is replaced only after full release validation, under the exclusive
+	// check operation. Rate-limit state is protected by mu.
+	cached     *cachedRelease
+	retryAt    time.Time
+	retryDelay time.Duration
 
 	current         string
 	goos            string
@@ -81,6 +88,12 @@ type checkResult struct {
 	offer   *offeredRelease
 }
 
+type cachedRelease struct {
+	tag    string
+	etag   string
+	result checkResult
+}
+
 // New configures the public idy/tailsplit release source and desktop platform.
 // CurrentVersion retains version as supplied; discovered versions omit "v".
 // Development, prerelease, and incomplete versions cannot be checked.
@@ -123,6 +136,8 @@ func (u *Updater) SetAutomatic(automatic bool) {
 // five-minute intervals. Disabled and development builds skip timed checks. The
 // preference does not reset that cadence. Only one Run loop can be active.
 // Automatic checks only discover updates; they never download or install them.
+// Once metadata is validated, unchanged tags use the public latest-release
+// redirect instead of the rate-limited API. Use Check to refresh same-tag edits.
 // After the startup delay, Run also removes downloads left by earlier processes.
 func (u *Updater) Run(ctx context.Context) {
 	u.mu.Lock()
@@ -155,15 +170,22 @@ func (u *Updater) Run(ctx context.Context) {
 		enabled := u.state.Automatic && u.current != ""
 		u.mu.Unlock()
 		if enabled {
-			_ = u.Check(ctx)
+			_ = u.checkForUpdates(ctx, true)
 		}
 		delay = u.checkInterval
 	}
 }
 
-// Check discovers a strictly newer stable desktop release. A failed recheck
-// retains any previous offer so temporary network failures do not lose it.
+// Check discovers a strictly newer stable desktop release, even when automatic
+// checks are disabled. Manual checks always revalidate API metadata (using its
+// ETag when available), including edits to an existing tag. Both manual and
+// timed checks honor server backoff without making requests or advancing
+// LastChecked during the wait. A failed recheck retains any previous offer.
 func (u *Updater) Check(ctx context.Context) error {
+	return u.checkForUpdates(ctx, false)
+}
+
+func (u *Updater) checkForUpdates(ctx context.Context, automatic bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -172,11 +194,17 @@ func (u *Updater) Check(ctx context.Context) error {
 		u.mu.Unlock()
 		return ErrBusy
 	}
+	if u.now().Before(u.retryAt) {
+		err := rateLimitError(u.retryAt)
+		u.state.Error = err.Error()
+		u.mu.Unlock()
+		return err
+	}
 	u.state.Checking = true
 	u.state.Error = ""
 	u.mu.Unlock()
 
-	result, err := u.check(ctx)
+	result, err := u.check(ctx, automatic)
 	checked := u.now()
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -197,14 +225,28 @@ func (u *Updater) Check(ctx context.Context) error {
 	return nil
 }
 
-func (u *Updater) check(ctx context.Context) (checkResult, error) {
+func (u *Updater) check(ctx context.Context, automatic bool) (checkResult, error) {
 	if u.current == "" {
 		return checkResult{}, errors.New("updates require a complete stable current version")
 	}
-	release, err := u.fetchRelease(ctx)
-	if err != nil {
-		return checkResult{}, err
+	if u.source != latestReleaseURL {
+		return checkResult{}, errors.New("update source is not the expected public GitHub release URL")
 	}
+	if automatic && u.cached != nil {
+		// Unauthenticated API requests consume quota even on a 304. Probe the
+		// public web redirect instead; never follow it or trust it as metadata.
+		tag, err := u.latestTag(ctx)
+		if err != nil {
+			return checkResult{}, err
+		}
+		if tag == u.cached.tag {
+			return u.cached.result, nil
+		}
+	}
+	return u.fetchRelease(ctx)
+}
+
+func (u *Updater) validateRelease(release githubRelease) (checkResult, error) {
 	latest, valid := stableVersion(release.Tag)
 	if !valid || release.Draft || release.Prerelease {
 		return checkResult{}, errors.New("GitHub did not return a stable release")

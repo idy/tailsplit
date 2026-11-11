@@ -101,6 +101,9 @@ func fixture(t *testing.T, tag, goos, goarch string) releaseFixture {
 
 func (f releaseFixture) serve(w http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
+	case "/idy/tailsplit/releases/latest":
+		w.Header().Set("Location", f.release.URL)
+		w.WriteHeader(http.StatusFound)
 	case "/repos/idy/tailsplit/releases/latest":
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(f.release)
@@ -440,5 +443,392 @@ func TestReadBoundedDeclaredLength(t *testing.T) {
 	response := &http.Response{ContentLength: maxJSONBytes + 1, Body: io.NopCloser(strings.NewReader("small"))}
 	if _, err := readBounded(response, maxJSONBytes); err == nil {
 		t.Fatal("accepted excessive declared response length")
+	}
+}
+
+func TestConditionalReleaseReusesValidatedOffer(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var checks atomic.Int32
+	u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/idy/tailsplit/releases/latest" {
+			if checks.Add(1) == 1 {
+				if r.Header.Get("If-None-Match") != "" {
+					t.Error("initial request sent an ETag")
+				}
+				w.Header().Set("ETag", `W/"release-1"`)
+			} else {
+				if r.Header.Get("If-None-Match") != `W/"release-1"` {
+					t.Errorf("missing conditional validator: %q", r.Header.Get("If-None-Match"))
+				}
+				// A weak and strong ETag with the same opaque value compare equal
+				// for If-None-Match. A 304 need not carry a response body.
+				w.Header().Set("ETag", `"release-1"`)
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		} else if r.Header.Get("If-None-Match") != "" {
+			t.Error("metadata ETag leaked into an asset request")
+		}
+		f.serve(w, r)
+	})
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	requireCheck(t, u)
+	before, offer := u.Snapshot(), *u.offer
+	now = now.Add(5 * time.Minute)
+	requireCheck(t, u)
+	after := u.Snapshot()
+	if !after.Available || after.LatestVersion != before.LatestVersion || after.ReleaseURL != before.ReleaseURL ||
+		after.ReleaseNotes != before.ReleaseNotes || *u.offer != offer || after.Error != "" || !after.LastChecked.Equal(now) {
+		t.Fatalf("304 lost validated offer or check state: %+v", after)
+	}
+	pkg, err := u.Download(context.Background())
+	if err != nil {
+		t.Fatal("cached offer was not downloadable:", err)
+	}
+	defer pkg.Cleanup()
+}
+
+func TestRejectUnusable304(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		prime       bool
+		firstETag   string
+		body        string
+		invalidURL  bool
+		firstOK     bool
+		responseTag string
+	}{
+		{name: "initial"},
+		{name: "no validator", prime: true, firstOK: true},
+		{name: "malformed validator", prime: true, firstOK: true, firstETag: "not-an-etag"},
+		{name: "invalid JSON was not cached", prime: true, firstETag: `"bad"`, body: "{"},
+		{name: "invalid asset was not cached", prime: true, firstETag: `"bad"`, invalidURL: true},
+		{name: "mismatched 304 validator", prime: true, firstETag: `"good"`, firstOK: true, responseTag: `"different"`},
+		{name: "malformed 304 validator", prime: true, firstETag: `"good"`, firstOK: true, responseTag: "not-an-etag"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := fixture(t, "v0.6.2", "darwin", "arm64")
+			if test.invalidURL {
+				f.release.Assets[0].URL = "https://evil.example/package.zip"
+			}
+			var checks atomic.Int32
+			u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+				if checks.Add(1) == 1 && test.prime {
+					w.Header().Set("ETag", test.firstETag)
+					if test.body != "" {
+						_, _ = io.WriteString(w, test.body)
+					} else {
+						f.serve(w, r)
+					}
+					return
+				}
+				if !test.firstOK && r.Header.Get("If-None-Match") != "" {
+					t.Error("unvalidated metadata supplied a conditional validator")
+				}
+				w.Header().Set("ETag", test.responseTag)
+				w.WriteHeader(http.StatusNotModified)
+			})
+			if test.prime {
+				if err := u.Check(context.Background()); (err == nil) != test.firstOK {
+					t.Fatalf("unexpected priming result: %v", err)
+				}
+			}
+			if err := u.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "304") {
+				t.Fatalf("accepted unusable 304: %v", err)
+			}
+			wanted := 1
+			if test.prime {
+				wanted++
+			}
+			if log.count() != wanted || u.Snapshot().Available != test.firstOK || u.Snapshot().Checking {
+				t.Fatalf("bad 304 changed offer or retried: state=%+v requests=%d", u.Snapshot(), log.count())
+			}
+		})
+	}
+}
+
+func TestInvalidReplacementDoesNotPoisonConditionalCache(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var checks atomic.Int32
+	u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		switch checks.Add(1) {
+		case 1:
+			w.Header().Set("ETag", `"validated"`)
+			f.serve(w, r)
+		case 2:
+			w.Header().Set("ETag", `"invalid"`)
+			invalid := f.release
+			invalid.Prerelease = true
+			_ = json.NewEncoder(w).Encode(invalid)
+		default:
+			if r.Header.Get("If-None-Match") != `"validated"` {
+				t.Error("failed validation replaced the cached ETag")
+			}
+			w.WriteHeader(http.StatusNotModified)
+		}
+	})
+	requireCheck(t, u)
+	if err := u.Check(context.Background()); err == nil {
+		t.Fatal("accepted invalid replacement")
+	}
+	requireCheck(t, u)
+	if !u.Snapshot().Available || u.Snapshot().Error != "" {
+		t.Fatal("304 did not restore the last validated offer")
+	}
+}
+
+func TestAutomaticDiscoveryAvoidsSharedIPAPIQuota(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var api, probes atomic.Int32
+	var clients []*Updater
+	for range 6 {
+		u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/idy/tailsplit/releases/latest" {
+				probes.Add(1)
+				if r.Method != http.MethodHead || r.Header.Get("If-None-Match") != "" {
+					t.Error("discovery fetched a page or leaked an API validator")
+				}
+			} else {
+				api.Add(1)
+				w.Header().Set("ETag", `"`+f.release.Tag+`"`)
+			}
+			f.serve(w, r)
+		})
+		// Include up-to-date clients, whose validated cached result has no offer.
+		if len(clients) >= 3 {
+			u.current = "v0.6.2"
+			u.state.CurrentVersion = "0.6.2"
+		}
+		clients = append(clients, u)
+		if err := u.checkForUpdates(context.Background(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Six clients each perform twelve five-minute checks behind one IP. Only
+	// their initial metadata fetches consume the 60/hour unauthenticated quota.
+	for range 12 {
+		for _, u := range clients {
+			if err := u.checkForUpdates(context.Background(), true); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if api.Load() != 6 || probes.Load() != 72 {
+		t.Fatalf("unchanged releases consumed API quota: API=%d probes=%d", api.Load(), probes.Load())
+	}
+	f = fixture(t, "v0.6.3", "darwin", "arm64")
+	for _, u := range clients {
+		if err := u.checkForUpdates(context.Background(), true); err != nil {
+			t.Fatal(err)
+		}
+		if !u.Snapshot().Available || u.Snapshot().LatestVersion != "0.6.3" {
+			t.Fatal("changed redirect did not fetch validated metadata")
+		}
+	}
+	if api.Load() != 12 || probes.Load() != 78 {
+		t.Fatalf("changed tags did not fetch exactly once: API=%d probes=%d", api.Load(), probes.Load())
+	}
+}
+
+func TestManualCheckRefreshesSameTagEdits(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var api atomic.Int32
+	u, _ := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/idy/tailsplit/releases/latest" {
+			if api.Add(1) > 1 && r.Header.Get("If-None-Match") != `"old"` {
+				t.Error("manual check did not revalidate metadata")
+			}
+			w.Header().Set("ETag", `"old"`)
+		}
+		f.serve(w, r)
+	})
+	requireCheck(t, u)
+	before := u.Snapshot().ReleaseNotes
+	f.release.Notes = "Updated notes for the same tag"
+	if err := u.checkForUpdates(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if api.Load() != 1 || u.Snapshot().ReleaseNotes != before {
+		t.Fatal("automatic check unnecessarily refreshed an unchanged tag")
+	}
+	u.SetAutomatic(false)
+	requireCheck(t, u)
+	if api.Load() != 2 || u.Snapshot().ReleaseNotes != f.release.Notes || u.Snapshot().Automatic {
+		t.Fatal("manual check did not refresh same-tag edits independently of preference")
+	}
+}
+
+func TestDiscoveryRedirectTrust(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		status   int
+		location string
+	}{
+		{"not a redirect", http.StatusOK, releasePageBase + "v0.6.2"},
+		{"initial web 304", http.StatusNotModified, ""},
+		{"missing location", http.StatusFound, ""},
+		{"relative", http.StatusFound, "/idy/tailsplit/releases/tag/v0.6.2"},
+		{"foreign host", http.StatusFound, "https://evil.example/idy/tailsplit/releases/tag/v0.6.2"},
+		{"foreign repository", http.StatusFound, "https://github.com/foreign/tailsplit/releases/tag/v0.6.2"},
+		{"HTTP", http.StatusFound, "http://github.com/idy/tailsplit/releases/tag/v0.6.2"},
+		{"query", http.StatusFound, releasePageBase + "v0.6.2?x=1"},
+		{"fragment", http.StatusFound, releasePageBase + "v0.6.2#notes"},
+		{"encoded tag", http.StatusFound, releasePageBase + "%760.6.2"},
+		{"prerelease", http.StatusFound, releasePageBase + "v0.6.3-beta.1"},
+		{"loop", http.StatusFound, latestReleasePage},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := fixture(t, "v0.6.2", "darwin", "arm64")
+			u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/idy/tailsplit/releases/latest" {
+					w.Header().Set("Location", test.location)
+					w.WriteHeader(test.status)
+					return
+				}
+				f.serve(w, r)
+			})
+			requireCheck(t, u)
+			if err := u.checkForUpdates(context.Background(), true); err == nil {
+				t.Fatal("accepted untrusted or invalid discovery response")
+			}
+			if log.count() != 2 || !u.Snapshot().Available {
+				t.Fatal("invalid discovery followed a redirect, fell back to the API, or lost the offer")
+			}
+		})
+	}
+}
+
+func TestCheckRateLimitBackoff(t *testing.T) {
+	base := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name       string
+		status     int
+		remaining  string
+		retryAfter string
+		reset      string
+		delay      time.Duration
+		limited    bool
+	}{
+		{"primary 403", 403, "0", "", fmt.Sprint(base.Add(17 * time.Minute).Unix()), 17 * time.Minute, true},
+		{"429 seconds", 429, "", "900", "", 15 * time.Minute, true},
+		{"secondary 403 date", 403, "8", base.Add(20 * time.Minute).Format(http.TimeFormat), "", 20 * time.Minute, true},
+		{"both use later reset", 429, "0", "600", fmt.Sprint(base.Add(25 * time.Minute).Unix()), 25 * time.Minute, true},
+		{"both use later retry", 403, "0", "1800", fmt.Sprint(base.Add(5 * time.Minute).Unix()), 30 * time.Minute, true},
+		{"unexhausted reset ignored", 403, "8", "420", fmt.Sprint(base.Add(time.Hour).Unix()), 7 * time.Minute, true},
+		{"malformed headers", 429, "0", "invalid", "invalid", time.Minute, true},
+		{"past headers", 429, "0", base.Add(-time.Hour).Format(http.TimeFormat), fmt.Sprint(base.Add(-time.Hour).Unix()), time.Minute, true},
+		{"zero delay", 429, "", "0", "", time.Minute, true},
+		{"overflow delay", 429, "", "9223372036854775807", "", time.Minute, true},
+		{"successful exhausted quota without reset", 200, "0", "", "", time.Minute, false},
+		{"successful last quota request", 200, "0", "", fmt.Sprint(base.Add(13 * time.Minute).Unix()), 13 * time.Minute, false},
+		{"304 last quota request", 304, "0", "", fmt.Sprint(base.Add(13 * time.Minute).Unix()), 13 * time.Minute, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := fixture(t, "v0.6.2", "darwin", "arm64")
+			var checks atomic.Int32
+			u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("ETag", `"validated"`)
+				if checks.Add(1) == 2 {
+					w.Header().Set("X-RateLimit-Remaining", test.remaining)
+					w.Header().Set("X-RateLimit-Reset", test.reset)
+					w.Header().Set("Retry-After", test.retryAfter)
+					if test.status != http.StatusOK {
+						w.WriteHeader(test.status)
+						return
+					}
+				}
+				f.serve(w, r)
+			})
+			now := base
+			u.now = func() time.Time { return now }
+			requireCheck(t, u)
+			if err := u.Check(context.Background()); (err != nil) != test.limited {
+				t.Fatalf("unexpected rate-limit response: %v", err)
+			}
+			last := u.Snapshot().LastChecked
+			now = base.Add(test.delay - time.Nanosecond)
+			// Neither manual checks nor automatic ticks may bypass server backoff.
+			for _, automatic := range []bool{false, true} {
+				if err := u.checkForUpdates(context.Background(), automatic); err == nil || !strings.Contains(err.Error(), "retry after") {
+					t.Fatalf("backoff was not explained: %v", err)
+				}
+			}
+			if log.count() != 2 || !u.Snapshot().Available || !u.Snapshot().LastChecked.Equal(last) || u.Snapshot().Checking {
+				t.Fatalf("backoff made requests or changed the offer/check time: %+v, requests=%d", u.Snapshot(), log.count())
+			}
+			now = base.Add(test.delay)
+			requireCheck(t, u)
+			if log.count() != 3 || u.Snapshot().Error != "" || !u.Snapshot().LastChecked.Equal(now) {
+				t.Fatal("check did not resume when server backoff expired")
+			}
+		})
+	}
+}
+
+func TestDiscoveryDoesNotResetRepeatedAPILimitBackoff(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var api atomic.Int32
+	u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/idy/tailsplit/releases/latest" && api.Add(1) > 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		f.serve(w, r)
+	})
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	requireCheck(t, u)
+	f = fixture(t, "v0.6.3", "darwin", "arm64")
+	for i, delay := range []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute} {
+		if err := u.checkForUpdates(context.Background(), true); err == nil {
+			t.Fatal("accepted secondary API limit after a successful web probe")
+		}
+		now = now.Add(delay - time.Nanosecond)
+		if err := u.checkForUpdates(context.Background(), true); err == nil || log.count() != 1+2*(i+1) {
+			t.Fatal("successful web discovery reset the API's repeated-limit backoff")
+		}
+		now = now.Add(time.Nanosecond)
+	}
+}
+
+func TestSecondaryLimitFallbackIncreasesAndOtherHeadersDoNotThrottle(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	for i, delay := range []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute} {
+		if err := u.Check(context.Background()); err == nil {
+			t.Fatal("accepted secondary limit")
+		}
+		now = now.Add(delay - time.Nanosecond)
+		if err := u.Check(context.Background()); err == nil || log.count() != i+1 {
+			t.Fatal("repeated secondary limit did not increase the fallback")
+		}
+		now = now.Add(time.Nanosecond)
+	}
+	for _, status := range []int{http.StatusForbidden, http.StatusOK} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var checks atomic.Int32
+			u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+				if checks.Add(1) == 1 {
+					w.Header().Set("X-RateLimit-Remaining", "8")
+					w.Header().Set("X-RateLimit-Reset", fmt.Sprint(now.Add(time.Hour).Unix()))
+					if status != http.StatusOK {
+						w.WriteHeader(status)
+						return
+					}
+				}
+				f.serve(w, r)
+			})
+			u.now = func() time.Time { return now }
+			_ = u.Check(context.Background())
+			requireCheck(t, u)
+			if log.count() != 2 {
+				t.Fatal("unrelated status or unexhausted quota caused backoff")
+			}
+		})
 	}
 }

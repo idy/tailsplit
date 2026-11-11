@@ -60,6 +60,14 @@ download percentage and installation state without adding a second row. The pane
 version, release notes, last check and errors. Development builds skip
 automatic checks; prereleases and older versions are never offered.
 
+After validating release metadata once, automatic checks inspect GitHub's public
+latest-release redirect every five minutes and reuse cached metadata when the tag
+is unchanged. Only a changed tag or a manual check revalidates the API metadata,
+using its ETag when available. This avoids spending the shared unauthenticated API
+quota on routine probes. Checks honor server retry/reset deadlines and back off
+on rate limits; cached offers remain visible. Cache and backoff are process-local,
+and same-tag release-note edits appear after a manual check or app restart.
+
 `app.check_for_updates` defaults to `true` when omitted. The menu and panel can
 change it immediately without reconnecting the proxy. Checks only discover new
 versions: installation always asks for confirmation. Before that confirmation,

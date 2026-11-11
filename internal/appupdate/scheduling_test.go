@@ -216,6 +216,79 @@ func TestRunChecksAfterStartupAndSkipsDevelopment(t *testing.T) {
 	}
 }
 
+func TestRunKeepsCadenceWhileHonoringRateLimit(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var checks int
+	u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		checks++
+		if checks == 1 {
+			w.Header().Set("Retry-After", "1200")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		f.serve(w, r)
+	})
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	u.now = func() time.Time { return now }
+	timers := fakeTimers(u)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	go func() { u.Run(ctx); close(finished) }()
+	startup := nextTimer(t, timers, 10*time.Second)
+	now = now.Add(10 * time.Second)
+	startup.tick <- now
+	interval := nextTimer(t, timers, 5*time.Minute)
+	lastChecked := u.Snapshot().LastChecked
+	for range 3 {
+		now = now.Add(5 * time.Minute)
+		interval.tick <- now
+		interval = nextTimer(t, timers, 5*time.Minute)
+		if log.count() != 1 || !u.Snapshot().LastChecked.Equal(lastChecked) {
+			t.Fatal("scheduled check bypassed the server's twenty-minute backoff")
+		}
+	}
+	if err := u.Check(ctx); err == nil || log.count() != 1 {
+		t.Fatal("manual check bypassed server backoff")
+	}
+	now = now.Add(5 * time.Minute)
+	interval.tick <- now
+	nextTimer(t, timers, 5*time.Minute)
+	if log.count() != 2 || !u.Snapshot().Available || !u.Snapshot().LastChecked.Equal(now) {
+		t.Fatalf("scheduled checks did not resume on the original cadence: %+v", u.Snapshot())
+	}
+	cancel()
+	waitSignal(t, finished)
+}
+
+func TestRateLimitDoesNotBlockOfferedDownload(t *testing.T) {
+	f := fixture(t, "v0.6.2", "darwin", "arm64")
+	var checks int
+	u, log := testUpdater(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/idy/tailsplit/releases/latest" {
+			checks++
+			if checks > 1 {
+				w.Header().Set("Retry-After", "1200")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+		}
+		f.serve(w, r)
+	})
+	requireCheck(t, u)
+	if err := u.Check(context.Background()); err == nil {
+		t.Fatal("accepted rate-limited check")
+	}
+	pkg, err := u.Download(context.Background())
+	if err != nil {
+		t.Fatal("API backoff prevented downloading the validated offer:", err)
+	}
+	defer pkg.Cleanup()
+	if log.count() != 4 {
+		t.Fatal("download made unexpected requests while checks were rate limited")
+	}
+}
+
 func TestRunRemovesStaleDownloadsAfterStartup(t *testing.T) {
 	f := fixture(t, "v0.6.2", "darwin", "arm64")
 	u, _ := testUpdater(t, f.serve)
