@@ -139,7 +139,10 @@ async function page(snapshot = {}, native = '', localeOptions = {}, initialDocum
   const cookies = localeOptions.cookies || new Map();
   app.cookies = cookies;
   Object.defineProperty(document, 'cookie', {
-    get: () => [...cookies].map(([name, value]) => `${name}=${value}`).join('; '),
+    get: () => {
+      if (localeOptions.unreadableCookies) throw new Error('cookie storage unavailable');
+      return [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
+    },
     set: raw => {
       if (localeOptions.rejectCookies) return; // Browsers may reject writes without throwing.
       const [pair, ...attributes] = raw.split(';');
@@ -4395,6 +4398,93 @@ test('native reload retaining only the token refuses cancellation without cached
     assert.equal(storage.has('tailsplit-setup-cancel'), false);
     assert.ok(reload.requests.some(request => request.path === '/api/state' && request.headers.Authorization === 'Bearer fixture'));
     assert.match(reload.$('#home-description').textContent, /无法保存取消请求.*当前连接保持不变/);
+  }
+});
+
+for (const retry of ['manual-ipc', 'automatic-http', 'newer-owner']) test(`committed native cancellation survives unavailable storage and retries through ${retry}`, async () => {
+  const options = { page: 'home', hash: '#token=fixture&journal=native-retry-scope&journal_backup=0&cancel_host=1' };
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'committed-retry-owner' }, 'mygo-windows', options, guidedDocument());
+  app.navigationOverride = () => { throw new Error('navigation unavailable'); };
+  app.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP unavailable' }, false) : undefined;
+  const cancel = app.$('#connection-setup-cancel').emit('click');
+  await settle(); await app.flushTimers(); await cancel;
+  assert.equal(app.snapshot.active, true);
+  const pending = JSON.parse(app.storage.get('tailsplit-setup-cancel'));
+  assert.equal(pending.journal_scope, 'native-retry-scope');
+  assert.equal(app.cookies.size, 1);
+  options.rejectCookies = options.unreadableCookies = true;
+  if (retry === 'newer-owner') Object.assign(app.snapshot, { active: true, state: 'running', mode: 'tun', operation_id: 'newer-protected-owner' });
+  if (retry === 'automatic-http') app.override = () => undefined;
+  else app.nativeOverride = () => undefined;
+  if (retry === 'manual-ipc') await app.$('#connection-setup-cancel').emit('click');
+  else { await app.poll(); await settle(); }
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+  assert.equal(app.snapshot.active, retry === 'newer-owner');
+  if (retry === 'newer-owner') assert.equal(app.snapshot.operation_id, 'newer-protected-owner');
+  assert.ok(app.requests.filter(request => request.path === '/api/cancel').every(request => request.data.operation_id === 'committed-retry-owner'));
+  assert.equal(app.nativeCalls.length, 2);
+});
+
+test('native pending confirmation survives a matching-scope reload with an unreadable journal', async () => {
+  const options = { page: 'home', hash: '#token=fixture&journal=native-retry-scope&journal_backup=0&cancel_host=1' };
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'reload-committed-owner' }, 'mygo-macos', options, guidedDocument());
+  app.navigationOverride = () => { throw new Error('navigation unavailable'); };
+  app.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP unavailable' }, false) : undefined;
+  const cancel = app.$('#connection-setup-cancel').emit('click');
+  await settle(); await app.flushTimers(); await cancel;
+  const reload = await page(app.snapshot, 'mygo-macos', { page: 'home', hash: '#', storage: app.storage, cookies: app.cookies, unreadableCookies: true, rejectCookies: true }, app.config);
+  assert.equal(reload.snapshot.active, false);
+  assert.equal(reload.nativeCalls.length, 1);
+  assert.equal(reload.nativeCalls[0].data.operation_id, 'reload-committed-owner');
+  assert.equal(reload.storage.has('tailsplit-setup-cancel'), false);
+});
+
+test('confirmation from another native scope cannot authorize an unreadable pending journal', async () => {
+  const storage = new Map([
+    ['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: '', operation_id: 'unconfirmed-owner', journal_scope: 'foreign-native-scope' })],
+  ]);
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'unconfirmed-owner' }, 'mygo-windows',
+    { page: 'home', hash: '#token=fixture&journal=current-native-scope&journal_backup=0', storage, unreadableCookies: true, rejectCookies: true }, guidedDocument());
+  assert.equal(app.nativeCalls.length, 0);
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.$('#connection-setup-cancel').disabled, true);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+});
+
+test('an acknowledged native cancellation does not authorize a fresh unjournaled operation', async () => {
+  const options = { page: 'home', hash: '#token=fixture&journal=native-retry-scope&journal_backup=0' };
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'completed-owner' }, 'mygo-macos', options, guidedDocument());
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+  Object.assign(app.snapshot, { active: true, state: 'authorizing', mode: 'login', operation_id: 'fresh-unconfirmed-owner' });
+  options.rejectCookies = options.unreadableCookies = true;
+  await app.poll();
+  assert.equal(app.$('#connection-setup-cancel').disabled, true);
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.nativeCalls.length, 1);
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.snapshot.operation_id, 'fresh-unconfirmed-owner');
+});
+
+test('disabled header disconnect retains menu guidance in its final title and accessible label on every page', async () => {
+  for (const activeMode of ['tun', 'login']) {
+    const options = { hash: '#token=fixture&journal=native-label-scope&journal_backup=0', rejectCookies: true };
+    const app = await page({ desktop: true, active: true, state: activeMode === 'tun' ? 'running' : 'authorizing', mode: activeMode, operation_id: 'label-owner' }, 'mygo-windows', options, guidedDocument());
+    for (const pageName of ['connection', 'settings', 'logs']) {
+      await app.$(`[data-page="${pageName}"]`).emit('click');
+      const control = app.$('#desktop-disconnect');
+      assert.equal(control.disabled, true);
+      assert.match(control.title, /无法保存取消请求.*菜单栏或托盘/);
+      assert.equal(control.attributes.get('aria-label'), control.title);
+    }
+    options.rejectCookies = false;
+    await app.poll();
+    const control = app.$('#desktop-disconnect');
+    assert.equal(control.disabled, false);
+    assert.equal(control.title, activeMode === 'tun' ? '断开' : '取消');
+    assert.equal(control.attributes.get('aria-label'), control.title);
   }
 });
 

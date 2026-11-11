@@ -880,11 +880,17 @@
     }
     return cookieStored || backupStored;
   }
-  function rememberSetupCancel(cancel) {
+  function rememberSetupCancel(cancel, confirmed = false) {
     const previous = pendingSetupCancel;
+    const wasConfirmed = cancel && previous && setupCancelJournalConfirmed &&
+      cancel.request === previous.request && (cancel.operation_id || '') === (previous.operation_id || '');
+    const stored = journalNativeCancel(cancel, previous);
     pendingSetupCancel = cancel;
-    setupCancelJournalConfirmed = journalNativeCancel(cancel, previous);
-    const serialized = cancel ? JSON.stringify({ token, request: cancel.request, operation_id: cancel.operation_id || '' }) : '';
+    // Confirmation belongs to this exact pending intent until acknowledgment.
+    // A later unavailable store cannot revoke a previously committed request.
+    setupCancelJournalConfirmed = Boolean(cancel && (wasConfirmed || confirmed || stored));
+    const serialized = cancel ? JSON.stringify({ token, request: cancel.request, operation_id: cancel.operation_id || '',
+      ...(mygoWindow && setupCancelJournalConfirmed ? { journal_scope: nativeJournalScope } : {}) }) : '';
     try {
       if (cancel) sessionStorage.setItem(setupCancelKey, serialized);
       else sessionStorage.removeItem(setupCancelKey);
@@ -932,8 +938,12 @@
   }
   try {
     const remembered = JSON.parse(sessionStorage.getItem(setupCancelKey) || 'null');
-    if (remembered?.token === token && typeof remembered.request === 'string') rememberSetupCancel({ request: remembered.request, operation_id: remembered.operation_id || '' });
-    else sessionStorage.removeItem(setupCancelKey);
+    if (remembered?.token === token && typeof remembered.request === 'string') {
+      pendingSetupCancel = { request: remembered.request, operation_id: remembered.operation_id || '' };
+      setupCancelJournalConfirmed = Boolean(mygoWindow && nativeJournalPrefix && remembered.journal_scope === nativeJournalScope &&
+        typeof remembered.operation_id === 'string' && (remembered.request || remembered.operation_id));
+      rememberSetupCancel(pendingSetupCancel);
+    } else sessionStorage.removeItem(setupCancelKey);
   } catch (_) { /* Unavailable or malformed storage cannot restore a cancellation. */ }
   if (!pendingSetupCancel) {
     const recovered = nativeJournalRecords()[0]?.record;
@@ -1151,7 +1161,7 @@
   }
   function nativeCancelReady(cancel = currentCancelTarget()) {
     // Missing cached metadata never bypasses native cancellation safety.
-    return !mygoWindow || !cancel || nativeRecoveryAvailable(cancel);
+    return !mygoWindow || !cancel || cancel === pendingSetupCancel && setupCancelJournalConfirmed || nativeRecoveryAvailable(cancel);
   }
   function nativeCancelUnavailable() {
     return t('此面板无法保存取消请求。当前连接保持不变；如需断开，请使用菜单栏或托盘菜单的“断开连接”，或退出 TailSplit。');
@@ -1202,7 +1212,7 @@
   async function dispatchSetupCancel() {
     if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
     const cancel = pendingSetupCancel;
-    if (mygoWindow) setupCancelJournalConfirmed = journalNativeCancel(cancel);
+    if (mygoWindow) setupCancelJournalConfirmed = journalNativeCancel(cancel) || setupCancelJournalConfirmed;
     if (mygoWindow && !setupCancelJournalConfirmed) {
       setupCancelError = nativeCancelUnavailable();
       renderConnectionCenter();
@@ -1230,7 +1240,8 @@
     const target = currentCancelTarget();
     // Refuse an unprotected native cancellation before invalidating setup or
     // dispatching any command, including when reload lost its metadata.
-    if (mygoWindow && target && !journalNativeCancel(target)) {
+    const confirmed = mygoWindow && target && (target === pendingSetupCancel && setupCancelJournalConfirmed || journalNativeCancel(target));
+    if (mygoWindow && target && !confirmed) {
       operationError = { title: '操作未完成', detail: nativeCancelUnavailable() };
       clearNotice(); renderConnectionCenter(); return;
     }
@@ -1240,7 +1251,7 @@
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
     if (exitDialog.open) exitDialog.close();
-    if (!pendingSetupCancel && (operationID || canceledRequest)) rememberSetupCancel({ request: canceledRequest, operation_id: operationID || '' });
+    if (!pendingSetupCancel && (operationID || canceledRequest)) rememberSetupCancel({ request: canceledRequest, operation_id: operationID || '' }, Boolean(confirmed));
     if (await dispatchSetupCancel()) await refreshState();
     renderConnectionCenter();
   }
@@ -1522,9 +1533,8 @@
     $('#desktop-disconnect').hidden = !live.active && !pendingSetupCancel;
     $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || (!needsDefaultChoice && requiredBlocked) || Boolean(connectionSetup && connectionSetup.stage !== 'failed');
     $('#desktop-disconnect').disabled = !live.desktop || setupCancelSending || !nativeCancelReady();
-    $('#desktop-disconnect').title = !nativeCancelReady() ? nativeCancelUnavailable() : '';
     $('#desktop-disconnect').setAttribute('aria-checked', String(connected));
-    $('#desktop-disconnect').title = connected ? t('断开') : t('取消');
+    $('#desktop-disconnect').title = !nativeCancelReady() ? nativeCancelUnavailable() : connected ? t('断开') : t('取消');
     $('#desktop-disconnect').setAttribute('aria-label', $('#desktop-disconnect').title);
     if (document.activeElement === $('#desktop-connect') && $('#desktop-connect').hidden) $('#desktop-disconnect').focus();
     else if (document.activeElement === $('#desktop-disconnect') && $('#desktop-disconnect').hidden) $('#desktop-connect').focus();
