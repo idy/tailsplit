@@ -3,6 +3,7 @@ package configweb
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +14,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -67,13 +70,11 @@ func newPeettyUpdates(configPath string) *peettyUpdates {
 		releases:     make(map[string]*peettyRelease),
 		sourceClient: newPeettySourceClient(),
 	}
-	if privatefs.EnsureDir(filepath.Dir(u.path)) == nil && privatefs.CheckFile(u.path) == nil {
-		if data, err := readPeettyFile(u.path, peettyCacheLimit); err == nil {
-			var release peettyRelease
-			if json.Unmarshal(data, &release) == nil && preparePeettyRelease(&release) == nil {
-				u.active = &release
-				u.releases[release.Version] = &release
-			}
+	if data, err := readPeettyFile(u.path, peettyCacheLimit); err == nil {
+		var release peettyRelease
+		if json.Unmarshal(data, &release) == nil && preparePeettyRelease(&release) == nil {
+			u.active = &release
+			u.releases[release.Version] = &release
 		}
 	}
 	return u
@@ -221,14 +222,14 @@ func preparePeettyRelease(release *peettyRelease) error {
 
 func (u *peettyUpdates) save(release *peettyRelease) error {
 	directory := filepath.Dir(u.path)
-	if err := privatefs.EnsureDir(directory); err != nil {
+	if err := privatefs.StableDir(directory, true); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(u.path); err == nil {
-		if err := privatefs.CheckFile(u.path); err != nil {
-			return err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	directoryInfo, err := os.Lstat(directory)
+	if err != nil {
+		return err
+	}
+	if _, err := checkPeettyCacheFile(u.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	data, err := json.Marshal(release)
@@ -238,32 +239,111 @@ func (u *peettyUpdates) save(release *peettyRelease) error {
 	if len(data) > peettyCacheLimit {
 		return errors.New("Peetty cache exceeds size limit")
 	}
-	file, err := os.CreateTemp(directory, ".peetty-*")
+	file, err := createPeettyCacheTemp(directory)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	}()
 	if _, err := file.Write(data); err != nil {
-		file.Close()
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		file.Close()
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if _, err := checkPeettyCacheFile(file.Name()); err != nil {
+		return err
+	}
+	// Recheck the destination before the atomic replacement. Stable ancestry
+	// prevents other users from swapping any checked directory along this path.
+	if err := privatefs.StableDir(directory, false); err != nil {
+		return err
+	}
+	currentDirectory, err := os.Lstat(directory)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(directoryInfo, currentDirectory) {
+		return errors.New("Peetty cache directory changed during save")
+	}
+	if _, err := checkPeettyCacheFile(u.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return privatefs.Replace(file.Name(), u.path)
 }
 
+func createPeettyCacheTemp(directory string) (*os.File, error) {
+	// CreateFile establishes a private ACL before any bytes are written, without
+	// inheriting macOS grants or the Windows process token's default DACL.
+	return privatefs.CreateFile(filepath.Join(directory, ".peetty-"+rand.Text()))
+}
+
+func checkPeettyCacheFile(path string) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || !peettyCacheOwnedByUser(info) {
+		return nil, errors.New("Peetty cache must be an owned regular file")
+	}
+	if err := privatefs.CheckFile(path); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+func peettyCacheOwnedByUser(info os.FileInfo) bool {
+	if runtime.GOOS == "windows" {
+		return true // CheckFile verifies the Windows owner SID and private ACL.
+	}
+	// syscall.Stat_t is unavailable on Windows. Inspect its POSIX Uid field
+	// without importing a platform-specific type into the shared cache code.
+	stat := reflect.Indirect(reflect.ValueOf(info.Sys()))
+	if !stat.IsValid() || stat.Kind() != reflect.Struct {
+		return false
+	}
+	uid := stat.FieldByName("Uid")
+	return uid.IsValid() && uid.Kind() == reflect.Uint32 && uid.Uint() == uint64(os.Geteuid())
+}
+
 func readPeettyFile(path string, limit int64) ([]byte, error) {
+	directory := filepath.Dir(path)
+	if err := privatefs.StableDir(directory, false); err != nil {
+		return nil, err
+	}
+	before, err := checkPeettyCacheFile(path)
+	if err != nil {
+		return nil, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	return readPeettyBounded(file, limit)
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(before, opened) {
+		return nil, errors.New("Peetty cache changed while opening")
+	}
+	data, err := readPeettyBounded(file, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := privatefs.StableDir(directory, false); err != nil {
+		return nil, err
+	}
+	after, err := checkPeettyCacheFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(opened, after) {
+		return nil, errors.New("Peetty cache changed while reading")
+	}
+	return data, nil
 }
 
 func readPeettyBounded(reader io.Reader, limit int64) ([]byte, error) {

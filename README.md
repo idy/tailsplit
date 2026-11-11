@@ -241,8 +241,10 @@ build remains available offline. Publisher TLS uses an application-pinned Mozill
 public CA bundle (`github.com/breml/rootcerts` v0.3.8), independently of system or
 CDN trust. Certificates added to the OS trust store cannot authorize publisher
 responses. GitHub and control of the publisher repository remain trusted;
-upstream releases do not provide signed-release provenance. Offline reuse trusts
-the owner-only cache; caches established using system TLS trust are rejected.
+upstream releases do not provide signed-release provenance. Offline reuse checks
+the cache file's ownership, private permissions and ACLs, and the safety of every
+storage ancestor. Staging files have private permissions before any bytes are
+written. Caches established using system TLS trust are rejected.
 Reduced motion, oversized page text (including YAML and logs), or a failed CDN
 companion use the embedded build with TailSplit's compatibility fixes. All
 browser requests stay on the local origin; CSP permits only the selected

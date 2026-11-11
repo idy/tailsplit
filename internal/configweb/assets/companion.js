@@ -8,7 +8,7 @@
   const preferences = window.TailSplitCompanionPreferences;
   const leasesByPet = new WeakMap();
   const activeHosts = new Map();
-  const wiredHideButtons = new WeakSet();
+  const wiredHosts = new WeakSet();
   const hostPrefix = 'tailsplit-peetty-' + (window.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)) + '-';
   let hostSerial = 0;
   const timeoutMS = 10000;
@@ -95,26 +95,40 @@
   }
 
   function wireHost(host) {
-    const hide = host.shadowRoot?.querySelector('[data-action="hide"]');
-    if (!hide) return false;
-    if (!wiredHideButtons.has(hide)) {
-      hide.addEventListener('click', () => { void save(false); });
-      wiredHideButtons.add(hide);
+    if (wiredHosts.has(host)) return;
+    // Capture composed clicks on the host, including controls created later
+    // inside its open shadow tree. SDK handlers may stop propagation or remove
+    // the UI, so persist after dispatch and recheck the instance's ownership.
+    host.addEventListener('click', (event) => {
+      const owner = activeHosts.get(host.localName);
+      if (!owner || owner.cancelled || !host.isConnected) return;
+      let hide = false;
+      for (const node of event.composedPath()) {
+        if (node === host) break;
+        if (node?.localName === 'peetty-companion' || node?.localName?.startsWith('tailsplit-peetty-')) return;
+        if (node?.getAttribute?.('data-action') === 'hide') hide = true;
+      }
+      if (hide) void Promise.resolve().then(() => {
+        if (activeHosts.get(host.localName) === owner && !owner.cancelled) void save(false);
+      });
+    }, true);
+    wiredHosts.add(host);
+  }
+
+  function adoptHost(host) {
+    if (host.localName === 'peetty-companion') {
+      host.remove();
+    } else if (host.localName?.startsWith(hostPrefix)) {
+      const owner = activeHosts.get(host.localName);
+      if (!owner || owner.cancelled) host.remove();
+      else { owner.hosts.add(host); wireHost(host); }
     }
-    return true;
   }
 
   function adoptHosts(root) {
-    const nodes = root.nodeType === 1 ? [root] : [];
-    if (root.querySelectorAll) nodes.push(...root.querySelectorAll('*'));
-    for (const host of nodes) {
-      if (host.localName === 'peetty-companion') {
-        host.remove();
-      } else if (host.localName?.startsWith(hostPrefix)) {
-        const owner = activeHosts.get(host.localName);
-        if (!owner || owner.cancelled) host.remove();
-        else { owner.hosts.add(host); wireHost(host); }
-      }
+    if (root.nodeType === 1) adoptHost(root);
+    if (root.querySelectorAll) {
+      for (const host of root.querySelectorAll('*')) adoptHost(host);
     }
   }
 
@@ -168,8 +182,9 @@
       await Promise.race([mounting, cancelled, deadline]);
       if (lease.cancelled || current !== generation || pet !== next) return;
       adoptHosts(document.documentElement);
-      const host = [...lease.hosts].find((candidate) => candidate.isConnected && wireHost(candidate));
+      const host = [...lease.hosts].find((candidate) => candidate.isConnected && candidate.shadowRoot);
       if (!host) throw new Error('Missing companion host.');
+      wireHost(host);
       committed = true;
     } finally {
       window.clearTimeout(lease.timer);

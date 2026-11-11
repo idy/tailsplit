@@ -22,7 +22,11 @@ async function setup(options = {}) {
   const preview = { textContent: options.yaml || '' };
   const content = [log, preview, ...(options.texts || []).map((textContent) => ({ textContent }))];
   document.body = { nodeType: 1, localName: 'body' };
-  document.documentElement = { nodeType: 1, localName: 'html', querySelectorAll: () => [...overlays].map((instance) => instance.host) };
+  document.documentElement = { nodeType: 1, localName: 'html', querySelectorAll: function* () {
+    const span = { nodeType: 1, localName: 'span' };
+    for (let index = 0; index < (options.pageElements || 0); index++) yield span;
+    for (const instance of overlays) yield instance.host;
+  } };
   document.querySelectorAll = () => [...overlays].map((instance) => instance.host);
   document.createTreeWalker = () => {
     let index = 0;
@@ -48,6 +52,22 @@ async function setup(options = {}) {
   window.setTimeout = (callback) => { timers.set(++nextTimer, callback); return nextTimer; };
   window.clearTimeout = (id) => { timers.delete(id); };
   const expireTimers = () => { for (const [id, callback] of [...timers]) { timers.delete(id); callback(); } };
+  const enableHostEvents = (host) => {
+    const receiver = new EventTarget();
+    host.addEventListener = receiver.addEventListener.bind(receiver);
+    host.dispatchEvent = receiver.dispatchEvent.bind(receiver);
+  };
+  const attachHide = (host, button = new EventTarget()) => {
+    button.getAttribute = (name) => name === 'data-action' ? 'hide' : null;
+    const dispatch = button.dispatchEvent.bind(button);
+    button.dispatchEvent = (event) => {
+      Object.defineProperty(event, 'composedPath', { configurable: true, value: () => [button, host.shadowRoot, host] });
+      host.dispatchEvent(event);
+      return dispatch(event);
+    };
+    host.shadowRoot = { querySelector: () => button };
+    return button;
+  };
   window.Peetty = { createPeetty(_options, onHost = () => {}, hostTag = 'peetty-companion') {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
@@ -78,11 +98,15 @@ async function setup(options = {}) {
       },
       setLanguage() {},
     };
+    enableHostEvents(instance.host);
+    attachHide(instance.host, hide);
     if (options.destroyMissing && instances.length === 0) instance.destroy = undefined;
     if (options.destroyNonCallable && instances.length === 0) instance.destroy = 'invalid';
     instance.copyHost = () => {
       const copy = { hide: new EventTarget() };
       copy.host = { ...instance.host, shadowRoot: { querySelector: () => copy.hide }, get isConnected() { return overlays.has(copy); }, remove: () => { overlays.delete(copy); } };
+      enableHostEvents(copy.host);
+      attachHide(copy.host, copy.hide);
       return copy;
     };
     if (!(options.unscopedRoot && instances.length === 0)) onHost(instance.host);
@@ -118,7 +142,7 @@ async function setup(options = {}) {
   const setEnabled = (enabled) => { toggle.checked = enabled; toggle.dispatchEvent(new Event('change')); };
   const setHidden = (hidden) => { document.hidden = hidden; document.dispatchEvent(new Event('visibilitychange')); };
   await flush();
-  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden, scripts, motion, log, preview, logChanged, factory, timers, expireTimers, observations, resources };
+  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden, scripts, motion, log, preview, logChanged, factory, timers, expireTimers, observations, resources, attachHide };
 }
 
 for (const interruption of ['toggle off', 'document hidden', 'page hidden']) {
@@ -722,6 +746,41 @@ test('copies adopted after the initial mount receive their own Hide handler exac
   assert.equal(state.saved.enabled, false);
   assert.equal(state.overlays.size, 0);
 });
+
+test('large allowed pages do not expand DOM nodes into function arguments', async () => {
+  const state = await setup({ updated: true, pageElements: 250000 });
+  state.instances[0].finish();
+  await flush();
+  assert.equal(state.overlays.size, 1);
+  assert.equal(state.error.hidden, true);
+  assert.equal(state.scripts.length, 0);
+  state.instances[0].hide.dispatchEvent(new Event('click'));
+  await flush();
+  assert.equal(state.saved.enabled, false);
+});
+
+for (const missingShadow of [false, true]) {
+  test(`a copied host saves Hide when its control arrives later (missing shadow=${missingShadow})`, async () => {
+    const state = await setup({ updated: true });
+    const instance = state.instances[0];
+    instance.finish();
+    await flush();
+    const copy = instance.copyHost();
+    copy.host.shadowRoot = missingShadow ? null : { querySelector: () => null };
+    instance.host.remove();
+    state.overlays.add(copy);
+    await flush();
+    const late = state.attachHide(copy.host);
+    late.addEventListener('click', (event) => { event.stopImmediatePropagation(); copy.host.remove(); });
+    // No document mutation is emitted for the later shadow-tree population.
+    late.dispatchEvent(new Event('click'));
+    await flush();
+    assert.deepEqual(state.saves, [false]);
+    assert.equal(state.saved.enabled, false);
+    assert.equal(state.overlays.size, 0);
+    assert.equal(state.error.hidden, true);
+  });
+}
 
 test('changing reduced motion switches an active CDN companion to the embedded runtime', async () => {
   const state = await setup({ updated: true });
