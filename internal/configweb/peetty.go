@@ -212,9 +212,12 @@ func preparePeettyRelease(release *peettyRelease) error {
 	}
 	bundle := release.Files["cdn/peetty.global.js"]
 	styles := peettyStylesheet.FindAllSubmatch(bundle, -1)
+	// The supported build has one host tag literal at its one tracked creation
+	// call. Any additional reference makes the host-creation shape unsupported.
 	if len(styles) != 1 || bytes.Contains(styles[0][1], []byte("${")) || bytes.ContainsAny(styles[0][1], "\\") ||
 		bytes.Count(bundle, []byte(`createElement("style")`)) != 1 ||
-		!bytes.Contains(bundle, []byte("createPeetty")) || len(peettyHostCreation.FindAllIndex(bundle, -1)) != 1 {
+		!bytes.Contains(bundle, []byte("createPeetty")) || len(peettyHostCreation.FindAllIndex(bundle, -1)) != 1 ||
+		bytes.Count(bundle, []byte("peetty-companion")) != 1 {
 		return errors.New("unsupported Peetty browser bundle or stylesheet")
 	}
 	digest := sha256.Sum256(styles[0][1])

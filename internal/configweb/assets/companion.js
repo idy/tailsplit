@@ -89,11 +89,11 @@
     } else lease.hosts.add(host);
   }
 
-  function disposeLease(lease) {
+  function disposeLease(lease, retryCleanup = false) {
     lease.cancelled = true;
     window.clearTimeout(lease.timer);
     lease.release();
-    if (!lease.disposed) {
+    if (!lease.disposed || retryCleanup) {
       lease.disposed = true;
       try { if (typeof lease.instance?.destroy === 'function') lease.instance.destroy(); }
       catch (_) { /* Host ownership does not depend on successful SDK cleanup. */ }
@@ -127,7 +127,14 @@
       const deadline = new Promise((_, reject) => {
         lease.timer = window.setTimeout(() => reject(new Error('Companion mount timed out.')), timeoutMS);
       });
-      await Promise.race([next.mount(), cancelled, deadline]);
+      const mounting = Promise.resolve(next.mount());
+      const settled = () => {
+        // Observe the original mount after the cancellation/deadline race has
+        // returned, so late listeners and animation work get another teardown.
+        if (lease.cancelled) disposeLease(lease, true);
+      };
+      void mounting.then(settled, settled);
+      await Promise.race([mounting, cancelled, deadline]);
       if (lease.cancelled || current !== generation || pet !== next) return;
       const live = new Set(document.querySelectorAll('peetty-companion'));
       const host = [...lease.hosts].find((candidate) => live.has(candidate) && candidate.shadowRoot?.querySelector('[data-action="hide"]'));

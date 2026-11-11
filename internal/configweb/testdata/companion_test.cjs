@@ -39,6 +39,7 @@ async function setup(options = {}) {
     save: async (enabled) => { saves.push(enabled); saved.enabled = enabled; return { enabled }; },
   };
   const instances = [];
+  const resources = new Set();
   const window = new EventTarget();
   window.TailSplitI18n = { language: 'en', t: (key) => key, subscribe() {} };
   window.TailSplitCompanionPreferences = preferences;
@@ -51,10 +52,14 @@ async function setup(options = {}) {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
     const hide = new EventTarget();
+    let settled = false;
     const instance = {
+      cleanupCalls: 0,
       host: { insertionRoot: options.outsideBody ? document.documentElement : document.body, shadowRoot: { querySelector: () => hide }, remove: () => { overlays.delete(instance); } }, hide, finish,
       // Model a mount whose asynchronous work completes after early disposal.
       mount: () => pending.then(() => {
+        settled = true;
+        if (options.installLateResources && instances[0] === instance) resources.add(instance);
         if (options.mountRejects && instances[0] === instance) {
           if (options.partialMount) overlays.add(instance);
           throw new Error('Mount failed');
@@ -62,6 +67,9 @@ async function setup(options = {}) {
         overlays.add(instance);
       }),
       destroy: () => {
+        instance.cleanupCalls++;
+        if (options.destroyWhilePending && !settled && instances[0] === instance) throw new Error('Initialization still pending');
+        resources.delete(instance);
         if (options.destroyBeforeRemoval && instances[0] === instance) throw new Error('Cleanup failed before removing host');
         overlays.delete(instance);
         if (options.destroyThrows && instances[0] === instance) throw new Error('Cleanup failed');
@@ -103,7 +111,7 @@ async function setup(options = {}) {
   const setEnabled = (enabled) => { toggle.checked = enabled; toggle.dispatchEvent(new Event('change')); };
   const setHidden = (hidden) => { document.hidden = hidden; document.dispatchEvent(new Event('visibilitychange')); };
   await flush();
-  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden, scripts, motion, log, preview, logChanged, factory, timers, expireTimers, observations };
+  return { toggle, error, retry, document, window, instances, overlays, saves, saved, setEnabled, setHidden, scripts, motion, log, preview, logChanged, factory, timers, expireTimers, observations, resources };
 }
 
 for (const interruption of ['toggle off', 'document hidden', 'page hidden']) {
@@ -593,6 +601,45 @@ test('fallback script timeout is retryable and ignores a late load', async () =>
   assert.equal(state.overlays.size, 1);
   assert.equal(state.error.hidden, true);
   assert.equal(state.timers.size, 0);
+});
+
+for (const earlyThrow of [false, true]) {
+  for (const lateReject of [false, true]) {
+    test(`late initialization cleanup retries after cancellation (early throw=${earlyThrow}, rejection=${lateReject})`, async () => {
+      const state = await setup({ updated: true, outsideBody: true, installLateResources: true, destroyWhilePending: earlyThrow, mountRejects: lateReject, partialMount: true });
+      const old = state.instances[0];
+      state.setHidden(true);
+      state.setHidden(false);
+      await flush();
+      assert.equal(state.instances.length, 2, 'replacement must not wait for late cleanup');
+      state.instances[1].finish();
+      await flush();
+      assert.equal(old.cleanupCalls, 1);
+      old.finish();
+      await flush();
+      assert.equal(old.cleanupCalls, 2, 'cleanup must run after late initialization installs resources');
+      assert.equal(state.resources.size, 0, 'late listeners and animation work must be released');
+      assert.deepEqual([...state.overlays], [state.instances[1]]);
+      assert.equal(state.error.hidden, true);
+    });
+  }
+}
+
+test('late initialization cleanup retries after a mount timeout and fallback recovery', async () => {
+  const state = await setup({ updated: true, installLateResources: true, destroyWhilePending: true });
+  const old = state.instances[0];
+  state.expireTimers();
+  await flush();
+  state.scripts[0].finishLoad();
+  await flush();
+  state.instances[1].finish();
+  await flush();
+  old.finish();
+  await flush();
+  assert.equal(old.cleanupCalls, 2);
+  assert.equal(state.resources.size, 0);
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+  assert.equal(state.error.hidden, true);
 });
 
 test('changing reduced motion switches an active CDN companion to the embedded runtime', async () => {

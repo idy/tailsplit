@@ -306,7 +306,14 @@ func TestPeettyDoesNotLoadOrReplaceCacheThroughDirectorySymlink(t *testing.T) {
 }
 
 func TestPeettyRejectsUntrackedHostCreation(t *testing.T) {
-	for _, replacement := range []string{`window.document.createElement("peetty-companion")`, `globalThis.document.createElement("peetty-companion")`} {
+	for _, replacement := range []string{
+		`window.document.createElement("peetty-companion")`,
+		`globalThis.document.createElement("peetty-companion")`,
+		`document.createElement("peetty-companion");window.document.createElement("peetty-companion")`,
+		`document.createElement("peetty-companion");globalThis.document.createElement("peetty-companion")`,
+		`document.createElement("peetty-companion");window.document.createElement('peetty-companion')`,
+		`document.createElement("peetty-companion");var tag="peetty-companion";window.document.createElement(tag)`,
+	} {
 		release := &peettyRelease{Format: peettyCacheFormat, Commit: peettyTestCommit("v0.3.1"), Version: "v0.3.1", Files: peettyTestFiles("red", false), Hashes: make(map[string]string)}
 		release.Files["cdn/peetty.global.js"] = bytes.ReplaceAll(release.Files["cdn/peetty.global.js"], []byte(`document.createElement("peetty-companion")`), []byte(replacement))
 		for name, body := range release.Files {
