@@ -200,12 +200,11 @@ the owner-only cache; caches established using system TLS trust are rejected.
 Reduced motion, oversized page text (including YAML and logs), or a failed CDN
 companion use the embedded build with TailSplit's compatibility fixes. All
 browser requests stay on the local origin; CSP permits only the selected
-release's exact stylesheet. A local SDK facade records each instance's hosts at
-creation, so cancellation and ten-second mount/load deadlines can release
-recovery immediately while late hosts remain safely removable. Updates with
-unsupported rendering construction paths retain the last working release; the
-supported SDK creates elements directly through the scoped document and does
-not clone, import or parse HTML into new hosts.
+release's exact stylesheet. A local SDK facade gives each instance a
+private host tag. Native DOM copies retain that tag, so cancellation and
+ten-second mount/load deadlines can release recovery immediately while late
+hosts and copies remain removable without affecting a replacement. Ordinary
+SDK text and unrelated method names do not participate in version validation.
 
 ## CLI
 

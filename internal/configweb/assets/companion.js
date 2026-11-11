@@ -7,7 +7,10 @@
   const locale = window.TailSplitI18n;
   const preferences = window.TailSplitCompanionPreferences;
   const leasesByPet = new WeakMap();
-  const hostOwners = new WeakMap();
+  const activeHosts = new Map();
+  const wiredHideButtons = new WeakSet();
+  const hostPrefix = 'tailsplit-peetty-' + (window.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)) + '-';
+  let hostSerial = 0;
   const timeoutMS = 10000;
   let enabled = false;
   let ready = false;
@@ -80,17 +83,44 @@
     return pending;
   }
 
-  // The server's SDK facade reports hosts at creation, before insertion. Each
-  // callback retains its own lease even after cancellation or a mount timeout.
+  // The SDK facade gives each instance a private tag. Native cloning/importing
+  // preserves that tag, so copied hosts can be adopted without a creation hook.
   function registerHost(lease, host) {
-    hostOwners.set(host, lease);
-    if (lease.cancelled) {
-      void Promise.resolve().then(() => { if (hostOwners.get(host) === lease) host.remove(); });
-    } else lease.hosts.add(host);
+    if (host.localName !== lease.tag) {
+      host.remove();
+      throw new Error('Unisolated companion host.');
+    }
+    if (lease.cancelled) void Promise.resolve().then(() => { host.remove(); });
+    else lease.hosts.add(host);
+  }
+
+  function wireHost(host) {
+    const hide = host.shadowRoot?.querySelector('[data-action="hide"]');
+    if (!hide) return false;
+    if (!wiredHideButtons.has(hide)) {
+      hide.addEventListener('click', () => { void save(false); });
+      wiredHideButtons.add(hide);
+    }
+    return true;
+  }
+
+  function adoptHosts(root) {
+    const nodes = root.nodeType === 1 ? [root] : [];
+    if (root.querySelectorAll) nodes.push(...root.querySelectorAll('*'));
+    for (const host of nodes) {
+      if (host.localName === 'peetty-companion') {
+        host.remove();
+      } else if (host.localName?.startsWith(hostPrefix)) {
+        const owner = activeHosts.get(host.localName);
+        if (!owner || owner.cancelled) host.remove();
+        else { owner.hosts.add(host); wireHost(host); }
+      }
+    }
   }
 
   function disposeLease(lease, retryCleanup = false) {
     lease.cancelled = true;
+    activeHosts.delete(lease.tag);
     window.clearTimeout(lease.timer);
     lease.release();
     if (!lease.disposed || retryCleanup) {
@@ -110,14 +140,15 @@
 
   async function mountOne(current) {
     if (current !== generation || !ready || !enabled || suspended || document.hidden || saving) return;
-    const lease = { instance: null, hosts: new Set(), cancelled: false, disposed: false, timer: null, release: null };
+    const lease = { tag: hostPrefix + (++hostSerial), instance: null, hosts: new Set(), cancelled: false, disposed: false, timer: null, release: null };
+    activeHosts.set(lease.tag, lease);
     const cancelled = new Promise((resolve) => { lease.release = resolve; });
     let committed = false;
     try {
       const next = sdk.createPeetty({
         figure: 'miru', size: 88, activity: 'lively',
         language: locale.language, greet: false, chat: false, zIndex: 20,
-      }, (host) => registerHost(lease, host));
+      }, (host) => registerHost(lease, host), lease.tag);
       lease.instance = next;
       if (!next || typeof next.mount !== 'function' || typeof next.destroy !== 'function' || typeof next.setLanguage !== 'function') {
         throw new Error('Incompatible companion instance.');
@@ -136,10 +167,9 @@
       void mounting.then(settled, settled);
       await Promise.race([mounting, cancelled, deadline]);
       if (lease.cancelled || current !== generation || pet !== next) return;
-      const live = new Set(document.querySelectorAll('peetty-companion'));
-      const host = [...lease.hosts].find((candidate) => live.has(candidate) && candidate.shadowRoot?.querySelector('[data-action="hide"]'));
+      adoptHosts(document.documentElement);
+      const host = [...lease.hosts].find((candidate) => candidate.isConnected && wireHost(candidate));
       if (!host) throw new Error('Missing companion host.');
-      host.shadowRoot.querySelector('[data-action="hide"]').addEventListener('click', () => { void save(false); });
       committed = true;
     } finally {
       window.clearTimeout(lease.timer);
@@ -200,13 +230,14 @@
 
   reducedMotion?.addEventListener('change', checkCompatibility);
   if (window.MutationObserver) {
-    new window.MutationObserver(() => {
-      for (const host of document.querySelectorAll('peetty-companion')) {
-        if (hostOwners.get(host)?.cancelled) host.remove();
+    new window.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) adoptHosts(node);
       }
       checkCompatibility();
     }).observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   }
+  adoptHosts(document.documentElement);
 
   async function save(value) {
     if (!ready || saving) { toggle.checked = enabled; return; }

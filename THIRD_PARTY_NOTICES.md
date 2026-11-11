@@ -67,8 +67,9 @@ verified against source bytes fetched directly from the publisher's GitHub
 repository at the resolved tag commit, independently of the delivery CDN. Exact
 stylesheet CSP hashes permit the upstream shadow-root stylesheet without
 inline-style exceptions. Served scripts wrap the verified upstream bytes in a
-TailSplit document facade that reports companion elements at creation; the
-cached upstream files remain unmodified. Script integrity covers the complete
+TailSplit document facade that gives each instance a private custom-element
+host tag and reports creation. DOM copies preserve that tag for lifecycle
+ownership; the cached upstream files remain unmodified. Script integrity covers the complete
 served wrapper and upstream code.
 
 ## Publisher verification certificate roots

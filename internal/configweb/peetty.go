@@ -43,26 +43,6 @@ type peettyRelease struct {
 	style   string
 }
 
-var peettyHostCreation = regexp.MustCompile(`(?:^|[^\w$.])document\.createElement\("peetty-companion"\)`)
-
-var peettyDOMCreation = regexp.MustCompile(`\b(?:createElement|createElementNS)\b`)
-var peettyScopedDOMCreation = regexp.MustCompile(`(?:^|[^\w$.])document\.(?:createElement|createElementNS)\(`)
-var peettyUnsupportedDOMCreation = regexp.MustCompile(`\b(?:cloneNode|cloneContents|extractContents|importNode|adoptNode|` +
-	`innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment|DOMParser|parseFromString|` +
-	`createHTMLDocument|createDocument|customElements|srcdoc|write|writeln|` +
-	`setHTML|setHTMLUnsafe|parseHTML|parseHTMLUnsafe)\b`)
-
-// Support the published SDK's explicit DOM construction surface: every element
-// factory reference must be a call through our lexical document facade. Copies
-// and HTML parsers can construct nodes without such a call, so builds using any
-// of those primitives are unsupported, even when they retain the expected host
-// constructor. This conservative gate also rejects aliases and qualified calls.
-func supportedPeettyDOMConstruction(bundle []byte) bool {
-	factories := peettyDOMCreation.FindAllIndex(bundle, -1)
-	return len(factories) > 0 && len(factories) == len(peettyScopedDOMCreation.FindAllIndex(bundle, -1)) &&
-		!peettyUnsupportedDOMCreation.Match(bundle)
-}
-
 var peettyStylesheet = regexp.MustCompile("(?s)(?:var|let|const)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*=\\s*`(\\n:host \\{ all: initial; \\}[^`]*\\n)`[;,]")
 
 type peettyUpdates struct {
@@ -230,12 +210,8 @@ func preparePeettyRelease(release *peettyRelease) error {
 	}
 	bundle := release.Files["cdn/peetty.global.js"]
 	styles := peettyStylesheet.FindAllSubmatch(bundle, -1)
-	// The supported build has one host tag literal at its one tracked creation
-	// call. Any additional reference makes the host-creation shape unsupported.
 	if len(styles) != 1 || bytes.Contains(styles[0][1], []byte("${")) || bytes.ContainsAny(styles[0][1], "\\") ||
-		bytes.Count(bundle, []byte(`createElement("style")`)) != 1 ||
-		!bytes.Contains(bundle, []byte("createPeetty")) || len(peettyHostCreation.FindAllIndex(bundle, -1)) != 1 ||
-		bytes.Count(bundle, []byte("peetty-companion")) != 1 || !supportedPeettyDOMConstruction(bundle) {
+		!bytes.Contains(bundle, []byte("createPeetty")) || !bytes.Contains(bundle, []byte("peetty-companion")) {
 		return errors.New("unsupported Peetty browser bundle or stylesheet")
 	}
 	digest := sha256.Sum256(styles[0][1])

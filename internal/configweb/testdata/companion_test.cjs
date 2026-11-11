@@ -21,8 +21,8 @@ async function setup(options = {}) {
   const log = { textContent: options.log || '' };
   const preview = { textContent: options.yaml || '' };
   const content = [log, preview, ...(options.texts || []).map((textContent) => ({ textContent }))];
-  document.body = {};
-  document.documentElement = {};
+  document.body = { nodeType: 1, localName: 'body' };
+  document.documentElement = { nodeType: 1, localName: 'html', querySelectorAll: () => [...overlays].map((instance) => instance.host) };
   document.querySelectorAll = () => [...overlays].map((instance) => instance.host);
   document.createTreeWalker = () => {
     let index = 0;
@@ -48,14 +48,14 @@ async function setup(options = {}) {
   window.setTimeout = (callback) => { timers.set(++nextTimer, callback); return nextTimer; };
   window.clearTimeout = (id) => { timers.delete(id); };
   const expireTimers = () => { for (const [id, callback] of [...timers]) { timers.delete(id); callback(); } };
-  window.Peetty = { createPeetty(_options, onHost = () => {}) {
+  window.Peetty = { createPeetty(_options, onHost = () => {}, hostTag = 'peetty-companion') {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
     const hide = new EventTarget();
     let settled = false;
     const instance = {
       cleanupCalls: 0,
-      host: { insertionRoot: options.outsideBody ? document.documentElement : document.body, shadowRoot: { querySelector: () => hide }, remove: () => { overlays.delete(instance); } }, hide, finish,
+      host: { nodeType: 1, localName: options.unscopedRoot && instances.length === 0 ? 'peetty-companion' : hostTag, get isConnected() { return overlays.has(instance); }, querySelectorAll: () => [], insertionRoot: options.outsideBody ? document.documentElement : document.body, shadowRoot: { querySelector: () => hide }, remove: () => { overlays.delete(instance); } }, hide, finish,
       // Model a mount whose asynchronous work completes after early disposal.
       mount: () => pending.then(() => {
         settled = true;
@@ -64,21 +64,28 @@ async function setup(options = {}) {
           if (options.partialMount) overlays.add(instance);
           throw new Error('Mount failed');
         }
-        overlays.add(instance);
+        instance.rendered = options.cloneTemplate ? instance.copyHost() : instance;
+        if (options.cloneTemplate) instance.hide = instance.rendered.hide;
+        overlays.add(instance.rendered);
       }),
       destroy: () => {
         instance.cleanupCalls++;
         if (options.destroyWhilePending && !settled && instances[0] === instance) throw new Error('Initialization still pending');
         resources.delete(instance);
         if (options.destroyBeforeRemoval && instances[0] === instance) throw new Error('Cleanup failed before removing host');
-        overlays.delete(instance);
+        overlays.delete(instance.rendered || instance);
         if (options.destroyThrows && instances[0] === instance) throw new Error('Cleanup failed');
       },
       setLanguage() {},
     };
     if (options.destroyMissing && instances.length === 0) instance.destroy = undefined;
     if (options.destroyNonCallable && instances.length === 0) instance.destroy = 'invalid';
-    onHost(instance.host);
+    instance.copyHost = () => {
+      const copy = { hide: new EventTarget() };
+      copy.host = { ...instance.host, shadowRoot: { querySelector: () => copy.hide }, get isConnected() { return overlays.has(copy); }, remove: () => { overlays.delete(copy); } };
+      return copy;
+    };
+    if (!(options.unscopedRoot && instances.length === 0)) onHost(instance.host);
     instances.push(instance);
     return instance;
   } };
@@ -89,11 +96,11 @@ async function setup(options = {}) {
   let logChanged = () => {};
   const observations = [];
   window.MutationObserver = class {
-    constructor(callback) { this.callback = callback; logChanged = callback; }
+    constructor(callback) { this.callback = callback; logChanged = () => callback([{ addedNodes: [document.documentElement] }]); }
     observe(root) {
       observations.push(root);
       notifyHosts = (host) => {
-        if (root === document.documentElement || host.insertionRoot === root) this.callback();
+        if (root === document.documentElement || host.insertionRoot === root) this.callback([{ addedNodes: [host] }]);
       };
     }
   };
@@ -640,6 +647,80 @@ test('late initialization cleanup retries after a mount timeout and fallback rec
   assert.equal(state.resources.size, 0);
   assert.deepEqual([...state.overlays], [state.instances[1]]);
   assert.equal(state.error.hidden, true);
+});
+
+test('a copied template host retains its instance namespace and Hide preference action', async () => {
+  const state = await setup({ updated: true, cloneTemplate: true });
+  const instance = state.instances[0];
+  instance.finish();
+  await flush();
+  assert.equal(instance.host.isConnected, false, 'the original template stays detached');
+  assert.equal(state.overlays.size, 1);
+  assert.equal(instance.rendered.host.localName, instance.host.localName);
+  assert.equal(state.error.hidden, true);
+  instance.hide.dispatchEvent(new Event('click'));
+  await flush();
+  assert.equal(state.saved.enabled, false);
+  assert.equal(state.overlays.size, 0);
+});
+
+test('a late copied host from a canceled template cannot claim a replacement namespace', async () => {
+  const state = await setup({ updated: true, outsideBody: true, destroyBeforeRemoval: true });
+  const old = state.instances[0];
+  state.setHidden(true);
+  state.setHidden(false);
+  await flush();
+  state.instances[1].finish();
+  await flush();
+  const copy = old.copyHost();
+  assert.notEqual(copy.host.localName, state.instances[1].host.localName);
+  state.overlays.add(copy);
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+  old.finish();
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+});
+
+test('unscoped legacy hosts recover into an isolated fallback and late legacy copies are removed', async () => {
+  const state = await setup({ updated: true, outsideBody: true, unscopedRoot: true, destroyBeforeRemoval: true });
+  const old = state.instances[0];
+  old.finish();
+  await flush();
+  assert.equal(state.overlays.size, 0);
+  assert.equal(state.scripts.length, 1);
+  state.scripts[0].finishLoad();
+  await flush();
+  state.instances[1].finish();
+  await flush();
+  const copy = old.copyHost();
+  assert.equal(copy.host.localName, 'peetty-companion');
+  state.overlays.add(copy);
+  await flush();
+  assert.deepEqual([...state.overlays], [state.instances[1]]);
+  assert.equal(state.error.hidden, true);
+  state.instances[1].hide.dispatchEvent(new Event('click'));
+  await flush();
+  assert.equal(state.saved.enabled, false);
+  assert.equal(state.overlays.size, 0);
+});
+
+test('copies adopted after the initial mount receive their own Hide handler exactly once', async () => {
+  const state = await setup({ updated: true });
+  const instance = state.instances[0];
+  instance.finish();
+  await flush();
+  const copy = instance.copyHost();
+  instance.host.remove();
+  state.overlays.add(copy);
+  await flush();
+  state.logChanged();
+  state.logChanged();
+  copy.hide.dispatchEvent(new Event('click'));
+  await flush();
+  assert.deepEqual(state.saves, [false]);
+  assert.equal(state.saved.enabled, false);
+  assert.equal(state.overlays.size, 0);
 });
 
 test('changing reduced motion switches an active CDN companion to the embedded runtime', async () => {
