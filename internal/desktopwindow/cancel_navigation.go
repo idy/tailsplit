@@ -14,7 +14,6 @@ import (
 )
 
 const nativeCancelPath = "/native-cancel"
-const nativeCancelArmPath = "/native-cancel-arm"
 const nativeCancelAttemptTimeout = 15 * time.Second
 const nativeCancelAckTimeout = 2 * time.Second
 
@@ -27,18 +26,16 @@ type nativeCancellationInbox struct {
 	handler      func() nativeCancelHandler
 	mu           sync.Mutex
 	pending      map[journalCancellation]bool
-	armed        map[journalCancellation]bool // Promoted only on actual source loss, never normal hide.
 	acknowledged map[journalCancellation]bool
 	job          *journalRecovery
 	running      bool
 	wake         chan struct{}
 	ack          func(journalCancellation) // Callbacks must not wait for renderer Eval.
-	armedAck     func(journalCancellation)
 	admittedAck  func(journalCancellation)
 }
 
 func newNativeCancellationInbox(ctx context.Context, handler func() nativeCancelHandler) *nativeCancellationInbox {
-	return &nativeCancellationInbox{ctx: ctx, handler: handler, pending: make(map[journalCancellation]bool), armed: make(map[journalCancellation]bool), acknowledged: make(map[journalCancellation]bool), wake: make(chan struct{}, 1)}
+	return &nativeCancellationInbox{ctx: ctx, handler: handler, pending: make(map[journalCancellation]bool), acknowledged: make(map[journalCancellation]bool), wake: make(chan struct{}, 1)}
 }
 
 func (i *nativeCancellationInbox) retry() {
@@ -48,31 +45,7 @@ func (i *nativeCancellationInbox) retry() {
 	}
 }
 
-// arm stores the exact fail-safe target before acknowledging it. No worker is
-// started and no current owner is stopped while the original source survives.
-func (i *nativeCancellationInbox) arm(record journalCancellation) bool {
-	i.mu.Lock()
-	if i.ctx.Err() != nil {
-		i.mu.Unlock()
-		return false
-	}
-	completed := i.acknowledged[record]
-	if !completed && !i.pending[record] {
-		i.armed[record] = true
-	}
-	armedAck, ack := i.armedAck, i.ack
-	i.mu.Unlock()
-	if armedAck != nil {
-		armedAck(record)
-	}
-	if completed && ack != nil {
-		ack(record)
-	}
-	return true
-}
-
 func (i *nativeCancellationInbox) enqueueLocked(record journalCancellation) bool {
-	delete(i.armed, record)
 	if i.acknowledged[record] {
 		return true
 	}
@@ -105,17 +78,6 @@ func (i *nativeCancellationInbox) enqueue(record journalCancellation) bool {
 		ack(record)
 	}
 	return true
-}
-
-func (i *nativeCancellationInbox) promoteArmed() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.ctx.Err() != nil {
-		return
-	}
-	for record := range i.armed {
-		i.enqueueLocked(record)
-	}
 }
 
 func (i *nativeCancellationInbox) pendingRecovery() *journalRecovery {
@@ -214,19 +176,12 @@ func sameCancellationOrigin(candidate *url.URL, origin string) bool {
 }
 
 func parseNativeCancellation(origin, scope, raw string) (journalCancellation, bool) {
-	return parseNativeCancellationPath(origin, scope, raw, nativeCancelPath)
-}
-
-func parseNativeCancellationPath(origin, scope, raw, path string) (journalCancellation, bool) {
 	var empty journalCancellation
-	if path != nativeCancelPath && path != nativeCancelArmPath {
-		return empty, false
-	}
 	if scope == "" || len(raw) > 8192 {
 		return empty, false
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || !sameCancellationOrigin(parsed, origin) || parsed.Path != path || parsed.EscapedPath() != path || parsed.RawQuery != "" || parsed.ForceQuery {
+	if err != nil || !sameCancellationOrigin(parsed, origin) || parsed.Path != nativeCancelPath || parsed.EscapedPath() != nativeCancelPath || parsed.RawQuery != "" || parsed.ForceQuery {
 		return empty, false
 	}
 	// Parse the escaped fragment once. Parsing URL.Fragment would decode escaped
@@ -250,7 +205,7 @@ func parseNativeCancellationPath(origin, scope, raw, path string) (journalCancel
 func nativeCancellationPath(raw string) string {
 	head, _, _ := strings.Cut(raw, "#")
 	parsed, err := url.Parse(head)
-	if err == nil && (parsed.Path == nativeCancelPath || parsed.Path == nativeCancelArmPath) {
+	if err == nil && parsed.Path == nativeCancelPath {
 		return parsed.Path
 	}
 	return ""
@@ -271,15 +226,6 @@ func (w *Window) nativeCancellationInbox() *nativeCancellationInbox {
 		})
 	}
 	return w.navigationInbox
-}
-
-func (w *Window) promoteArmedCancellations() {
-	w.mu.Lock()
-	inbox := w.navigationInbox
-	w.mu.Unlock()
-	if inbox != nil {
-		inbox.promoteArmed()
-	}
 }
 
 func (w *Window) pendingNativeCancellation() *journalRecovery {
@@ -311,15 +257,11 @@ func (b *cancellationBindings) cancellationNavigation(w *Window, frame *mygo.Win
 	if err != nil || !sameCancellationOrigin(source, origin) || source.Path != "/" || source.RawQuery != "" {
 		return false
 	}
-	record, valid := parseNativeCancellationPath(origin, w.journalScope, event.URL, path)
+	record, valid := parseNativeCancellation(origin, w.journalScope, event.URL)
 	if !valid {
 		return false
 	}
-	inbox := w.nativeCancellationInbox()
-	if path == nativeCancelArmPath {
-		return inbox.arm(record)
-	}
-	return inbox.enqueue(record)
+	return w.nativeCancellationInbox().enqueue(record)
 }
 
 func nativeCancellationEventCode(origin, event string, record journalCancellation) string {
@@ -343,7 +285,6 @@ func (w *Window) registerCancellationNavigation(frame *mygo.Window, page *mygo.P
 	}
 	inbox.mu.Lock()
 	inbox.ack = emit("tailsplit-native-cancel-ack")
-	inbox.armedAck = emit("tailsplit-native-cancel-armed")
 	inbox.admittedAck = emit("tailsplit-native-cancel-admitted")
 	inbox.mu.Unlock()
 	page.OnWillNavigate(func(event *mygo.NavigateEvent) {

@@ -118,7 +118,6 @@ func (w *Window) createWindow() {
 		defer func() {
 			if recover() != nil {
 				w.rendererUnavailable.Store(true)
-				w.promoteArmedCancellations()
 				w.stopLoadProbe()
 				w.complete(errors.New("could not create the TailSplit window"))
 				if w.native != nil && !w.native.IsDestroyed() {
@@ -192,7 +191,6 @@ func (w *Window) createWindow() {
 				if w.rendererUnavailable.Swap(true) {
 					return
 				}
-				w.promoteArmedCancellations()
 				w.loaded = false
 				w.stopLoadProbe()
 				w.afterCancellationRecovery(func(_ *journalRecovery, _ bool) {
@@ -219,9 +217,6 @@ func (w *Window) createWindow() {
 			knownFailure := w.isDone()
 			w.stopLoadProbe()
 			w.rendererUnavailable.Store(true)
-			if !w.quitting.Load() {
-				w.promoteArmedCancellations()
-			}
 			w.complete(nil)
 			if !knownFailure && !w.quitting.Load() && w.journal != nil {
 				w.releaseJournalAfterRecovery(w.beginCancellationRecovery())

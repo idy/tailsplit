@@ -307,7 +307,6 @@ func (w *Window) releaseJournalAfterRecovery(job *journalRecovery) {
 
 func (w *Window) failAfterCancellationRecovery(err error, destroy func()) {
 	w.rendererUnavailable.Store(true)
-	w.promoteArmedCancellations()
 	if w.native != nil && !w.native.IsDestroyed() {
 		w.hideWindow()
 	}

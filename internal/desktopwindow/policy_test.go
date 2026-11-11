@@ -45,6 +45,8 @@ func TestConfigurationPagePolicy(t *testing.T) {
 	}{
 		{"http://127.0.0.1:43821/#capability", true},
 		{"http://127.0.0.1:43821/settings", true},
+		{"http://127.0.0.1:43821/native-cancel-arm#scope=old&request=r&operation_id=o", false},
+		{"http://127.0.0.1:43821/%6eative-cancel-arm#scope=old&request=r&operation_id=o", false},
 		{"http://127.0.0.1:43822/", false},
 		{"http://localhost:43821/", false},
 		{"http://127.0.0.1:43821@other.example/", false},

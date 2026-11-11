@@ -1,6 +1,8 @@
 package desktopwindow
 
 import (
+	"net/url"
+
 	"github.com/egoist/mygo"
 	"github.com/idy/tailsplit/internal/tray"
 )
@@ -15,7 +17,8 @@ type policyPage interface {
 
 func configurePagePolicy(page policyPage, port uint16) {
 	page.OnWillNavigate(func(event *mygo.NavigateEvent) {
-		if !tray.ConfigurationWindowAllows(port, event.URL) {
+		candidate, err := url.Parse(event.URL)
+		if err != nil || candidate.Path == "/native-cancel-arm" || !tray.ConfigurationWindowAllows(port, event.URL) {
 			event.PreventDefault()
 		}
 	})
