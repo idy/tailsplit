@@ -32,6 +32,22 @@ test('catalog covers all static app text, accessible labels and placeholders', (
   }
 });
 
+test('popup static copy and every projected status have English translations', () => {
+  const { i18n } = languagePage(['en']);
+  const popupHTML = readFileSync(join(__dirname, '../assets/tray.html'), 'utf8');
+  const popupScript = readFileSync(join(__dirname, '../assets/tray.js'), 'utf8');
+  const copy = [...popupHTML.matchAll(/>([^<>]+)</g)].map(m => m[1].trim());
+  copy.push(...[...popupHTML.matchAll(/(?:aria-label|title)="([^"]+)"/g)].map(m => m[1]));
+  copy.push(...[...popupScript.matchAll(/'([^']*[一-鿿][^']*)'/g)].map(m => m[1]));
+  for (const text of new Set(copy.filter(text => /[一-鿿]/.test(text)))) {
+    assert.ok(Object.hasOwn(i18n.catalog, text), `Missing popup translation: ${text}`);
+    assert.doesNotMatch(i18n.t(text), /[一-鿿]/, `Untranslated popup text: ${text}`);
+  }
+  assert.equal(i18n.t('等待安装后台服务'), 'Waiting for network service installation');
+  i18n.setLanguage('zh');
+  assert.equal(i18n.t('等待安装后台服务'), '等待安装后台服务');
+});
+
 test('language fallback and interpolation keep external values literal', () => {
   for (const [languages, expected] of [[['zh-TW'], 'zh'], [['zh-CN'], 'zh'], [['en-GB'], 'en'], [['de-DE'], 'en'], [[], 'en']]) {
     const { i18n, document } = languagePage(languages);
@@ -54,7 +70,7 @@ test('language fallback and interpolation keep external values literal', () => {
 });
 
 test('Global Add consent explains the protection loss and failure behavior in both languages', () => {
-  const dialog = html.match(/<dialog id="add-exit-consent-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  const dialog = html.match(/<dialog\b[^>]*\bid="add-exit-consent-dialog"[^>]*>[\s\S]*?<\/dialog>/)?.[0];
   assert.ok(dialog);
   assert.match(dialog, /aria-labelledby="add-exit-consent-title" aria-describedby="add-exit-consent-description"/);
   assert.match(dialog, /<form method="dialog">/);
@@ -93,7 +109,7 @@ test('Global login and gateway consent describe explicit disconnect and stopped 
 });
 
 test('removal consent retains original rules and explains replacement and network restoration', () => {
-  const dialog = html.match(/<dialog id="remove-exit-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  const dialog = html.match(/<dialog\b[^>]*\bid="remove-exit-dialog"[^>]*>[\s\S]*?<\/dialog>/)?.[0];
   assert.ok(dialog);
   const description = dialog.match(/<p[^>]*>([^<]+)<\/p>/)[1];
   const { i18n } = languagePage(['en']);

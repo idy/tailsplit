@@ -83,8 +83,8 @@ func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	if err := initializeConfig(path, template); err != nil {
 		t.Fatal(err)
 	}
-	if proxyAddress(path) != "127.0.0.1:17890" {
-		t.Fatal("proxy address could not be copied")
+	if data, err := os.ReadFile(path); err != nil || string(data) != "listen: 127.0.0.1:17890\n" {
+		t.Fatal("app did not initialize the requested template", err)
 	}
 	if err := os.WriteFile(path, []byte("listen: 127.0.0.1:19999\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -92,8 +92,8 @@ func TestAppConfigurationPreservesUserEdits(t *testing.T) {
 	if err := initializeConfig(path, template); err != nil {
 		t.Fatal(err)
 	}
-	if proxyAddress(path) != "127.0.0.1:19999" {
-		t.Fatal("app overwrote user configuration")
+	if data, err := os.ReadFile(path); err != nil || string(data) != "listen: 127.0.0.1:19999\n" {
+		t.Fatal("app overwrote user configuration", err)
 	}
 	stat, _ := os.Stat(path)
 	if stat.Mode().Perm() != 0o600 {
@@ -167,9 +167,10 @@ func (c *desktopActionFixture) TrafficExitID() (string, error) {
 	return c.trafficExit, c.trafficErr
 }
 
-func (c *desktopActionFixture) Snapshot() tray.Snapshot { return c.snapshot }
-func (c *desktopActionFixture) Start() error            { return c.record("connect") }
-func (c *desktopActionFixture) StartLogin() error       { return c.record("start-login") }
+func (c *desktopActionFixture) Snapshot() tray.Snapshot    { return c.snapshot }
+func (c *desktopActionFixture) Start() error               { return c.record("connect") }
+func (c *desktopActionFixture) StartRevision(string) error { return c.record("connect") }
+func (c *desktopActionFixture) StartLogin() error          { return c.record("start-login") }
 func (c *desktopActionFixture) AddExit(id string, revision ...string) error {
 	return c.record("add-exit:" + id)
 }
@@ -186,7 +187,7 @@ func (c *desktopActionFixture) record(action string) error {
 
 func TestDesktopLoginUsesNativeLoginFlow(t *testing.T) {
 	const link = "https://login.tailscale.com/a/window-test"
-	for _, action := range []string{"login", "connect"} {
+	for _, action := range []string{"login"} {
 		t.Run(action, func(t *testing.T) {
 			controller := &desktopActionFixture{snapshot: tray.Snapshot{State: "stopped", BackendState: "NeedsLogin"}}
 			var flow tray.LoginFlow
@@ -444,8 +445,8 @@ func TestDesktopConnectUsesSavedTrafficDeviceForLogin(t *testing.T) {
 	for _, test := range []struct{ name, selected, primary, extra, want string }{
 		{"global extra ignores signed-out primary", "office", "NeedsLogin", "Running", "connect"},
 		{"global extra without cached status checks itself", "office", "NeedsLogin", "", "connect"},
-		{"global extra signs into its own device", "office", "Running", "NeedsLogin", "start-login:office"},
-		{"primary retains legacy login", "main", "NeedsLogin", "Running", "start-login"},
+		{"global extra authenticates in traffic preflight", "office", "Running", "NeedsLogin", "connect"},
+		{"primary authenticates in traffic preflight", "main", "NeedsLogin", "Running", "connect"},
 		{"primary ignores signed-out extra", "main", "Running", "NeedsLogin", "connect"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

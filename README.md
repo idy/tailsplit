@@ -69,6 +69,27 @@ exit and confirm to save it and connect; Cancel or Escape changes nothing. A
 failed or stale save never starts traffic. Settings drafts must be resolved
 first. An existing offline default is retained rather than silently replaced.
 
+Click the menu-bar or tray icon for a compact popup with connection status,
+a connect/disconnect switch, and read-only routing mode and traffic exit details. Open
+TailSplit from the popup to manage exits and settings; clicking outside, pressing
+Escape or clicking the tray icon again dismisses it. Right-click the icon for a
+minimal native menu with Open, connection status, Connect/Disconnect and Quit.
+The popup follows the app's language and system appearance. It shows the actual
+running traffic device, including an additional exit when the primary is signed out.
+Its Connect action checks the displayed configuration revision before starting;
+configuration changes require a refresh. Explicit Connect keeps the same traffic
+helper waiting through any required browser authorization and continues after
+sign-in; automatic startup never opens that browser. Valid direct-only Split
+policies can connect without a default gateway or signing in to optional devices. On macOS, if the local panel cannot start,
+the native menu offers **Edit Configuration**. The full window's **TailSplit**
+application menu and native fallback menu retain **Uninstall Network Service**,
+which finishes connection cleanup before opening the bundled removal installer,
+even when the panel cannot open. Each connection snapshot holds an OS file lock
+for its lifetime. On the next launch, snapshots with released locks are reclaimed
+even if an old PID has been reused; locked snapshots, unrecognized files and links
+are preserved. Snapshot creation and cleanup share a short directory lock so an
+in-progress write cannot be mistaken for an orphan.
+
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
 traffic if its exit goes offline; Rule-based restores Split without deleting
@@ -219,6 +240,20 @@ See the [build guide](docs/guide.md#build-and-test) for platform-specific comman
 The production macOS and Windows desktop uses MyGo v0.8.3 for its window and
 tray. Its entry point is `cmd/tailsplit-tray`, with `internal/desktopwindow` and
 `internal/desktoptray` hosting the existing configuration UI and controls.
+The embedded configuration panel uses a local copy of
+[Magpie Design System](https://github.com/idy/magpie-design-system) for
+its tokens, components, fonts and dropdown behavior. The vendored source is
+pinned to commit `46ba098239979506a4ccc14721aac044483c66bc` (v0.4.3),
+including the text dropdown and preference-row variants extracted upstream.
+This is the published v0.4.3 release. Assets are pinned with
+SHA-256 hashes under `internal/configweb/assets/vendor/magpie/`; run
+`node scripts/vendor-magpie.mjs --check` to verify them, or omit `--check` to
+restore the pinned files. Node.js 18+ is needed only for this maintenance
+command and the frontend regression tests. The shipped panel needs no CDN,
+package installation or frontend build step. `assets/ui.js` loads its modules
+in dependency order, and `assets/style.css` holds TailSplit's layout and
+product-specific states.
+
 On macOS, `make run-tray` builds the CLI helper and `bin/tailsplit-tray`, then
 opens the configuration window with automatic connection disabled for that launch.
 `make test` checks the desktop packages in the root module. See the

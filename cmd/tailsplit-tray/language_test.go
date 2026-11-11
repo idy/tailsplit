@@ -6,7 +6,6 @@ import (
 	"testing"
 	"unicode"
 
-	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/locale"
 	"github.com/idy/tailsplit/internal/tray"
 )
@@ -55,18 +54,6 @@ func TestConnectionPresentationBothLanguages(t *testing.T) {
 					t.Fatalf("untranslated %s: %+v", state, en)
 				}
 			}
-		}
-	}
-	for _, language := range []string{"en", "zh"} {
-		title := updateMenuTitleForLanguage(appupdate.State{Available: true, LatestVersion: "v1.2.3"}, language)
-		if !strings.Contains(title, "v1.2.3") {
-			t.Fatal("version changed")
-		}
-		if language == "en" && title != "Update to v1.2.3…" {
-			t.Fatal(title)
-		}
-		if language == "zh" && title != "升级到 v1.2.3…" {
-			t.Fatal(title)
 		}
 	}
 }
