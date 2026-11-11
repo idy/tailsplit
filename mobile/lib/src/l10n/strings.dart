@@ -49,7 +49,41 @@ class S {
         '规则分流让匹配的域名和 IP 经过出口。VPN 运行时，全局模式让接管的流量经过出口，不回退直连。VPN 停止或故障后可能恢复正常网络；当前版本不支持系统级断网保护。',
       );
 
-  // Exit
+  // Signed-in networks and the single selected exit.
+  String get tailnets => _('Tailnets', 'Tailnet');
+  String get tailnet => _('Tailnet', 'Tailnet');
+  String get addTailnet => _('Add Tailnet', '添加 Tailnet');
+  String get noTailnets => _('No Tailnets yet', '还未登录 Tailnet');
+  String get addTailnetBody => _(
+        'Sign in to one or more Tailnets, then choose one exit node for the VPN.',
+        '可以登录多个 Tailnet，再从中选择一个出口节点供 VPN 使用。',
+      );
+  String get addTailnetToConnect => _('Add a Tailnet, then choose an exit node.', '先添加 Tailnet，再选择出口节点。');
+  String get chooseTailnetExit => _('Choose an exit node from a Tailnet below.', '从下面的 Tailnet 中选择一个出口节点。');
+  String get oneSelectedExit => _(
+        'Keep multiple Tailnets signed in. The VPN uses only one selected exit node.',
+        '多个 Tailnet 可以保持登录，VPN 始终只使用一个选定出口节点。',
+      );
+  String get notSelected => _('Not selected', '未选择');
+  String get noExits => _('No exits', '无出口');
+  String get signInAgain => _('Sign in again', '重新登录');
+  String get removeTailnet => _('Sign out of Tailnet', '退出 Tailnet');
+  String get removeTailnetTitle => _('Sign out of this Tailnet?', '退出这个 Tailnet？');
+  String get removeTailnetBody => _(
+        'Forget only this Tailnet’s local sign-in. If it is selected or in use, the VPN stops first. Other Tailnets stay signed in. Its device record remains in Tailscale’s admin console.',
+        '只退出并忘记此 Tailnet 的本机登录。若它是当前选定或正在使用的出口网络，会先断开 VPN；其他 Tailnet 保持登录。设备记录仍保留在 Tailscale 管理后台。',
+      );
+  String get signOut => _('Sign out', '退出登录');
+  String get noVisiblePeers => _(
+        'No other devices were returned for this Tailnet. Check the selected network and access rules, or add another Tailnet.',
+        '这个 Tailnet 没有返回其他设备。请检查所选网络和访问权限，也可以添加其他 Tailnet。',
+      );
+  String get exitRoutesUnavailable => _('No usable exit routes', '暂无可用出口路由');
+  String get exitRoutesUnavailableBody => _(
+        'Devices advertise exit routing, but no usable exit route was returned. Check administrator approval and access rules.',
+        '已发现宣告出口的设备，但没有返回可用出口路由。请检查管理员批准和访问权限。',
+      );
+  String visibleDevices(int count) => _('Visible devices: $count', '可见设备：$count');
   String get exit => _('Exit', '出口');
   String get addExit => _('Add exit', '添加出口');
   String get addExitTitle => _('No exit yet', '还没有出口');
@@ -83,14 +117,18 @@ class S {
   // Picker
   String get chooseExitNode => _('Exit Node', '出口节点');
   String get confirm => _('Confirm', '确认');
+  String get selectionNotSaved => _(
+        'The selected node could not be saved. Refresh this Tailnet and try again; details are in Logs.',
+        '未能保存所选节点。请刷新这个 Tailnet 后重试；详情见日志。',
+      );
   String get online => _('Online', '在线');
   String get offline => _('Offline', '离线');
   String lastSeen(String when) => _('Seen $when', '$when在线');
   String signedInAs(String user) => _('Signed in as $user', '已登录：$user');
   String get noExitNodes => _('No exit nodes in this Tailnet', '此 Tailnet 中没有出口节点');
   String get noExitNodesBody => _(
-        'Advertise a device as an exit node and approve it in the Tailscale admin console, then refresh.',
-        '在某台设备上宣告出口节点并在 Tailscale 管理后台批准，然后刷新。',
+        'Advertise a device as an exit node in this Tailnet and approve it in the Tailscale admin console, then refresh. You can also add another Tailnet.',
+        '在这个 Tailnet 的某台设备上宣告出口节点并在 Tailscale 管理后台批准，然后刷新。也可以添加其他 Tailnet。',
       );
   String get pickerFooterIdle =>
       _('Saving keeps TailSplit disconnected.', '保存后保持未连接。');

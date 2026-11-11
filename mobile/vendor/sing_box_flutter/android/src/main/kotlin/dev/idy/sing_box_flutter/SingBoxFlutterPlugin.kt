@@ -48,6 +48,9 @@ class SingBoxFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 return
             }
         }
+        // The lifecycle worker may be inside native startup. Signal its context
+        // cancellation now; the queued stop still owns cleanup and confirmation.
+        if (call.method == "stop" && NativeRuntime.initialized) NativeRuntime.interruptStart()
         NativeRuntime.worker.execute {
             try {
                 if (call.method != "getVersion" && call.method != "initialize") NativeRuntime.requireInitialized()

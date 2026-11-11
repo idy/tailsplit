@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../model/exit_profile.dart';
 import '../model/settings.dart';
+import '../model/tailnet_account.dart';
 import '../services/config_builder.dart';
 import '../services/errors.dart';
 import '../services/rules.dart';
@@ -130,12 +131,46 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   static const staleSnapshot = Duration(minutes: 5);
 
   MobileSettings settings = const MobileSettings();
-  ExitProfile? exit;
+  TailnetStore _accounts = TailnetStore();
+  Iterable<TailnetAccount> get tailnets => _accounts.accounts.values;
+  TailnetAccount? tailnetById(String id) => _accounts.accounts[id];
+  String? get selectedTailnetId => _accounts.selection?.tailnetId;
+
+  ExitProfile? get exit {
+    final selection = _accounts.selection;
+    final account = selection == null ? null : tailnetById(selection.tailnetId);
+    return account == null ? null : selection!.compose(account.identity, account.snapshot);
+  }
+
+  /// Legacy single-account test fixtures only. Production code mutates the
+  /// authoritative account store through sign-in, selection and removal.
+  @visibleForTesting
+  set exit(ExitProfile? profile) {
+    _accounts = profile == null ? TailnetStore()
+        : TailnetStore.fromLegacy(profile, allowUnselectedFixture: true);
+  }
+
+  final _accountEpochs = <String, int>{};
+  final _refreshingAccounts = <String>{};
+  Future<void> _accountOperations = Future<void>.value();
+  bool _accountStoreUnreadable = false;
+  String? _runningTailnetId;
+  bool get refreshing => _refreshingAccounts.isNotEmpty;
+  bool isRefreshingTailnet(String id) => _refreshingAccounts.contains(id);
+  int _accountEpoch(String id) => _accountEpochs[id] ?? 0;
+  void _invalidateAccount(String id) => _accountEpochs[id] = _accountEpoch(id) + 1;
+  bool _accountCurrent(String id, int epoch) =>
+      !_disposed && _accountEpoch(id) == epoch && tailnetById(id) != null;
+
+  Future<T> _serializeAccounts<T>(Future<T> Function() operation) {
+    final next = _accountOperations.then((_) => operation());
+    _accountOperations = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return next;
+  }
   VpnConnectionState vpnState = VpnConnectionState.disconnected;
   SignInPhase signIn = SignInPhase.idle;
   ConnectStep? connectStep;
   bool get preparing => connectStep != null;
-  bool refreshing = false;
   bool removing = false;
   bool needsReconnect = false;
   String coreVersion = '';
@@ -149,12 +184,22 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// The node or item a problem is about, shown in its title.
   String? problemSubject;
 
+  /// Account-specific errors must reauthenticate the same account even after
+  /// the user selects an exit in another tailnet.
+  String? problemTailnetId;
+
   DateTime? rulesUpdatedAt;
   bool rulesUpdating = false;
   FailureCause? rulesUpdateError;
 
-  /// Set after a successful sign-in so the UI opens the node picker once.
-  bool pickerRequested = false;
+  /// The account whose nodes the UI should open after sign-in. Adding a new
+  /// account does not change the global selection just to drive the picker.
+  String? pickerRequestedTailnetId;
+  bool get pickerRequested => pickerRequestedTailnetId != null;
+  set pickerRequested(bool value) {
+    pickerRequestedTailnetId = value
+        ? pickerRequestedTailnetId ?? selectedTailnetId ?? tailnets.firstOrNull?.id : null;
+  }
 
   /// Preview builds only: the state requested for simulator review.
   String previewScreen = '';
@@ -165,6 +210,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Uri? _authUrl; // Sensitive: memory only, never logged or persisted.
   StreamSubscription<LoginProgress>? _login;
   TailscaleControlClient? _loginClient;
+  String? _signInTailnetId;
   StreamSubscription<VpnStatus>? _statusSub;
   StreamSubscription<SingBoxLog>? _logSub;
   int _connectAttempt = 0;
@@ -193,7 +239,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       vpnState == VpnConnectionState.disconnecting;
   bool get busy => removing || signIn != SignInPhase.idle;
   bool get canConnect => exit?.hasNode == true && !busy &&
-      !_shutdownUnconfirmed && !_nativeStartPending && _stopRequest == null;
+      !_accountStoreUnreadable && !_shutdownUnconfirmed && !_nativeStartPending && _stopRequest == null;
   bool get canRetryDisconnect => !busy && _stopRequest == null;
   bool get hasAuthUrl => _authUrl != null || (isPreview && signIn == SignInPhase.browser);
 
@@ -233,10 +279,23 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _log('warn', 'Saved settings could not be read; defaults are used (${describeFailure(error)}).');
     }
     try {
-      final saved = await JsonStore.read(_paths.exitFile);
-      if (saved != null) exit = ExitProfile.fromJson(saved);
+      // Existence is authoritative, including an empty or damaged store. Never
+      // fall back to stale legacy data after accounts have been removed.
+      if (await FileSystemEntity.type(_paths.accountsFile.path, followLinks: false) != FileSystemEntityType.notFound) {
+        final saved = await JsonStore.read(_paths.accountsFile);
+        if (saved == null) throw const FormatException('Unreadable tailnet store');
+        _accounts = TailnetStore.fromJson(saved);
+      } else {
+        final legacy = await JsonStore.read(_paths.exitFile);
+        if (legacy != null) {
+          _accounts = TailnetStore.fromLegacy(ExitProfile.fromJson(legacy));
+          await _writeAccounts(_accounts);
+        }
+      }
     } catch (error) {
-      _log('warn', 'The saved exit could not be read and was ignored (${describeFailure(error)}).');
+      _accountStoreUnreadable = true;
+      _setProblem(AppProblem.storage, error: error);
+      _log('warn', 'Saved tailnets could not be read (${describeFailure(error)}).');
     }
     await _loadRuleInfo();
     notifyListeners();
@@ -260,7 +319,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _observing = true;
     notifyListeners();
     // A saved netmap can be days old; update it quietly while idle.
-    if (exit != null && !active) unawaited(refresh(silent: true));
+    if (tailnets.isNotEmpty && !active) unawaited(refreshAll(silent: true));
   }
 
   Future<void> _loadPreview() async {
@@ -283,7 +342,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         _ => null,
       },
     );
-    exit = screen == 'empty' || screen == 'signin' ? null : seeded.exit;
+    _accounts = screen == 'empty' || screen == 'signin' ? TailnetStore() : TailnetStore(
+      accounts: seeded.tailnets,
+      selection: seeded.exit.hasNode ? ExitSelection.fromProfile(seeded.tailnets.first.id, seeded.exit) : null,
+    );
     coreVersion = '1.14.4';
     rulesUpdatedAt = DateTime.now().subtract(const Duration(days: 2));
     logBuffer.addAll(PreviewData.logs());
@@ -315,6 +377,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       case 'nonode':
         pickerRequested = true;
     }
+    if (active) _runningTailnetId = selectedTailnetId;
     notifyListeners();
   }
 
@@ -344,11 +407,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       // The next status event corrects the display.
     }
-    final current = exit;
-    if (current == null || active || preparing || busy) return;
-    final fetched = current.snapshot?.fetchedAt;
-    if (fetched == null || DateTime.now().difference(fetched) > staleSnapshot) {
-      unawaited(refresh(silent: true));
+    if (active || preparing || busy) return;
+    for (final account in tailnets.toList()) {
+      final fetched = account.snapshot?.fetchedAt;
+      if (fetched == null || DateTime.now().difference(fetched) > staleSnapshot) {
+        unawaited(refresh(silent: true, tailnetId: account.id));
+      }
     }
   }
 
@@ -393,67 +457,83 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   static String defaultHostname() => Platform.isIOS ? 'tailsplit-ios' : 'tailsplit-android';
 
-  /// Signs in a new device, or the existing device after it was signed out.
-  Future<void> signInExit({bool allowProtectionGap = false}) async {
-    if (busy) return;
-    if (reconnectRequiresConsent && !allowProtectionGap) {
+  /// Adding an independent account has no protection gap. Reauthentication
+  /// needs consent only if its native state may belong to the live Global (or
+  /// restored unknown-mode) tunnel, including an old pending exit selection.
+  bool signInRequiresConsent({String? tailnetId}) => tailnetId != null &&
+      tailnetById(tailnetId) != null && _mayOwnNative(tailnetId) && reconnectRequiresConsent;
+
+  /// A null target adds an independent account; an ID reauthenticates exactly
+  /// that account. Adding never stops or changes an already selected exit.
+  Future<void> signInExit({String? tailnetId, bool allowProtectionGap = false}) async {
+    if (busy || _accountStoreUnreadable) return;
+    final previous = tailnetId == null ? null : tailnetById(tailnetId);
+    if (tailnetId != null && previous == null) return;
+    final mustStop = previous != null && _mayOwnNative(previous.id);
+    if (signInRequiresConsent(tailnetId: tailnetId) && !allowProtectionGap) {
       needsReconnect = true;
       notifyListeners();
       return;
     }
+    final id = previous?.id ?? TailnetAccount.newId();
+    _invalidateAccount(id);
+    final epoch = _accountEpoch(id);
     final attempt = ++_signInAttempt;
+    _signInTailnetId = previous?.id;
+    bool cancelled() => _disposed || attempt != _signInAttempt ||
+        _accountEpoch(id) != epoch || (previous != null && tailnetById(id) == null);
     _clearProblem();
     signIn = SignInPhase.starting;
     notifyListeners();
-    if ((switchOn || exit != null) && !await disconnect(force: true)) {
-      signIn = SignInPhase.idle;
-      notifyListeners();
+    if (mustStop && !await disconnect(force: true)) {
+      if (!cancelled()) await _finishSignIn(attempt: attempt);
       return;
     }
-    if (attempt != _signInAttempt) return;
+    if (cancelled()) return;
     _log('info', 'Starting Tailscale sign-in.');
-    if (isPreview) {
-      await Future<void>.delayed(const Duration(milliseconds: 700));
-      if (attempt != _signInAttempt) return;
-      signIn = SignInPhase.idle;
-      exit = (await PreviewData.seed(withNode: false)).exit;
-      pickerRequested = true;
-      _log('info', 'Signed in (simulated).');
-      notifyListeners();
-      return;
-    }
     try {
-      final identity = exit?.identity ??
-          await TailscaleIdentity.generate(hostname: defaultHostname());
-      if (attempt != _signInAttempt) return;
+      if (isPreview) {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        if (cancelled()) return;
+        final seeded = await PreviewData.seed(withNode: false);
+        if (cancelled()) return;
+        signIn = SignInPhase.finishing;
+        await _commitSignIn(previous?.identity ?? seeded.exit.identity,
+            previous?.snapshot ?? PreviewData.snapshot(secondary: tailnets.isNotEmpty),
+            id: id, existing: previous != null, cancelled: cancelled);
+        await _finishSignIn(attempt: attempt);
+        return;
+      }
+      final identity = previous == null
+          ? await TailscaleIdentity.generate(hostname: defaultHostname())
+          : await _liveIdentity(previous, cancelled: cancelled);
+      if (cancelled()) return;
       final client = _newClient();
       _loginClient = client;
       _login = client.login(identity).listen(
-        (progress) => _onLogin(progress, attempt),
+        (progress) => _onLogin(progress, attempt, id, previous != null, cancelled),
         onError: (Object error) {
-          if (attempt == _signInAttempt) _finishSignIn(error: error);
+          if (!cancelled()) _finishSignIn(attempt: attempt, error: error);
         },
         onDone: () {
-          // A completed stream is normal after authorization; committing
-          // finishes the sign-in itself.
-          if (attempt == _signInAttempt &&
-              signIn != SignInPhase.idle &&
-              signIn != SignInPhase.finishing) {
-            _finishSignIn();
+          if (!cancelled() && signIn != SignInPhase.idle && signIn != SignInPhase.finishing) {
+            _finishSignIn(attempt: attempt);
           }
         },
         cancelOnError: true,
       );
     } catch (error) {
-      if (attempt == _signInAttempt) await _finishSignIn(error: error);
+      if (!cancelled()) await _finishSignIn(attempt: attempt, error: error);
     }
   }
 
-  Future<void> _onLogin(LoginProgress progress, int attempt) async {
-    if (attempt != _signInAttempt) return;
+  Future<void> _onLogin(LoginProgress progress, int attempt, String id,
+      bool existing, bool Function() cancelled) async {
+    if (cancelled()) return;
     try {
       switch (progress) {
         case LoginNeedsBrowser(:final authUrl):
+          if (signIn == SignInPhase.finishing) return;
           final first = _authUrl == null;
           _authUrl = authUrl;
           signIn = SignInPhase.browser;
@@ -461,31 +541,33 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           notifyListeners();
           await openSignInPage();
         case LoginAuthorized(:final snapshot, :final identity):
-          // Control may have replaced an expired node key; keep the accepted one.
           if (signIn == SignInPhase.finishing) return;
           signIn = SignInPhase.finishing;
           notifyListeners();
-          await _commitSignIn(identity, snapshot);
-          if (attempt == _signInAttempt) await _finishSignIn();
+          await _commitSignIn(identity, snapshot, id: id, existing: existing, cancelled: cancelled);
+          if (!cancelled()) await _finishSignIn(attempt: attempt);
       }
     } catch (error) {
-      // Without this, a failed state write would leave sign-in stuck.
-      if (attempt == _signInAttempt) await _finishSignIn(error: error);
+      if (!cancelled()) await _finishSignIn(attempt: attempt, error: error);
     }
   }
 
   Future<void> openSignInPage() async {
     final url = _authUrl;
+    final attempt = _signInAttempt;
     if (url == null) return;
+    bool cancelled() => _disposed || attempt != _signInAttempt || _authUrl != url;
     var opened = false;
     try {
       opened = await launchUrl(url, mode: LaunchMode.inAppBrowserView);
     } catch (_) {}
+    if (cancelled()) return;
     if (!opened) {
       try {
         opened = await launchUrl(url, mode: LaunchMode.externalApplication);
       } catch (_) {}
     }
+    if (cancelled()) return;
     if (!opened) {
       _setProblem(
         AppProblem.signIn,
@@ -499,36 +581,70 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _commitSignIn(TailscaleIdentity identity, TailnetSnapshot snapshot) async {
+  Future<void> _commitSignIn(TailscaleIdentity identity, TailnetSnapshot snapshot, {
+    required String id, required bool existing, required bool Function() cancelled,
+  }) async {
     try {
       await closeInAppWebView();
     } catch (_) {}
-    final previous = exit;
-    // A different Tailnet than before invalidates the old node choice.
-    final sameNetwork = previous != null && previous.networkName == snapshot.networkName;
-    final profile = (sameNetwork ? previous : ExitProfile(identity: identity))
-        .copyWith(identity: identity, snapshot: snapshot);
-    await TsnetState.write(
-      stateDirectory: _paths.tailscaleState,
-      identity: identity,
-      snapshot: snapshot,
-    );
-    exit = profile;
-    await _saveExit();
-    _log('info', 'Signed in to ${snapshot.networkName}.');
-    pickerRequested = !profile.hasNode;
+    await _serializeAccounts(() async {
+      if (cancelled()) return;
+      final previous = tailnetById(id);
+      final key = TailnetAccount.networkKeyOf(snapshot);
+      if (existing && previous != null && previous.networkKey.isNotEmpty &&
+          key.isNotEmpty && previous.networkKey != key) {
+        throw const AppFailure(FailureCause.rejected,
+            'This sign-in belongs to a different Tailnet. Add it as a new Tailnet.');
+      }
+      final duplicate = key.isEmpty ? null : tailnets.where(
+          (account) => account.id != id && account.networkKey == key).firstOrNull;
+      if (duplicate != null) {
+        // Keep the working account and its native state intact. The newly
+        // registered device is not a replacement for an existing identity.
+        if (!isPreview && identity.machinePrivateKey != duplicate.identity.machinePrivateKey) {
+          final client = _newClient();
+          try {
+            await client.logout(identity).timeout(const Duration(seconds: 15));
+          } catch (error) {
+            _log('warn', 'Duplicate device sign-out did not complete: ${describeFailure(error)}');
+          } finally {
+            await client.close();
+          }
+        }
+        if (cancelled()) return;
+        pickerRequestedTailnetId = duplicate.id;
+        _log('info', 'This Tailnet is already signed in; the existing account was kept.');
+        return;
+      }
+      final account = previous?.copyWith(identity: identity, snapshot: snapshot) ??
+          TailnetAccount(id: id, identity: identity, snapshot: snapshot);
+      if (!isPreview) {
+        await TsnetState.write(stateDirectory: _paths.tailscaleStateFor(account),
+            identity: identity, snapshot: snapshot);
+      }
+      if (cancelled()) return;
+      if (!await _commitAccounts(_accounts.withAccount(account))) {
+        throw const FileSystemException('The signed-in Tailnet could not be saved.');
+      }
+      _log('info', 'Signed in to ${snapshot.networkName}.');
+      _logDiscovery(id, snapshot);
+      if (!existing || selectedTailnetId != id || exit?.hasNode != true) {
+        pickerRequestedTailnetId = id;
+      }
+    });
   }
 
-  Future<void> _finishSignIn({Object? error}) async {
+  Future<void> _finishSignIn({int? attempt, Object? error}) async {
+    final currentAttempt = attempt ?? _signInAttempt;
+    if (_disposed || currentAttempt != _signInAttempt) return;
     final login = _login;
     final client = _loginClient;
     _login = null;
     _loginClient = null;
     _authUrl = null;
-    signIn = SignInPhase.idle;
-    notifyListeners();
     await login?.cancel();
     await client?.close();
+    if (_disposed || currentAttempt != _signInAttempt) return;
     if (error != null && classifyFailure(error) != FailureCause.cancelled) {
       _setProblem(AppProblem.signIn, error: error);
       _log('error', 'Sign-in failed: ${describeFailure(error)}');
@@ -536,6 +652,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         await closeInAppWebView();
       } catch (_) {}
     }
+    if (_disposed || currentAttempt != _signInAttempt) return;
+    signIn = SignInPhase.idle;
+    _signInTailnetId = null;
     notifyListeners();
   }
 
@@ -557,45 +676,60 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Fetches the netmap. A [silent] refresh logs failures without showing a
   /// problem, except a signed-out device, which always needs attention.
-  Future<bool> refresh({bool silent = false}) async {
-    final current = exit;
-    if (current == null || refreshing || busy) return false;
-    refreshing = true;
+  Future<bool> refresh({bool silent = false, String? tailnetId}) async {
+    final id = tailnetId ?? selectedTailnetId;
+    final current = id == null ? null : tailnetById(id);
+    if (current == null || isRefreshingTailnet(current.id) || busy) return false;
+    final epoch = _accountEpoch(current.id);
+    bool cancelled() => !_accountCurrent(current.id, epoch);
+    _refreshingAccounts.add(current.id);
     if (!silent && problem == AppProblem.refresh) _clearProblem();
     notifyListeners();
     try {
-      if (isPreview) {
-        await Future<void>.delayed(const Duration(milliseconds: 600));
-        if (exit == null) return false;
-        exit = exit!.copyWith(snapshot: PreviewData.snapshot());
-        return true;
-      }
-      final snapshot = await _fetchSnapshot(current);
-      if (exit == null) return false; // Removed meanwhile.
-      exit = exit!.copyWith(snapshot: snapshot);
-      await _saveExit();
-      if (problem == AppProblem.needsSignIn ||
+      final snapshot = isPreview
+          ? await Future<TailnetSnapshot>.delayed(const Duration(milliseconds: 600),
+              () => current.snapshot!.copyWith(fetchedAt: DateTime.now()))
+          : await _fetchSnapshot(current, cancelled: cancelled);
+      if (cancelled()) return false;
+      final saved = await _serializeAccounts(() async {
+        if (cancelled()) return false;
+        return _commitAccounts(_accounts.withAccount(tailnetById(current.id)!.copyWith(snapshot: snapshot)));
+      });
+      if (!saved || cancelled()) return false;
+      _logDiscovery(current.id, snapshot);
+      if (problemTailnetId == current.id && (problem == AppProblem.needsSignIn ||
           problem == AppProblem.refresh ||
-          (problem == AppProblem.awaitingApproval && snapshot.machineAuthorized)) {
+          (problem == AppProblem.awaitingApproval && snapshot.machineAuthorized))) {
         _clearProblem();
       }
       return true;
     } on TailscaleNeedsLogin {
-      _setProblem(AppProblem.needsSignIn);
-      _log('warn', 'This device is no longer signed in to its Tailnet.');
+      if (cancelled()) return false;
+      if (selectedTailnetId == current.id || !silent) {
+        _setProblem(AppProblem.needsSignIn, subject: current.networkName, tailnetId: current.id);
+      }
+      _log('warn', '${current.networkName}: this device is no longer signed in.');
       return false;
     } catch (error) {
-      _log('warn', 'Refreshing exit nodes failed: ${describeFailure(error)}');
-      if (!silent) _setProblem(AppProblem.refresh, error: error);
+      if (cancelled()) return false;
+      _log('warn', 'Refreshing ${current.networkName} failed: ${describeFailure(error)}');
+      if (!silent) _setProblem(AppProblem.refresh, error: error, tailnetId: current.id);
       return false;
     } finally {
-      refreshing = false;
+      _refreshingAccounts.remove(current.id);
       notifyListeners();
     }
   }
 
-  Future<TailnetSnapshot> _fetchSnapshot(ExitProfile current, {Duration? timeout}) async {
-    final identity = await _liveIdentity(current.identity);
+  Future<void> refreshAll({bool silent = false}) async {
+    await Future.wait([for (final account in tailnets.toList()) refresh(silent: silent, tailnetId: account.id)]);
+  }
+
+  Future<TailnetSnapshot> _fetchSnapshot(TailnetAccount current, {
+    Duration? timeout, required bool Function() cancelled,
+  }) async {
+    final identity = await _liveIdentity(current, cancelled: cancelled);
+    if (cancelled()) throw const AppFailure(FailureCause.cancelled, 'Account request cancelled.');
     final client = _newClient();
     try {
       final request = client.fetchSnapshot(identity);
@@ -616,60 +750,101 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Saves the chosen node; false when it could not be saved, leaving the
   /// previous choice. Split reconnects in the background; Global waits for consent.
-  Future<bool> confirmNode(TailnetPeer peer) async {
-    final current = exit;
-    final address = exitAddress(peer);
-    if (current == null || address == null) return false;
-    final next = current.copyWith(
-      nodeId: peer.stableId,
-      nodeName: peer.name,
-      nodeAddress: address,
-      label: current.autoName
-          ? ExitProfile.automaticLabel(peer.name, current.networkName)
-          : current.label,
-    );
-    if (!await _writeExit(next)) return false;
-    exit = next;
+  Future<bool> confirmNode(TailnetPeer peer, {String? tailnetId}) async {
+    final id = tailnetId ?? selectedTailnetId;
+    final account = id == null ? null : tailnetById(id);
+    if (account == null || busy || !selectable(peer)) return false;
+    final epoch = _accountEpoch(account.id);
+    final saved = await _serializeAccounts(() async {
+      if (!_accountCurrent(account.id, epoch) || busy) return false;
+      final currentAccount = tailnetById(account.id)!;
+      // Use the captured account's netmap, not an arbitrary peer from another
+      // tailnet that happens to have an identical stable node ID.
+      final node = currentAccount.snapshot?.exitNodes.where((node) => node.stableId == peer.stableId).firstOrNull;
+      if (node == null || !selectable(node)) return false;
+      final previous = selectedTailnetId == account.id ? exit : null;
+      final selection = ExitSelection(
+        tailnetId: account.id, nodeId: node.stableId, nodeName: node.name,
+        nodeAddress: exitAddress(node)!,
+        autoName: previous?.autoName ?? true,
+        label: previous?.autoName == false ? previous!.label
+            : ExitProfile.automaticLabel(node.name, currentAccount.networkName),
+      );
+      return _commitAccounts(_accounts.select(selection));
+    });
+    if (!saved) return false;
     if (problem == AppProblem.nodeOffline || problem == AppProblem.nodeMissing) _clearProblem();
     _log('info', 'Exit node set to ${peer.name}.');
+    final wasOn = switchOn;
+    // Cancel preflight for the previous node. An already submitted Global
+    // start must keep running until reconnect consent, just like a connected
+    // Global tunnel. Split reconnect will cancel it through disconnect.
+    if (connectStep != ConnectStep.starting) {
+      _connectAttempt++;
+      connectStep = null;
+    }
     notifyListeners();
-    if (switchOn) unawaited(reconnect());
+    if (wasOn) unawaited(reconnect());
     return true;
   }
 
   Future<bool> removeExit() async {
-    final current = exit;
-    if (current == null || busy) return false;
+    final id = selectedTailnetId;
+    return id != null && await removeTailnet(id);
+  }
+
+  /// True if this account may own native state, including a restored tunnel
+  /// whose account is unknown after relaunch or an unconfirmed stop.
+  bool _mayOwnNative(String id) => id == _runningTailnetId ||
+      (_runningTailnetId == null && (id == selectedTailnetId ||
+          vpnState != VpnConnectionState.disconnected || _nativeStartPending || _shutdownUnconfirmed));
+
+  Future<bool> removeTailnet(String id) async {
+    final current = tailnetById(id);
+    if (current == null || busy || _accountStoreUnreadable) return false;
     removing = true;
+    _invalidateAccount(id);
     notifyListeners();
-    Object? storageError;
     try {
-      // Never log out or remove state until native shutdown is confirmed.
-      if (!await disconnect(force: true)) return false;
+      // Let an already submitted selection save publish before deciding which
+      // account may be in use. New selection requests are blocked by removing.
+      await _serializeAccounts(() async {});
+      if (_disposed) return false;
+      // An unrelated signed-in account does not own the selected VPN. The old
+      // running account can differ from the saved selection during Global's
+      // explicit-consent wait, so ownership is tracked independently.
+      if ((id == selectedTailnetId || _mayOwnNative(id)) && !await disconnect(force: true)) return false;
+      final saved = await _serializeAccounts(() async {
+        if (_disposed || tailnetById(id) == null) return false;
+        // Persist removal first, even for the last account. If persistence
+        // fails, keep every account and selection and do not log anything out.
+        return _commitAccounts(_accounts.withoutAccount(id));
+      });
+      if (!saved) return false;
+      if (pickerRequestedTailnetId == id) pickerRequestedTailnetId = null;
+      _clearProblem();
       if (!isPreview) {
         final client = _newClient();
         try {
-          await client
-              .logout(await _liveIdentity(current.identity))
-              .timeout(const Duration(seconds: 15));
+          final identity = await _readLiveIdentity(current);
+          await client.logout(identity).timeout(const Duration(seconds: 15));
         } catch (error) {
           _log('warn', 'Tailscale sign-out did not complete: ${describeFailure(error)}');
         } finally {
           await client.close();
         }
         try {
-          await TsnetState.clear(_paths.tailscaleState);
+          await TsnetState.clear(_paths.tailscaleStateFor(current));
+          await JsonStore.delete(File(_paths.cacheFileFor(current)));
+          // Once the authoritative store is safely saved, discard credentials
+          // from the old migration file too. Native state was never moved.
           await JsonStore.delete(_paths.exitFile);
         } catch (error) {
-          storageError = error;
-          _log('error', 'The exit could not be deleted from storage: ${describeFailure(error)}');
+          _setProblem(AppProblem.storage, error: error);
+          _log('error', 'Tailnet state cleanup failed: ${describeFailure(error)}');
         }
       }
-      exit = null;
-      needsReconnect = false;
-      _clearProblem();
-      if (storageError != null) _setProblem(AppProblem.storage, error: storageError);
-      _log('info', 'Exit removed.');
+      _log('info', 'Tailnet removed.');
       return true;
     } finally {
       removing = false;
@@ -677,19 +852,28 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<TailscaleIdentity> _liveIdentity(TailscaleIdentity identity) async {
-    // tsnet may rotate the node key while the VPN runs; keep using its key.
+  Future<TailscaleIdentity> _readLiveIdentity(TailnetAccount account) async {
     String? live;
     try {
-      live = await TsnetState.readNodePrivateKey(_paths.tailscaleState);
-    } catch (_) {
-      live = null;
+      live = await TsnetState.readNodePrivateKey(_paths.tailscaleStateFor(account));
+    } catch (_) {}
+    return live == null || live == account.identity.nodePrivateKey
+        ? account.identity : account.identity.copyWith(nodePrivateKey: live);
+  }
+
+  Future<TailscaleIdentity> _liveIdentity(TailnetAccount account, {
+    required bool Function() cancelled,
+  }) async {
+    final identity = await _readLiveIdentity(account);
+    if (cancelled()) throw const AppFailure(FailureCause.cancelled, 'Account request cancelled.');
+    if (identity.nodePrivateKey != account.identity.nodePrivateKey) {
+      await _serializeAccounts(() async {
+        if (cancelled()) return;
+        final current = tailnetById(account.id);
+        if (current != null) await _commitAccounts(_accounts.withAccount(current.copyWith(identity: identity)));
+      });
     }
-    if (live == null || live == identity.nodePrivateKey) return identity;
-    final updated = identity.copyWith(nodePrivateKey: live);
-    exit = exit?.copyWith(identity: updated);
-    await _saveExit();
-    return updated;
+    return identity;
   }
 
   // ── Connection ─────────────────────────────────────────────────────────
@@ -704,13 +888,18 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> connect() async {
     final current = exit;
-    if (current == null || !canConnect || preparing || active ||
+    final accountId = selectedTailnetId;
+    final account = accountId == null ? null : tailnetById(accountId);
+    if (current == null || account == null || !canConnect || preparing || active ||
         vpnState == VpnConnectionState.disconnecting) {
       return;
     }
     final connectionSettings = settings;
     final attempt = ++_connectAttempt;
-    bool cancelled() => attempt != _connectAttempt || _disposed;
+    final epoch = _accountEpoch(account.id);
+    bool cancelled() => attempt != _connectAttempt || !_accountCurrent(account.id, epoch) ||
+        selectedTailnetId != account.id || exit?.nodeId != current.nodeId;
+    final stateDirectory = _paths.tailscaleStateFor(account);
     connectStep = ConnectStep.checking;
     if (problem != AppProblem.storage) _clearProblem();
     needsReconnect = false;
@@ -731,16 +920,17 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         if (cancelled()) return;
         vpnState = VpnConnectionState.connected;
         _runningMode = connectionSettings.mode;
+        _runningTailnetId = account.id;
         _log('info', 'Connected (simulated).');
         return;
       }
 
       // A native logout must not be undone using the app's cached identity.
       // Keep the exit selection and let an explicit sign-in replace the state.
-      final stateFile = File('${_paths.tailscaleState.path}/${TsnetState.stateFileName}');
+      final stateFile = File('${stateDirectory.path}/${TsnetState.stateFileName}');
       if (await stateFile.exists()) {
-        final loggedOut = await TsnetState.readLoggedOut(_paths.tailscaleState);
-        final nodeKey = await TsnetState.readNodePrivateKey(_paths.tailscaleState);
+        final loggedOut = await TsnetState.readLoggedOut(stateDirectory);
+        final nodeKey = await TsnetState.readNodePrivateKey(stateDirectory);
         if (cancelled()) return;
         if (loggedOut != false || nodeKey == null) {
           _setProblem(AppProblem.needsSignIn);
@@ -760,11 +950,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           !expired(profile.snapshot);
       if (!fresh) {
         try {
-          final snapshot = await _fetchSnapshot(profile, timeout: const Duration(seconds: 12));
+          final snapshot = await _fetchSnapshot(account,
+              timeout: const Duration(seconds: 12), cancelled: cancelled);
           if (cancelled()) return;
-          profile = (exit ?? profile).copyWith(snapshot: snapshot);
-          exit = profile;
-          await _saveExit();
+          await _serializeAccounts(() async {
+            if (cancelled()) return;
+            await _commitAccounts(_accounts.withAccount(tailnetById(account.id)!.copyWith(snapshot: snapshot)));
+          });
+          if (cancelled()) return;
+          profile = profile.copyWith(snapshot: snapshot);
+          _logDiscovery(account.id, snapshot);
           fresh = true;
         } on TailscaleNeedsLogin {
           if (cancelled()) return;
@@ -802,23 +997,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         final address = exitAddress(node);
         if (address != null && address != profile.nodeAddress) {
           profile = profile.copyWith(nodeAddress: address);
-          exit = profile;
-          await _saveExit();
+          await _serializeAccounts(() async {
+            if (cancelled()) return;
+            await _commitAccounts(_accounts.select(ExitSelection.fromProfile(account.id, profile)));
+          });
+          if (cancelled()) return;
         }
       }
       if (profile.nodeAddress.isEmpty) {
         _setProblem(AppProblem.nodeMissing, subject: profile.nodeName);
         return;
       }
-      final identity = await _liveIdentity(profile.identity);
+      final identity = await _liveIdentity(tailnetById(account.id)!, cancelled: cancelled);
       final snapshot = profile.snapshot;
-      if (!await stateFile.exists() && snapshot != null) {
-        await TsnetState.write(
-          stateDirectory: _paths.tailscaleState,
-          identity: identity,
-          snapshot: snapshot,
-        );
-      }
+      await _serializeAccounts(() async {
+        if (cancelled()) return;
+        if (!await stateFile.exists() && snapshot != null && !cancelled()) {
+          await TsnetState.write(stateDirectory: stateDirectory, identity: identity, snapshot: snapshot);
+        }
+      });
       if (cancelled()) return;
 
       // 2. Rule list: cached after the first download.
@@ -854,8 +1051,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         exit: ExitRuntime(
           hostname: identity.hostname,
           nodeAddress: profile.nodeAddress,
-          stateDirectory: _paths.tailscaleState.path,
-          cacheFile: _paths.cacheFile,
+          stateDirectory: stateDirectory.path,
+          cacheFile: _paths.cacheFileFor(account),
           magicDnsSuffix: profile.snapshot?.magicDnsSuffix ?? '',
         ),
       );
@@ -875,6 +1072,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await _serializeNative(() async {
         if (cancelled()) return;
         _runningMode = connectionSettings.mode;
+        _runningTailnetId = account.id;
         await _startVpnBounded(config);
         // A start acknowledgement can arrive after cancellation. Stop inside
         // this same serialized operation before any later start may run.
@@ -883,7 +1081,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         } else {
           _runningMode = connectionSettings.mode;
           needsReconnect = needsReconnect || settings.affectsConnection(connectionSettings) ||
-              exit?.nodeId != profile.nodeId;
+              selectedTailnetId != account.id || exit?.nodeId != profile.nodeId;
         }
       });
     } catch (error) {
@@ -969,6 +1167,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     _pendingNativeStart = null;
     _runningMode = null;
+    _runningTailnetId = null;
     _shutdownUnconfirmed = false;
   }
 
@@ -1004,6 +1203,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         _onStatus(const VpnStatus(state: VpnConnectionState.disconnected));
       }
       _runningMode = null;
+      _runningTailnetId = null;
       return true;
     }
     // Cancelling preflight does not touch a service it never started. Identity
@@ -1066,7 +1266,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// Writes settings and the exit again after a storage failure.
   Future<void> retrySave() async {
     if (isPreview) return;
-    final saved = await _writeSettings(settings) && (exit == null || await _writeExit(exit!));
+    final saved = await _writeSettings(settings) &&
+        await _serializeAccounts(() => _writeAccounts(_accounts));
     if (saved && problem == AppProblem.storage) _clearProblem();
     notifyListeners();
   }
@@ -1114,11 +1315,12 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  void _setProblem(AppProblem kind, {Object? error, String? detail, String? subject}) {
+  void _setProblem(AppProblem kind, {Object? error, String? detail, String? subject, String? tailnetId}) {
     problem = kind;
     problemCause = error == null ? null : classifyFailure(error);
     problemDetail = detail ?? (error == null ? null : describeFailure(error));
     problemSubject = subject;
+    problemTailnetId = tailnetId ?? (kind == AppProblem.signIn ? _signInTailnetId : selectedTailnetId);
   }
 
   void _clearProblem() {
@@ -1126,6 +1328,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     problemCause = null;
     problemDetail = null;
     problemSubject = null;
+    problemTailnetId = null;
+  }
+
+  void _logDiscovery(String id, TailnetSnapshot snapshot) {
+    // A local account ID and counts only: no keys, peer names or addresses.
+    final detail = snapshot.discoveryDiagnostics?.summary ?? 'exit-nodes=${snapshot.exitNodes.length}';
+    _log('info', 'Tailnet $id: machine-authorized=${snapshot.machineAuthorized}; $detail');
   }
 
   void _log(String level, String message, {String source = 'app'}) {
@@ -1144,21 +1353,27 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _writeExit(ExitProfile profile) async {
+  Future<bool> _writeAccounts(TailnetStore store) async {
     if (isPreview) return true;
+    // A corrupt authoritative store must not be overwritten by partial or empty
+    // recovery data; in particular retrySave cannot erase unread identities.
+    if (_accountStoreUnreadable) return false;
     try {
-      await JsonStore.write(_paths.exitFile, profile.toJson());
+      await JsonStore.write(_paths.accountsFile, store.toJson());
       return true;
     } catch (error) {
       _setProblem(AppProblem.storage, error: error);
-      _log('error', 'The exit could not be saved: ${describeFailure(error)}');
+      _log('error', 'Tailnets could not be saved: ${describeFailure(error)}');
       notifyListeners();
       return false;
     }
   }
 
-  Future<void> _saveExit() async {
-    final current = exit;
-    if (current != null) await _writeExit(current);
+  /// Called inside the account queue so concurrent refreshes cannot overwrite
+  /// a selection, removal, or another account's successful refresh.
+  Future<bool> _commitAccounts(TailnetStore store) async {
+    if (!await _writeAccounts(store)) return false;
+    _accounts = store;
+    return true;
   }
 }

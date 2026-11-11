@@ -199,11 +199,26 @@ ParsedMapResponse parseMapResponse(
   final domain = json['Domain'] as String? ?? '';
   final displayNameAttr = tailnetDisplayNameOf(self);
 
-  final exitNodes = <TailnetPeer>[
-    for (final peer in (json['Peers'] as List?) ?? const [])
-      if (peer is Map) _peer(peer.cast<String, Object?>()),
-  ].where((p) => p.isExitNode).toList()
+  // Go's mapSession uses a non-empty Peers as the complete list; otherwise
+  // PeersChanged adds peers to the initially empty session. Do not silently
+  // discard those peers when a server uses that form for the first map.
+  final fullPeers = (json['Peers'] as List?) ?? const [];
+  final changedPeers = (json['PeersChanged'] as List?) ?? const [];
+  final peers = <Map<String, Object?>>[
+    for (final peer in fullPeers.isNotEmpty ? fullPeers : changedPeers)
+      if (peer is Map) peer.cast<String, Object?>(),
+  ];
+  final exitNodes = peers.map(_peer).where((p) => p.isExitNode).toList()
     ..sort(comparePeers);
+  final diagnostics = TailnetDiscoveryDiagnostics(
+    peerCount: peers.length,
+    exitRoutePeerCount: exitNodes.length,
+    advertisedExitRoutePeerCount: peers.where((p) => offersExitRoute(_map(p['Hostinfo'])['RoutableIPs'])).length,
+    primaryExitRoutePeerCount: peers.where((p) => offersExitRoute(p['PrimaryRoutes'])).length,
+    missingAllowedIpsPeerCount: peers.where((p) => p['AllowedIPs'] == null).length,
+    changedPeerCount: changedPeers.length,
+    peerListPresent: json['Peers'] is List,
+  );
 
   final keyExpiry = _goTime(self['KeyExpiry']);
   return ParsedMapResponse(
@@ -226,6 +241,7 @@ ParsedMapResponse parseMapResponse(
       domainName: domain,
       tailnetDisplayName: displayNameAttr,
       machineAuthorized: self['MachineAuthorized'] as bool? ?? false,
+      discoveryDiagnostics: diagnostics,
     ),
     selfStatus: SelfNodeStatus(
       expired: self['Expired'] as bool? ?? false,

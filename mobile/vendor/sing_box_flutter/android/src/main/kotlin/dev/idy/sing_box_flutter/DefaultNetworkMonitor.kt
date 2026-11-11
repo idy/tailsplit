@@ -60,6 +60,12 @@ internal class DefaultNetworkMonitor(private val service: SingBoxVpnService) {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
+        // Seed before registering callbacks: a callback may run as soon as the
+        // registration is submitted. Only callbacks may change the selection after
+        // that point, including an onLost report that selects no network.
+        currentNetwork = connectivity.activeNetwork?.takeIf { network ->
+            connectivity.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == true
+        }
         try {
             // registerDefaultNetworkCallback returns the VPN itself on Android 9+.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -75,12 +81,6 @@ internal class DefaultNetworkMonitor(private val service: SingBoxVpnService) {
             callbackThread = null
             handler = null
             throw failure
-        }
-        // Seed the initial path without ever choosing another VPN as the underlying network.
-        connectivity.activeNetwork?.let { network ->
-            if (connectivity.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == true) {
-                currentNetwork = network
-            }
         }
     }
 
@@ -110,6 +110,7 @@ internal class DefaultNetworkMonitor(private val service: SingBoxVpnService) {
                     block()
                 } catch (_: Exception) {
                     // A broken monitor cannot safely leave the VPN advertised as connected.
+                    service.interruptStartup()
                     NativeRuntime.worker.execute {
                         if (running && NativeRuntime.service === service) {
                             service.shutdownOnWorker("Android could not update the VPN network path.")

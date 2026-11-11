@@ -42,6 +42,17 @@ class AndroidKotlinConfigTests(unittest.TestCase):
         )
 
 
+class VendoredKotlinConfigTests(unittest.TestCase):
+    def test_library_and_example_apply_external_kotlin(self):
+        vendor = ANDROID.parent / "vendor/sing_box_flutter"
+        for relative in ("android/build.gradle.kts", "example/android/app/build.gradle.kts"):
+            with self.subTest(module=relative):
+                build = (vendor / relative).read_text()
+                plugins = re.search(r"(?m)^plugins\s*\{([^}]+)\}", build)
+                self.assertIsNotNone(plugins)
+                self.assertRegex(plugins.group(1), r'(?m)^\s*id\("org\.jetbrains\.kotlin\.android"\)\s*$')
+
+
 class AndroidBackupConfigTests(unittest.TestCase):
     def setUp(self):
         manifest = ET.parse(MAIN / "AndroidManifest.xml").getroot()

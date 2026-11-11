@@ -269,7 +269,8 @@ void main() {
         expect(vpn.starts, 0);
         expect(app.problem, AppProblem.needsSignIn);
         expect(app.preparing, isFalse);
-        expect(app.exit, same(profile));
+        expect(app.exit!.identity, same(profile.identity));
+        expect(app.exit!.nodeId, profile.nodeId);
         expect(await file.readAsString(), before,
             reason: 'A connect must not silently restore a logged-out identity.');
       });
@@ -297,7 +298,7 @@ void main() {
       app.addListener(() {
         if (app.signIn == SignInPhase.idle && !finished.isCompleted) finished.complete();
       });
-      await app.signInExit();
+      await app.signInExit(tailnetId: app.selectedTailnetId);
       await finished.future.timeout(const Duration(seconds: 5));
       expect(app.problem, isNull);
       expect(app.exit!.nodeId, 'id-tokyo');
@@ -422,8 +423,8 @@ void main() {
         loginEvents: Stream.value(LoginAuthorized(_snapshot([_peer('tokyo')]), identity: identity)),
       ),
     );
-    // A file where the Tailscale state directory belongs makes the save fail.
-    File('${root.path}/shared/tailscale').writeAsStringSync('');
+    // A file where account state directories belong makes the save fail.
+    File('${root.path}/shared/accounts').writeAsStringSync('');
     await app.signInExit();
     await pumpEventQueue();
     expect(app.signIn, SignInPhase.idle);

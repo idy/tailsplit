@@ -35,7 +35,7 @@
       "kind": "button",
       "refersTo": "primary-button",
       "description": "HTML illustration of CupertinoButton.filled, not a UIKit screenshot or native component implementation. Native defaults and feedback remain platform-owned.",
-      "html": "<button class=\"ds-primary\">Add exit</button>",
+      "html": "<button class=\"ds-primary\">Add Tailnet</button>",
       "css": ".ds-primary{width:100%;background:#2f62d5;color:white;border:0;border-radius:14px;padding:16px;font:600 17px system-ui}.ds-primary:focus-visible{outline:2px solid currentColor;outline-offset:2px}.ds-primary:disabled{opacity:.45}@media(prefers-color-scheme:dark){.ds-primary{background:#5b8cf5}}"
     },
     {
@@ -70,7 +70,7 @@
   ],
   "narrative": {
     "northStar": "The Desktop Configuration Panel, Native on Phone",
-    "overview": "TailSplit retains the user-pinned desktop identity: neutral grouped surfaces, blue actions, text-backed semantic states, a plain green node check, and a fixed deep-gray diagnostic terminal. This mobile boundary implements one embedded Tailscale device with one selected exit node. Native phone controls carry that identity; the desktop web typography and geometry are not transplanted into touch controls.\n\nThe implementation uses native UIKit Liquid Glass through `adaptive_platform_ui` for supported iOS controls on iOS 26+, with Cupertino fallback. The page content, inset grouped lists and node sheet include Flutter Cupertino widgets. Material 3 implementations also exist in source; Android has not been built or tested. This record describes the phone adaptation, not a new identity for TailSplit or a desktop redesign.",
+    "overview": "TailSplit retains the user-pinned desktop identity: neutral grouped surfaces, blue actions, text-backed semantic states, a plain green node check, and a fixed deep-gray diagnostic terminal. This mobile boundary keeps multiple Tailnets signed in with independent embedded device identities and one globally selected exit node. Native phone controls carry that identity; the desktop web typography and geometry are not transplanted into touch controls.\n\nThe implementation uses native UIKit Liquid Glass through `adaptive_platform_ui` for supported iOS controls on iOS 26+, with Cupertino fallback. The page content, inset grouped lists and node sheet include Flutter Cupertino widgets. Material 3 implementations also exist in source; Android has not been built or tested. This record describes the phone adaptation, not a new identity for TailSplit or a desktop redesign.",
     "keyCharacteristics": [
       "System appearance and native semantic surfaces.",
       "Native tab, toolbar, switch, segmented and menu controls where implemented.",
@@ -109,7 +109,7 @@
       "Do hide underlying native page toolbars while the picker sheet owns navigation, and disable tickers in inactive tabs."
     ],
     "donts": [
-      "Don't introduce the desktop multi-exit list or a giant VPN power-button hero into this single-exit native adaptation.",
+      "Don't treat Tailnet sign-ins as simultaneous VPN exits: list the accounts, but keep one global exit selection and one tunnel.",
       "Don't add persistent selected-node row fill, fabricated latency, or a Ping action unsupported by the mobile data plane.",
       "Don't equate simulated connected logs with verified account authorization or real VPN traffic.",
       "Don't infer Android, tablet, large-text or older-iOS runtime verification from source branches."

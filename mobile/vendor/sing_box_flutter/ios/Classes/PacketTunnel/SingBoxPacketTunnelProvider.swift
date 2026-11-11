@@ -9,6 +9,9 @@ import NetworkExtension
 /// This pod has no Flutter dependency. Only this extension process starts the sing-box service.
 open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
     private let coreQueue = DispatchQueue(label: "dev.idy.sing_box_flutter.packet-tunnel")
+    private let cancellationQueue = DispatchQueue(label: "dev.idy.sing_box_flutter.packet-tunnel-cancel")
+    private let coreLock = NSLock()
+    private var stopRequested = false
     private var storage: TunnelStorage?
     private var sessionID: String?
     private var commandServer: LibboxCommandServer?
@@ -18,7 +21,7 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
 
     override open func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         coreQueue.async {
-            guard self.commandServer == nil, !self.transitioning else { completionHandler(TunnelFailure.busy); return }
+            guard self.commandServer == nil, !self.transitioning, !self.isStopRequested else { completionHandler(TunnelFailure.busy); return }
             self.transitioning = true
             do {
                 guard let configuration = self.protocolConfiguration as? NETunnelProviderProtocol,
@@ -48,7 +51,14 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
                 guard let server = LibboxNewCommandServer(platform, platform, &error), error == nil else {
                     throw TunnelFailure(code: "core_create_failed", message: "libbox could not create the tunnel service.")
                 }
-                self.commandServer = server
+                self.coreLock.lock()
+                let stopped = self.stopRequested
+                if !stopped { self.commandServer = server }
+                self.coreLock.unlock()
+                guard !stopped else {
+                    server.close()
+                    throw TunnelFailure(code: "start_cancelled", message: "VPN startup was cancelled.")
+                }
                 // StartOrReloadService owns the core independently of Start's RPC listener.
                 // App communication uses NE provider messages, so no Unix/TCP command
                 // listener is opened (App Group paths can also exceed Unix socket limits).
@@ -57,12 +67,17 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
                 guard platform.hasTunnel else {
                     throw TunnelFailure(code: "missing_tun", message: "The configuration must start a TUN inbound on iOS.")
                 }
-                self.setStatus("connected")
+                self.coreLock.lock()
+                let cancelled = self.stopRequested
+                if !cancelled { self.setStatus("connected") }
+                self.coreLock.unlock()
+                guard !cancelled else { throw TunnelFailure(code: "start_cancelled", message: "VPN startup was cancelled.") }
                 self.transitioning = false
                 completionHandler(nil)
             } catch {
                 let failure = error as? TunnelFailure ?? TunnelFailure(code: "core_start_failed", message: "sing-box could not start the tunnel. Check the configuration and extension capabilities.")
-                self.setStatus("error", message: failure.message)
+                if self.isStopRequested { self.setStatus("disconnecting") }
+                else { self.setStatus("error", message: failure.message) }
                 self.closeCore()
                 self.setTunnelNetworkSettings(nil) { _ in
                     self.coreQueue.async {
@@ -75,6 +90,7 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override open func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        interruptStartup()
         coreQueue.async {
             // Preserve an actionable startup failure when the OS follows it with stopTunnel.
             self.transitioning = true
@@ -87,6 +103,11 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
                         self.setStatus(closeFailed ? "error" : "disconnected", message: closeFailed ? "sing-box reported an error while stopping the tunnel." : nil)
                     }
                     self.transitioning = false
+                    // A later OS start may reuse this provider, but only after
+                    // the old startup and resource teardown have both finished.
+                    self.coreLock.lock()
+                    self.stopRequested = false
+                    self.coreLock.unlock()
                     completionHandler()
                 }
             }
@@ -125,6 +146,7 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
 
     func stopFromCore() {
         // A libbox callback may be holding Go service locks. Never synchronously re-enter it.
+        interruptStartup()
         coreQueue.async {
             self.closeCore()
             self.setStatus("disconnected")
@@ -133,6 +155,7 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     func failFromPlatform() {
+        interruptStartup()
         coreQueue.async {
             let failure = TunnelFailure(code: "network_settings_failed", message: "The system could not restore the tunnel's network settings.")
             self.setStatus("error", message: failure.message)
@@ -141,13 +164,38 @@ open class SingBoxPacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    @discardableResult private func closeCore() -> Bool {
-        var failed = false
-        if let commandServer {
-            do { try commandServer.closeService() } catch { failed = true }
-            commandServer.close()
+    var isStopRequested: Bool {
+        coreLock.lock(); defer { coreLock.unlock() }
+        return stopRequested
+    }
+
+    private func interruptStartup() {
+        coreLock.lock(); defer { coreLock.unlock() }
+        guard !stopRequested else { return }
+        stopRequested = true
+        #if SINGBOX_SELECTABLE_CORE
+        // This binding cancels its context before waiting for Start to return.
+        // It never closes engine resources under Start. Legacy Close has no such
+        // guarantee and must remain serialized. OS teardown still waits below.
+        if let server = commandServer {
+            cancellationQueue.async { server.close() }
         }
+        #endif
+    }
+
+    @discardableResult private func closeCore() -> Bool {
+        coreLock.lock()
+        let server = commandServer
         commandServer = nil
+        let cancelled = stopRequested
+        coreLock.unlock()
+        var failed = false
+        if let server {
+            if !cancelled {
+                do { try server.closeService() } catch { failed = true }
+            }
+            server.close()
+        }
         platform?.reset()
         platform = nil
         reasserting = false

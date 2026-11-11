@@ -16,7 +16,7 @@ from build_core import (ANDROID_TARGETS, RECEIPT, build_identity, canonical_hash
 from core_features import canonicalize, generate_registry, resolve_features
 from native_common import BuildError, ROOT, artifact_hashes, legal_files, load_pins, sha256, write_json
 from restore_core_artifact import (MANIFEST, RestoreMiss, bundle, main, restore_artifact,
-                                   write_manifest)
+                                   verify_contents, write_manifest)
 
 
 class RestoreCoreArtifact(unittest.TestCase):
@@ -77,21 +77,71 @@ sing_box_flutter:
             write_manifest(self.producer)
         else:
             self.reseal()
+        self.trusted_digest = sha256(self.producer / MANIFEST)
 
-    def reseal(self):
+    def reseal(self, *, trust=True):
         _, _, _, files = bundle(self.producer)
         write_json(self.producer / MANIFEST, {"schema": 1, "sha256": files})
+        # Most tests exercise structural validation even for an approved producer.
+        # Adversarial resealing must leave the caller's independent pin unchanged.
+        if trust:
+            self.trusted_digest = sha256(self.producer / MANIFEST)
 
     def assert_miss(self):
         before = (self.host / "pubspec.yaml").read_bytes()
         with self.assertRaises(RestoreMiss):
-            restore_artifact(self.producer, self.host)
+            restore_artifact(self.producer, self.host, manifest_sha256=self.trusted_digest)
         self.assertEqual(self.receipt_path.read_bytes(), self.previous_receipt)
         self.assertEqual((self.host / "pubspec.yaml").read_bytes(), before)
 
+    def test_missing_independent_digest_never_reuses_a_consistent_bundle(self):
+        with self.assertRaises(RestoreMiss):
+            restore_artifact(self.producer, self.host)
+        self.assertEqual(self.receipt_path.read_bytes(), self.previous_receipt)
+        output = self.base / "github-output"
+        with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+            self.assertEqual(main(["--project-dir", str(self.host), "--from-dir", str(self.producer)]), 0)
+        self.assertEqual(output.read_text(), "restored=false\n")
+
+    def test_resealed_inventory_receipt_metadata_and_aar_cannot_self_authenticate(self):
+        aar = self.output / "libbox.aar"
+        with zipfile.ZipFile(aar, "w") as archive:
+            archive.writestr("AndroidManifest.xml", "manifest")
+            archive.writestr("classes.jar", "changed executable classes")
+            for abi in ANDROID_TARGETS:
+                archive.writestr(f"jni/{abi}/libbox.so", f"changed native executable {abi}")
+        hashes = artifact_hashes(aar)
+        metadata_path = self.output / "native-build.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["artifact_sha256"] = hashes
+        write_json(metadata_path, metadata)
+        renamed = self.output.with_name(canonical_hash(hashes))
+        self.output.rename(renamed)
+        self.output = renamed
+        receipt_path = self.producer / RECEIPT
+        receipt = json.loads(receipt_path.read_text())
+        entry = receipt["artifacts"]["android"]
+        entry["sha256"] = hashes
+        for field, name in (("path", "libbox.aar"), ("capabilities", "core-capabilities.json"),
+                            ("metadata", "native-build.json")):
+            entry[field] = (renamed / name).relative_to(self.producer).as_posix()
+        write_json(receipt_path, receipt)
+        self.reseal(trust=False)
+        # All old consistency/recipe/ABI checks accept this self-sealed producer.
+        verify_contents(self.host, receipt, metadata, self.output, ROOT)
+        self.assertNotEqual(sha256(self.producer / MANIFEST), self.trusted_digest)
+        self.assert_miss()
+
+    def test_cli_reuses_only_the_explicitly_trusted_inventory(self):
+        output = self.base / "github-output"
+        with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+            self.assertEqual(main(["--project-dir", str(self.host), "--from-dir", str(self.producer),
+                                   "--manifest-sha256", self.trusted_digest]), 0)
+        self.assertEqual(output.read_text(), "restored=true\n")
+
     def test_complete_bundle_restores_without_running_a_compiler(self):
         with mock.patch("subprocess.run", side_effect=AssertionError("No subprocess is needed for reuse")):
-            restore_artifact(self.producer, self.host)
+            restore_artifact(self.producer, self.host, manifest_sha256=self.trusted_digest)
         manifest = json.loads((self.producer / MANIFEST).read_text())
         for relative, digest in manifest["sha256"].items():
             self.assertEqual(sha256(self.host / relative), digest)
@@ -102,10 +152,10 @@ sing_box_flutter:
 
     def test_existing_matching_bundle_does_not_copy_the_binary_again(self):
         with mock.patch("restore_core_artifact.shutil.copytree", wraps=shutil.copytree) as copy:
-            restore_artifact(self.producer, self.host)
+            restore_artifact(self.producer, self.host, manifest_sha256=self.trusted_digest)
             self.assertGreater(copy.call_count, 0)
             copy.reset_mock()
-            restore_artifact(self.producer, self.host)
+            restore_artifact(self.producer, self.host, manifest_sha256=self.trusted_digest)
             self.assertEqual(copy.call_count, 0)
         self.assertEqual(self.receipt_path.read_bytes(), (self.producer / RECEIPT).read_bytes())
 
@@ -200,7 +250,7 @@ sing_box_flutter:
     def test_failed_receipt_publication_preserves_previous_receipt(self):
         with mock.patch("restore_core_artifact.os.replace", side_effect=OSError("Interrupted receipt publication")):
             with self.assertRaises(OSError):
-                restore_artifact(self.producer, self.host)
+                restore_artifact(self.producer, self.host, manifest_sha256=self.trusted_digest)
         self.assertEqual(self.receipt_path.read_bytes(), self.previous_receipt)
         self.assertFalse(list(self.host.rglob(".restore-*")))
 

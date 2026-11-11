@@ -1,6 +1,52 @@
 import '../tailscale/tailscale.dart';
 
-/// The phone's single exit: one embedded Tailscale device and its exit node.
+/// The one globally chosen exit. It contains no duplicate account credentials
+/// or snapshots and never selects a replacement when its account is removed.
+class ExitSelection {
+  const ExitSelection({
+    required this.tailnetId,
+    required this.nodeId,
+    required this.nodeName,
+    required this.nodeAddress,
+    this.label = '',
+    this.autoName = true,
+  });
+
+  final String tailnetId;
+  final String nodeId;
+  final String nodeName;
+  final String nodeAddress;
+  final String label;
+  final bool autoName;
+
+  ExitProfile compose(TailscaleIdentity identity, TailnetSnapshot? snapshot) => ExitProfile(
+        identity: identity, snapshot: snapshot, nodeId: nodeId, nodeName: nodeName,
+        nodeAddress: nodeAddress, label: label, autoName: autoName,
+      );
+
+  factory ExitSelection.fromProfile(String id, ExitProfile profile) => ExitSelection(
+        tailnetId: id, nodeId: profile.nodeId, nodeName: profile.nodeName,
+        nodeAddress: profile.nodeAddress, label: profile.label, autoName: profile.autoName,
+      );
+
+  Map<String, Object?> toJson() => {
+        'tailnet_id': tailnetId, 'node_id': nodeId, 'node_name': nodeName,
+        'node_address': nodeAddress, 'label': label, 'auto_name': autoName,
+      };
+
+  factory ExitSelection.fromJson(Map<String, Object?> json) => ExitSelection(
+        tailnetId: json['tailnet_id'] as String,
+        nodeId: json['node_id'] as String? ?? '',
+        nodeName: json['node_name'] as String? ?? '',
+        nodeAddress: json['node_address'] as String? ?? '',
+        label: json['label'] as String? ?? '',
+        autoName: json['auto_name'] as bool? ?? true,
+      );
+}
+
+
+/// A composed view of the globally selected account and node. Account identity
+/// and snapshots live in TailnetStore; this view is also the legacy file format.
 class ExitProfile {
   const ExitProfile({
     required this.identity,

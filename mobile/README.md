@@ -1,7 +1,8 @@
 # TailSplit for iOS and Android
 
-A Flutter app that brings TailSplit's routing to phones with **one** exit: one
-embedded Tailscale device and one selected exit node. Rule-based (Split) routes
+A Flutter app that brings TailSplit's routing to phones with **multiple signed-in
+Tailnets and one selected exit node**. Each Tailnet keeps its own embedded device
+identity; only the selected account runs in the VPN. Rule-based (Split) routes
 matched traffic through the exit; Global routes all traffic captured by the VPN
 through that exit, without a direct fallback inside the tunnel. Both routing
 modes are available. They do not promise a system kill switch after the OS removes
@@ -15,16 +16,29 @@ reviewable iOS cancellation fix; see [patch provenance and limits](vendor/sing_b
 
 ## How it works
 
-1. **Add exit** generates device keys and registers with Tailscale's control plane
+1. **Add Tailnet** generates independent device keys and registers with Tailscale's control plane
    over the `ts2021` Noise protocol (`lib/src/tailscale/`). The sign-in page opens in an
    in-app browser; the app continues automatically after authorization.
 2. The app reads the netmap, lists peers that offer an exit route, and saves the
    device identity in tsnet's on-disk state format, so sing-box's `tailscale`
    endpoint starts already signed in as the same device. No TUN is created while
    signing in or listing nodes.
-3. Choosing a node names the exit `<node>@<network>`. The switch builds a sing-box
-   configuration (`lib/src/services/config_builder.dart`, mirroring the desktop's
-   `compile.go`) and starts the VPN.
+3. Each Tailnet row opens that network's nodes, refresh, reauthentication and
+   sign-out. Choosing a node replaces the **one global selection** and names it
+   `<node>@<network>`; canceling leaves the selection intact. Adding another
+   Tailnet does not change the selected exit or interrupt its tunnel.
+4. The switch builds one sing-box configuration with one Tailscale endpoint
+   (`lib/src/services/config_builder.dart`, mirroring the desktop's `compile.go`)
+   and starts the VPN using the selected account's private state/cache paths.
+   Removing an account never selects a fallback. A selected or running account
+   must stop successfully before its local identity can be removed.
+
+First launch after an upgrade imports the old `exit.json` into `tailnets.json`
+without moving its native state or cache; an OS-owned tunnel can keep using those
+paths. The new account store remains authoritative even when empty. Each added
+Tailnet has a stable local ID and separate state directory. Device discovery reads
+both full `Peers` and initial `PeersChanged` maps; empty states and redacted count
+logs distinguish missing visible peers from advertised but unavailable exit routes.
 
 The node picker shows the reachability Tailscale reports (Online, Offline, last
 seen). Tailscale Ping needs the VPN core and is not offered here.
@@ -138,7 +152,8 @@ download failed). These options only take effect in preview builds.
   It does not switch routing modes or claim that a retry blocks traffic; an OS
   process kill can prevent the UI warning from appearing.
 - **Reconnect and removal** require confirmed native disconnection before a new
-  start, sign-in or identity deletion. A stop failure retains the saved identity
+  start or reauthentication/deletion of an account that may own the tunnel.
+  Adding or refreshing an independent Tailnet leaves the current tunnel running. A stop failure retains the saved identity
   and reports a retryable error. A restored tunnel whose runtime mode is unknown
   stays active until the user confirms that reconnecting can expose direct traffic,
   including on failure. Changes to a running Global session likewise stay pending
@@ -167,7 +182,10 @@ The app builds for the iOS simulator. The Exit Node, node picker, Settings and
 Logs screens were inspected on an iPhone 18 Pro simulator running iOS 27, in
 English/Chinese and light/dark appearance. Selecting another node and confirming
 it updated the exit label while leaving the preview disconnected. These captures
-use explicitly labelled simulated data.
+use explicitly labelled simulated data. The multi-tailnet native XCUITest also
+verifies opening another network, canceling without a selection change and
+confirming its node as the sole exit. Development build 0.1.0 (3) was signed by
+Termitoc, installed in place and launched on a physical iPhone Air.
 
 The failure states (offline node, first rule-list download failure, connecting
 step) and the Exit Node, picker and Settings screens at the accessibility-extra-large
@@ -177,8 +195,14 @@ Global routing remains selectable in production and preview builds. The native
 simulator check verifies switching both ways between Rule-based and Global without
 the former capability-blocking message.
 
-Static analysis is clean. The default test run passes 126 tests and skips six
-checks that require external Go helper services; `test/hardening_test.dart` covers
+Static analysis and the default Flutter suite pass; six checks require external
+Go helper services and remain skipped. `test/multi_tailnet_test.dart` covers
+migration, independent identities, one global selection, scoped refresh, persistence
+races and runtime ownership. `test/tailnet_ui_test.dart` covers both platform layouts
+before selection, canceling another Tailnet's picker and replacing the single exit.
+`test/storage_serialization_test.dart` covers ordered file replacement and deletion.
+The control dial tests destroy sockets that arrive after cancellation or timeout.
+`test/hardening_test.dart` covers
 cancelled connects, offline/missing nodes, logged-out or expired session recovery,
 failed sign-in saves, storage errors, the rule-list cache, resolver and CIDR parsing,
 and damaged settings. `test/vpn_service_test.dart` covers fast disconnect events,
@@ -189,14 +213,15 @@ removal/reconnect, usable saved Global settings, and explicit reconnect consent
 when changing a running Global configuration.
 `test/navigation_review_test.dart` checks disabled menus, Android Back handling
 and iOS edge-swipe navigation. Release and Android configuration guards pass
-37 Python tests. Android debug and iOS simulator/unsigned device builds passed
+38 Python tests. Android debug and iOS simulator/unsigned device builds passed
 [PR CI](https://github.com/idy/tailsplit/actions/runs/42974106036).
 `test/cleanup_test.dart` checks bounded log ordering and notifications, inactive-tab
 updates, theme reuse and control-error categories independent of diagnostic wording. Generated Split and
 Global configurations were also instantiated with the desktop's pinned sing-box
-1.14.4 engine. The Tailscale client received an authorization URL from the real
-control server; authorization with a real account and device VPN traffic remain
-unverified. Android and tablet layouts have not been verified on devices or
+1.14.4 engine. On a physical iPhone Air, an expired browser followup was diagnosed
+and repaired; the user subsequently confirmed sign-in succeeded. The reported
+empty exit list still needs verification with the account-scoped diagnostics.
+Real VPN traffic remains unverified. Android and tablet layouts have not been verified on devices or
 emulators.
 
 ## Tests
@@ -221,6 +246,8 @@ flutter test
 
 ## Data and privacy
 
-Device keys and the saved exit stay in the app's private storage; tsnet state and
-the sing-box cache live in the App Group container (iOS) or app files (Android),
-excluded from backups. Authorization URLs and keys are never logged.
+Device keys, signed-in Tailnets and the single exit selection stay in the app's
+private storage. Each account's tsnet state and sing-box cache live in separate
+App Group paths (iOS) or app files (Android), excluded from backups. Migrated
+accounts retain their original paths. Authorization URLs and keys are never logged;
+discovery diagnostics contain only local account IDs, authorization flags and counts.

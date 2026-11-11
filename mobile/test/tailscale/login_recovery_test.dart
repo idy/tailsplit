@@ -15,15 +15,17 @@ class _Response extends Fake implements ControlResponse {
   _Response(this.status, String text)
     : bytes = Uint8List.fromList(utf8.encode(text));
   _Response.json(Object json) : this(200, jsonEncode(json));
-  _Response.map() : status = 200 {
-    final json = File('test/tailscale/fixtures/map_response.json')
-        .readAsBytesSync();
-    bytes = Uint8List.fromList([
-      ...(ByteData(
-        4,
-      )..setUint32(0, json.length, Endian.little)).buffer.asUint8List(),
-      ...json,
-    ]);
+  _Response.map() : this.maps([
+    jsonDecode(File('test/tailscale/fixtures/map_response.json').readAsStringSync()),
+  ]);
+  _Response.maps(List<Object?> maps) : status = 200 {
+    final frames = BytesBuilder();
+    for (final map in maps) {
+      final json = utf8.encode(jsonEncode(map));
+      frames.add((ByteData(4)..setUint32(0, json.length, Endian.little)).buffer.asUint8List());
+      frames.add(json);
+    }
+    bytes = frames.takeBytes();
   }
 
   @override
@@ -133,6 +135,29 @@ void _expectSameRegistrationKey(
 }
 
 void main() {
+  test('login discovers changed peers in the first map after keep-alives', () async {
+    final map = jsonDecode(File('test/tailscale/fixtures/map_response.json').readAsStringSync()) as Map<String, Object?>;
+    map['PeersChanged'] = map.remove('Peers');
+    final session = _Session([
+      _approved(),
+      _Response.maps([
+        {'KeepAlive': true, 'ControlTime': '2026-11-11T00:00:00Z'},
+        map,
+      ]),
+    ]);
+    final (events, error) = await _login(_Client(session), _identity());
+
+    expect(error, isNull);
+    final snapshot = (events.single as LoginAuthorized).snapshot;
+    expect(snapshot.exitNodes, hasLength(5));
+    expect(snapshot.discoveryDiagnostics!.peerCount, 7);
+    expect(snapshot.discoveryDiagnostics!.changedPeerCount, 7);
+    expect(snapshot.discoveryDiagnostics!.peerListPresent, isFalse);
+    expect(session.requests.map((r) => r.path), ['/machine/register', '/machine/map']);
+    expect(session.requests.last.body['Stream'], isTrue);
+    expect(session.closed, isTrue);
+  });
+
   test('netmap rejection preserves redacted server detail without authorizing', () async {
     final key = 'privkey:${'aa' * 32}';
     final session = _Session([

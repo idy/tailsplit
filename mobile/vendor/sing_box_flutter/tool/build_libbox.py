@@ -13,6 +13,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -79,7 +80,7 @@ def go_environment(goroot: Path, cache: Path, inherited: dict | None = None) -> 
     return env
 
 
-def bootstrap_go(pins: dict, bootstrap: Path, cache: Path) -> tuple[Path, dict, dict]:
+def bootstrap_go(pins: dict, bootstrap: Path, cache: Path, *, offline: bool = False) -> tuple[Path, dict, dict]:
     lock = json.loads((ROOT / "tool/tailscale-go.json").read_text())
     key = host_key()
     digest = lock["sha256"][key]
@@ -97,6 +98,8 @@ def bootstrap_go(pins: dict, bootstrap: Path, cache: Path) -> tuple[Path, dict, 
         provenance = {"url": source_url if source_url in (url, asset_url) else None,
                       "sha256": digest, "size": cached_archive.stat().st_size, "cached": True}
     else:
+        if offline:
+            raise BuildError("Run the pinned native build first: verified Tailscale Go archive is missing")
         try:
             response, provenance = download(url, bootstrap / "downloads", digest)
         except urllib.error.HTTPError as error:
@@ -147,48 +150,144 @@ def bootstrap_go(pins: dict, bootstrap: Path, cache: Path) -> tuple[Path, dict, 
     return go, env, provenance
 
 
+def copy_git_objects(source: Path, destination: Path) -> None:
+    """Import only inert object data, never cached config, refs, index or alternates."""
+    if source.is_symlink() or not source.is_dir():
+        raise BuildError("Cached core object store must be a regular directory")
+    for directory, dirs, files in os.walk(source, followlinks=False):
+        parent = Path(directory)
+        if any((parent / name).is_symlink() for name in dirs):
+            raise BuildError("Cached core object store must not contain symlinks")
+        for name in files:
+            path = parent / name
+            relative = path.relative_to(source).as_posix()
+            if not re.fullmatch(r"[0-9a-f]{2}/[0-9a-f]{38}|pack/pack-[0-9a-f]{40}\.(pack|idx|rev)", relative):
+                continue
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise BuildError("Cached core objects must be regular files")
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+
+
+def verify_source_tree(source: Path, tree: str) -> None:
+    """Hash actual files as Git blobs, without consulting the index or filters."""
+    expected = {}
+    gitlinks = set()
+    for entry in tree.split("\0"):
+        if not entry:
+            continue
+        header, name = entry.split("\t", 1)
+        mode, kind, digest = header.split()
+        path = Path(name)
+        if path.is_absolute() or ".." in path.parts or ".git" in path.parts:
+            raise BuildError("Pinned core tree contains an unsupported path")
+        # Upstream includes client applications as uninitialized submodules.
+        # They are not core inputs; allow only absent/empty directories, never
+        # unchecked submodule contents or nested executable Git metadata.
+        if kind == "commit" and mode == "160000":
+            gitlinks.add(name)
+            continue
+        if kind != "blob" or mode not in ("100644", "100755", "120000"):
+            raise BuildError("Pinned core tree contains an unsupported entry")
+        expected[name] = (mode, digest)
+    # Do not consult .gitignore, info/exclude, sparse flags or filesystem monitors.
+    # Only known build outputs may survive a previous invocation.
+    allowed = {"libbox.aar", "libbox-legacy.aar", "libbox-sources.jar", "libbox-legacy-sources.jar"}
+    seen = set()
+    for directory, dirs, files in os.walk(source, followlinks=False):
+        parent = Path(directory)
+        if parent.relative_to(source).as_posix() in gitlinks:
+            if dirs or files:
+                raise BuildError("Cached core client submodules must remain uninitialized")
+            continue
+        if parent == source:
+            dirs[:] = [name for name in dirs if name not in (".git", "Libbox.xcframework")]
+            framework = source / "Libbox.xcframework"
+            if framework.is_symlink():
+                raise BuildError("Cached core output must not be a symlink")
+        links = [name for name in dirs if (parent / name).is_symlink()]
+        dirs[:] = [name for name in dirs if name not in links]
+        for name in [*files, *links]:
+            path = parent / name
+            relative = path.relative_to(source).as_posix()
+            mode = path.lstat().st_mode
+            if relative not in expected:
+                if relative in allowed and stat.S_ISREG(mode):
+                    continue
+                raise BuildError(f"Cached core checkout contains unexpected files: {relative}")
+            expected_mode, expected_hash = expected[relative]
+            if expected_mode == "120000" and stat.S_ISLNK(mode):
+                content = os.fsencode(os.readlink(path))
+                digest = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content)
+            elif (expected_mode in ("100644", "100755") and stat.S_ISREG(mode)
+                  and bool(mode & 0o111) == (expected_mode == "100755")):
+                digest = hashlib.sha1(b"blob " + str(path.stat().st_size).encode() + b"\0")
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            else:
+                raise BuildError(f"Cached core checkout has a changed file type/mode: {relative}")
+            if digest.hexdigest() != expected_hash:
+                raise BuildError(f"Cached core checkout has tracked modifications: {relative}")
+            seen.add(relative)
+    if seen != expected.keys():
+        raise BuildError("Cached core checkout is missing tracked files")
+
+
 def source_checkout(pins: dict, bootstrap: Path) -> Path:
     source = bootstrap / "sing-box"
-    git_env = dict(os.environ)
-    git_env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                    "GIT_TERMINAL_PROMPT": "0"})
-    # Ambient git variables must not redirect the repo/index/object store.
-    git_env = {k: v for k, v in git_env.items() if not k.startswith("GIT_") or k in
-               ("GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT")}
-    def git(*args: str, capture: bool = True) -> str:
-        return run(["git", "-c", "core.hooksPath=/dev/null", "-C", source, *args],
-                   env=git_env, capture=capture)
     if source.is_symlink():
         raise BuildError("Core checkout must not be a symlink")
-    if not source.exists():
-        source.mkdir(parents=True)
-        git("init")
+    # Git has executable repository-local settings in addition to hooks. Never
+    # invoke it on cached metadata, even for an identity or status query.
+    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    git_env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1"})
+    revision, tag = pins["sing_box_revision"], "v" + pins["sing_box_version"]
+    with tempfile.TemporaryDirectory(prefix="source-git-", dir=bootstrap) as temporary:
+        clean = Path(temporary) / "checkout"
+        run(["git", "init", "--quiet", "--template=", clean], env=git_env)
+        git_dir = clean / ".git"
+
+        def git(*args: str) -> str:
+            return run(["git", "--no-pager", "--git-dir", git_dir, "--work-tree", source, *args],
+                       env=git_env, capture=True)
+
+        git("config", "core.hooksPath", os.devnull)
+        git("config", "core.fsmonitor", "false")
         git("remote", "add", "origin", CORE_REPO)
-        git("fetch", "--depth=1", "origin", f"refs/tags/v{pins['sing_box_version']}:refs/tags/v{pins['sing_box_version']}")
-        fetched = git("rev-parse", f"v{pins['sing_box_version']}^{{commit}}")
-        if fetched != pins["sing_box_revision"]:
-            raise BuildError("Upstream release tag does not resolve to the pinned core commit")
-        git("checkout", "--detach", pins["sing_box_revision"])
-    if (git("remote", "get-url", "origin") != CORE_REPO
-            or git("rev-parse", "HEAD") != pins["sing_box_revision"]
-            or git("rev-parse", f"v{pins['sing_box_version']}^{{commit}}") != pins["sing_box_revision"]):
-        raise BuildError("Cached source git identity differs from core pins")
-    git("fsck", "--no-dangling")
-    if git("describe", "--tags") != "v" + pins["sing_box_version"]:
-        raise BuildError("Official linker version would differ from sing_box_version")
-    if git("status", "--porcelain", "--untracked-files=no"):
-        raise BuildError("Cached core checkout has tracked modifications; remove the checkout and retry")
-    # Untracked source/go.work/vendor files could alter compilation. Only the known
-    # products of this upstream builder may remain after an earlier build.
-    allowed = ("libbox.aar", "libbox-legacy.aar", "libbox-sources.jar",
-               "libbox-legacy-sources.jar", "Libbox.xcframework/")
-    for entry in git("ls-files", "--others", "--exclude-standard").splitlines():
-        if not any(entry == name or (name.endswith("/") and entry.startswith(name)) for name in allowed):
-            raise BuildError("Cached core checkout contains unexpected untracked files")
-    # Also catch ignored files (notably a vendor tree) that affect Go resolution.
-    for entry in git("ls-files", "--others", "--ignored", "--exclude-standard").splitlines():
-        if not any(entry == name or (name.endswith("/") and entry.startswith(name)) for name in allowed):
-            raise BuildError("Cached core checkout contains unexpected ignored files")
+        cached = source.exists()
+        if cached:
+            if (source / ".git").is_symlink() or not (source / ".git").is_dir():
+                raise BuildError("Cached core metadata must be a regular directory")
+            copy_git_objects(source / ".git/objects", git_dir / "objects")
+            # The repository may be a shallow checkout. Only the trusted pinned
+            # commit and its complete tree are needed; cached refs are not inputs.
+            (git_dir / "shallow").write_text(revision + "\n")
+            git("update-ref", "--no-deref", "HEAD", revision)
+            git("update-ref", "refs/tags/" + tag, revision)
+        else:
+            source.mkdir(parents=True)
+            git("fetch", "--depth=1", "origin", f"refs/tags/{tag}:refs/tags/{tag}")
+            if git("rev-parse", f"{tag}^{{commit}}") != revision:
+                raise BuildError("Upstream release tag does not resolve to the pinned core commit")
+        git("fsck", "--no-dangling")
+        if not cached:
+            git("checkout", "--detach", revision)
+        verify_source_tree(source, git("ls-tree", "-rz", "--full-tree", revision))
+        # Rebuild the index and replace all cached metadata before a compiler or
+        # upstream helper can invoke Git itself. read-tree does not touch files.
+        git("read-tree", revision)
+        previous = Path(temporary) / "previous-git"
+        if cached:
+            (source / ".git").rename(previous)
+        try:
+            git_dir.rename(source / ".git")
+        except BaseException:
+            if cached:
+                previous.rename(source / ".git")
+            raise
     module = (source / "go.mod").read_text()
     if not re.search(rf"(?m)^\s*{re.escape(GOMOBILE_MODULE)}\s+{re.escape(pins['gomobile_version'])}\s*$", module):
         raise BuildError("Core go.mod gomobile version differs from native-core.json")

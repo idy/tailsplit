@@ -22,6 +22,11 @@ internal object NativeRuntime {
     val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "sing-box-lifecycle")
     }
+    // Close cancels the selectable core before waiting for Start to unwind. Never
+    // enqueue that signal behind the lifecycle work it is intended to interrupt.
+    val cancellation = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "sing-box-cancellation")
+    }
     val main = Handler(Looper.getMainLooper())
     private val lock = Any()
     private val listeners = mutableSetOf<(Map<String, String>) -> Unit>()
@@ -29,6 +34,8 @@ internal object NativeRuntime {
     private var pendingStart: StartRequest? = null
     private var generation = 0L
     @Volatile var initialized = false
+        private set
+    @Volatile var supportsStartupCancellation = false
         private set
     @Volatile var notificationTitle = "sing-box"
         private set
@@ -77,6 +84,7 @@ internal object NativeRuntime {
                 debug = false
                 crashReportSource = "android"
             })
+            supportsStartupCancellation = manifestText != null
             initialized = true
         }
         notificationTitle = title.take(80)
@@ -133,6 +141,12 @@ internal object NativeRuntime {
     fun invalidateStart() = synchronized(lock) {
         generation++
         pendingStart = null
+    }
+
+    /** Safe on the caller thread; cleanup and stop completion remain on worker. */
+    fun interruptStart() {
+        invalidateStart()
+        service?.interruptStartup()
     }
 
     /** Called only on worker; channel completion also waits for Android service destruction. */

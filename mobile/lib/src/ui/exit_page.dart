@@ -45,31 +45,32 @@ class _ExitPageState extends State<ExitPage> {
     final app = AppScope.of(context);
     final s = S.of(context);
     if (app.pickerRequested) {
+      final tailnetId = app.pickerRequestedTailnetId;
       app.pickerRequested = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) showNodePicker(context);
+        if (mounted) showNodePicker(context, tailnetId: tailnetId);
       });
     }
-    final exit = app.exit;
+    final hasTailnets = app.tailnets.isNotEmpty;
     return NativePage(
       title: s.tabExit,
-      onRefresh: exit == null ? null : app.refresh,
+      onRefresh: hasTailnets ? app.refreshAll : null,
       actions: [
-        if (exit != null)
+        if (hasTailnets)
           PageAction(
             label: s.refresh,
             iosSymbol: 'arrow.clockwise',
             icon: Icons.refresh,
-            onPressed: app.refreshing || app.busy ? null : app.refresh,
+            onPressed: app.refreshing || app.busy ? null : app.refreshAll,
           ),
       ],
       bottom: app.needsReconnect ? const ReconnectBar() : null,
       slivers: [
         const SliverToBoxAdapter(child: ProblemCard()),
         SliverToBoxAdapter(child: _ConnectionSection(app: app)),
-        SliverToBoxAdapter(
-          child: exit == null ? _AddExitSection(app: app) : _ExitSection(app: app),
-        ),
+        if (hasTailnets) SliverToBoxAdapter(child: _TailnetSection(app: app)),
+        if (!hasTailnets || app.signIn != SignInPhase.idle)
+          SliverToBoxAdapter(child: _AddTailnetSection(app: app)),
       ],
     );
   }
@@ -97,10 +98,10 @@ class _ConnectionSection extends StatelessWidget {
       ConnectStep.starting => s.stepStarting,
       null => null,
     };
-    final summary = exit == null
-        ? s.addExitToConnect
-        : !exit.hasNode
-            ? s.chooseNodeToConnect
+    final summary = app.tailnets.isEmpty
+        ? s.addTailnetToConnect
+        : exit == null || !exit.hasNode
+            ? s.chooseTailnetExit
             : step != null
                 ? '$step ${s.turnOffToCancel}'
                 : app.active && app.needsReconnect
@@ -162,8 +163,8 @@ class RoutingMenu extends StatelessWidget {
   }
 }
 
-class _AddExitSection extends StatelessWidget {
-  const _AddExitSection({required this.app});
+class _AddTailnetSection extends StatelessWidget {
+  const _AddTailnetSection({required this.app});
   final AppController app;
 
   @override
@@ -172,7 +173,7 @@ class _AddExitSection extends StatelessWidget {
     final waiting = app.signIn != SignInPhase.idle;
     final secondary = secondaryLabelColor(context);
     return NativeSection(
-      header: s.exit,
+      header: s.tailnets,
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
@@ -184,7 +185,7 @@ class _AddExitSection extends StatelessWidget {
                   if (waiting) ...[const Spinner(), const SizedBox(width: 10)],
                   Expanded(
                     child: Text(
-                      waiting ? s.signingIn : s.addExitTitle,
+                      waiting ? s.signingIn : s.noTailnets,
                       style: TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.w600,
@@ -196,12 +197,12 @@ class _AddExitSection extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                waiting ? s.signingInBody : s.addExitBody,
+                waiting ? s.signingInBody : s.addTailnetBody,
                 style: TextStyle(fontSize: 15, height: 1.35, color: secondary),
               ),
               const SizedBox(height: 16),
               if (!waiting)
-                PrimaryButton(label: s.addExit, onPressed: () => signInWithConsent(context, app))
+                PrimaryButton(label: s.addTailnet, onPressed: app.busy ? null : () => signInWithConsent(context, app))
               else
                 Row(
                   children: [
@@ -227,74 +228,52 @@ class _AddExitSection extends StatelessWidget {
   }
 }
 
-class _ExitSection extends StatelessWidget {
-  const _ExitSection({required this.app});
+class _TailnetSection extends StatelessWidget {
+  const _TailnetSection({required this.app});
   final AppController app;
 
   @override
   Widget build(BuildContext context) {
     final s = S.of(context);
-    final exit = app.exit!;
-    final snapshot = exit.snapshot;
-    final node = exit.node;
-    final signedOut = app.problem == AppProblem.needsSignIn;
-    final Color dot;
-    if (signedOut) {
-      dot = secondaryLabelColor(context);
-    } else if (node != null && node.online) {
-      dot = TsColors.of(context, TsColors.good);
-    } else {
-      dot = TsColors.of(context, TsColors.warn);
-    }
-    final awaitingApproval = snapshot != null && !snapshot.machineAuthorized;
-    final subtitle = signedOut
-        ? s.signedOut
-        : awaitingApproval
-            ? s.awaitingApproval
-            : !exit.hasNode
-                ? s.noNodeSelected
-                : snapshot != null && node == null
-                    ? '${exit.nodeName} · ${s.nodeMissing}'
-                    : node == null || !node.online
-                        ? '${exit.nodeName} · ${s.nodeOffline}'
-                        : [exit.nodeName, exit.networkName].where((v) => v.isNotEmpty).join(' · ');
-    final self = snapshot == null
-        ? null
-        : [snapshot.selfName, if (snapshot.selfAddresses.isNotEmpty) snapshot.selfAddresses.first]
-            .join(' · ');
     return NativeSection(
-      header: s.exit,
-      footer: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (signedOut || awaitingApproval || !exit.hasNode || node?.online != true)
-            Text(subtitle),
-          if (self != null) Text(s.thisDevice(self)),
-          if (snapshot != null)
-            Text(
-              app.refreshing ? s.refreshing : s.updated(relativeTime(s, snapshot.fetchedAt)),
-            ),
-        ],
-      ),
+      header: s.tailnets,
+      footer: Text(s.oneSelectedExit),
       children: [
+        for (final account in app.tailnets)
+          Builder(builder: (context) {
+            final selected = app.selectedTailnetId == account.id;
+            final snapshot = account.snapshot;
+            final signedOut = app.problem == AppProblem.needsSignIn &&
+                (app.problemTailnetId ?? app.selectedTailnetId) == account.id;
+            final value = signedOut
+                ? s.signedOut
+                : snapshot != null && !snapshot.machineAuthorized
+                    ? s.awaitingApproval
+                    : selected && app.exit != null
+                        ? app.exit!.nodeName
+                        : snapshot?.exitNodes.isEmpty == true ? s.noExits : s.notSelected;
+            return Semantics(
+              selected: selected,
+              child: NativeRow(
+                key: ValueKey('tailnet-${account.id}'),
+                leading: NativeRowIcon(
+                  ios: selected ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.globe,
+                  android: selected ? Icons.check_circle : Icons.hub_outlined,
+                  color: selected ? TsColors.of(context, TsColors.good) : null,
+                ),
+                title: Text(account.networkName.isEmpty ? s.tailnet : account.networkName),
+                value: value,
+                chevron: true,
+                enabled: !app.busy,
+                onTap: () => showNodePicker(context, tailnetId: account.id),
+              ),
+            );
+          }),
         NativeRow(
-          leading: NativeRowIcon(
-            ios: CupertinoIcons.globe,
-            android: Icons.hub_outlined,
-            color: dot,
-          ),
-          title: Text(
-            exit.displayName(s.newExit),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w500),
-          ),
-          trailing: signedOut
-              ? TextAction(label: s.signIn, onPressed: () => signInWithConsent(context, app))
-              : null,
-          chevron: !signedOut,
-          enabled: !app.removing,
-          onTap: signedOut ? null : () => showNodePicker(context),
+          leading: const NativeRowIcon(ios: CupertinoIcons.add_circled, android: Icons.add_circle_outline),
+          title: Text(s.addTailnet),
+          enabled: !app.busy,
+          onTap: () => signInWithConsent(context, app),
         ),
       ],
     );

@@ -27,6 +27,7 @@ final class ApplePlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, L
 
     func openTun(_ options: LibboxTunOptionsProtocol?, ret0_: UnsafeMutablePointer<Int32>?) throws {
         guard let options, let ret0_, let provider else { throw TunnelFailure.invalidArguments }
+        guard !provider.isStopRequested else { throw TunnelFailure(code: "start_cancelled", message: "VPN startup was cancelled.") }
         guard !hasTunnel else { throw TunnelFailure(code: "multiple_tun", message: "Only one TUN inbound is supported on iOS.") }
         if !strings(options.getIncludePackage()).isEmpty || !strings(options.getExcludePackage()).isEmpty || options.getStrictRoute() {
             throw TunnelFailure(code: "unsupported_tun_option", message: "Per-app routing and strict_route are not supported by this iOS backend.")
@@ -227,8 +228,8 @@ final class ApplePlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, L
     }
 
     func clearDNSCache() {
-        // DNS cache invalidation has no throwing API in libbox. Fail the tunnel if restoring
-        // settings fails, instead of silently continuing without its DNS/routing policy.
+        // Reapply the complete settings to refresh DNS without ever withdrawing the
+        // active TUN routes. reasserting alone does not keep traffic on the tunnel.
         settingsQueue.async { [weak self] in
             guard let self, let provider = self.provider else { return }
             self.lock.lock()
@@ -238,7 +239,6 @@ final class ApplePlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, L
             provider.reasserting = true
             defer { provider.reasserting = false }
             do {
-                try self.apply(nil, to: provider)
                 try self.apply(settings, to: provider)
             } catch { provider.failFromPlatform() }
         }

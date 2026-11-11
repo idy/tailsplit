@@ -347,7 +347,15 @@ Future<NoiseTransport> dialTs2021({
       controlPublic: controlPublic,
       protocolVersion: protocolVersion,
       timeout: timeout,
-      onSocket: sockets.add,
+      onSocket: (socket) {
+        // Socket.connect can finish after cancellation, timeout or another
+        // attempt winning. Such a socket no longer has a deadline owner.
+        if (completer.isCompleted) {
+          socket.destroy();
+          throw const ControlCancelled();
+        }
+        sockets.add(socket);
+      },
     ).then((conn) {
       inFlight--;
       finish(conn: conn);

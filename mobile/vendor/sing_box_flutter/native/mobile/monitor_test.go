@@ -2,6 +2,7 @@
 package libbox
 
 import (
+	"errors"
 	"net"
 	"slices"
 	"strconv"
@@ -44,6 +45,7 @@ type monitorTestNetworkManager struct {
 	interfaces   []adapter.NetworkInterface
 	enumerations int
 	afterUpdate  func()
+	updateError  error
 }
 
 func (m *monitorTestNetworkManager) InterfaceFinder() control.InterfaceFinder { return m.finder }
@@ -52,6 +54,9 @@ func (m *monitorTestNetworkManager) NetworkInterfaces() []adapter.NetworkInterfa
 }
 func (m *monitorTestNetworkManager) UpdateInterfaces() error {
 	m.enumerations++
+	if m.updateError != nil {
+		return m.updateError
+	}
 	interfaces, err := m.wrapper.NetworkInterfaces()
 	if err != nil {
 		return err
@@ -150,6 +155,47 @@ func TestMonitorUsesIncomingPathMetadataOnFirstUpdateAndHandover(t *testing.T) {
 	requirePathMetadata(t, manager, 102, true, true)
 	if callbacks != 4 || manager.enumerations != 6 {
 		t.Fatalf("callbacks=%d enumerations=%d", callbacks, manager.enumerations)
+	}
+}
+
+func TestMonitorFailedHandoverClearsOldInterfaceAndDNS(t *testing.T) {
+	for _, enumerationFailure := range []bool{false, true} {
+		t.Run(strconv.FormatBool(enumerationFailure), func(t *testing.T) {
+			monitor, manager, platform := newMonitorFixture()
+			monitor.UpdateDefaultInterface("wifi-test", 101, false, false)
+			// Darwin reads system DNS, so seed the previous snapshot explicitly.
+			monitor.defaultDNSServers = []string{"192.0.2.53"}
+			var published []int
+			monitor.RegisterCallback(func(iif *control.Interface, _ int) {
+				index := -1
+				if iif != nil {
+					index = iif.Index
+				}
+				published = append(published, index)
+				if monitor.DefaultInterface() != iif {
+					t.Fatal("callback observed stale default")
+				}
+			})
+			if enumerationFailure {
+				manager.updateError = errors.New("enumeration failed")
+			} else {
+				platform.interfaces = platform.interfaces[:1] // new path absent from enumeration
+			}
+			monitor.UpdateDefaultInterface("cell-test", 102, true, true)
+			if monitor.DefaultInterface() != nil || len(monitor.defaultDNSServers) != 0 || !slices.Equal(published, []int{-1}) {
+				t.Fatalf("failed handover retained stale path/DNS: %v %v", monitor.DefaultInterface(), monitor.defaultDNSServers)
+			}
+			monitor.updateDNSServers()
+			if len(published) != 1 {
+				t.Fatal("DNS callback revived an unavailable path")
+			}
+			manager.updateError = nil
+			platform.interfaces = append(platform.interfaces[:1], &NetworkInterface{Index: 102, Name: "cell-test", MTU: 1500, Flags: syscall.IFF_UP})
+			monitor.UpdateDefaultInterface("cell-test", 102, true, true)
+			if !slices.Equal(published, []int{-1, 102}) {
+				t.Fatalf("recovered path was not published: %v", published)
+			}
+		})
 	}
 }
 

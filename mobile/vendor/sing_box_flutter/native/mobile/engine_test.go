@@ -187,6 +187,89 @@ func TestMobileCacheRestoresExistingPinnedCache(t *testing.T) {
 	}
 }
 
+func TestPrivateLogPathsStayWithinWorkingStorage(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	ctx := cacheTestContext(root)
+	for _, output := range []string{filepath.Join(outside, "activity.log"), "../activity.log", root, "stdout", "stderr"} {
+		if _, err := privateLogPath(ctx, &option.LogOptions{Output: output}); err == nil {
+			t.Errorf("accepted unsafe log output %q", output)
+		}
+	}
+	for _, output := range []string{"", "logs/activity.log", filepath.Join(root, "absolute.log")} {
+		path, err := privateLogPath(ctx, &option.LogOptions{Output: output})
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := openPrivateLog(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = file.WriteString("started\n"); err != nil {
+			t.Fatal(err)
+		}
+		info, err := file.Stat()
+		_ = file.Close()
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("private log permissions: %v %v", info, err)
+		}
+	}
+}
+
+func TestPrivateLogRejectsSymlinkParentsAndTargetsWithoutTouchingVictim(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	ctx := cacheTestContext(root)
+	victim := filepath.Join(outside, "private-data")
+	if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, target, output string }{
+		{"parent", outside, "parent/private-data"},
+		{"target", victim, "target"},
+		{"internal", filepath.Join(root, "real"), "internal/activity.log"},
+	} {
+		if err := os.MkdirAll(filepath.Join(root, "real"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(tc.target, filepath.Join(root, tc.name)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := privateLogPath(ctx, &option.LogOptions{Output: tc.output}); err == nil {
+			t.Fatalf("accepted symlink %s", tc.name)
+		}
+		if file, err := openPrivateLog(ctx, filepath.Join(root, tc.output)); err == nil {
+			file.Close()
+			t.Fatalf("opened symlink %s", tc.name)
+		}
+	}
+	// Simulate a symlink substituted after validation. Opening must check again.
+	path, err := privateLogPath(ctx, &option.LogOptions{Output: "swapped/private-data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "swapped")); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := openPrivateLog(ctx, path); err == nil {
+		file.Close()
+		t.Fatal("followed a parent swapped after validation")
+	}
+	if err := os.Link(victim, filepath.Join(root, "hardlink")); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := openPrivateLog(ctx, filepath.Join(root, "hardlink")); err == nil {
+		file.Close()
+		t.Fatal("opened a multiply linked file")
+	}
+	content, err := os.ReadFile(victim)
+	if err != nil || string(content) != "keep" {
+		t.Fatalf("victim changed: %q %v", content, err)
+	}
+	info, err := os.Stat(victim)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatal("victim permissions changed")
+	}
+}
+
 func TestMobileWakeEndsDevicePauseOnEveryPlatform(t *testing.T) {
 	ctx := pause.WithDefaultManager(context.Background())
 	manager := service.FromContext[pause.Manager](ctx)

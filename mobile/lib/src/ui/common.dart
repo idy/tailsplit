@@ -57,11 +57,15 @@ class ProblemCard extends StatelessWidget {
     final detail = cause ?? app.problemDetail;
     final subject = app.problemSubject ?? app.exit?.nodeName ?? '';
     final signingIn = app.signIn != SignInPhase.idle;
+    final tailnetId = app.problemTailnetId ?? app.selectedTailnetId;
+    final refreshing = tailnetId == null ? app.refreshing : app.isRefreshingTailnet(tailnetId);
+    Future<void> refresh() async { await app.refresh(tailnetId: tailnetId); }
     final (String title, String? body, String action, VoidCallback? onAction) = switch (problem) {
       AppProblem.signIn when signingIn =>
         (s.errorSignIn, detail, s.openSignInAgain, app.openSignInPage),
-      AppProblem.signIn => (s.errorSignIn, detail, s.retry, () => signInWithConsent(context, app)),
-      AppProblem.refresh => (s.errorRefresh, detail, s.retry, app.refreshing ? null : app.refresh),
+      AppProblem.signIn => (s.errorSignIn, detail, s.retry,
+          app.busy ? null : () => signInWithConsent(context, app, tailnetId: app.problemTailnetId)),
+      AppProblem.refresh => (s.errorRefresh, detail, s.retry, refreshing ? null : refresh),
       AppProblem.rules => (
           s.errorRules,
           [?detail, if (app.rulesUpdatedAt == null) s.rulesFirstDownload].join(' '),
@@ -75,24 +79,24 @@ class ProblemCard extends StatelessWidget {
       AppProblem.tunnelStopped => (s.tunnelStopped, s.tunnelStoppedBody, s.retry,
           app.canConnect && !app.switchOn ? app.connect : null),
       AppProblem.needsSignIn => (s.signedOut, s.needsSignInAgain, s.signIn,
-          app.busy ? null : () => signInWithConsent(context, app)),
+          app.busy ? null : () => signInWithConsent(context, app, tailnetId: tailnetId)),
       AppProblem.nodeOffline => (
           s.errorNodeOffline(subject),
           s.errorNodeOfflineBody,
           s.chooseNode,
-          () => showNodePicker(context),
+          () => showNodePicker(context, tailnetId: tailnetId),
         ),
       AppProblem.nodeMissing => (
           s.errorNodeMissing,
           s.errorNodeMissingBody(subject),
           s.chooseNode,
-          () => showNodePicker(context),
+          () => showNodePicker(context, tailnetId: tailnetId),
         ),
       AppProblem.awaitingApproval => (
           s.awaitingApproval,
           s.awaitingApprovalBody,
           s.refresh,
-          app.refreshing ? null : app.refresh,
+          refreshing ? null : refresh,
         ),
       AppProblem.storage => (s.errorStorage, s.errorStorageBody, s.retry, app.retrySave),
     };
@@ -190,10 +194,12 @@ Future<bool> _confirmProtectionGap(BuildContext context) {
       message: s.protectionGapBody, confirm: s.stopAndContinue, cancel: s.cancel);
 }
 
-Future<void> signInWithConsent(BuildContext context, AppController app) async {
-  final needsConsent = app.reconnectRequiresConsent;
+Future<void> signInWithConsent(BuildContext context, AppController app, {String? tailnetId}) async {
+  final needsConsent = app.signInRequiresConsent(tailnetId: tailnetId);
   if (needsConsent && !await _confirmProtectionGap(context)) return;
-  if (context.mounted) await app.signInExit(allowProtectionGap: needsConsent);
+  if (context.mounted) {
+    await app.signInExit(tailnetId: tailnetId, allowProtectionGap: needsConsent);
+  }
 }
 
 /// Settings saved while connected wait for an explicit reconnect, like the

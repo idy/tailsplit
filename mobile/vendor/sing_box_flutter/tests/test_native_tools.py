@@ -5,6 +5,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -18,7 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 from native_common import (ARTIFACTS, BuildError, ROOT, REQUIRED_TAGS, archive_name, artifact_hashes,
                            build_directory, download, load_pins, parse_manifest, pin_identity, safe_extract,
                            sha256, validate_metadata)
-from build_libbox import bootstrap_go, go_environment, mobile_profile_bytes, resolved_tailscale_dependency, verify_dependency_toolchain
+from build_libbox import (CORE_REPO, GOMOBILE_MODULE, UPSTREAM_REQUIRED_TAGS, bootstrap_go,
+                          go_environment, mobile_profile_bytes, resolved_tailscale_dependency,
+                          source_checkout, verify_dependency_toolchain)
 from source_inputs import ADAPTER_INPUTS, adapter_digest, source_digest
 import install_libbox
 
@@ -167,6 +171,210 @@ class SourceInputTests(unittest.TestCase):
                 self.assertNotEqual(after["wgc_source_sha256"], before["wgc_source_sha256"])
 
 
+class SourceCheckoutTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.source = self.base / "sing-box"
+        self.source.mkdir()
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_TERMINAL_PROMPT="0")
+        self.git("init", "--quiet", "--template=")
+        self.git("config", "user.name", "Native fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        self.git("config", "commit.gpgSign", "false")
+        self.git("remote", "add", "origin", CORE_REPO)
+        self.pins = load_pins()
+        files = {"go.mod": f"module fixture\nrequire (\n{GOMOBILE_MODULE} {self.pins['gomobile_version']}\n)\n",
+                 "LICENSE": "fixture license\n", "source.go": "package fixture\n",
+                 ".gitignore": "vendor/\n*.ignored\n", ".gitattributes": "source.go filter=fixture\n",
+                 "cmd/internal/build_libbox/main.go": "\n".join(f'"{tag}"' for tag in UPSTREAM_REQUIRED_TAGS)
+                     + '\n"-tags-not-macos=with_low_memory"\n'}
+        for name, content in files.items():
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        self.git("add", ".")
+        self.git("commit", "--quiet", "-m", "pinned fixture")
+        self.pins["sing_box_revision"] = self.git("rev-parse", "HEAD")
+        self.git("tag", "v" + self.pins["sing_box_version"])
+        self.marker = self.base / "executed"
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "--no-pager", "-C", str(self.source), *args],
+                                       env=self.env, stderr=subprocess.PIPE).decode().strip()
+
+    def verify(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return source_checkout(self.pins, self.base)
+
+    def payload(self, output=""):
+        executable = self.base / "payload"
+        executable.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n"
+                              f"Path({str(self.marker)!r}).touch()\nprint({output!r}, end='')\n")
+        executable.chmod(0o755)
+        return str(executable)
+
+    def test_uninitialized_upstream_client_submodules_are_allowed(self):
+        self.git("update-index", "--add", "--cacheinfo",
+                 "160000," + self.pins["sing_box_revision"] + ",clients/apple")
+        self.git("commit", "--quiet", "-m", "client submodule")
+        self.pins["sing_box_revision"] = self.git("rev-parse", "HEAD")
+        self.assertEqual(self.verify(), self.source)
+        client = self.source / "clients/apple"
+        client.mkdir(parents=True)
+        self.assertEqual(self.verify(), self.source)
+        (client / "unverified.go").write_text("package injected\n")
+        with self.assertRaisesRegex(BuildError, "uninitialized"):
+            self.verify()
+        (client / "unverified.go").unlink()
+        client.rmdir()
+        client.symlink_to(self.base, target_is_directory=True)
+        with self.assertRaises(BuildError):
+            self.verify()
+
+    def test_pristine_and_packed_caches_remain_usable(self):
+        for packed in (False, True):
+            with self.subTest(packed=packed):
+                if packed:
+                    self.git("repack", "-ad")
+                (self.source / "libbox.aar").write_bytes(b"previous output")
+                framework = self.source / "Libbox.xcframework"
+                framework.mkdir(exist_ok=True)
+                (framework / "Info.plist").write_text("previous framework")
+                self.assertEqual(self.verify(), self.source)
+                self.assertEqual(self.git("describe", "--tags"), "v" + self.pins["sing_box_version"])
+                self.assertEqual(self.git("rev-parse", "HEAD"), self.pins["sing_box_revision"])
+                self.assertEqual(self.git("remote", "get-url", "origin"), CORE_REPO)
+                self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+
+    def test_fresh_checkout_fetches_only_the_verified_fixture_tag(self):
+        bootstrap = self.base / "fresh"
+        bootstrap.mkdir()
+        with mock.patch("build_libbox.CORE_REPO", str(self.source)), contextlib.redirect_stdout(io.StringIO()):
+            result = source_checkout(self.pins, bootstrap)
+        self.assertEqual((result / "source.go").read_bytes(), (self.source / "source.go").read_bytes())
+        self.assertTrue((result / ".git").is_dir())
+
+    def test_wrong_tag_commit_is_rejected_before_checkout(self):
+        bootstrap = self.base / "wrong-tag"
+        bootstrap.mkdir()
+        pins = {**self.pins, "sing_box_revision": "1" * 40}
+        with mock.patch("build_libbox.CORE_REPO", str(self.source)), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(BuildError, "release tag"):
+                source_checkout(pins, bootstrap)
+        self.assertFalse((bootstrap / "sing-box/source.go").exists())
+
+    def test_executable_local_configuration_is_never_read_and_is_replaced(self):
+        payload = self.payload()
+        included = self.base / "included-config"
+        included.write_text(f"[core]\n\tfsmonitor = {payload}\n\tpager = {payload}\n")
+        self.git("config", "include.path", str(included))
+        self.git("config", "core.hooksPath", str(self.base))
+        # Demonstrate that the old status check reaches this fixture executable.
+        self.git("status", "--porcelain", "--untracked-files=no")
+        self.assertTrue(self.marker.exists())
+        self.marker.unlink()
+        self.verify()
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.git("config", "core.fsmonitor"), "false")
+        self.assertEqual(self.git("config", "core.hooksPath"), os.devnull)
+        self.git("status", "--porcelain", "--untracked-files=no")
+        self.assertFalse(self.marker.exists())
+
+    def test_cached_monitor_cannot_run_before_a_missing_pin_is_rejected(self):
+        self.git("config", "core.fsmonitor", self.payload())
+        self.pins["sing_box_revision"] = "1" * 40
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify()
+        self.assertFalse(self.marker.exists())
+
+    def test_assume_unchanged_and_skip_worktree_cannot_hide_modified_contents(self):
+        path = self.source / "source.go"
+        original = path.read_bytes()
+        for flag in ("assume-unchanged", "skip-worktree"):
+            with self.subTest(flag=flag):
+                self.git("update-index", "--" + flag, "source.go")
+                path.write_bytes(b"package changed\n")  # Same length as the fixture.
+                self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+                with self.assertRaisesRegex(BuildError, "tracked modifications"):
+                    self.verify()
+                path.write_bytes(original)
+                self.git("update-index", "--no-" + flag, "source.go")
+
+    def test_clean_filter_cannot_conceal_modified_bytes_or_execute(self):
+        path = self.source / "source.go"
+        original = path.read_text()
+        self.git("config", "filter.fixture.clean", self.payload(original))
+        path.write_text("package changed\n")
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+        self.assertTrue(self.marker.exists())
+        self.marker.unlink()
+        with self.assertRaisesRegex(BuildError, "tracked modifications"):
+            self.verify()
+        self.assertFalse(self.marker.exists())
+
+    def test_untracked_ignored_source_cannot_hide_in_git_exclusions(self):
+        for name in ("unexpected.go", "vendor/hidden.go", "payload.ignored"):
+            with self.subTest(name=name):
+                path = self.source / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_text("package payload\n")
+                with self.assertRaisesRegex(BuildError, "unexpected files"):
+                    self.verify()
+                path.unlink()
+
+    def test_modified_type_mode_or_missing_file_is_rejected(self):
+        path = self.source / "source.go"
+        content = path.read_bytes()
+        path.chmod(0o755)
+        with self.assertRaisesRegex(BuildError, "file type/mode"):
+            self.verify()
+        path.unlink()
+        with self.assertRaisesRegex(BuildError, "missing tracked"):
+            self.verify()
+        external = self.base / "external.go"
+        external.write_bytes(content)
+        path.symlink_to(external)
+        with self.assertRaisesRegex(BuildError, "file type/mode"):
+            self.verify()
+
+    def test_replaced_parent_directory_cannot_supply_tracked_source(self):
+        directory = self.source / "cmd"
+        outside = self.base / "outside-cmd"
+        directory.rename(outside)
+        directory.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(BuildError):
+            self.verify()
+
+    def test_object_store_symlink_and_corruption_are_rejected(self):
+        objects = self.source / ".git/objects"
+        outside = self.base / "objects"
+        objects.rename(outside)
+        objects.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(BuildError, "object store"):
+            self.verify()
+        objects.unlink()
+        outside.rename(objects)
+        commit = self.pins["sing_box_revision"]
+        object_path = objects / commit[:2] / commit[2:]
+        object_path.unlink()
+        object_path.write_bytes(b"invalid object")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify()
+
+    def test_poisoned_refs_and_index_do_not_override_the_pin(self):
+        # Cached refs/index are not authorities; a pristine tree still has one
+        # accepted identity even if its mutable metadata is corrupt.
+        (self.source / ".git/HEAD").write_text("0" * 40 + "\n")
+        (self.source / ".git/index").write_bytes(b"invalid index")
+        self.verify()
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.pins["sing_box_revision"])
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+
+
 class PinTests(unittest.TestCase):
     def test_core_pins_and_dependency_matching_fork(self):
         self.assertEqual(pin_identity(load_pins()), {
@@ -274,6 +482,73 @@ class SafeExtractionTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def isolated_installer(self, plugin):
+        with mock.patch.object(install_libbox, "ROOT", plugin), mock.patch.object(
+                install_libbox, "build_directory", side_effect=lambda path, root=plugin: build_directory(path, root)), \
+                mock.patch.object(install_libbox, "project_lock", return_value=contextlib.nullcontext()), \
+                mock.patch.object(install_libbox, "validate_metadata"):
+            yield
+
+    def test_missing_trust_pin_rejects_local_and_remote_before_io(self):
+        with tempfile.TemporaryDirectory() as temp:
+            plugin = Path(temp) / "plugin"
+            for source in (["--from-dir", temp], ["--release", "v0.2.0"]):
+                with self.subTest(source=source), self.isolated_installer(plugin), \
+                        mock.patch.object(install_libbox, "download") as fetch, \
+                        mock.patch.object(install_libbox, "install_one") as install, \
+                        contextlib.redirect_stderr(io.StringIO()) as error:
+                    self.assertEqual(install_libbox.main(["--target", "android", *source]), 1)
+                    self.assertIn("independently trusted", error.getvalue())
+                    fetch.assert_not_called()
+                    install.assert_not_called()
+                    self.assertFalse(plugin.exists())
+
+    def test_trusted_manifest_installs_but_resealed_archive_and_manifest_fail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pins, source, sums, _ = self.release_fixture(root)
+            name = archive_name(pins, "android")
+            manifest = source / "SHA256SUMS"
+            manifest.write_text(f"{sums[name]}  {name}\n")
+            trusted = sha256(manifest)
+            plugin = root / "plugin"
+            arguments = ["--target", "android", "--from-dir", str(source), "--manifest-sha256", trusted]
+            with self.isolated_installer(plugin):
+                self.assertEqual(install_libbox.main(arguments), 0)
+                before = (plugin / ARTIFACTS["android"]).read_bytes()
+                # A producer replaces its AAR and updates every self-supplied seal.
+                payload = root / "payload"
+                with zipfile.ZipFile(payload / ARTIFACTS["android"], "w") as aar:
+                    aar.writestr("AndroidManifest.xml", "manifest")
+                    aar.writestr("classes.jar", "changed executable classes")
+                metadata_path = payload / "native-build.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata["artifact_sha256"] = artifact_hashes(payload / ARTIFACTS["android"])
+                metadata_path.write_text(json.dumps(metadata))
+                with tarfile.open(source / name, "w:gz") as archive:
+                    for entry in ("Legal", "LICENSE.sing-box", "native-build.json", ARTIFACTS["android"]):
+                        archive.add(payload / entry, arcname=entry)
+                manifest.write_text(f"{sha256(source / name)}  {name}\n")
+                with contextlib.redirect_stderr(io.StringIO()) as error:
+                    self.assertEqual(install_libbox.main([*arguments, "--force"]), 1)
+                    self.assertIn("does not match --manifest-sha256", error.getvalue())
+                self.assertEqual((plugin / ARTIFACTS["android"]).read_bytes(), before)
+                receipt = json.loads((plugin / ".build/install/installed/android.json").read_text())
+                self.assertEqual(receipt["manifest_sha256"], trusted)
+
+    def test_downloaded_manifest_is_checked_against_independent_pin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            response = io.BytesIO(b"a" * 64 + b"  forged.tar.gz\n")
+            response.url = "https://example.invalid/SHA256SUMS"
+            with self.isolated_installer(Path(temp) / "plugin"), \
+                    mock.patch("native_common.urllib.request.urlopen", return_value=response), \
+                    mock.patch.object(install_libbox, "install_one") as install, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(install_libbox.main(["--target", "android", "--release", "v0.2.0",
+                                                      "--manifest-sha256", "0" * 64]), 1)
+                install.assert_not_called()
+
     def test_local_archive_home_path_expands_before_resolution(self):
         output = io.StringIO()
         with mock.patch("install_libbox.sys.stdout", output):
@@ -608,6 +883,57 @@ class ToolchainDownloadTests(unittest.TestCase):
         return [urllib.error.HTTPError(url, status, "HTTP failure", None, io.BytesIO())
                 for _ in range(count)]
 
+    def test_smoke_reextracts_pinned_archive_before_executing_a_forged_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            key = "linux-amd64"
+            pins, lock, payload, _, _, _, _ = self.fixture(root, key)
+            bootstrap, cache = root / ".build/bootstrap", root / ".build/cache"
+            goroot = bootstrap / f"tailscale-go-{key}"
+            go = goroot / "bin/go"
+            go.parent.mkdir(parents=True)
+            go.write_bytes(b"edited compiler")
+            go.chmod(0o755)
+            # Forge precisely the fields trusted by the former smoke script.
+            receipt = {"host": key, "revision": lock["revision"], "version": lock["version"],
+                       "sha256": lock["sha256"][key], "binary_sha256": sha256(go)}
+            (bootstrap / "toolchain-provenance.json").write_text(json.dumps(receipt))
+            archives = cache / "archives"
+            archives.mkdir(parents=True)
+            archive = archives / f"tailscale-go-{pins['tailscale_go_revision']}-{key}.tar.gz"
+            archive.write_bytes(payload)
+            identity = {"GOROOT": str(goroot), "GOTOOLCHAIN": "local", "GOVERSION": lock["version"]}
+            script = (ROOT / "tool/run_android_wgc_smoke.sh").read_text()
+            compiler = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+            commands = []
+
+            def compiled(command, **kwargs):
+                self.assertEqual(Path(command[0]).read_bytes(), b"verified executable")
+                commands.append(command)
+
+            with mock.patch("build_libbox.ROOT", root), mock.patch("build_libbox.host_key", return_value=key), \
+                    mock.patch("build_libbox.run", return_value=json.dumps(identity)), \
+                    mock.patch("native_common.urllib.request.urlopen", side_effect=AssertionError("No network")), \
+                    mock.patch("subprocess.run", side_effect=compiled), \
+                    mock.patch.object(sys, "argv", ["-", str(root), str(root / "wgc.test"), "/fixture/clang"]):
+                exec(compile(compiler, "smoke-compiler-fixture", "exec"), {})
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0][1:3], ["test", "-c"])
+            self.assertEqual(go.read_bytes(), b"verified executable")
+
+    def test_offline_bootstrap_requires_the_archive_not_a_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pins, _, _, bootstrap, cache, _, _ = self.fixture(root, "linux-amd64")
+            (bootstrap / "toolchain-provenance.json").write_text("{}")
+            with mock.patch("build_libbox.ROOT", root), mock.patch("build_libbox.host_key", return_value="linux-amd64"), \
+                    mock.patch("build_libbox.run") as run, \
+                    mock.patch("native_common.urllib.request.urlopen") as network:
+                with self.assertRaisesRegex(BuildError, "archive is missing"):
+                    bootstrap_go(pins, bootstrap, cache, offline=True)
+                run.assert_not_called()
+                network.assert_not_called()
+
     def test_primary_and_exhausted_gateway_fallback_keep_verified_identity_and_source(self):
         for key in self.HOSTS:
             for fallback in (False, True):
@@ -682,6 +1008,117 @@ class ToolchainDownloadTests(unittest.TestCase):
                 sleep.assert_not_called()
                 run.assert_not_called()
                 self.assertFalse(list((bootstrap / "downloads").glob("*")))
+
+
+class SmokeEmulatorTests(unittest.TestCase):
+    def exercise(self, mode):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        sdk = base / "sdk"
+        sdk.mkdir()
+        (base / ".build/logs").mkdir(parents=True)
+        # This independent fixture process represents someone else's emulator.
+        foreign = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: foreign.wait(timeout=5))
+        self.addCleanup(foreign.terminate)
+        stub = f"#!{sys.executable} -I\n" + r'''
+import json, os, signal, sys, time
+from pathlib import Path
+base = Path(os.environ["SMOKE_FIXTURE"])
+mode = os.environ["SMOKE_MODE"]
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+if name == "avdmanager":
+    sys.stdin.read()
+    sys.exit(0)
+if name == "emulator":
+    token = next((arg.split("=", 1)[1] for arg in args if arg.startswith("qemu.sbf_smoke=")), "")
+    (base / "launched.json").write_text(json.dumps({"token": token, "pid": os.getpid()}))
+    if mode == "collision":
+        sys.exit(1)
+    def stop(*_):
+        (base / "terminated").touch()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, stop)
+    while True:
+        time.sleep(0.02)
+with (base / "adb-calls.jsonl").open("a") as stream:
+    stream.write(json.dumps(args) + "\n")
+if args == ["devices"]:
+    print("List of devices attached")
+    if mode == "existing":
+        print("emulator-5554\tdevice")
+    sys.exit(0)
+args = args[2:]  # -s emulator-5554
+if args == ["emu", "kill"]:
+    os.kill(int(os.environ["FOREIGN_PID"]), signal.SIGTERM)
+    sys.exit(0)
+if args[:2] == ["shell", "getprop"]:
+    if args[2] == "qemu.sbf_smoke":
+        path = base / "launched.json"
+        print("foreign" if mode in ("existing", "collision") or (base / "replaced").exists()
+              else json.loads(path.read_text())["token"] if path.exists() else "")
+    elif args[2] == "sys.boot_completed":
+        print("1")
+    else:
+        print("x86_64")
+elif args[0] == "push" and mode == "replace":
+    (base / "replaced").touch()
+elif args[0] == "shell" and "-test.run" in args[-1]:
+    print("--- PASS: TestAndroidUDPProtectionSmoke (0.00s)")
+'''
+        for name in ("adb", "avdmanager", "emulator"):
+            path = sdk / name
+            path.write_text(stub)
+            path.chmod(0o755)
+        timeout = sdk / "timeout"
+        timeout.write_text('#!/bin/sh\nshift 3\nexec "$@"\n')
+        timeout.chmod(0o755)
+        script = (ROOT / "tool/run_android_wgc_smoke.sh").read_text()
+        # Run the actual launch/boot/cleanup section with only SDK/KVM and Go
+        # prerequisites replaced; no real ADB server or emulator is contacted.
+        runtime = script[script.index('export ANDROID_HOME="$sdk"'):]
+        variables = {"root": str(base), "sdk": str(sdk), "adb": str(sdk / "adb"),
+                     "emulator": str(sdk / "emulator"), "avdmanager": str(sdk / "avdmanager"),
+                     "logs": str(base / ".build/logs"), "binary": str(base / "wgc.test")}
+        harness = base / "smoke.sh"
+        harness.write_text("set -euo pipefail\n" + "\n".join(
+            f"{key}={shlex.quote(value)}" for key, value in variables.items()) + "\n" + runtime)
+        environment = dict(os.environ, SMOKE_FIXTURE=str(base), SMOKE_MODE=mode,
+                           FOREIGN_PID=str(foreign.pid), PATH=str(sdk) + os.pathsep + os.environ["PATH"])
+        result = subprocess.run(["bash", str(harness)], env=environment, cwd=base,
+                                text=True, capture_output=True, timeout=20)
+        calls = [json.loads(line) for line in (base / "adb-calls.jsonl").read_text().splitlines()]
+        self.assertIsNone(foreign.poll(), result.stdout + result.stderr)
+        self.assertFalse(any(call[-2:] == ["emu", "kill"] for call in calls))
+        self.assertFalse(list((base / ".build").glob("android-wgc-run.*")))
+        return base, result, calls
+
+    def test_existing_emulator_is_not_launched_over_or_stopped(self):
+        base, result, calls = self.exercise("existing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing device is untouched", result.stderr)
+        self.assertFalse((base / "launched.json").exists())
+        self.assertEqual(calls, [["devices"]])
+
+    def test_collision_after_preflight_never_writes_to_or_kills_foreign_emulator(self):
+        _, result, calls = self.exercise("collision")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("push" in call or "chmod" in call or "rm" in call for call in calls))
+
+    def test_owned_emulator_runs_smoke_and_only_its_process_is_stopped(self):
+        base, result, calls = self.exercise("own")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((base / "terminated").exists())
+        self.assertTrue(any("push" in call for call in calls))
+        self.assertIn("--- PASS: TestAndroidUDPProtectionSmoke", result.stdout)
+
+    def test_serial_replacement_stops_device_writes_and_preserves_foreign_process(self):
+        base, result, calls = self.exercise("replace")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((base / "terminated").exists())
+        self.assertFalse(any("chmod" in call or "rm" in call for call in calls))
 
 
 class ToolchainTests(unittest.TestCase):

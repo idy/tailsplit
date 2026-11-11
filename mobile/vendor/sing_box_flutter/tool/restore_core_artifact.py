@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ import zipfile
 sys.dont_write_bytecode = True
 from build_core import ANDROID_TARGETS, RECEIPT, canonical_hash, host_lock, host_path
 from core_recipe import verify_current_recipe
-from native_common import BuildError, ROOT, legal_files, sha256, write_json
+from native_common import BuildError, ROOT, legal_files, require_trusted_digest, sha256, write_json
 
 MANIFEST = ".dart_tool/sing_box_flutter/artifact-sha256.json"
 
@@ -126,16 +127,25 @@ def write_manifest(project: Path, *, root: Path = ROOT) -> None:
         write_json(host_path(project, MANIFEST), {"schema": 1, "sha256": files})
 
 
-def restore_artifact(source: Path, project: Path, *, root: Path = ROOT) -> None:
-    # Check the complete producer bundle before touching this host's output.
+def restore_artifact(source: Path, project: Path, *, manifest_sha256: str | None = None,
+                     root: Path = ROOT) -> None:
+    # The inventory and receipts only prove consistency. Bind the inventory to a
+    # digest obtained separately from an approved producer before trusting bytes.
     try:
+        require_trusted_digest(manifest_sha256)
+        manifest_path = host_path(source, MANIFEST)
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            raise BuildError("Selected core manifest is missing")
+        manifest_bytes = manifest_path.read_bytes()
+        if hashlib.sha256(manifest_bytes).hexdigest() != manifest_sha256:
+            raise BuildError("Selected core manifest does not match the trusted producer digest")
+        manifest = json.loads(manifest_bytes)
         receipt, metadata, directory, files = bundle(source)
-        manifest = read_object(host_path(source, MANIFEST))
-        if manifest.get("schema") != 1 or manifest.get("sha256") != files:
+        if not isinstance(manifest, dict) or manifest.get("schema") != 1 or manifest.get("sha256") != files:
             raise BuildError("Selected core bundle checksum inventory differs")
         verify_contents(project, receipt, metadata, directory, root)
     except (BuildError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
-        raise RestoreMiss("Selected core bundle is absent or incompatible") from error
+        raise RestoreMiss("Selected core bundle is untrusted, absent or incompatible") from error
 
     relative = directory.relative_to(source)
     expected = {Path(name).relative_to(relative).as_posix(): digest for name, digest in files.items()
@@ -175,6 +185,7 @@ def restore_artifact(source: Path, project: Path, *, root: Path = ROOT) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", type=Path, required=True)
+    parser.add_argument("--manifest-sha256", help="Required for reuse: inventory digest from an independently approved producer; missing/mismatched pins fall back to source")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--from-dir", type=Path, help="Downloaded producer host directory containing .dart_tool")
     mode.add_argument("--write-manifest", action="store_true", help="Record the producer's complete selected output")
@@ -183,15 +194,16 @@ def main(argv: list[str] | None = None) -> int:
         project = args.project_dir.expanduser().resolve(strict=True)
         if args.write_manifest:
             write_manifest(project)
-            print("Recorded selected Android core checksums.")
+            print(f"Recorded selected Android core checksums; manifest SHA-256: {sha256(host_path(project, MANIFEST))}")
             return 0
         restored = False
         try:
-            restore_artifact(args.from_dir.expanduser().absolute(), project)
+            restore_artifact(args.from_dir.expanduser().absolute(), project,
+                             manifest_sha256=args.manifest_sha256)
             restored = True
             print("Restored the compatible selected Android core; native compilation is unnecessary.")
         except BuildError:
-            print("Selected core bundle is absent or incompatible; building from source.")
+            print("Selected core bundle is untrusted, absent or incompatible; building from source.")
         if output := os.environ.get("GITHUB_OUTPUT"):
             with open(output, "a") as handle:
                 handle.write(f"restored={str(restored).lower()}\n")

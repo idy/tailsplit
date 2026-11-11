@@ -87,7 +87,7 @@ components:
 
 **Creative North Star: "The Desktop Configuration Panel, Native on Phone"**
 
-TailSplit retains the user-pinned desktop identity: neutral grouped surfaces, blue actions, text-backed semantic states, a plain green node check, and a fixed deep-gray diagnostic terminal. This mobile boundary implements one embedded Tailscale device with one selected exit node. Native phone controls carry that identity; the desktop web typography and geometry are not transplanted into touch controls.
+TailSplit retains the user-pinned desktop identity: neutral grouped surfaces, blue actions, text-backed semantic states, a plain green node check, and a fixed deep-gray diagnostic terminal. This mobile boundary keeps multiple Tailnets signed in with independent embedded device identities and one globally selected exit node. Native phone controls carry that identity; the desktop web typography and geometry are not transplanted into touch controls.
 
 The implementation uses native UIKit Liquid Glass through `adaptive_platform_ui` for supported iOS controls on iOS 26+, with Cupertino fallback. The page content, inset grouped lists and node sheet include Flutter Cupertino widgets. Material 3 implementations also exist in source; the Android debug build passed CI, while Android device layouts remain unverified. This record describes the phone adaptation, not a new identity for TailSplit or a desktop redesign.
 
@@ -153,7 +153,7 @@ The app has three tabs: Exit Node, Logs and Settings. Each retains its own navig
 
 Top-level iOS pages use a scrolling large title, with the inline toolbar title enabled after a source scroll offset of 36 logical units. Content begins below the top safe inset plus 56; page title padding is 20 horizontal, 4 top and 6 bottom. Inset-grouped sections use directional margins of 20 horizontal and 10 bottom; native list sections own internal spacing and row metrics. Page scroll content reserves bottom safe inset plus 96 for the tab region. The shared source spacing constants are available in frontmatter; actual native grouping is not a uniform 24-unit grid.
 
-The first tab separates the connection/routing group from the one saved exit or Add exit group. A device identity footer remains subordinate. The picker uses a Cupertino sheet and its supplied scroll controller, with one list for nodes, identity and removal. It does not introduce a nested node-list scroller. While the sheet is presented, `NativeChrome.sheetPresented` removes underlying page toolbars so native actions cannot float over the sheet's navigation.
+The first tab separates the connection/routing group from a Tailnet list. Each single-line network row opens its own node picker; a green check and trailing node name identify the globally selected exit's Tailnet. Add Tailnet preserves other sign-ins and the current exit. With no accounts, a dedicated sign-in group replaces the list. The picker uses a Cupertino sheet and its supplied scroll controller, with one list for that network's nodes, identity, refresh, reauthentication and sign-out. It does not introduce a nested node-list scroller. While the sheet is presented, `NativeChrome.sheetPresented` removes underlying page toolbars so native actions cannot float over the sheet's navigation.
 
 Logs use a 16-unit horizontal gutter and the terminal's internal padding. Settings use grouped sections and pushed editors rather than the desktop's sidebar, form/preview columns or YAML workspace. Reconnect guidance is pinned above the tab region, with a horizontal inset of 16 and bottom position at safe inset plus 64.
 
@@ -181,7 +181,7 @@ Every card-list row has a plain 21-unit platform icon within its 22-unit leading
 
 ### Buttons
 
-Add exit uses a full-width `CupertinoButton.filled`, a dynamic tint, semibold text and the primary-button radius. Busy state replaces text with a Cupertino activity indicator and disables activation. This action uses Flutter Cupertino rendering; do not prescribe native UIKit UIButton rendering for it. The Material branch uses a filled button with a 48-unit minimum height.
+The empty-state Add Tailnet action uses a full-width `CupertinoButton.filled`, a dynamic tint, semibold text and the primary-button radius. Busy state replaces text with a Cupertino activity indicator and disables activation. This action uses Flutter Cupertino rendering; do not prescribe native UIKit UIButton rendering for it. The Material branch uses a filled button with a 48-unit minimum height.
 
 Small iOS `TextAction` buttons use 12-unit horizontal padding and a 44-by-44 minimum size. Sheet Cancel/Confirm are Cupertino navigation actions; Confirm is enabled only for a changed, online choice when not saving. Native menu and toolbar state handling remains defined by their adapters.
 
@@ -225,7 +225,7 @@ Card-list rows stay on one line at every text size. Their title, value and contr
 
 Selection is a plain green check with a semibold name and no persistent selected-row fill. Unselected rows show a device icon in the same leading slot. Native press feedback remains platform behavior. The trailing column shows Online, Offline or last seen, with tabular numerals; it is not a Ping button or measured latency. Only online nodes can be newly selected; offline rows remain visible and disabled. A saved offline choice is retained rather than silently replaced.
 
-A tap stages a node. Confirm saves the changed online choice; Cancel and sheet dismissal discard it. The source blocks popping while saving. Account/device identity follows the list; Remove exit is a separate destructive section below it and opens confirmation. No Ping action is implemented because the app has no Tailscale data plane outside the VPN extension.
+A tap stages a node. Confirm saves the changed online choice; Cancel and sheet dismissal discard it. The source blocks popping while saving. Account/device identity follows the list. Refresh and Sign in again target the displayed Tailnet. Sign out of Tailnet opens confirmation and removes only that local login; selecting a different Tailnet's node replaces the single global selection. No Ping action is implemented because the app has no Tailscale data plane outside the VPN extension.
 
 ### Diagnostic Terminal
 

@@ -140,9 +140,20 @@ func (m *platformDefaultInterfaceMonitor) updateDefaultInterface(interfaceName s
 		m.defaultInterfaceAccess.Unlock()
 		return
 	}
-	if interfaceIndex32 == -1 {
+	var newInterface *control.Interface
+	if err == nil && interfaceIndex32 > 0 {
+		newInterface, err = m.networkManager.InterfaceFinder().ByIndex(int(interfaceIndex32))
+		if err != nil {
+			m.logger.Error(E.Cause(err, "find updated interface: ", interfaceName))
+		}
+	}
+	if newInterface == nil {
+		// A failed enumeration or lookup is an unavailable path, not permission
+		// to retain the previous interface or its DNS servers indefinitely.
 		m.defaultInterface = nil
 		m.defaultDNSServers = nil
+		m.pathInterfaceIndex = -1
+		m.isExpensive, m.isConstrained = false, false
 		callbacks := m.callbacks.Array()
 		m.defaultInterfaceAccess.Unlock()
 		for _, callback := range callbacks {
@@ -151,12 +162,6 @@ func (m *platformDefaultInterfaceMonitor) updateDefaultInterface(interfaceName s
 		return
 	}
 	oldInterface := m.defaultInterface
-	newInterface, err := m.networkManager.InterfaceFinder().ByIndex(int(interfaceIndex32))
-	if err != nil {
-		m.defaultInterfaceAccess.Unlock()
-		m.logger.Error(E.Cause(err, "find updated interface: ", interfaceName))
-		return
-	}
 	oldDNSServers := m.defaultDNSServers
 	m.defaultInterface = newInterface
 	m.defaultDNSServers = m.readDNSServers(newInterface.Index)

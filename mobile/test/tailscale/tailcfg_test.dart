@@ -71,6 +71,75 @@ void main() {
       expect(s.exitNodes.any((p) => p.name == 'laptop' || p.name == 'office-router'), isFalse);
     });
 
+    test('initial map accepts PeersChanged when Peers is absent or empty', () {
+      for (final emptyPeers in [null, <Object?>[]]) {
+        final json = _fixture();
+        json['PeersChanged'] = json['Peers'];
+        json['Peers'] = emptyPeers;
+        final snapshot = parseMapResponse(json).snapshot;
+        expect(snapshot.exitNodes.map((p) => p.stableId), s.exitNodes.map((p) => p.stableId));
+        expect(snapshot.discoveryDiagnostics!.changedPeerCount, 7);
+        expect(snapshot.discoveryDiagnostics!.peerListPresent, emptyPeers != null);
+      }
+    });
+
+    test('a non-empty full peer list takes precedence over PeersChanged', () {
+      final json = _fixture();
+      json['PeersChanged'] = json['Peers'];
+      json['Peers'] = [(json['Peers'] as List).first]; // Laptop, no exit route.
+      expect(parseMapResponse(json).snapshot.exitNodes, isEmpty);
+    });
+
+    test('route advertisements and capabilities do not grant an exit route', () {
+      final json = _fixture();
+      json['Peers'] = [
+        {
+          'ID': 99,
+          'Addresses': ['100.64.0.99/32'],
+          'PrimaryRoutes': ['0.0.0.0/0', '::/0'],
+          'Hostinfo': {'RoutableIPs': ['0.0.0.0/0', '::/0']},
+          'Capabilities': ['suggest-exit-node'],
+          'CapMap': {'suggest-exit-node': []},
+        },
+      ];
+      final snapshot = parseMapResponse(json).snapshot;
+      expect(snapshot.exitNodes, isEmpty);
+      final counts = snapshot.discoveryDiagnostics!;
+      expect(counts.peerCount, 1);
+      expect(counts.exitRoutePeerCount, 0);
+      expect(counts.advertisedExitRoutePeerCount, 1);
+      expect(counts.primaryExitRoutePeerCount, 1);
+      expect(counts.missingAllowedIpsPeerCount, 1);
+    });
+
+    test('discovery diagnostics retain only counts and peer-list presence', () {
+      final counts = s.discoveryDiagnostics!;
+      expect(counts.toJson(), {
+        'peer_count': 7,
+        'exit_route_peer_count': 5,
+        'advertised_exit_route_peer_count': 0,
+        'primary_exit_route_peer_count': 0,
+        'missing_allowed_ips_peer_count': 1,
+        'changed_peer_count': 0,
+        'peer_list_present': true,
+      });
+      expect(counts.summary, 'Netmap discovery: peers=7, exit-routes=5, advertised-exits=0, '
+          'primary-exits=0, allowed-ips-missing=1, peer-changes=0, peer-list=true');
+      expect(counts.toJson().values.every((v) => v is int || v is bool), isTrue);
+      for (final privateValue in [s.selfName, s.networkName, s.userLoginName, s.stableNodeId, ...s.selfAddresses]) {
+        expect(counts.summary, isNot(contains(privateValue)));
+      }
+    });
+
+    test('an empty map reports zero counts without inventing exits', () {
+      final json = _fixture()..remove('Peers');
+      final snapshot = parseMapResponse(json).snapshot;
+      expect(snapshot.exitNodes, isEmpty);
+      expect(snapshot.discoveryDiagnostics!.peerCount, 0);
+      expect(snapshot.discoveryDiagnostics!.exitRoutePeerCount, 0);
+      expect(snapshot.discoveryDiagnostics!.peerListPresent, isFalse);
+    });
+
     test('offersExitRoute', () {
       expect(offersExitRoute(null), isFalse, reason: 'nil AllowedIPs means Addresses (capver >= 112)');
       expect(offersExitRoute(['100.1.1.1/32', '10.0.0.0/8']), isFalse);

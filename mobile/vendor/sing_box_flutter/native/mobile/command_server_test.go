@@ -94,6 +94,49 @@ func TestCloseCancelsStartupAndIsFinal(t *testing.T) {
 	}
 }
 
+func TestCloseDoesNotDisposeResourcesUnderUncooperativeStartup(t *testing.T) {
+	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	engine := &fakeMobileEngine{}
+	server := &CommandServer{newEngine: func(ctx context.Context, _ PlatformInterface, _ option.Options) (mobileEngine, error) {
+		engine.start = func() error {
+			close(started)
+			<-ctx.Done()
+			close(cancelled)
+			<-release // A native function can ignore context until it returns.
+			if engine.closed.Load() != 0 {
+				t.Error("closed resources under startup")
+			}
+			return nil // Late success must never resurrect the retired startup.
+		}
+		return engine, nil
+	}}
+	result := make(chan error, 1)
+	go func() { result <- server.StartOrReloadService(lifecycleTestConfig, nil) }()
+	receive(t, started)
+	closed := make(chan struct{})
+	go func() { server.Close(); close(closed) }()
+	receive(t, cancelled)
+	if engine.closed.Load() != 0 {
+		t.Fatal("cancellation disposed resources before startup returned")
+	}
+	select {
+	case <-closed:
+		t.Fatal("stop confirmed before startup returned")
+	default:
+	}
+	unblock()
+	if receive(t, result) == nil {
+		t.Fatal("retired startup returned success")
+	}
+	receive(t, closed)
+	if engine.closed.Load() != 1 || server.engine != nil {
+		t.Fatal("retired startup leaked or published its engine")
+	}
+}
+
 func TestCloseServiceInterruptsStartupAndAllowsRestart(t *testing.T) {
 	started := make(chan struct{})
 	var calls int

@@ -74,6 +74,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def require_trusted_digest(value: str | None) -> str:
+    """The caller must obtain this pin independently of the supplied bundle."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise BuildError("--manifest-sha256 requires an independently trusted lowercase SHA-256 digest")
+    return value
+
+
 def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")

@@ -27,7 +27,9 @@ import io.nekohasekai.libbox.TunOptions
 import java.util.concurrent.atomic.AtomicBoolean
 
 class SingBoxVpnService : VpnService(), CommandServerHandler {
-    private var commandServer: CommandServer? = null // NativeRuntime.worker only.
+    private val coreLock = Any()
+    private var commandServer: CommandServer? = null // Writes on worker; snapshots under coreLock.
+    private val stopping = AtomicBoolean(false)
     private val stopCompletions = mutableListOf<() -> Unit>() // NativeRuntime.worker only.
     private lateinit var platform: AndroidPlatform
     private val fdLock = Any()
@@ -44,6 +46,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            NativeRuntime.interruptStart()
             NativeRuntime.worker.execute { NativeRuntime.stop() }
             return START_NOT_STICKY
         }
@@ -75,7 +78,13 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
             sessionName = request.name
             platform.start()
             val server = CommandServer(this, platform)
-            commandServer = server // Retain before start so every partial startup is cleaned up.
+            synchronized(coreLock) {
+                if (stopping.get() || !NativeRuntime.isCurrent(request)) {
+                    server.close()
+                    throw NativeFailure("start_cancelled", "VPN startup was cancelled.")
+                }
+                commandServer = server // Publish atomically with the cancellation latch.
+            }
             server.start()
             server.startOrReloadService(request.config, OverrideOptions())
             if (server.needWIFIState()) {
@@ -84,18 +93,30 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
             if (synchronized(fdLock) { tunnel == null }) {
                 throw NativeFailure("tun_failed", "The native core did not establish the Android VPN tunnel.")
             }
-            if (destroyed.get() || revoked.get() || !NativeRuntime.isCurrent(request)) {
-                shutdownOnWorker()
-                return
+            synchronized(coreLock) {
+                if (stopping.get() || destroyed.get() || revoked.get() || !NativeRuntime.isCurrent(request)) {
+                    throw NativeFailure("start_cancelled", "VPN startup was cancelled.")
+                }
+                showNotification("Connected")
+                NativeRuntime.publish("connected")
             }
-            showNotification("Connected")
-            NativeRuntime.publish("connected")
         } catch (failure: NativeFailure) {
-            shutdownOnWorker(failure.message)
+            shutdownOnWorker(if (stopping.get()) null else failure.message)
         } catch (_: LinkageError) {
             shutdownOnWorker("Cannot load libbox 1.14.4 for this device ABI.")
         } catch (_: Exception) {
-            shutdownOnWorker("The native core could not start the VPN. Check the configuration and Android VPN permission.")
+            shutdownOnWorker(if (stopping.get()) null else "The native core could not start the VPN. Check the configuration and Android VPN permission.")
+        }
+    }
+
+    internal fun interruptStartup() {
+        synchronized(coreLock) {
+            if (!stopping.compareAndSet(false, true)) return
+            // Only the selectable binding guarantees Close cancels before waiting
+            // for Start. Legacy artifacts retain serialized cleanup.
+            if (NativeRuntime.supportsStartupCancellation) commandServer?.let { server ->
+                NativeRuntime.cancellation.execute { runCatching { server.close() } }
+            }
         }
     }
 
@@ -109,10 +130,11 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         if (NativeRuntime.service === this && NativeRuntime.snapshot()["state"] != "disconnected") {
             NativeRuntime.publish("disconnecting")
         }
-        val server = commandServer
-        commandServer = null
+        val server = synchronized(coreLock) { commandServer.also { commandServer = null } }
         var closeFailed = false
-        try { server?.closeService() } catch (_: Exception) { closeFailed = true }
+        // A cancellation Close permanently retires the server; CloseService would
+        // report that expected state as an error. Close still waits for all work.
+        if (!stopping.get()) try { server?.closeService() } catch (_: Exception) { closeFailed = true }
         try { server?.close() } catch (_: Exception) { closeFailed = true }
         try { platform.close() } catch (_: Exception) { closeFailed = true }
         synchronized(fdLock) {
@@ -132,7 +154,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
 
     override fun onRevoke() {
         revoked.set(true)
-        NativeRuntime.invalidateStart()
+        NativeRuntime.interruptStart()
         NativeRuntime.worker.execute { shutdownOnWorker("Android revoked VPN permission.") }
         // super.onRevoke() calls stopSelf(); teardown is serialized above and onDestroy below.
         super.onRevoke()
@@ -140,6 +162,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
 
     override fun onDestroy() {
         destroyed.set(true)
+        interruptStartup()
         NativeRuntime.worker.execute {
             // Idempotent cleanup also covers a host calling stopService directly.
             val state = NativeRuntime.snapshot()["state"]
@@ -154,7 +177,7 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
     }
 
     internal fun openTunnel(options: TunOptions): Int = synchronized(fdLock) {
-        if (prepare(this) != null || revoked.get() || destroyed.get()) error("VPN permission is missing or revoked")
+        if (prepare(this) != null || stopping.get() || revoked.get() || destroyed.get()) error("VPN permission is missing or startup was cancelled")
         check(tunnel == null) { "Only one Android TUN inbound is supported" }
         check(!options.isHTTPProxyEnabled) { "The optional Android HTTP proxy is not supported" }
         val builder = Builder().setSession(sessionName).setMtu(options.mtu)
@@ -222,7 +245,10 @@ class SingBoxVpnService : VpnService(), CommandServerHandler {
         } else startForeground(NOTIFICATION_ID, builder.build())
     }
 
-    override fun serviceStop() { NativeRuntime.worker.execute { NativeRuntime.stop() } }
+    override fun serviceStop() {
+        NativeRuntime.interruptStart()
+        NativeRuntime.worker.execute { NativeRuntime.stop() }
+    }
     override fun serviceReload(): Unit = throw UnsupportedOperationException("Reload is unsupported; use stop and start")
     override fun getSystemProxyStatus() = SystemProxyStatus().apply { available = false; enabled = false }
     override fun setSystemProxyEnabled(enabled: Boolean): Unit = throw UnsupportedOperationException("System proxy is unsupported")

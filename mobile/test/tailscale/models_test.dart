@@ -104,11 +104,33 @@ void main() {
       expect(back.machineAuthorized, isFalse);
     });
 
+    test('discovery diagnostics survive JSON and snapshot copies', () {
+      final counts = {
+        'peer_count': 4,
+        'exit_route_peer_count': 2,
+        'advertised_exit_route_peer_count': 3,
+        'primary_exit_route_peer_count': 1,
+        'missing_allowed_ips_peer_count': 1,
+        'changed_peer_count': 4,
+        'peer_list_present': false,
+      };
+      final snapshot = TailnetSnapshot.fromJson({
+        ..._snapshot().toJson(),
+        'discovery_diagnostics': counts,
+      });
+      final copy = snapshot.copyWith(fetchedAt: DateTime.utc(2026, 11, 11));
+      expect(copy.discoveryDiagnostics!.toJson(), counts);
+      final back = TailnetSnapshot.fromJson(jsonDecode(jsonEncode(copy.toJson())) as Map<String, Object?>);
+      expect(back.discoveryDiagnostics!.toJson(), counts);
+      expect(back.discoveryDiagnostics!.summary, copy.discoveryDiagnostics!.summary);
+    });
+
     test('minimal JSON has sane defaults', () {
       final s = TailnetSnapshot.fromJson({'network_name': 'example.com', 'exit_nodes': []});
       expect(s.domainName, 'example.com');
       expect(s.keyExpiry, isNull);
       expect(s.machineAuthorized, isTrue);
+      expect(s.discoveryDiagnostics, isNull);
       expect(s.userId, 0);
       final p = TailnetPeer.fromJson({'stable_id': 'x'});
       expect(p.addresses, isEmpty);

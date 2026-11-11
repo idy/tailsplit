@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,13 +40,7 @@ func newBoxEngine(ctx context.Context, platform PlatformInterface, options optio
 	}
 	engine := &boxEngine{ctx: ctx, pause: service.FromContext[pause.Manager](ctx)}
 	if path != "" {
-		if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, errors.New("could not open private mobile log")
-		}
-		engine.log, err = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-		if err == nil {
-			err = engine.log.Chmod(0o600)
-		}
+		engine.log, err = openPrivateLog(ctx, path)
 		if err != nil {
 			_ = engine.Close()
 			return nil, errors.New("could not open private mobile log")
@@ -92,7 +87,82 @@ func privateLogPath(ctx context.Context, options *option.LogOptions) (string, er
 	if output == "" {
 		output = "mobile.log"
 	}
-	return filemanager.BasePath(ctx, output), nil
+	path := filepath.Clean(filemanager.BasePath(ctx, output))
+	root, relative, err := privateLogLocation(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	// Validation is read-only. Opening repeats this check using directory file
+	// descriptors so a symlink swap between validation and startup cannot escape.
+	current := root
+	parts := strings.Split(relative, string(filepath.Separator))
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || (index < len(parts)-1 && !info.IsDir()) || (index == len(parts)-1 && !info.Mode().IsRegular()) {
+			return "", errors.New("mobile log path must be a private regular file")
+		}
+	}
+	return path, nil
+}
+
+func privateLogLocation(ctx context.Context, path string) (string, string, error) {
+	// The host supplies the private working root via filemanager, never config.
+	root := filepath.Clean(filemanager.BasePath(ctx, "."))
+	relative, err := filepath.Rel(root, path)
+	if !filepath.IsAbs(root) || err != nil || !filepath.IsLocal(relative) || relative == "." {
+		return "", "", errors.New("mobile log path must stay inside private working storage")
+	}
+	return root, relative, nil
+}
+
+func openPrivateLog(ctx context.Context, path string) (*os.File, error) {
+	root, relative, err := privateLogLocation(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	// The host root may have system aliases (e.g. /var on Apple). Below that
+	// trusted root, no component may be a symlink, even one pointing back inside.
+	directory, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unix.Close(directory) }()
+	parts := strings.Split(relative, string(filepath.Separator))
+	for _, part := range parts[:len(parts)-1] {
+		next, err := unix.Openat(directory, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if errors.Is(err, unix.ENOENT) {
+			if err = unix.Mkdirat(directory, part, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+				return nil, err
+			}
+			next, err = unix.Openat(directory, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		}
+		if err != nil {
+			return nil, err
+		}
+		_ = unix.Close(directory)
+		directory = next
+	}
+	fd, err := unix.Openat(directory, parts[len(parts)-1], unix.O_CREAT|unix.O_APPEND|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	var stat unix.Stat_t
+	if err = unix.Fstat(fd, &stat); err == nil && (stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1) {
+		err = errors.New("mobile log must be a private regular file")
+	}
+	if err == nil {
+		err = file.Chmod(0o600)
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func (e *boxEngine) event(event string) {

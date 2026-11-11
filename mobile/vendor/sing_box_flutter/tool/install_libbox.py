@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Install this plugin's prebuilt core from an immutable GitHub release tag."""
+"""Install a prebuilt core bound to an independently trusted manifest digest."""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 from pathlib import Path
-import re
 import shutil
 import sys
 import tarfile
@@ -17,7 +16,7 @@ import zipfile
 sys.dont_write_bytecode = True
 from native_common import (ARTIFACTS, BuildError, RELEASE_REPO, ROOT, archive_name,
                            artifact_hashes, build_directory, download, legal_files, load_pins,
-                           parse_manifest, project_lock, safe_extract, sha256,
+                           parse_manifest, project_lock, require_trusted_digest, safe_extract, sha256,
                            validate_metadata, valid_release_tag, write_json)
 
 
@@ -148,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     source_args = parser.add_mutually_exclusive_group(required=True)
     source_args.add_argument("--release", help="Published tag, e.g. v0.2.0; never latest")
     source_args.add_argument("--from-dir", type=Path, help="Install verified local/CI release inputs without networking")
-    parser.add_argument("--manifest-sha256", help="Optional independently obtained SHA-256 of SHA256SUMS")
+    parser.add_argument("--manifest-sha256", help="Required for installation: independently trusted SHA-256 of SHA256SUMS; do not derive it from the downloaded release")
     parser.add_argument("--cache-dir", default=str(ROOT / ".build/install"))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true", help="Replace an existing core after all validation")
@@ -158,14 +157,14 @@ def main(argv: list[str] | None = None) -> int:
         cache = build_directory(args.cache_dir)
         if args.release and not valid_release_tag(args.release):
             raise BuildError("Use an explicit release tag without paths")
-        if args.manifest_sha256 and not re.fullmatch(r"[0-9a-f]{64}", args.manifest_sha256):
-            raise BuildError("--manifest-sha256 must be a lowercase SHA-256 digest")
+        if not args.dry_run or args.manifest_sha256 is not None:
+            require_trusted_digest(args.manifest_sha256)
         targets = ["android", "apple"] if args.target == "all" else [args.target]
         source = args.from_dir.expanduser().resolve() if args.from_dir else f"https://github.com/{RELEASE_REPO}/releases/download/{urllib.parse.quote(args.release, safe='')}"
         if args.dry_run:
             prefix = str(source)
             print(json.dumps({"manifest": prefix + "/SHA256SUMS", "archives": [prefix + "/" + archive_name(pins, t) for t in targets],
-                              "validation": ["SHA256SUMS", "safe extraction", "core/toolchain pins", "mobile profile", "artifact hashes"],
+                              "validation": ["required independent --manifest-sha256", "SHA256SUMS", "safe extraction", "core/toolchain pins", "mobile profile", "artifact hashes"],
                               "outputs": [ARTIFACTS[t] for t in targets]}, indent=2))
             return 0
         with project_lock():
@@ -176,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise BuildError("Local SHA256SUMS must be a regular file under 1 MiB")
                 manifest_bytes = manifest.read_bytes()
                 digest = hashlib.sha256(manifest_bytes).hexdigest()
-                if args.manifest_sha256 and digest != args.manifest_sha256:
+                if digest != args.manifest_sha256:
                     raise BuildError("Local SHA256SUMS does not match --manifest-sha256")
             else:
                 manifest, provenance = download(source + "/SHA256SUMS", cache / "downloads",

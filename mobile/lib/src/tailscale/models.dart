@@ -57,6 +57,56 @@ class TailnetPeer {
   String toString() => 'TailnetPeer($name, online: $online, exit: $isExitNode)';
 }
 
+/// Counts from a received netmap, safe to include in diagnostic logs.
+/// No names, addresses, identifiers, keys or URLs are retained here.
+class TailnetDiscoveryDiagnostics {
+  const TailnetDiscoveryDiagnostics({
+    required this.peerCount,
+    required this.exitRoutePeerCount,
+    required this.advertisedExitRoutePeerCount,
+    required this.primaryExitRoutePeerCount,
+    required this.missingAllowedIpsPeerCount,
+    required this.changedPeerCount,
+    required this.peerListPresent,
+  });
+
+  final int peerCount;
+  final int exitRoutePeerCount;
+  final int advertisedExitRoutePeerCount;
+  final int primaryExitRoutePeerCount;
+  final int missingAllowedIpsPeerCount;
+  final int changedPeerCount;
+  final bool peerListPresent;
+
+  String get summary => 'Netmap discovery: peers=$peerCount, exit-routes=$exitRoutePeerCount, '
+      'advertised-exits=$advertisedExitRoutePeerCount, primary-exits=$primaryExitRoutePeerCount, '
+      'allowed-ips-missing=$missingAllowedIpsPeerCount, peer-changes=$changedPeerCount, '
+      'peer-list=$peerListPresent';
+
+  Map<String, Object?> toJson() => {
+        'peer_count': peerCount,
+        'exit_route_peer_count': exitRoutePeerCount,
+        'advertised_exit_route_peer_count': advertisedExitRoutePeerCount,
+        'primary_exit_route_peer_count': primaryExitRoutePeerCount,
+        'missing_allowed_ips_peer_count': missingAllowedIpsPeerCount,
+        'changed_peer_count': changedPeerCount,
+        'peer_list_present': peerListPresent,
+      };
+
+  factory TailnetDiscoveryDiagnostics.fromJson(Map<String, Object?> json) => TailnetDiscoveryDiagnostics(
+        peerCount: (json['peer_count'] as num?)?.toInt() ?? 0,
+        exitRoutePeerCount: (json['exit_route_peer_count'] as num?)?.toInt() ?? 0,
+        advertisedExitRoutePeerCount: (json['advertised_exit_route_peer_count'] as num?)?.toInt() ?? 0,
+        primaryExitRoutePeerCount: (json['primary_exit_route_peer_count'] as num?)?.toInt() ?? 0,
+        missingAllowedIpsPeerCount: (json['missing_allowed_ips_peer_count'] as num?)?.toInt() ?? 0,
+        changedPeerCount: (json['changed_peer_count'] as num?)?.toInt() ?? 0,
+        peerListPresent: json['peer_list_present'] as bool? ?? false,
+      );
+
+  @override
+  String toString() => summary;
+}
+
 /// What the app needs from one netmap: the device itself, the tailnet and
 /// the peers that can act as exit nodes.
 class TailnetSnapshot {
@@ -77,6 +127,7 @@ class TailnetSnapshot {
     this.domainName = '',
     this.tailnetDisplayName = '',
     this.machineAuthorized = true,
+    this.discoveryDiagnostics,
   });
 
   final String selfName;
@@ -113,6 +164,9 @@ class TailnetSnapshot {
   /// False while the tailnet requires admin approval of this device.
   final bool machineAuthorized;
 
+  /// Counts from the original map response; absent in older saved snapshots.
+  final TailnetDiscoveryDiagnostics? discoveryDiagnostics;
+
   TailnetSnapshot copyWith({List<TailnetPeer>? exitNodes, DateTime? fetchedAt}) =>
       TailnetSnapshot(
         selfName: selfName,
@@ -131,6 +185,7 @@ class TailnetSnapshot {
         domainName: domainName,
         tailnetDisplayName: tailnetDisplayName,
         machineAuthorized: machineAuthorized,
+        discoveryDiagnostics: discoveryDiagnostics,
       );
 
   Map<String, Object?> toJson() => {
@@ -150,6 +205,7 @@ class TailnetSnapshot {
         'domain_name': domainName,
         if (tailnetDisplayName.isNotEmpty) 'tailnet_display_name': tailnetDisplayName,
         'machine_authorized': machineAuthorized,
+        if (discoveryDiagnostics != null) 'discovery_diagnostics': discoveryDiagnostics!.toJson(),
       };
 
   factory TailnetSnapshot.fromJson(Map<String, Object?> json) {
@@ -174,6 +230,9 @@ class TailnetSnapshot {
       domainName: json['domain_name'] as String? ?? networkName,
       tailnetDisplayName: json['tailnet_display_name'] as String? ?? '',
       machineAuthorized: json['machine_authorized'] as bool? ?? true,
+      discoveryDiagnostics: json['discovery_diagnostics'] is Map
+          ? TailnetDiscoveryDiagnostics.fromJson((json['discovery_diagnostics'] as Map).cast<String, Object?>())
+          : null,
     );
   }
 
