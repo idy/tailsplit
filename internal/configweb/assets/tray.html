@@ -14,22 +14,18 @@
   <script src="/tray.js" defer></script>
 </head>
 <body>
-  <!-- Phosphor Icons 2.1.1, regular, MIT. See THIRD_PARTY_NOTICES.md. -->
-  <svg class="symbols" aria-hidden="true"><defs>
-    <symbol id="i-open" viewBox="0 0 256 256"><path d="M224,104a8,8,0,0,1-16,0V51.31l-74.34,74.35a8,8,0,0,1-11.32-11.32L196.69,40H144a8,8,0,0,1,0-16h72a8,8,0,0,1,8,8ZM192,136a8,8,0,0,0-8,8v64H48V72h64a8,8,0,0,0,0-16H48A16,16,0,0,0,32,72V208a16,16,0,0,0,16,16H184a16,16,0,0,0,16-16V144A8,8,0,0,0,192,136Z"/></symbol>
-  </defs></svg>
   <header class="popup-header">
-    <h1>TailSplit</h1>
-    <button class="icon-button mds-icon-button" data-open-panel aria-label="打开主界面" title="打开主界面"><svg class="icon mds-icon" aria-hidden="true"><use href="#i-open"/></svg></button>
+    <div class="popup-brand">
+      <span class="mds-brand-mark" aria-hidden="true"><svg viewBox="7.5 9.2 48 48"><path d="M53.4 21.68C52.9 22.65 51.94 23.25 50.89 23.49C46.01 24.6 43.48 20.21 39.58 18.56C36.94 17.45 34.01 17.28 31.18 17.37C28.78 17.45 26.27 18.1 24.6 19.93C19.47 25.57 30.86 27.54 34.03 28.41C39.04 29.8 45.05 32.06 47.15 37.29C48.15 39.81 47.99 42.69 47.04 45.2C45.28 49.83 40.8 52.56 36.03 53.12C34.32 53.32 32.58 53.24 30.87 53.33C28.75 53.44 26.64 53.64 24.54 53.9C19.38 54.53 14.28 55.52 9.22 56.66C15.21 53.26 21.56 51.11 28.22 49.44C21.03 46.73 14.91 42.28 9.22 37.19C14.49 39.48 19.52 42.29 24.98 44.12C28.28 45.23 32.2 46.35 35.7 45.67C37.15 45.38 38.65 44.68 39.42 43.36C44.7 34.38 14.31 38.99 15.03 22.36C15.19 18.56 17.15 15.03 20.16 12.74C25.74 8.52 33.87 9.15 40.21 11.26C41.74 11.77 43.13 12.62 44.64 13.13C46.06 13.61 47.58 13.49 49 13.95C51.97 14.92 55.06 18.45 53.4 21.68ZM46.8 16.7a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-linejoin="round"/></svg></span>
+      <h1>TailSplit</h1>
+    </div>
+    <button id="connect" class="connection-switch mds-switch" role="switch" aria-checked="false" aria-label="连接 TailSplit" aria-describedby="status connection-detail" disabled><span class="mds-switch-track" aria-hidden="true"></span></button>
+    <button id="setup" class="button small mds-button mds-button--small" hidden>设置出口</button>
   </header>
   <main class="popup-main">
-    <div class="popup-connection">
-      <div class="popup-state" role="status" aria-live="polite" aria-atomic="true">
-        <div class="popup-status"><i id="status-dot" aria-hidden="true"></i><strong id="status">正在读取</strong></div>
-        <p id="connection-detail">正在读取本机配置…</p>
-      </div>
-      <button id="connect" class="connection-switch mds-switch" role="switch" aria-checked="false" aria-label="连接 TailSplit" aria-describedby="connection-detail" disabled><span class="mds-switch-track" aria-hidden="true"></span></button>
-      <button id="setup" class="button small mds-button mds-button--small" hidden>设置出口</button>
+    <div class="popup-state" role="status" aria-live="polite" aria-atomic="true">
+      <div class="popup-status"><i id="status-dot" aria-hidden="true"></i><strong id="status">正在读取</strong></div>
+      <p id="connection-detail">正在读取本机配置…</p>
     </div>
     <div class="popup-details">
       <div class="popup-row"><span class="popup-label">模式</span><span id="routing-mode">—</span></div>
@@ -42,8 +38,8 @@
     <p class="popup-preview" id="preview-note" hidden>预览 · 连接状态为模拟数据</p>
   </main>
   <footer class="popup-footer">
-    <button class="popup-link" data-open-panel>打开主界面</button>
-    <button class="popup-link" id="quit" disabled>退出</button>
+    <button class="mds-button" data-open-panel>打开主界面</button>
+    <button class="mds-button" id="quit" disabled>退出</button>
   </footer>
 </body>
 </html>
