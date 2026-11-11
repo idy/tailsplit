@@ -50,7 +50,7 @@ class S {
       );
 
   // Signed-in networks and the single selected exit.
-  String get tailnets => _('Tailnets', 'Tailnet');
+  String get tailnets => _('Tailnets', 'Tailnets');
   String get tailnet => _('Tailnet', 'Tailnet');
   String get addTailnet => _('Add Tailnet', '添加 Tailnet');
   String get noTailnets => _('No Tailnets yet', '还未登录 Tailnet');
