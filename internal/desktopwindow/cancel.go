@@ -30,11 +30,34 @@ func (panelCancelService) Cancel(ctx context.Context, request, operation string)
 	return panelCancellation.cancelFrom(ctx, mygo.CallerWindow(ctx), mygo.CallerPage(ctx), request, operation)
 }
 
-// RetainCancel acknowledges only after the host owns the explicit intent. The
-// panel must obtain this receipt before accepting cancellation locally; neither
-// renderer storage nor a later navigation is responsible for keeping it alive.
-func (panelCancelService) RetainCancel(ctx context.Context, scope, request, operation string) (journalCancellation, error) {
-	return panelCancellation.retainFrom(mygo.CallerWindow(ctx), mygo.CallerPage(ctx), scope, request, operation)
+// cancellationRetentionReceipt distinguishes host ownership from an actual
+// completion, so a pending panel can resolve a missed asynchronous event.
+type cancellationRetentionReceipt struct {
+	Scope       string `json:"scope"`
+	Request     string `json:"request"`
+	OperationID string `json:"operation_id"`
+	Completed   bool   `json:"completed"`
+}
+
+func (panelCancelService) RetainCancel(ctx context.Context, scope, request, operation string) (cancellationRetentionReceipt, error) {
+	return panelCancellation.retainReceiptFrom(mygo.CallerWindow(ctx), mygo.CallerPage(ctx), scope, request, operation)
+}
+
+func (b *cancellationBindings) retainReceiptFrom(frame *mygo.Window, page *mygo.Page, scope, request, operation string) (cancellationRetentionReceipt, error) {
+	record, err := b.retainFrom(frame, page, scope, request, operation)
+	if err != nil {
+		return cancellationRetentionReceipt{}, err
+	}
+	b.mu.Lock()
+	window := b.windows[frame].window
+	b.mu.Unlock()
+	inbox := window.nativeCancellationInbox()
+	inbox.mu.Lock()
+	completed := inbox.acknowledged[record]
+	inbox.mu.Unlock()
+	// A completed receipt resolves a lost asynchronous completion event without
+	// depending on another transport that may still be unavailable.
+	return cancellationRetentionReceipt{Scope: record.Scope, Request: record.Request, OperationID: record.OperationID, Completed: completed}, nil
 }
 
 func (b *cancellationBindings) retainFrom(frame *mygo.Window, page *mygo.Page, scope, request, operation string) (journalCancellation, error) {

@@ -110,3 +110,31 @@ func TestRetainCancellationValidatesBindingScopeAndTargetBeforeAcknowledging(t *
 		t.Fatal("stopped host acknowledged retention", err)
 	}
 }
+
+func TestRetentionReceiptDistinguishesPendingFromCompletedCancellation(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	allow := make(chan struct{})
+	release := sync.OnceFunc(func() { close(allow) })
+	defer release()
+	var calls atomic.Int32
+	frame, page := &mygo.Window{}, &mygo.Page{}
+	bindings := cancellationBindings{windows: make(map[*mygo.Window]cancellationBinding)}
+	window := &Window{journalScope: "scope", journalContext: ctx, cancelHandler: func(context.Context, string, string) error {
+		calls.Add(1)
+		<-allow
+		return nil
+	}}
+	bindings.register(frame, page, window)
+	receipt, err := bindings.retainReceiptFrom(frame, page, "scope", "request", "owner")
+	if err != nil || receipt.Completed || receipt.Scope != "scope" || receipt.Request != "request" || receipt.OperationID != "owner" {
+		t.Fatal("pending retention incorrectly confirmed completion", receipt, err)
+	}
+	job := window.pendingNativeCancellation()
+	release()
+	waitJournal(t, job)
+	receipt, err = bindings.retainReceiptFrom(frame, page, "scope", "request", "owner")
+	if err != nil || !receipt.Completed || receipt.OperationID != "owner" || calls.Load() != 1 {
+		t.Fatal("completed retention did not resolve a missed completion event exactly", receipt, err, calls.Load())
+	}
+}

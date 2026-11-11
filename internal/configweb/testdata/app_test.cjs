@@ -4573,23 +4573,105 @@ test('restored pending intent rechecks host retention rather than trusting its h
   assert.equal(reload.storage.has('tailsplit-setup-cancel'), false);
 });
 
-for (const failure of ['rejected', 'stalled', 'wrong-target']) test(`native cancellation is not accepted locally before ${failure} host retention`, async () => {
-  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'not-yet-retained' }, 'mygo-macos',
-    { page: 'home', hash: '#token=fixture&journal=native-retain-scope&journal_backup=0&cancel_host=1' }, guidedDocument());
+for (const failure of ['rejected', 'stalled', 'wrong-target']) test(`uncertain ${failure} retention remains visibly pending when all delivery fails`, async () => {
+  const app = await page({ desktop: true, active: true, state: 'running', mode: 'tun', operation_id: 'uncertain-global-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-retain-scope&journal_backup=0&cancel_host=1' }, activeGlobalGatewayDocument());
   app.retentionOverride = record => {
     if (failure === 'stalled') return deferred().promise;
     if (failure === 'wrong-target') return { ...record, operation_id: 'unrelated-owner' };
     throw new Error('synthetic retention failure');
   };
+  app.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP unavailable' }, false) : undefined;
+  const cancel = app.$('#home-connect').emit('click');
+  await settle();
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true, 'a journaled request is visibly pending before admission resolves');
+  await app.flushTimers(); await settle(); await app.flushTimers(); await cancel;
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+  assert.equal(app.$('#home-status').textContent, '正在取消连接');
+  assert.match(app.$('#home-description').textContent, /取消尚未确认/);
+  assert.equal(app.retainedCancellations.size, 0);
+  assert.equal(app.nativeCalls.length, 1);
+  assert.equal(app.cookies.size, 1, 'unknown retention must not erase the live recovery record');
+});
+
+for (const failure of ['rejected', 'stalled', 'wrong-target']) test(`confirmed journal permits independent HTTP cancellation after ${failure} retention`, async () => {
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'http-fallback-owner' }, 'mygo-windows',
+    { page: 'home', hash: '#token=fixture&journal=native-retain-scope&journal_backup=0&cancel_host=1' }, guidedDocument());
+  app.retentionOverride = record => {
+    if (failure === 'stalled') return deferred().promise;
+    if (failure === 'wrong-target') return { ...record, operation_id: 'other-owner' };
+    throw new Error('synthetic retention failure');
+  };
+  app.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
   const cancel = app.$('#connection-setup-cancel').emit('click');
   await settle();
   if (failure === 'stalled') await app.flushTimers();
   await cancel;
+  const requests = app.requests.filter(request => request.path === '/api/cancel' && request.method === 'POST');
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].data, { request: '', operation_id: 'http-fallback-owner' });
+  assert.equal(app.snapshot.active, false);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+  assert.equal(app.cookies.size, 0);
+});
+
+test('retention timeout cannot use an evicted journal to authorize fallback', async () => {
+  const options = { page: 'home', hash: '#token=fixture&journal=native-retain-scope&journal_backup=0&cancel_host=1' };
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'outage-during-retain' }, 'mygo-macos', options, guidedDocument());
+  app.retentionOverride = () => deferred().promise;
+  const cancel = app.$('#connection-setup-cancel').emit('click');
+  await settle();
+  app.cookies.clear(); options.unreadableCookies = options.rejectCookies = true;
+  await app.flushTimers(); await cancel;
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+  assert.equal(app.nativeCalls.length, 0);
+  assert.equal(app.requests.some(request => request.path === '/api/cancel'), false);
   assert.equal(app.snapshot.active, true);
-  assert.equal(app.storage.has('tailsplit-setup-cancel'), false, 'no accepted marker may precede host ownership');
+  assert.match(app.$('#home-description').textContent, /取消尚未确认/);
+});
+
+test('late retention after timeout stays pending until acknowledged and cannot stop a newer owner', async () => {
+  const app = await page({ desktop: true, active: true, state: 'running', mode: 'tun', operation_id: 'late-retained-owner' }, 'mygo-windows',
+    { page: 'home', hash: '#token=fixture&journal=native-retain-scope&journal_backup=0&cancel_host=1' }, activeGlobalGatewayDocument());
+  const receipt = deferred();
+  app.retentionOverride = () => receipt.promise;
+  app.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP unavailable' }, false) : undefined;
+  const cancel = app.$('#home-connect').emit('click');
+  await settle(); await app.flushTimers(); await settle(); await app.flushTimers(); await cancel;
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true);
+  assert.match(app.$('#home-description').textContent, /取消尚未确认/);
+  const target = app.retentionCalls[0];
+  receipt.resolve(target); await settle();
+  assert.equal(app.retainedCancellations.size, 1);
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), true, 'a late admission receipt is not a completion acknowledgment');
+  Object.assign(app.snapshot, { active: true, state: 'running', mode: 'tun', operation_id: 'new-protected-owner' });
+  app.retentionOverride = record => ({ ...record, completed: true });
+  const legacyBefore = app.nativeCalls.length;
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+  assert.equal(app.nativeCalls.length, legacyBefore, 'host completion resolves uncertainty without another legacy attempt');
+  assert.equal(app.snapshot.active, true);
+  assert.equal(app.snapshot.operation_id, 'new-protected-owner');
+});
+
+test('exact completed retention receipt resolves pending cancellation even when every other transport fails', async () => {
+  const app = await page({ desktop: true, active: true, state: 'authorizing', mode: 'login', operation_id: 'completed-host-owner' }, 'mygo-macos',
+    { page: 'home', hash: '#token=fixture&journal=native-retain-scope&journal_backup=0&cancel_host=1' }, guidedDocument());
+  app.retentionOverride = record => {
+    Object.assign(app.snapshot, { active: false, state: 'stopped', mode: '' });
+    return { ...record, completed: true };
+  };
+  app.nativeOverride = () => response({ error: 'IPC unavailable' }, false);
+  app.override = request => request.path === '/api/cancel' ? response({ error: 'HTTP unavailable' }, false) : undefined;
+  await app.$('#connection-setup-cancel').emit('click');
+  assert.equal(app.storage.has('tailsplit-setup-cancel'), false);
+  assert.equal(app.cookies.size, 0);
   assert.equal(app.nativeCalls.length, 0);
   assert.equal(app.nativeNavigations.length, 0);
-  assert.equal(app.retainedCancellations.size, 0);
+  assert.equal(app.snapshot.active, false);
 });
 
 test('stale commitment without a usable native host or current journal cannot start delivery', async () => {

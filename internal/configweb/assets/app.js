@@ -1190,6 +1190,7 @@
       if (retained?.scope !== nativeJournalScope || retained.request !== cancel.request || retained.operation_id !== (cancel.operation_id || '')) {
         throw new Error(t('取消尚未由宿主接收，请重试。'));
       }
+      return retained.completed === true;
     } finally { clearTimeout(timer); }
   }
   async function deliverNativeCancel(cancel) {
@@ -1199,8 +1200,8 @@
     const host = nativeCancelHost && Boolean(nativeJournalScope);
     if (host) nativeCancelConfirmation = confirmation;
     try {
-      // RetainCancel has already committed this exact intent to the host.
-      // Journals and these transports are additional delivery paths only.
+      // The host owns this exact intent, or its journal was just reconfirmed.
+      // A failed retention bridge must not starve independent HTTP delivery.
       if (host) {
         const fragment = new URLSearchParams({ scope: nativeJournalScope, request: cancel.request, operation_id: cancel.operation_id || '' });
         try { location.assign(`/native-cancel#${fragment}`); } catch (_) { /* The original transports remain available. */ }
@@ -1224,12 +1225,12 @@
       }
     } finally { if (nativeCancelConfirmation === confirmation) nativeCancelConfirmation = null; }
   }
-  async function dispatchSetupCancel(retained = false) {
+  async function dispatchSetupCancel() {
     if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
     const cancel = pendingSetupCancel;
     const journalReady = mygoWindow && journalNativeCancel(cancel);
     if (journalReady) setupCancelCommitted = true;
-    if (mygoWindow && !retained && !journalReady && !(setupCancelCommitted && nativeCancelHost && nativeJournalScope)) {
+    if (mygoWindow && !journalReady && !(setupCancelCommitted && nativeCancelHost && nativeJournalScope)) {
       setupCancelError = nativeCancelUnavailable();
       renderConnectionCenter();
       return false;
@@ -1243,8 +1244,16 @@
       // The controller revokes this exact operation, including commands still
       // awaiting admission. A retry must never stop a different, newer session.
       if (mygoWindow) {
-        if (!retained) await retainNativeCancel(cancel);
-        await deliverNativeCancel(cancel);
+        let completed = false;
+        try { completed = await retainNativeCancel(cancel); }
+        catch (error) {
+          // Rejection or timeout does not prove the host received nothing. Keep
+          // the request visibly pending; fallback needs a currently confirmed
+          // journal, never merely a historical successful write.
+          setupCancelError = error; renderConnectionCenter();
+          if (!journalNativeCancel(cancel)) throw error;
+        }
+        if (!completed) await deliverNativeCancel(cancel);
       } else await api('cancel', { request: cancel.request, operation_id: cancel.operation_id || '' });
       if (cancel.request) markNativeConnectHandled(cancel.request);
       rememberSetupCancel(null);
@@ -1267,21 +1276,14 @@
       clearNotice(); renderConnectionCenter(); return;
     }
     setupCancelGeneration++;
-    // Do not accept or invalidate a new native intent until a host-owned copy
-    // exists. A failed/lost receipt leaves this attempt explicitly unconfirmed.
-    if (mygoWindow && target) {
-      setupCancelSending = true; renderConnectionCenter();
-      try { await retainNativeCancel(target); }
-      catch (error) {
-        operationError = { title: '操作未完成', detail: error };
-        setupFailed(error); clearNotice(); return;
-      } finally { setupCancelSending = false; renderConnectionCenter(); }
-    }
+    // The confirmed journal already records an explicit user request. Keep it
+    // visibly pending before any asynchronous admission: a lost receipt or a
+    // timed-out call may still cancel later, so the outcome cannot be hidden.
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
     if (exitDialog.open) exitDialog.close();
     if (target) rememberSetupCancel(target, Boolean(confirmed));
-    if (await dispatchSetupCancel(Boolean(mygoWindow && target))) await refreshState();
+    if (await dispatchSetupCancel()) await refreshState();
     renderConnectionCenter();
   }
   async function beginConnectionSetup(exit = '', operationID = '') {
