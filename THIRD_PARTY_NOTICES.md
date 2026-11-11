@@ -63,9 +63,10 @@ browser releases from jsDelivr. These unmodified files retain their MIT license
 and any published `THIRD_PARTY_NOTICES.txt` in the private local cache, and both
 notices are served beside the selected version's script. The embedded 0.2.0
 adaptation remains the offline and compatibility fallback. Dynamic releases are
-checked against the pinned CDN manifest's SHA-256 hashes; an exact stylesheet
-CSP hash permits the upstream shadow-root stylesheet without inline-style
-exceptions.
+verified against source bytes fetched directly from the publisher's GitHub
+repository at the resolved tag commit, independently of the delivery CDN. Exact
+stylesheet CSP hashes permit the upstream shadow-root stylesheet without
+inline-style exceptions.
 
 ## Interface fonts
 

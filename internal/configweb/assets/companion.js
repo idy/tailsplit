@@ -17,6 +17,7 @@
   let generation = 0;
   let bundled = !document.querySelector('script[data-peetty-release]');
   let fallbackLoading = null;
+  let sdk = window.Peetty;
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   toggle.checked = false;
   toggle.disabled = true;
@@ -43,24 +44,42 @@
     if (fallbackLoading) return fallbackLoading;
     fallbackLoading = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = '/vendor/peetty/peetty.global.js';
-      script.onload = () => { bundled = true; resolve(); };
-      script.onerror = () => { script.remove(); fallbackLoading = null; reject(new Error('Companion fallback unavailable.')); };
+      const previous = window.TailSplitBundledPeetty;
+      const fail = () => { script.remove(); fallbackLoading = null; reject(new Error('Companion fallback unavailable.')); };
+      script.src = '/vendor/peetty/fallback.js';
+      script.onload = () => {
+        const loaded = window.TailSplitBundledPeetty;
+        if (!loaded || loaded === previous || typeof loaded.createPeetty !== 'function') { fail(); return; }
+        sdk = loaded;
+        bundled = true;
+        resolve();
+      };
+      script.onerror = fail;
       document.head.append(script);
     });
     return fallbackLoading;
   }
 
-  // The embedded build retains TailSplit's accessibility and long-log fixes
-  // until those changes are available in the upstream CDN distribution.
+  function dispose(instance) {
+    try { if (typeof instance?.destroy === 'function') instance.destroy(); }
+    catch (_) { /* A broken CDN cleanup must not prevent embedded recovery. */ }
+  }
+
+  // Upstream can abandon a scan on any oversized text node, including YAML
+  // comments and values. Inspect text nodes rather than total container text.
   function needsBundled() {
-    return reducedMotion?.matches || (document.querySelector('#desktop-log-text')?.textContent?.length || 0) > 16384;
+    if (reducedMotion?.matches) return true;
+    const walker = document.createTreeWalker(document.body, 4 /* SHOW_TEXT */);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.data.length > 16384 && !node.parentElement?.closest('script,style,noscript')) return true;
+    }
+    return false;
   }
 
   async function sync() {
     if (!ready || !enabled || suspended || document.hidden) {
       generation++;
-      pet?.destroy();
+      dispose(pet);
       pet = null;
       return;
     }
@@ -74,20 +93,23 @@
         await useBundled();
       }
       if (current !== generation) return;
-      next = window.Peetty.createPeetty({
+      next = sdk.createPeetty({
         figure: 'miru', size: 88, activity: 'lively',
         language: locale.language, greet: false, chat: false, zIndex: 20,
       });
+      if (!next || typeof next.mount !== 'function' || typeof next.destroy !== 'function' || typeof next.setLanguage !== 'function') {
+        throw new Error('Incompatible companion instance.');
+      }
       pet = next;
       await next.mount();
       if (current !== generation || pet !== next) {
-        next.destroy();
+        dispose(next);
         return;
       }
       document.querySelector('peetty-companion').shadowRoot
         .querySelector('[data-action="hide"]').addEventListener('click', () => { void save(false); });
     } catch (_) {
-      next?.destroy();
+      dispose(next);
       if (current !== generation) return;
       if (pet === next) pet = null;
       if (!bundled && !fallbackAttempted) {
@@ -97,22 +119,22 @@
           return;
         } catch (_) { /* A retry can reload the embedded fallback. */ }
       }
+      if (current !== generation) return;
       showError('无法显示页面小人，请重试。', sync);
     }
   }
 
   function checkCompatibility() {
-    if (bundled || !needsBundled()) return;
+    if (bundled || !pet || !needsBundled()) return;
     generation++;
-    pet?.destroy();
+    dispose(pet);
     pet = null;
     void sync();
   }
 
   reducedMotion?.addEventListener('change', checkCompatibility);
-  const log = document.querySelector('#desktop-log-text');
-  if (log && window.MutationObserver) {
-    new window.MutationObserver(checkCompatibility).observe(log, { childList: true, characterData: true, subtree: true });
+  if (window.MutationObserver) {
+    new window.MutationObserver(checkCompatibility).observe(document.body, { childList: true, characterData: true, subtree: true });
   }
 
   async function save(value) {

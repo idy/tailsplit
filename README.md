@@ -185,14 +185,17 @@ or hover for actions. **Settings › General › Page companion** hides or resto
 it immediately; the preference is saved with the app's UI preferences and survives
 restarts and updates. The companion runs locally and requires no AI connection
 or API key. TailSplit checks jsDelivr at startup and every six hours for compatible
-stable Peetty 0.3.x releases, downloads the classic browser bundle and license
-notices, and atomically caches them beside the configuration in
+stable Peetty 0.3.x releases. It resolves the publisher's tag directly through
+GitHub, compares commit-pinned CDN downloads with the files from that GitHub
+commit, and atomically caches the verified browser bundle and license notices in
 `<config-path>.peetty/current.json`. New configuration pages use the downloaded
 version without a TailSplit app update; already open pages keep their version.
 Network or validation failures keep the last complete cache, and the embedded
-build remains available offline. Reduced motion, oversized diagnostic logs, or
-a failed CDN companion use the embedded build with TailSplit's compatibility
-fixes. All browser requests stay on the local origin; CSP permits only the
+build remains available offline. Source verification trusts GitHub HTTPS and
+control of the publisher repository; it does not claim signed-release provenance.
+Offline reuse trusts the owner-only cache; older CDN-only cache formats are
+rejected. Reduced motion, oversized page text (including YAML and logs), or a
+failed CDN companion use the embedded build with TailSplit's compatibility fixes. All browser requests stay on the local origin; CSP permits only the
 selected release's exact stylesheet.
 
 ## CLI

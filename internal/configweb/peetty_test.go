@@ -20,11 +20,14 @@ type peettyTransport func(*http.Request) (*http.Response, error)
 func (f peettyTransport) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
 type peettyCDNFixture struct {
-	versions []string
-	files    map[string]map[string][]byte
-	fail     string
-	tamper   string
-	requests []string
+	versions  []string
+	files     map[string]map[string][]byte
+	publisher map[string]map[string][]byte
+	annotated bool
+	tagLoop   bool
+	fail      string
+	tamper    string
+	requests  []string
 }
 
 func peettyTestFiles(color string, notices bool) map[string][]byte {
@@ -36,6 +39,11 @@ func peettyTestFiles(color string, notices bool) map[string][]byte {
 		files["cdn/THIRD_PARTY_NOTICES.txt"] = []byte("Dependency notices")
 	}
 	return files
+}
+
+func peettyTestCommit(version string) string {
+	digest := sha256.Sum256([]byte(version))
+	return fmt.Sprintf("%x", digest[:20])
 }
 
 func (cdn *peettyCDNFixture) client(t *testing.T) *http.Client {
@@ -53,17 +61,50 @@ func (cdn *peettyCDNFixture) client(t *testing.T) *http.Client {
 			status = http.StatusServiceUnavailable
 		case source == peettyVersionsURL:
 			body, _ = json.Marshal(map[string]any{"versions": cdn.versions})
-		case strings.HasPrefix(source, peettyVersionsURL+"@"):
-			version := "v" + strings.TrimSuffix(strings.TrimPrefix(source, peettyVersionsURL+"@"), "/flat")
-			var files []map[string]any
-			for name, data := range cdn.files[version] {
-				digest := sha256.Sum256(data)
-				files = append(files, map[string]any{"name": "/" + name, "size": len(data), "hash": base64.StdEncoding.EncodeToString(digest[:])})
+		case strings.HasPrefix(source, peettyGitHubAPI+"/git/"):
+			publisher := cdn.publisher
+			if publisher == nil {
+				publisher = cdn.files
 			}
-			body, _ = json.Marshal(map[string]any{"files": files})
+			var version string
+			if strings.Contains(source, "/git/ref/tags/") {
+				version = strings.TrimPrefix(source, peettyGitHubAPI+"/git/ref/tags/")
+			} else {
+				for candidate := range publisher {
+					if strings.TrimPrefix(source, peettyGitHubAPI+"/git/tags/") == peettyTestCommit("tag-"+candidate) {
+						version = candidate
+					}
+				}
+			}
+			kind, sha := "commit", peettyTestCommit(version)
+			if cdn.tagLoop || cdn.annotated && strings.Contains(source, "/git/ref/tags/") {
+				kind, sha = "tag", peettyTestCommit("tag-"+version)
+			}
+			if publisher[version] == nil {
+				status = http.StatusNotFound
+			}
+			body, _ = json.Marshal(map[string]any{"object": map[string]any{"type": kind, "sha": sha}})
+		case strings.HasPrefix(source, peettySourceBase):
+			commit, name, _ := strings.Cut(strings.TrimPrefix(source, peettySourceBase), "/")
+			publisher := cdn.publisher
+			if publisher == nil {
+				publisher = cdn.files
+			}
+			for version, files := range publisher {
+				if peettyTestCommit(version) == commit {
+					body = files[name]
+				}
+			}
+			if len(body) == 0 {
+				status = http.StatusNotFound
+			}
 		case strings.HasPrefix(source, peettyCDNBase):
-			version, name, _ := strings.Cut(strings.TrimPrefix(source, peettyCDNBase), "/")
-			body = cdn.files[version][name]
+			commit, name, _ := strings.Cut(strings.TrimPrefix(source, peettyCDNBase), "/")
+			for version, files := range cdn.files {
+				if peettyTestCommit(version) == commit {
+					body = files[name]
+				}
+			}
 			if name == cdn.tamper {
 				body = append(bytes.Clone(body), '!')
 			}
@@ -98,7 +139,7 @@ func TestPeettyUpdatesPinStableAssetsAndRestoreOfflineCache(t *testing.T) {
 	if release.style != "'sha256-"+base64.StdEncoding.EncodeToString(digest[:])+"'" {
 		t.Fatalf("stylesheet hash does not include exact literal: %s", release.style)
 	}
-	if err := u.check(context.Background()); err != nil || len(cdn.requests) != 6 {
+	if err := u.check(context.Background()); err != nil || len(cdn.requests) != 9 {
 		t.Fatalf("unchanged release re-downloaded resources: %v, %v", cdn.requests, err)
 	}
 	cached := newPeettyUpdates(config).snapshot()
@@ -256,7 +297,7 @@ func TestPeettyDoesNotLoadOrReplaceCacheThroughDirectorySymlink(t *testing.T) {
 func TestPeettyRejectsUnrecognizedOrDynamicStyles(t *testing.T) {
 	for _, css := range []string{"${dynamic}", `\n`, "`"} {
 		t.Run(fmt.Sprintf("%q", css), func(t *testing.T) {
-			release := &peettyRelease{Version: "v0.3.1", Files: peettyTestFiles(css, false), Hashes: make(map[string]string)}
+			release := &peettyRelease{Format: peettyCacheFormat, Commit: peettyTestCommit("v0.3.1"), Version: "v0.3.1", Files: peettyTestFiles(css, false), Hashes: make(map[string]string)}
 			for name, body := range release.Files {
 				digest := sha256.Sum256(body)
 				release.Hashes[name] = base64.StdEncoding.EncodeToString(digest[:])

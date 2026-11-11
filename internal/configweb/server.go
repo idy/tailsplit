@@ -205,6 +205,14 @@ func (s *Server) handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Path == "/vendor/peetty/fallback.js" {
+			bundle, _ := assets.ReadFile("assets/vendor/peetty/peetty.global.js")
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			_, _ = io.WriteString(w, "(() => {\n")
+			_, _ = w.Write(bundle)
+			_, _ = io.WriteString(w, "\nwindow.TailSplitBundledPeetty = Peetty;\n})();\n")
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, peettyAssetBase) && s.peetty != nil {
 			s.peetty.serveAsset(w, r)
 			return

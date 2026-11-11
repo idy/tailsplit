@@ -35,6 +35,8 @@ const (
 // Only the latest complete release is persisted; the embedded build is always
 // available independently of the cache and the network.
 type peettyRelease struct {
+	Format  int               `json:"format"`
+	Commit  string            `json:"commit"`
 	Version string            `json:"version"`
 	Files   map[string][]byte `json:"files"`
 	Hashes  map[string]string `json:"hashes"`
@@ -132,38 +134,9 @@ func (u *peettyUpdates) check(ctx context.Context) error {
 	if current := u.snapshot(); current != nil && semver.Compare(version, current.Version) <= 0 {
 		return nil
 	}
-	data, err = u.fetch(ctx, peettyVersionsURL+"@"+strings.TrimPrefix(version, "v")+"/flat", 1<<20)
+	release, err := u.downloadRelease(ctx, version)
 	if err != nil {
-		return fmt.Errorf("download Peetty manifest: %w", err)
-	}
-	var manifest struct {
-		Files []struct {
-			Name string `json:"name"`
-			Hash string `json:"hash"`
-			Size int64  `json:"size"`
-		} `json:"files"`
-	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return fmt.Errorf("decode Peetty manifest: %w", err)
-	}
-	release := &peettyRelease{Version: version, Files: make(map[string][]byte), Hashes: make(map[string]string)}
-	for _, file := range manifest.Files {
-		if file.Name != "/cdn/peetty.global.js" && file.Name != "/cdn/LICENSE" && file.Name != "/cdn/THIRD_PARTY_NOTICES.txt" {
-			continue
-		}
-		name := strings.TrimPrefix(file.Name, "/")
-		if _, duplicate := release.Files[name]; duplicate || file.Size <= 0 || file.Size > peettyFileLimit {
-			return errors.New("invalid Peetty CDN manifest")
-		}
-		body, err := u.fetch(ctx, peettyCDNBase+version+"/"+name, file.Size)
-		if err != nil {
-			return fmt.Errorf("download %s: %w", name, err)
-		}
-		digest := sha256.Sum256(body)
-		if int64(len(body)) != file.Size || base64.StdEncoding.EncodeToString(digest[:]) != file.Hash {
-			return fmt.Errorf("Peetty checksum mismatch: %s", name)
-		}
-		release.Files[name], release.Hashes[name] = body, file.Hash
+		return err
 	}
 	if err := preparePeettyRelease(release); err != nil {
 		return err
@@ -183,6 +156,9 @@ func (u *peettyUpdates) check(ctx context.Context) error {
 }
 
 func (u *peettyUpdates) fetch(ctx context.Context, source string, limit int64) ([]byte, error) {
+	if !peettyAllowedSource(source) {
+		return nil, errors.New("unexpected Peetty resource source")
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
 		return nil, err
@@ -194,7 +170,7 @@ func (u *peettyUpdates) fetch(ctx context.Context, source string, limit int64) (
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("CDN returned HTTP %d", response.StatusCode)
+		return nil, peettyHTTPStatus(response.StatusCode)
 	}
 	return readPeettyBounded(response.Body, limit)
 }
@@ -203,7 +179,10 @@ func (u *peettyUpdates) fetch(ctx context.Context, source string, limit int64) (
 // that stylesheet without unsafe-inline, upstream source downloads or rewrites
 // of minified JavaScript. Unknown build formats keep the last usable release.
 func preparePeettyRelease(release *peettyRelease) error {
-	if !compatiblePeettyVersion(release.Version) || len(release.Files) < 2 || len(release.Files) > 3 || len(release.Hashes) != len(release.Files) {
+	// Format 2 is written only after verification against the publisher's GitHub
+	// commit. Older CDN-only caches cannot establish that trust. Offline reuse
+	// trusts the owner-only cache, as it does other local application state.
+	if release.Format != peettyCacheFormat || !peettyCommitID(release.Commit) || !compatiblePeettyVersion(release.Version) || len(release.Files) < 2 || len(release.Files) > 3 || len(release.Hashes) != len(release.Files) {
 		return errors.New("invalid Peetty release")
 	}
 	for _, name := range []string{"cdn/peetty.global.js", "cdn/LICENSE"} {
