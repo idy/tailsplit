@@ -69,7 +69,7 @@ Source: "{#RuntimeFile}"; DestName: "webview2-runtime.exe"; Flags: dontcopy noco
 Name: "{commonprograms}\TailSplit"; Filename: "{app}\TailSplit.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\TailSplit.exe"; Parameters: "--no-connect"; WorkingDir: "{app}"; Description: "Open TailSplit (disconnected)"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: MayLaunchGUI
+Filename: "{app}\TailSplit.exe"; Parameters: "{code:DesktopLaunchParameters}"; WorkingDir: "{app}"; Description: "Open TailSplit"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: MayLaunchGUI
 
 ; Service state, the registered desktop SID, and user config/device state are
 ; deliberately not [Registry] or [UninstallDelete] entries. The service helper
@@ -94,6 +94,7 @@ const
   ErrorServiceNotActive = 1062;
   ErrorServiceMarkedForDelete = 1072;
   PayloadCount = 10;
+  DesktopReconnectExitCode = 10;
 
 type
   TServiceStatus = record
@@ -116,6 +117,7 @@ var
   SnapshotActive: Boolean;
   InstallComplete: Boolean;
   ServiceInstallSucceeded: Boolean;
+  ReconnectDesktop: Boolean;
   RecoveryInProgress: Boolean;
   OriginalFailure: String;
   FailureExitCode: Integer;
@@ -165,6 +167,14 @@ end;
 function MayLaunchGUI: Boolean;
 begin
   Result := ServiceInstallSucceeded and (OriginalFailure = '');
+end;
+
+function DesktopLaunchParameters(Param: String): String;
+begin
+  if ReconnectDesktop then
+    Result := '--start'
+  else
+    Result := '--no-connect';
 end;
 
 function FixedAppDir: String;
@@ -413,15 +423,24 @@ end;
 procedure QuitDesktopGUI;
 var
   ExitCode: Integer;
-  GUI: String;
+  GUI, QuitParameters: String;
+  RestoreConnection: Boolean;
 begin
+  ReconnectDesktop := False;
   GUI := FixedAppDir + '\TailSplit.exe';
   if not FileExists(GUI) then Exit;
-  { This fixed --quit invocation is control-only. The installed GUI resolves
-    the registered desktop SID from protected HKLM, authenticates that user's
-    GUI pipe/server image, reports teardown errors, and awaits GUI process exit.
-    Normal GUI launches still run only as the original ordinary desktop user. }
-  if not Exec(GUI, '--quit', FixedAppDir, SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+  { Both quit commands are control-only. The installed GUI resolves the
+    registered desktop SID from protected HKLM, authenticates its pipe/server
+    image and awaits process exit. In-app updates report traffic intent only
+    after successful cleanup; ordinary installs/uninstalls remain disconnected. }
+  RestoreConnection := (not IsUninstaller) and (ExpandConstant('{param:RestoreConnection|0}') = '1');
+  QuitParameters := '--quit';
+  if RestoreConnection then QuitParameters := '--quit-for-update';
+  if not Exec(GUI, QuitParameters, FixedAppDir, SW_HIDE, ewWaitUntilTerminated, ExitCode) then
+    RaiseException('TailSplit could not quit the registered desktop GUI.');
+  if RestoreConnection and (ExitCode = DesktopReconnectExitCode) then
+    ReconnectDesktop := True
+  else if ExitCode <> 0 then
     RaiseException('TailSplit could not disconnect and quit the registered desktop GUI (exit ' + IntToStr(ExitCode) + ').');
 end;
 

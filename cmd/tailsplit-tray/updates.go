@@ -10,6 +10,20 @@ import (
 	"github.com/idy/tailsplit/internal/tray"
 )
 
+// Preserve traffic intent, including a blocked Global session or a connection
+// waiting for its exit, without treating discovery or sign-in as Connect.
+func desktopUpdateReconnect(snapshot tray.Snapshot) bool {
+	return snapshot.Active && (snapshot.Mode == "tun" || snapshot.Mode == "proxy") &&
+		snapshot.State != "stopping" && snapshot.State != "failed" && snapshot.State != "logging-out"
+}
+
+func desktopUpdateStartArgument(reconnect bool) string {
+	if reconnect {
+		return "--start"
+	}
+	return "--no-connect"
+}
+
 // Update work has its own lifetime; downloading never holds the network
 // controller's operation queue. Only preference writes and installation enter it.
 type desktopUpdateSource interface {

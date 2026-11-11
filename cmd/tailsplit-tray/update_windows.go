@@ -42,7 +42,7 @@ func launchWindowsUpdate(update appupdate.Package) error {
 	if err != nil {
 		return err
 	}
-	parameters, _ := windows.UTF16PtrFromString("/SP- /NORESTART /UserSID=" + user.User.Sid.String())
+	parameters, _ := windows.UTF16PtrFromString("/SP- /NORESTART /RestoreConnection=1 /UserSID=" + user.User.Sid.String())
 	info := updateShellExecuteInfo{
 		Mask: 0x40 | 0x100, // SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
 		Verb: verb, File: file, Parameters: parameters, Show: windows.SW_SHOWNORMAL,

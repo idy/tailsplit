@@ -161,8 +161,11 @@ listeners. **System routing** captures system traffic when `tun.enabled` is set.
 Both modes create a DNS TUN and require the privileged network service:
 Windows Setup installs it; macOS requests administrator approval on first connection.
 
-Configuration and device state are retained across normal updates. The network
-service checks import eligibility per device, reads only still-needed CLI or
+Configuration and device state are retained across normal updates. In-app updates
+also restore the connection switch: an active connection reconnects after the
+restart, while a disconnected app stays disconnected. This does not change the
+auto-connect preference for ordinary launches. The network service checks import
+eligibility per device, reads only still-needed CLI or
 fallback copies, and holds their ordinary-user state lease through cleanup. An
 unused primary remains eligible after another device initializes the new service
 cache. Existing service-owned or logged-out devices retain authority, and legacy

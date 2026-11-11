@@ -10,7 +10,36 @@ import (
 
 	"github.com/idy/tailsplit/internal/appupdate"
 	"github.com/idy/tailsplit/internal/configweb"
+	"github.com/idy/tailsplit/internal/tray"
 )
+
+func TestDesktopUpdateRestoresTrafficIntent(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		snapshot tray.Snapshot
+		argument string
+	}{
+		{"connected proxy", tray.Snapshot{Active: true, Mode: "proxy", State: "running"}, "--start"},
+		{"connected TUN", tray.Snapshot{Active: true, Mode: "tun", State: "running"}, "--start"},
+		{"blocked Global", tray.Snapshot{Active: true, Mode: "tun", State: "blocked"}, "--start"},
+		{"waiting for exit", tray.Snapshot{Active: true, Mode: "proxy", State: "waiting-exit"}, "--start"},
+		{"connecting", tray.Snapshot{Active: true, Mode: "tun", State: "starting"}, "--start"},
+		{"traffic authorization", tray.Snapshot{Active: true, Mode: "tun", State: "login"}, "--start"},
+		{"stopped", tray.Snapshot{Mode: "tun", State: "stopped"}, "--no-connect"},
+		{"disconnecting", tray.Snapshot{Active: true, Mode: "tun", State: "stopping"}, "--no-connect"},
+		{"failed", tray.Snapshot{Active: true, Mode: "proxy", State: "failed"}, "--no-connect"},
+		{"discovery", tray.Snapshot{Active: true, Mode: "discovery", State: "discovering"}, "--no-connect"},
+		{"sign-in only", tray.Snapshot{Active: true, Mode: "login", State: "login"}, "--no-connect"},
+		{"logging out", tray.Snapshot{Active: true, Mode: "tun", State: "logging-out"}, "--no-connect"},
+		{"service preparation", tray.Snapshot{Active: true, Mode: "service-preparation", State: "authorizing"}, "--no-connect"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := desktopUpdateStartArgument(desktopUpdateReconnect(test.snapshot)); got != test.argument {
+				t.Fatalf("got %s, want %s", got, test.argument)
+			}
+		})
+	}
+}
 
 type updateFixture struct {
 	mu       sync.Mutex

@@ -96,7 +96,7 @@ func New(version string, automatic bool) *Updater {
 		now:             time.Now,
 		after:           time.After,
 		startupDelay:    10 * time.Second,
-		checkInterval:   6 * time.Hour,
+		checkInterval:   5 * time.Minute,
 		requestTimeout:  30 * time.Second,
 		downloadTimeout: 15 * time.Minute,
 		packageLimit:    maxPackageBytes,
@@ -120,7 +120,7 @@ func (u *Updater) SetAutomatic(automatic bool) {
 }
 
 // Run waits for the lifecycle context, checking after ten seconds and then at
-// six-hour intervals. Disabled and development builds skip timed checks. The
+// five-minute intervals. Disabled and development builds skip timed checks. The
 // preference does not reset that cadence. Only one Run loop can be active.
 // Automatic checks only discover updates; they never download or install them.
 // After the startup delay, Run also removes downloads left by earlier processes.

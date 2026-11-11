@@ -325,8 +325,28 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn(r"DefaultDirName={autopf}\TailSplit", self.script)
         self.assertIn("ServiceName = 'TailSplitNetworkService';", self.script)
         quit_gui = self.script.split("procedure QuitDesktopGUI;", 1)[1].split("procedure RemoveObsoleteWindowDLL;", 1)[0]
-        self.assertIn("Exec(GUI, '--quit', FixedAppDir, SW_HIDE, ewWaitUntilTerminated", quit_gui)
-        self.assertIn("(ExitCode <> 0)", quit_gui)
+        self.assertIn("QuitParameters := '--quit';", quit_gui)
+        self.assertIn("Exec(GUI, QuitParameters, FixedAppDir, SW_HIDE, ewWaitUntilTerminated", quit_gui)
+        self.assertIn("else if ExitCode <> 0 then", quit_gui)
+
+    def test_in_app_update_restores_shutdown_intent_without_changing_manual_install(self):
+        launch = self.script.split("[Run]", 1)[1].split("[Code]", 1)[0]
+        self.assertIn('Parameters: "{code:DesktopLaunchParameters}"', launch)
+        self.assertIn("nowait postinstall skipifsilent runasoriginaluser", launch)
+        self.assertIn("Check: MayLaunchGUI", launch)
+        parameters = self.script.split("function DesktopLaunchParameters(", 1)[1].split("function FixedAppDir:", 1)[0]
+        self.assertIn("if ReconnectDesktop then", parameters)
+        self.assertIn("Result := '--start'", parameters)
+        self.assertIn("Result := '--no-connect'", parameters)
+        quit_gui = self.script.split("procedure QuitDesktopGUI;", 1)[1].split("procedure RemoveObsoleteWindowDLL;", 1)[0]
+        self.assertIn("ReconnectDesktop := False;", quit_gui)
+        self.assertIn("(not IsUninstaller) and (ExpandConstant('{param:RestoreConnection|0}') = '1')", quit_gui)
+        self.assertIn("if RestoreConnection then QuitParameters := '--quit-for-update';", quit_gui)
+        self.assertIn("if RestoreConnection and (ExitCode = DesktopReconnectExitCode) then", quit_gui)
+        self.assertIn("ReconnectDesktop := True", quit_gui)
+        desktop = (ROOT / "cmd/tailsplit-tray/main_windows.go").read_text(encoding="utf-8")
+        code = re.search(r"desktopUpdateReconnectExitCode = (\d+)", desktop).group(1)
+        self.assertIn(f"DesktopReconnectExitCode = {code};", self.script)
 
     def test_recovery_journal_indices_stay_compatible_with_pre_mygo_installs(self):
         expected = ["TailSplit.exe", "tailsplit-core.exe", "TailSplit.Window.dll", "config.example.yaml",

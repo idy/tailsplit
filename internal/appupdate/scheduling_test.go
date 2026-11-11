@@ -162,19 +162,19 @@ func TestRunPreferenceSchedulingAndManualCheck(t *testing.T) {
 		t.Fatal("scheduler checked before startup delay")
 	}
 	startup.tick <- time.Now()
-	interval := nextTimer(t, timers, 6*time.Hour)
+	interval := nextTimer(t, timers, 5*time.Minute)
 	if log.count() != 0 || !u.Snapshot().LastChecked.IsZero() {
 		t.Fatal("disabled automatic check was not skipped")
 	}
 	u.SetAutomatic(true)
 	interval.tick <- time.Now()
-	interval = nextTimer(t, timers, 6*time.Hour)
+	interval = nextTimer(t, timers, 5*time.Minute)
 	if log.count() != 1 || !u.Snapshot().Available {
 		t.Fatal("enabled periodic check did not discover update")
 	}
 	u.SetAutomatic(false)
 	interval.tick <- time.Now()
-	nextTimer(t, timers, 6*time.Hour)
+	nextTimer(t, timers, 5*time.Minute)
 	if log.count() != 1 {
 		t.Fatal("disabled periodic check made a request")
 	}
@@ -200,9 +200,9 @@ func TestRunChecksAfterStartupAndSkipsDevelopment(t *testing.T) {
 			go func() { u.Run(ctx); close(finished) }()
 			startup := nextTimer(t, timers, 10*time.Second)
 			startup.tick <- time.Now()
-			interval := nextTimer(t, timers, 6*time.Hour)
+			interval := nextTimer(t, timers, 5*time.Minute)
 			interval.tick <- time.Now()
-			nextTimer(t, timers, 6*time.Hour)
+			nextTimer(t, timers, 5*time.Minute)
 			wanted := 0
 			if version == "0.6.1" {
 				wanted = 2
@@ -244,7 +244,7 @@ func TestRunRemovesStaleDownloadsAfterStartup(t *testing.T) {
 		t.Fatal("stale download was removed before the startup delay:", err)
 	}
 	startup.tick <- time.Now()
-	nextTimer(t, timers, 6*time.Hour)
+	nextTimer(t, timers, 5*time.Minute)
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("download left by an earlier process remained:", err)
 	}

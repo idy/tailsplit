@@ -3,19 +3,27 @@
 package main
 
 import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idy/tailsplit/internal/appupdate"
+	"github.com/tailscale/go-winio"
 	"golang.org/x/sys/windows"
 )
 
 // The test binary doubles as the fake Setup EXE. ShellExecuteEx passes this
 // process's environment to the child, which selects the fixture branch.
 const updateInstallerFixture = "TAILSPLIT_TEST_UPDATE_INSTALLER"
+const desktopQuitFixture = "TAILSPLIT_TEST_DESKTOP_QUIT"
 
 func TestMain(m *testing.M) {
 	if record := os.Getenv(updateInstallerFixture); record != "" {
@@ -28,7 +36,37 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(code)
 	}
+	if pipe := os.Getenv(desktopQuitFixture); pipe != "" {
+		os.Exit(runDesktopQuitFixture(pipe))
+	}
 	os.Exit(m.Run())
+}
+
+func runDesktopQuitFixture(pipe string) int {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return 3
+	}
+	listener, err := winio.ListenPipe(pipe, &winio.PipeConfig{SecurityDescriptor: desktopPipeDescriptor(user.User.Sid.String())})
+	if err != nil {
+		return 3
+	}
+	defer listener.Close()
+	fmt.Println("ready")
+	connection, err := listener.Accept()
+	if err != nil {
+		return 3
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+	command, err := bufio.NewReader(connection).ReadString('\n')
+	if err != nil || command != "quit-update\n" {
+		return 3
+	}
+	if _, err := io.WriteString(connection, os.Getenv(desktopQuitFixture+"_RESPONSE")); err != nil {
+		return 3
+	}
+	return 0
 }
 
 func TestWindowsUpdateInstallerHandoff(t *testing.T) {
@@ -56,9 +94,55 @@ func TestWindowsUpdateInstallerHandoff(t *testing.T) {
 				t.Fatal("installer failure was not reported:", err)
 			}
 			arguments, err := os.ReadFile(record)
-			want := "/SP-\n/NORESTART\n/UserSID=" + user.User.Sid.String()
+			want := "/SP-\n/NORESTART\n/RestoreConnection=1\n/UserSID=" + user.User.Sid.String()
 			if err != nil || string(arguments) != want {
 				t.Fatalf("installer arguments = %q (%v), want %q", arguments, err, want)
+			}
+		})
+	}
+}
+
+func TestWindowsDesktopUpdateQuitStateProtocol(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, response string
+		reconnect      bool
+		failure        bool
+	}{
+		{"connected", "ok-start\n", true, false},
+		{"disconnected", "ok\n", false, false},
+		{"cleanup failed", "failed\n", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			pipe := `\\.\pipe\tailsplit-update-quit-` + filepath.Base(t.TempDir())
+			command := exec.CommandContext(ctx, executable)
+			command.Env = append(os.Environ(), desktopQuitFixture+"="+pipe, desktopQuitFixture+"_RESPONSE="+test.response)
+			output, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = command.Process.Kill(); _ = command.Wait() }()
+			if ready, err := bufio.NewReader(output).ReadString('\n'); err != nil || ready != "ready\n" {
+				t.Fatal("desktop fixture did not listen:", ready, err)
+			}
+			reconnect, err := desktopRequest(ctx, pipe, "quit-update", executable, user.User.Sid.String())
+			if (err != nil) != test.failure || reconnect != test.reconnect {
+				t.Fatalf("reconnect=%t error=%v", reconnect, err)
+			}
+			if err := command.Wait(); err != nil {
+				t.Fatal("desktop fixture failed:", err)
 			}
 		})
 	}
