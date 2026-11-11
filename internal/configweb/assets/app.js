@@ -76,10 +76,11 @@
   let nativeJournalScope = validJournalScope(fragment.get('journal')) ? fragment.get('journal') : '';
   let nativeJournalBackup = fragment.get('journal_backup') === '1';
   let nativeCancelHost = fragment.get('cancel_host') === '1';
+  let nativeCancelGuard = fragment.get('cancel_guard') === '1';
   if (mygoWindow) {
     try {
       if (fragment.has('journal')) {
-        if (nativeJournalScope) sessionStorage.setItem(nativeJournalScopeKey, JSON.stringify({ token, scope: nativeJournalScope, backup: nativeJournalBackup, host: nativeCancelHost }));
+        if (nativeJournalScope) sessionStorage.setItem(nativeJournalScopeKey, JSON.stringify({ token, scope: nativeJournalScope, backup: nativeJournalBackup, host: nativeCancelHost, guard: nativeCancelGuard }));
         else sessionStorage.removeItem(nativeJournalScopeKey);
       } else {
         const remembered = JSON.parse(sessionStorage.getItem(nativeJournalScopeKey) || 'null');
@@ -87,6 +88,7 @@
           nativeJournalScope = remembered.scope;
           nativeJournalBackup = remembered.backup === true;
           nativeCancelHost = remembered.host === true;
+          nativeCancelGuard = remembered.guard === true;
         } else sessionStorage.removeItem(nativeJournalScopeKey);
       }
     } catch (_) { /* The fragment still supplies this native load's scope and negotiated store. */ }
@@ -769,6 +771,8 @@
   let setupCancelError = null;
   let setupCancelJournalConfirmed = false;
   let setupCancelGeneration = 0;
+  const nativeCancelGuards = new Map();
+  const nativeCancelKey = cancel => JSON.stringify([cancel.request || '', cancel.operation_id || '']);
   const setupCancelKey = 'tailsplit-setup-cancel';
   const sharedCancelPrefix = 'tailsplit-setup-cancel:';
   let sharedCancelReadable = true;
@@ -1132,35 +1136,84 @@
       checkingApproval ? '正在刷新设备状态，不会重新发起登录。' : approval ? approvalError || (approvalRetry ? t('设备获批后，点击“检查批准状态”以继续连接。') : approvalHelp()) : setup?.stage === 'node' ? '选择一个在线节点并确认；应用会保存出口并继续这次连接。' :
       setup?.stage === 'connecting' ? '正在使用已确认的出口连接。' : '正在准备设备授权。完成浏览器登录后会自动打开节点选择，再继续连接。';
     setStatusText('#connection-setup-title', t(title));
-    setStatusText('#connection-setup-detail', message(detail));
+    setStatusText('#connection-setup-detail', [message(detail), !pendingSetupCancel && nativeCancelGuarded() ? t('恢复记录不可用；此面板意外关闭时会取消当前操作。') : ''].filter(Boolean).join(' '));
     panel.classList.toggle('error', failed);
     $('#connection-setup-retry').hidden = Boolean(pendingSetupCancel) || !failed && !approvalRetry;
     setStatusText('#connection-setup-retry', t(approvalRetry ? '检查批准状态' : serviceError ? '安装服务并继续连接' : '重试连接'));
     $('#connection-setup-retry').disabled = isLocked() || isDesktopBusy() || quickBusy || connectionLost || state.dirty || state.external || !state.savedValid || networkActive();
     $('#connection-setup-cancel').hidden = !setup && !live.active && !pendingSetupCancel;
-    $('#connection-setup-cancel').disabled = !live.desktop || setupCancelSending;
+    $('#connection-setup-cancel').disabled = !live.desktop || setupCancelSending || !nativeCancelReady();
+    $('#connection-setup-cancel').title = nativeCancelGuard && !nativeCancelReady() ? t('正在准备安全取消，请等待宿主确认后重试。') : '';
     setStatusText('#connection-setup-cancel', t(pendingSetupCancel && !setupCancelSending ? '重试取消' : failed && !live.active ? '关闭' : '取消连接'));
   }
+  function currentCancelTarget() {
+    if (pendingSetupCancel) return pendingSetupCancel;
+    const request = desktopLive?.connect_request;
+    const canceledRequest = request && (mygoWindow || browserConnectRequest === request) ? request : '';
+    const operationID = desktopOperation || quickOperation || connectionSetup?.operation_id || (desktopLive?.active ? desktopLive.operation_id : '') || canceledRequest;
+    return operationID || canceledRequest ? { request: canceledRequest, operation_id: operationID || '' } : null;
+  }
+  function requestNativeCancelGuard(cancel) {
+    if (!nativeCancelGuard || !nativeCancelHost || !nativeJournalScope) return false;
+    const key = nativeCancelKey(cancel);
+    const guard = nativeCancelGuards.get(key);
+    if (guard?.armed) return true;
+    if (!guard || Date.now() - guard.requested > 1000) {
+      nativeCancelGuards.set(key, { armed: false, requested: Date.now() });
+      const fragment = new URLSearchParams({ scope: nativeJournalScope, request: cancel.request, operation_id: cancel.operation_id || '' });
+      try { location.assign(`/native-cancel-arm#${fragment}`); } catch (_) { /* A later refresh can retry; unsafe Cancel stays disabled. */ }
+    }
+    return false;
+  }
+  function nativeCancelGuarded(cancel = currentCancelTarget()) {
+    return Boolean(mygoWindow && nativeCancelGuard && cancel && nativeCancelGuards.get(nativeCancelKey(cancel))?.armed);
+  }
+  function nativeCancelReady(cancel = currentCancelTarget()) {
+    if (!mygoWindow || !nativeCancelGuard || !cancel) return true;
+    return nativeCancelGuards.get(nativeCancelKey(cancel))?.armed === true || nativeRecoveryAvailable(cancel) || requestNativeCancelGuard(cancel);
+  }
+  window.addEventListener('tailsplit-native-cancel-armed', event => {
+    const ack = event.detail;
+    if (!mygoWindow || !nativeCancelGuard || ack?.scope !== nativeJournalScope) return;
+    const guard = nativeCancelGuards.get(nativeCancelKey(ack));
+    if (!guard) return;
+    guard.armed = true;
+    renderConnectionCenter();
+  });
   let nativeCancelConfirmation = null;
+  function matchesNativeCancelAck(ack, confirmation = nativeCancelConfirmation) {
+    return mygoWindow && confirmation && ack?.scope === nativeJournalScope &&
+      ack.request === confirmation.cancel.request && ack.operation_id === (confirmation.cancel.operation_id || '');
+  }
+  window.addEventListener('tailsplit-native-cancel-admitted', event => {
+    if (matchesNativeCancelAck(event.detail)) nativeCancelConfirmation.admit();
+  });
   window.addEventListener('tailsplit-native-cancel-ack', event => {
     const confirmation = nativeCancelConfirmation;
     const ack = event.detail;
-    if (!mygoWindow || !confirmation || ack?.scope !== nativeJournalScope ||
-        ack.request !== confirmation.cancel.request || ack.operation_id !== (confirmation.cancel.operation_id || '')) return;
+    if (!matchesNativeCancelAck(ack, confirmation)) return;
+    confirmation.admit();
     confirmation.resolve();
   });
   async function deliverNativeCancel(cancel) {
-    let confirmed = false, resolveAck;
+    let confirmed = false, resolveAck, admit;
     const ack = new Promise(resolve => { resolveAck = () => { confirmed = true; resolve(); }; });
-    const confirmation = { cancel, resolve: resolveAck };
+    const admitted = new Promise(resolve => { admit = resolve; });
+    const confirmation = { cancel, resolve: resolveAck, admit };
     const host = nativeCancelHost && Boolean(nativeJournalScope);
     if (host) nativeCancelConfirmation = confirmation;
     try {
-      // The host intercepts this route before navigation or HTTP, retaining the
-      // intent outside the renderer even when both journal stores are denied.
+      // Assign only requests navigation. Guard-capable hosts must acknowledge
+      // admission before legacy delivery; a pre-armed target covers source loss.
       if (host) {
         const fragment = new URLSearchParams({ scope: nativeJournalScope, request: cancel.request, operation_id: cancel.operation_id || '' });
         try { location.assign(`/native-cancel#${fragment}`); } catch (_) { /* The original transports remain available. */ }
+      }
+      if (host && nativeCancelGuard) {
+        let timer;
+        try { await Promise.race([admitted, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(t('取消尚未由宿主接收，请重试。'))), 1000); })]); }
+        finally { clearTimeout(timer); }
+        if (confirmed) return;
       }
       const legacy = (async () => {
         let timer;
@@ -1185,9 +1238,14 @@
     if (!pendingSetupCancel || setupCancelSending || !desktopLive?.desktop) return false;
     const cancel = pendingSetupCancel;
     if (mygoWindow) setupCancelJournalConfirmed = journalNativeCancel(cancel);
+    if (mygoWindow && nativeCancelGuard && !setupCancelJournalConfirmed && !requestNativeCancelGuard(cancel)) {
+      setupCancelError = t('正在准备安全取消，请等待宿主确认后重试。');
+      renderConnectionCenter();
+      return false;
+    }
     if (!cancel.request && !cancel.operation_id) { rememberSetupCancel(null); return true; }
     setupCancelSending = true;
-    setupCancelError = mygoWindow && !setupCancelJournalConfirmed ? t('取消尚未确认，恢复日志也未能保存。请保留此面板并重试，仍失败时可从菜单栏或托盘退出 TailSplit。') : null;
+    setupCancelError = mygoWindow && !nativeCancelGuard && !setupCancelJournalConfirmed ? t('取消尚未确认，恢复日志也未能保存。请保留此面板并重试，仍失败时可从菜单栏或托盘退出 TailSplit。') : null;
     operationError = null; clearNotice(); stateRequest++;
     renderConnectionCenter();
     try {
@@ -1199,14 +1257,20 @@
       rememberSetupCancel(null);
       return !pendingSetupCancel;
     } catch (error) {
-      setupCancelError = mygoWindow && !setupCancelJournalConfirmed ? t('取消尚未确认，恢复日志也未能保存。请保留此面板并重试，仍失败时可从菜单栏或托盘退出 TailSplit。') : error;
+      setupCancelError = mygoWindow && !nativeCancelGuard && !setupCancelJournalConfirmed ? t('取消尚未确认，恢复日志也未能保存。请保留此面板并重试，仍失败时可从菜单栏或托盘退出 TailSplit。') : error;
       return false;
     } finally { setupCancelSending = false; renderConnectionCenter(); }
   }
   async function cancelConnectionSetup() {
-    const request = desktopLive?.connect_request;
-    const canceledRequest = request && (mygoWindow || browserConnectRequest === request) ? request : '';
-    const operationID = desktopOperation || quickOperation || connectionSetup?.operation_id || desktopLive?.operation_id || canceledRequest;
+    const target = currentCancelTarget();
+    // A click cannot commit a storage-free cancellation until the host has
+    // acknowledged its exact loss guard. No setup invalidation precedes this.
+    if (mygoWindow && nativeCancelGuard && target && !journalNativeCancel(target) && !requestNativeCancelGuard(target)) {
+      operationError = { title: '操作未完成', detail: t('正在准备安全取消，请等待宿主确认后重试。') };
+      clearNotice(); renderConnectionCenter(); return;
+    }
+    const canceledRequest = target?.request || '';
+    const operationID = target?.operation_id || '';
     setupCancelGeneration++;
     connectionSetup = null;
     pendingExitPicker = ''; pendingAddedExits.clear();
@@ -1492,7 +1556,8 @@
     $('#desktop-connect').hidden = Boolean(live.active || pendingSetupCancel);
     $('#desktop-disconnect').hidden = !live.active && !pendingSetupCancel;
     $('#desktop-connect').disabled = !live.desktop || locked || state.dirty || state.external || !state.savedValid || changing || (!needsDefaultChoice && requiredBlocked) || Boolean(connectionSetup && connectionSetup.stage !== 'failed');
-    $('#desktop-disconnect').disabled = !live.desktop || setupCancelSending;
+    $('#desktop-disconnect').disabled = !live.desktop || setupCancelSending || !nativeCancelReady();
+    $('#desktop-disconnect').title = nativeCancelGuard && !nativeCancelReady() ? t('正在准备安全取消，请等待宿主确认后重试。') : '';
     $('#desktop-disconnect').setAttribute('aria-checked', String(connected));
     $('#desktop-disconnect').title = connected ? t('断开') : t('取消');
     $('#desktop-disconnect').setAttribute('aria-label', $('#desktop-disconnect').title);
@@ -2548,6 +2613,8 @@
       connected ? !matchingState ? t('已保存的配置尚未应用；当前连接仍使用之前的配置。') : t(global ? '全局流量通过所选出口；出口不可用时阻断。' : '按已保存规则分流；直连与出口各走各的路径。') :
       working ? message($('#connection-setup-detail').textContent || $('#desktop-hint').textContent) :
       first ? t('点击“开始设置”，按提示完成系统授权、Tailscale 登录和节点选择。') : t('开启即可连接。需要登录或选择节点时，应用会带你完成。');
+    if (working && !pendingSetupCancel && nativeCancelGuarded()) description = t('恢复记录不可用；此面板意外关闭时会取消当前操作。');
+    if (working && nativeCancelGuard && !nativeCancelReady()) description = t('正在准备安全取消，请等待宿主确认后重试。');
     if (!live.desktop && !working) description = t('此页面仅编辑配置，连接操作请使用 TailSplit 桌面应用。');
     setStatusText('#home-description', description);
     const control = $('#home-connect');
