@@ -66,6 +66,7 @@ func execute(args []string, out, diagnostic io.Writer) error {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(diagnostic)
 	path := flags.String("c", "config.yaml", "YAML configuration path")
+	configBase := flags.String("config-base", "", "original base directory for a captured configuration")
 	target := flags.String("id", "", "discovered exit node ID to ping (ping only)")
 	exit := flags.String("exit", "", "limit login, discovery, logout or ping to one exit ID (main is the primary device)")
 	events := flags.Bool("events", false, "emit private connection events on stdout (run only)")
@@ -85,6 +86,9 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		return errors.New("--parent-pid must identify the current parent of a run command")
 	}
 	if command == "init" {
+		if *configBase != "" {
+			return errors.New("--config-base is not supported by init")
+		}
 		file, err := privatefs.CreateFile(*path)
 		if err != nil {
 			return fmt.Errorf("create config without overwriting existing files: %w", err)
@@ -96,12 +100,12 @@ func execute(args []string, out, diagnostic io.Writer) error {
 		fmt.Fprintln(out, "Created", *path)
 		return nil
 	}
-	load := tailsplit.Load
+	load := tailsplit.LoadWithBase
 	if command == "app-login-new" {
 		// This is a staged device-only draft, not an owner of saved rule caches.
-		load = tailsplit.LoadDraft
+		load = tailsplit.LoadDraftWithBase
 	}
-	config, err := load(*path)
+	config, err := load(*path, *configBase)
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/idy/tailsplit"
+	"github.com/idy/tailsplit/internal/privatefs"
 
 	"gopkg.in/yaml.v3"
 )
@@ -69,19 +70,30 @@ func startupConfig(configPath string, data []byte) (tailsplit.Config, error) {
 	return tailsplit.Normalize(config, base)
 }
 
-func stateConnectionSnapshotPath(config tailsplit.Config) string {
-	return filepath.Join(config.StateDir, ".tailsplit-connection-snapshots", "config.yaml")
+func connectionSnapshotFallbackPath(logPath string) (string, error) {
+	path, err := filepath.Abs(logPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(path), ".tailsplit-connection-snapshots", "config.yaml"), nil
 }
 
-func cleanupStartupConnectionSnapshots(configPath string) error {
+func cleanupStartupConnectionSnapshots(configPath, logPath string) error {
 	err := cleanupConnectionSnapshots(configPath)
-	data, _, readErr := readStartupConfigDocument(configPath)
-	if readErr != nil {
-		return err // Recovery still opens when the saved document cannot be loaded.
+	fallbackPath, pathErr := connectionSnapshotFallbackPath(logPath)
+	if pathErr != nil {
+		return errors.Join(err, pathErr)
 	}
-	config, configErr := startupConfig(configPath, data)
-	if configErr != nil {
-		return err
+	directory := filepath.Dir(fallbackPath)
+	if _, statErr := os.Lstat(directory); errors.Is(statErr, os.ErrNotExist) {
+		return err // Do not create snapshot metadata before the first fallback.
+	} else if statErr != nil {
+		return errors.Join(err, statErr)
 	}
-	return errors.Join(err, cleanupConnectionSnapshotsAt(configPath, stateConnectionSnapshotPath(config)))
+	// Check the private root itself; cleanup individually checks its files and
+	// must preserve unrelated entries and links rather than recursively adopt them.
+	if rootErr := privatefs.EnsureDir(directory, directory); rootErr != nil {
+		return errors.Join(err, rootErr)
+	}
+	return errors.Join(err, cleanupConnectionSnapshotsAt(configPath, fallbackPath))
 }

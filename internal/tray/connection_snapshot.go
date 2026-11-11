@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -8,12 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/idy/tailsplit"
 	"github.com/idy/tailsplit/internal/privatefs"
-
-	"gopkg.in/yaml.v3"
 )
 
 const connectionSnapshotPrefix = ".tailsplit-connect-"
@@ -40,34 +38,35 @@ func lockConnectionSnapshotDirectory(configPath string) (func() error, error) {
 	return tailsplit.LockSavedState(filepath.Join(filepath.Dir(configPath), ".tailsplit-connection-lock"))
 }
 
-func createConnectionSnapshot(configPath string, data []byte) (string, func(), error) {
-	path, cleanup, err := createConnectionSnapshotBeside(configPath, data)
-	if err == nil || !errors.Is(err, os.ErrPermission) && !errors.Is(err, syscall.EROFS) {
-		return path, cleanup, err
+func createConnectionSnapshot(configPath, logPath string, data []byte) (path, base string, cleanup func(), err error) {
+	// Validate captured bytes against the original argument directory without
+	// re-encoding them: compact YAML and aliases must keep the same byte budget.
+	if _, err := startupConfig(configPath, data); err != nil {
+		return "", "", nil, err
 	}
-	// Readable configuration can live in a managed, read-only directory. Only
-	// this startup snapshot falls back to private state; editing stays strict.
-	config, err := startupConfig(configPath, data)
+	path, cleanup, err = createConnectionSnapshotBeside(configPath, data)
+	if err == nil || !snapshotDirectoryUnavailable(err) {
+		return path, "", cleanup, err
+	}
+	// This root belongs to the desktop, independently of mutable YAML state_dir.
+	// Never publish an unindexed snapshot elsewhere if it is unavailable.
+	fallbackPath, err := connectionSnapshotFallbackPath(logPath)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	// A relocated helper document needs absolute filesystem paths. Its policy
-	// comes solely from captured bytes; the controller retains their revision.
-	data, err = yaml.Marshal(config)
+	base, err = filepath.Abs(filepath.Dir(configPath))
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	statePath := stateConnectionSnapshotPath(config)
-	if err := privatefs.EnsureDir(config.StateDir); err != nil {
-		return "", nil, err
+	directory := filepath.Dir(fallbackPath)
+	if err := privatefs.EnsureDir(directory, directory); err != nil {
+		return "", "", nil, err
 	}
-	if err := privatefs.EnsureDir(filepath.Dir(statePath)); err != nil {
-		return "", nil, err
+	if err := cleanupConnectionSnapshotsAt(configPath, fallbackPath); err != nil {
+		return "", "", nil, err
 	}
-	if err := cleanupConnectionSnapshotsAt(configPath, statePath); err != nil {
-		return "", nil, err
-	}
-	return createConnectionSnapshotBeside(statePath, data)
+	path, cleanup, err = createConnectionSnapshotBeside(fallbackPath, data)
+	return path, base, cleanup, err
 }
 
 func createConnectionSnapshotBeside(configPath string, data []byte) (string, func(), error) {
@@ -76,15 +75,32 @@ func createConnectionSnapshotBeside(configPath string, data []byte) (string, fun
 		return "", nil, err
 	}
 	defer unlockDirectory()
-	path, _, err := configCandidatePrefix(configPath, data, fmt.Sprintf("%s%d-", connectionSnapshotPrefix, os.Getpid()))
+	path := filepath.Join(filepath.Dir(configPath), fmt.Sprintf("%s%d-%s", connectionSnapshotPrefix, os.Getpid(), rand.Text()))
+	file, err := privatefs.CreateFile(path)
 	if err != nil {
+		return "", nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = file.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return "", nil, err
+	}
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		return "", nil, err
+	}
+	if err := privatefs.CheckFile(path); err != nil {
 		return "", nil, err
 	}
 	lease, err := lockConnectionSnapshot(path)
 	if err != nil {
-		_ = os.Remove(path)
 		return "", nil, err
 	}
+	keep = true
 	cleanup := sync.OnceFunc(func() {
 		_ = unlockConnectionSnapshot(lease)
 		_ = os.Remove(path)

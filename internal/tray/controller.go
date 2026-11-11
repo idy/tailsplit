@@ -166,7 +166,7 @@ func New(options Options) (*Controller, error) {
 		return nil, err
 	}
 	controller := &Controller{options: options, snapshot: Snapshot{State: "stopped"}, log: log, stopWait: 10 * time.Second}
-	if err := cleanupStartupConnectionSnapshots(options.ConfigPath); err != nil {
+	if err := cleanupStartupConnectionSnapshots(options.ConfigPath, options.LogPath); err != nil {
 		controller.RecordDesktopEvent("Could not clean orphaned connection snapshots: " + err.Error())
 	}
 	return controller, nil
@@ -365,11 +365,11 @@ func (c *Controller) startRevision(expected, operation string) error {
 	return nil
 }
 
-// Every traffic helper receives an immutable captured document. Keep its source
-// revision even when a read-only source directory requires a relocated snapshot
-// with absolute paths; a later saved-file edit cannot change the running policy.
+// Every traffic helper receives the exact immutable captured document. A
+// relocated snapshot carries its original path base separately, so neither
+// aliases nor the source byte budget change when its directory is read-only.
 func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expected string) error {
-	path, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, data)
+	path, base, cleanup, err := createConnectionSnapshot(c.options.ConfigPath, c.options.LogPath, data)
 	if err != nil {
 		return err
 	}
@@ -379,7 +379,7 @@ func (c *Controller) startConnectionLocked(mode, focus string, data []byte, expe
 			return err
 		}
 	}
-	if err := c.startConfigLocked(mode, focus, path); err != nil {
+	if err := c.startConfigLocked(mode, focus, path, base); err != nil {
 		cleanup()
 		return err
 	}
@@ -590,7 +590,7 @@ func (c *Controller) checkStartLocked() error {
 	return nil
 }
 
-func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
+func (c *Controller) startConfigLocked(mode, focus, configPath string, configBase ...string) error {
 	freshLogin := mode == "login-new"
 	if freshLogin {
 		mode = "login"
@@ -660,6 +660,9 @@ func (c *Controller) startConfigLocked(mode, focus, configPath string) error {
 	}
 	args := append(append([]string{}, c.options.HelperArgs...), runCommand, "--events",
 		"--parent-pid", fmt.Sprint(os.Getpid()), "-c", configPath)
+	if len(configBase) != 0 && configBase[0] != "" {
+		args = append(args, "--config-base", configBase[0])
+	}
 	if focus != "" {
 		args = append(args, "--exit", focus)
 	}

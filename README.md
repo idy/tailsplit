@@ -101,10 +101,12 @@ for its lifetime. On the next launch, snapshots with released locks are reclaime
 even if an old PID has been reused; locked snapshots, unrecognized files and links
 are preserved. Snapshot creation and cleanup share a short directory lock so an
 in-progress write cannot be mistaken for an orphan. Native startup can read a
-symlinked configuration. If its source directory is read-only, a writable
-`state_dir` holds the private traffic snapshot instead; relative paths still use
-the original configuration argument's directory, and the active revision identifies
-the captured source bytes. Web editing and recovery retain strict file checks.
+symlinked configuration. If its source directory is read-only or write-protected,
+the desktop's stable private storage beside its log holds the traffic snapshot.
+Captured YAML bytes and the 1 MiB limit stay unchanged; the original base directory
+is passed separately so relative paths keep their meaning. Startup can find these
+snapshots even after `state_dir` changes or the saved YAML is invalid or missing.
+Web editing and recovery retain strict file checks.
 
 The titlebar routing dropdown chooses **Rule-based** or **Global (Kill-Switch)**.
 It saves immediately and reconnects active traffic. Global/TUN mode blocks
