@@ -88,7 +88,7 @@ details[open] > summary > .icon { transform: rotate(90deg); }
    the snake around (180°) and it lights up green once traffic is actually connected.
    Busy and blocked states keep their amber/error meaning while the snake turns. */
 /* A hairline ring in the current ink marks the mark as a pressable control in every state. */
-.home-toggle { --snake-ink: var(--mds-faint); --snake-glow: transparent; display: grid; flex: 0 0 auto; place-items: center; width: 56px; height: 56px; padding: 0; border: 1px solid color-mix(in srgb, var(--snake-ink) 40%, transparent); border-radius: 50%; background: transparent; color: var(--snake-ink); cursor: pointer; }
+.home-toggle { --snake-ink: var(--mds-faint); --snake-glow: transparent; display: grid; flex: 0 0 auto; place-items: center; --snake-size: clamp(56px, var(--home-copy-height, 56px), 112px); width: var(--snake-size); height: var(--snake-size); padding: 0; border: 1px solid color-mix(in srgb, var(--snake-ink) 40%, transparent); border-radius: 50%; background: transparent; color: var(--snake-ink); cursor: pointer; }
 .home-toggle:hover:not(:disabled) { background: var(--mds-hover); }
 .home-toggle:hover:not(:disabled):not([aria-pressed="true"], [aria-busy="true"]) { --snake-ink: var(--mds-muted); }
 /* Equal specificity, so source order sets precedence: connected > busy > pressed-but-not-running. */
@@ -98,7 +98,7 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .home-toggle[data-connected="true"]:hover:not(:disabled) { background: color-mix(in srgb, var(--mds-good) 20%, transparent); }
 .home-toggle:focus-visible { outline: 2px solid var(--mds-accent-ink); outline-offset: 2px; }
 .home-toggle:disabled { cursor: not-allowed; opacity: .45; }
-.home-snake { display: block; width: 32px; height: 32px; filter: drop-shadow(0 0 6px var(--snake-glow)); }
+.home-snake { display: block; width: 58%; height: 58%; filter: drop-shadow(0 0 6px var(--snake-glow)); }
 .home-toggle[aria-pressed="true"] .home-snake { transform: rotate(180deg); }
 /* While connecting the snake keeps spinning. The spin uses the separate `rotate`
    property so it composes with the 180° turn; app.js keeps data-spinning until the
@@ -107,7 +107,7 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .home-toggle[data-spinning="true"][data-motion-paused="true"] .home-snake { animation-play-state: paused; }
 @keyframes home-snake-spin { from { rotate: 0deg; } to { rotate: 360deg; } }
 /* Motion narrates later state changes; the first live reading settles in place. */
-.home-toggle[data-motion="ready"] { transition: color var(--mds-duration), border-color var(--mds-duration), background-color var(--mds-duration); }
+.home-toggle[data-motion="ready"] { transition: color var(--mds-duration), border-color var(--mds-duration), background-color var(--mds-duration), width 200ms var(--mds-ease), height 200ms var(--mds-ease); }
 .home-toggle[data-motion="ready"] .home-snake { transition: transform 280ms cubic-bezier(.3, 0, .2, 1), filter var(--mds-duration); }
 @media (prefers-reduced-motion: reduce) {
   .home-toggle .home-snake { transition: none !important; animation: none !important; }

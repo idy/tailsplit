@@ -2699,6 +2699,17 @@
     const control = $('#home-connect');
     if (event.animationName === 'home-snake-spin' && control.getAttribute('aria-busy') !== 'true') control.dataset.spinning = 'false';
   });
+  // The snake button matches the height of the title and description beside it,
+  // which wrap differently by state, language and window width.
+  if (window.ResizeObserver) {
+    const homeCopy = $('.home-connection-copy');
+    const homeHeader = $('.home-connection');
+    if (homeCopy && homeHeader) {
+      new window.ResizeObserver(() => {
+        if (homeCopy.offsetHeight) homeHeader.style.setProperty('--home-copy-height', `${homeCopy.offsetHeight}px`);
+      }).observe(homeCopy);
+    }
+  }
   $('#home-connect').addEventListener('click', homeConnectionAction);
   $('#home-setup').addEventListener('click', homeConnectionAction);
   async function openRoutingRules() {
