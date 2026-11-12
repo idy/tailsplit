@@ -2631,14 +2631,14 @@
     const control = $('#home-connect');
     control.disabled = !state.loaded || !live.desktop || (working ? $('#desktop-disconnect').disabled :
       setup?.stage === 'failed' ? $('#connection-setup-retry').disabled : $('#desktop-connect').disabled);
-    control.setAttribute('aria-checked', String(networkActive(live)));
+    control.setAttribute('aria-pressed', String(networkActive(live)));
     control.setAttribute('aria-busy', String(working && !connected && !blocked));
     const action = working ? (networkActive(live) ? '断开' : '取消连接') : error ? '重试连接' : '开启连接';
     control.setAttribute('aria-label', t(action));
     control.title = t(action);
-    // The snake's tail splits only for a running connection, never a blocked one.
+    // The snake lights green only for a running connection, never a blocked one.
     control.dataset.connected = String(connected);
-    // Animate later changes only: the first live reading settles without a crawl.
+    // Animate later changes only: the first live reading settles without a turn.
     if (desktopLive && control.dataset.motion !== 'ready') {
       control.getBoundingClientRect?.();
       control.dataset.motion = 'ready';

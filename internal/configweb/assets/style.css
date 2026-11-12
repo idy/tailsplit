@@ -75,60 +75,34 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .danger { color: var(--mds-error); }
 /* Home explains saved routing without pretending to measure live traffic. */
 .home-page { max-width: 900px; padding-block: 36px 24px; }
-.home-connection { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 8px 4px 28px; }
+.home-connection { display: flex; align-items: center; gap: 20px; padding: 8px 4px 28px; }
 .home-connection-copy { min-width: 0; }
 .home-connection h2 { font-size: 1.5rem; font-weight: 600; line-height: 1.35; letter-spacing: -.02em; }
 .home-connection p { margin-top: 10px; max-width: 60ch; color: var(--mds-muted); overflow-wrap: anywhere; }
 .home-connection .home-setup { flex: 0 0 auto; min-height: 40px; min-width: 100px; }
 .home-toggle-control { display: flex; flex: 0 0 auto; }
-/* The TailSplit snake switch. The knob is the head and the body is a dash sliding
-   along one fixed wave, so every point follows the head's path: a real crawl, not a
-   stretch. The eye is closed while idle, the tongue flicks while working and the
-   tail splits only after traffic is actually connected. Three stacked dashes that
-   share the head end taper the body like the mark. Path numbers come from the wave
-   (pathLength 100): the body is 54.5 long and ends at 54.5 parked, 100 arrived. */
-.home-toggle { --snake-track: var(--mds-switch-off); align-items: center; justify-content: center; width: 56px; height: 44px; }
-.home-toggle[aria-checked="true"] { --snake-track: var(--mds-accent); }
-.home-toggle[aria-busy="true"] { --snake-track: var(--mds-warn); }
-/* Drawn on a 64x32 grid, shown at 44x22: close to the shared 34x20 track. */
-.home-snake { display: block; width: 44px; height: 22px; overflow: visible; border-radius: 11px; }
-.home-toggle:focus-visible > .home-snake { outline: 2px solid var(--mds-accent-ink); outline-offset: 3px; }
-.home-toggle:disabled > .home-snake { opacity: .5; }
-.home-snake-track { fill: var(--snake-track); }
-.home-snake-skull { fill: var(--mds-switch-knob); }
-.home-snake-eye { fill: var(--snake-track); transform: scaleY(.2); transform-box: fill-box; transform-origin: center; }
-.home-toggle:is([aria-checked="true"], [aria-busy="true"]) .home-snake-eye { transform: none; }
-.home-snake-body, .home-snake-prong { fill: none; stroke: var(--mds-switch-knob); stroke-linecap: round; }
-.home-snake-body { opacity: 0; }
-.home-snake-tail { stroke-width: 5; stroke-dasharray: 54.5 100; stroke-dashoffset: 0; }
-.home-snake-waist { stroke-width: 7; stroke-dasharray: 38 100; stroke-dashoffset: -16.5; }
-.home-snake-neck { stroke-width: 9; stroke-dasharray: 20 100; stroke-dashoffset: -34.5; }
-.home-snake-prong { stroke-width: 3; stroke-dasharray: 1 2; stroke-dashoffset: 1; opacity: 0; }
-.home-toggle[aria-checked="true"] .home-snake-head { transform: translateX(32px); }
-.home-toggle[aria-checked="true"] .home-snake-body { opacity: 1; }
-.home-toggle[aria-checked="true"] .home-snake-tail { stroke-dashoffset: -45.5; }
-.home-toggle[aria-checked="true"] .home-snake-waist { stroke-dashoffset: -62; }
-.home-toggle[aria-checked="true"] .home-snake-neck { stroke-dashoffset: -80; }
-.home-toggle[aria-checked="true"][data-connected="true"] .home-snake-prong { stroke-dashoffset: 0; opacity: 1; }
-.home-snake-tongue { fill: none; stroke: var(--mds-error); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transform: scaleX(0); transform-box: fill-box; transform-origin: left center; }
-.home-toggle[aria-busy="true"]:not([data-motion-paused="true"]) .home-snake-tongue { animation: home-snake-tongue 1.6s var(--mds-ease) infinite; }
-@keyframes home-snake-tongue {
-  0%, 48%, 100% { opacity: 0; transform: scaleX(0); }
-  56%, 66% { opacity: 1; transform: scaleX(1); }
-  61% { opacity: 1; transform: scaleX(.65); }
-  76% { opacity: 1; transform: scaleX(0); }
-}
+/* The TailSplit snake button. Off, the mark rests in muted ink; pressing it turns
+   the snake around (180°) and it lights up green once traffic is actually connected.
+   Busy and blocked states keep their amber/error meaning while the snake turns. */
+.home-toggle { --snake-ink: var(--mds-faint); --snake-glow: transparent; display: grid; flex: 0 0 auto; place-items: center; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--snake-ink); cursor: pointer; }
+.home-toggle:hover:not(:disabled) { background: var(--mds-hover); }
+.home-toggle:hover:not(:disabled):not([aria-pressed="true"], [aria-busy="true"]) { --snake-ink: var(--mds-muted); }
+/* Equal specificity, so source order sets precedence: connected > busy > pressed-but-not-running. */
+.home-toggle[aria-pressed="true"] { --snake-ink: var(--mds-error); }
+.home-toggle[aria-busy="true"] { --snake-ink: var(--mds-warn); }
+.home-toggle[data-connected="true"] { --snake-ink: var(--mds-good); --snake-glow: color-mix(in srgb, var(--mds-good) 55%, transparent); background: color-mix(in srgb, var(--mds-good) 14%, transparent); }
+.home-toggle[data-connected="true"]:hover:not(:disabled) { background: color-mix(in srgb, var(--mds-good) 20%, transparent); }
+.home-toggle:focus-visible { outline: 2px solid var(--mds-accent-ink); outline-offset: 2px; }
+.home-toggle:disabled { cursor: not-allowed; opacity: .45; }
+.home-snake { display: block; width: 30px; height: 30px; filter: drop-shadow(0 0 6px var(--snake-glow)); }
+.home-toggle[aria-pressed="true"] .home-snake { transform: rotate(180deg); }
+.home-toggle[aria-busy="true"]:not([data-motion-paused="true"]) .home-snake { animation: home-snake-wait 1.4s var(--mds-ease) infinite; }
+@keyframes home-snake-wait { 50% { opacity: .45; } }
 /* Motion narrates later state changes; the first live reading settles in place. */
-.home-toggle[data-motion="ready"] { --snake-crawl: 560ms; --snake-retreat: 400ms; --snake-gait: cubic-bezier(.6, 0, .3, 1); }
-.home-toggle[data-motion="ready"] .home-snake-track { transition: fill var(--mds-duration); }
-.home-toggle[data-motion="ready"] .home-snake-eye { transition: transform 140ms var(--mds-ease), fill var(--mds-duration); }
-.home-toggle[data-motion="ready"] .home-snake-head { transition: transform var(--snake-retreat) var(--snake-gait); }
-.home-toggle[data-motion="ready"] .home-snake-body { transition: stroke-dashoffset var(--snake-retreat) var(--snake-gait), opacity 100ms linear calc(var(--snake-retreat) - 100ms); }
-.home-toggle[data-motion="ready"] .home-snake-prong { transition: stroke-dashoffset 80ms linear, opacity 80ms linear; }
-.home-toggle[data-motion="ready"][aria-checked="true"] .home-snake-head { transition-duration: var(--snake-crawl); }
-.home-toggle[data-motion="ready"][aria-checked="true"] .home-snake-body { transition: stroke-dashoffset var(--snake-crawl) var(--snake-gait), opacity 80ms linear; }
-.home-toggle[data-motion="ready"][aria-checked="true"][data-connected="true"] .home-snake-prong {
-  transition: stroke-dashoffset 280ms cubic-bezier(.16, 1, .3, 1) calc(var(--snake-crawl) - 80ms), opacity 60ms linear calc(var(--snake-crawl) - 80ms);
+.home-toggle[data-motion="ready"] { transition: color var(--mds-duration), background-color var(--mds-duration); }
+.home-toggle[data-motion="ready"] .home-snake { transition: transform 480ms cubic-bezier(.6, 0, .3, 1), filter var(--mds-duration); }
+@media (prefers-reduced-motion: reduce) {
+  .home-toggle .home-snake { transition: none !important; animation: none !important; }
 }
 .home-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; list-style: none; margin: 0 0 36px; padding: 16px 0; border-block: 1px solid var(--mds-line); color: var(--mds-muted); }
 .home-steps li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--mds-text-note); }
@@ -202,14 +176,8 @@ details[open] > summary > .icon { transform: rotate(90deg); }
   .map-wires path, .map-wires-live path { stroke: CanvasText; }
   .map-route::before { border-color: CanvasText; }
   .map-route.tone-ok::before, .map-route.tone-warn::before { background: CanvasText; }
-  .home-snake { forced-color-adjust: none; }
-  .home-toggle, .home-toggle[aria-busy="true"] { --snake-track: Canvas; }
-  .home-toggle[aria-checked="true"] { --snake-track: Highlight; }
-  .home-snake-track { stroke: ButtonText; stroke-width: 1; }
-  .home-snake-skull { fill: ButtonText; }
-  .home-snake-body, .home-snake-prong { stroke: ButtonText; }
-  .home-toggle[aria-checked="true"] .home-snake-skull { fill: HighlightText; }
-  .home-toggle[aria-checked="true"] :is(.home-snake-body, .home-snake-prong) { stroke: HighlightText; }
+  .home-toggle { color: ButtonText; }
+  .home-toggle[data-connected="true"] { color: Highlight; }
 }
 /* Exits read like a provider list: one card, one device per two-line row. */
 /* The page owns vertical scrolling; this card only clips its rounded edges. */

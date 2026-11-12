@@ -4997,7 +4997,7 @@ for (const mode of ['global', 'split']) test(`blocked live Global remains checke
   const app = await page(snapshot, '', { page: 'home' }, initial);
   assert.equal(app.$('#home-status').textContent, '出口不可用 · 已阻断');
   assert.match(app.$('#home-description').textContent, /全局模式正在阻断流量.*手动断开会恢复系统网络/);
-  assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'true');
+  assert.equal(app.$('#home-connect').attributes.get('aria-pressed'), 'true');
   assert.equal(app.$('#home-connect').attributes.get('aria-busy'), 'false');
   assert.equal(app.$('#home-connect').attributes.get('aria-label'), '断开');
   assert.equal(app.$('#home-wires-live').children.length, 0);
@@ -5007,7 +5007,7 @@ for (const mode of ['global', 'split']) test(`blocked live Global remains checke
   }
   await app.$('#home-connect').emit('click');
   assert.equal(app.snapshot.active, false, 'checked active control explicitly disconnects when requested');
-  assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'false');
+  assert.equal(app.$('#home-connect').attributes.get('aria-pressed'), 'false');
 });
 
 test('home fans out saved destinations and only marks confirmed routes as in effect', async () => {
@@ -5255,7 +5255,7 @@ test('home Setup completes first connection in both languages and yields to the 
     await app.$('[data-page="home"]').emit('click');
     assert.equal(app.$('#home-setup').hidden, true);
     assert.equal(app.$('#home-toggle-control').hidden, false);
-    assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'true');
+    assert.equal(app.$('#home-connect').attributes.get('aria-pressed'), 'true');
   }
 });
 
