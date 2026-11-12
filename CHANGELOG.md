@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.8
+
+- Replace the Home connection switch with a raised round TailSplit snake button.
+  It leads the status block, matches the height of the title and description,
+  and never shifts when the status copy changes. Pressing turns the snake 180
+  degrees; it spins in amber while connecting, finishes its current lap, and
+  lights green only once traffic is running. Blocked or lost sessions use error
+  ink, including in forced colors, and reduced motion skips the turn and spin.
+  First-run Set up now sits below the status description.
+
 ## 0.9.7
 
 - Replace the Home connection toggle with a compact animated TailSplit snake and
