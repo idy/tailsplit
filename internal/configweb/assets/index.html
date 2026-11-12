@@ -73,7 +73,29 @@
       <div class="home-connection">
         <div class="home-connection-copy"><h2 id="home-status" role="status">准备好第一次连接</h2><p id="home-description">点击“开始设置”，按提示完成系统授权、Tailscale 登录和节点选择。</p></div>
         <button class="button primary home-setup mds-button mds-button--primary" id="home-setup" aria-describedby="home-description" disabled hidden>开始设置</button>
-        <div class="home-toggle-control" id="home-toggle-control"><button class="home-toggle mds-switch" id="home-connect" role="switch" aria-checked="false" aria-label="开启连接" aria-describedby="home-description" disabled><span class="home-toggle-track mds-switch-track" aria-hidden="true"></span></button><span id="home-action-label">开启连接</span></div>
+        <div class="home-toggle-control" id="home-toggle-control"><button class="home-toggle mds-switch" id="home-connect" role="switch" aria-checked="false" aria-label="开启连接" aria-describedby="home-description" title="开启连接" disabled>
+          <!-- The TailSplit snake: the knob is its head; the body follows one fixed wave so the switch crawls, and the tail splits once connected. -->
+          <svg class="home-snake" viewBox="0 0 64 32" aria-hidden="true" focusable="false">
+            <defs>
+              <clipPath id="home-snake-clip"><rect width="64" height="32" rx="16"/></clipPath>
+              <filter id="home-snake-shadow" x="-20%" y="-40%" width="140%" height="190%"><feDropShadow dx="0" dy="1" stdDeviation=".9" flood-color="#000" flood-opacity=".32"/></filter>
+              <path id="home-snake-spine" pathLength="100" d="M-19.8 18.5C-19.4 18.1 -18 16.8 -17.1 16C-16.2 15.2 -15.3 14.1 -14.4 13.5C-13.5 12.9 -12.6 12.4 -11.7 12.4C-10.8 12.4 -9.9 12.9 -9 13.5C-8.1 14.1 -7.2 15.2 -6.3 16C-5.3 16.8 -4.4 17.9 -3.5 18.5C-2.6 19.1 -1.7 19.6 -0.8 19.6C0.1 19.6 1 19.1 1.9 18.5C2.8 17.9 3.7 16.8 4.6 16C5.5 15.2 6.4 14.1 7.3 13.5C8.2 12.9 9.1 12.4 10 12.4C10.9 12.4 11.8 12.9 12.7 13.5C13.6 14.1 14.5 15.2 15.4 16C16.4 16.8 17.3 17.9 18.2 18.5C19.1 19.1 20 19.6 20.9 19.6C21.8 19.6 22.7 19.1 23.6 18.5C24.5 17.9 25.4 16.8 26.3 16C27.2 15.2 28.1 14.1 29 13.5C29.9 12.9 30.8 12.3 31.7 12.4C32.6 12.5 33.5 13.2 34.4 13.8C35.3 14.4 36.2 15.5 37.1 16C38.1 16.5 39 16.5 39.9 16.5C40.8 16.5 41.7 16.1 42.6 16C43.5 15.9 44.4 16 45.3 16C46.2 16 47.5 16 48 16"/>
+            </defs>
+            <rect class="home-snake-track" width="64" height="32" rx="16"/>
+            <g clip-path="url(#home-snake-clip)"><g filter="url(#home-snake-shadow)">
+              <use class="home-snake-body home-snake-tail" href="#home-snake-spine"/>
+              <use class="home-snake-body home-snake-waist" href="#home-snake-spine"/>
+              <use class="home-snake-body home-snake-neck" href="#home-snake-spine"/>
+              <path class="home-snake-prong" pathLength="1" d="M10 12.4l-4.8-2.8"/>
+              <path class="home-snake-prong" pathLength="1" d="M10 12.4l-4.8 2.8"/>
+            </g></g>
+            <g class="home-snake-head">
+              <path class="home-snake-tongue" d="M25.5 16h4.4m0 0l1.8-1.5m-1.8 1.5l1.8 1.5"/>
+              <ellipse class="home-snake-skull" cx="16" cy="16" rx="10.5" ry="8.5" filter="url(#home-snake-shadow)"/>
+              <ellipse class="home-snake-eye" cx="20.6" cy="12.9" rx="1.7" ry="1.9"/>
+            </g>
+          </svg>
+        </button></div>
       </div>
       <ol class="home-steps" id="home-steps" aria-label="首次连接步骤">
         <li id="home-step-service"><span class="home-step-mark" aria-hidden="true"><span>1</span><svg class="icon mds-icon"><use href="/vendor/magpie/icons/icons.svg#check"/></svg></span><span>系统准备</span></li>
