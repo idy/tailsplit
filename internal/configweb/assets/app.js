@@ -2424,7 +2424,9 @@
     return `${(value / 1024 ** power).toFixed(power ? 1 : 0)} ${units[power]}`;
   }
   function syncRouteMotion() {
-    $('#split-map').dataset.flowPaused = String(document.hidden || state.page !== 'home');
+    const paused = String(document.hidden || state.page !== 'home');
+    $('#split-map').dataset.flowPaused = paused;
+    $('#home-connect').dataset.motionPaused = paused;
   }
   function renderHomeRates(applied) {
     syncRouteMotion();
@@ -2633,7 +2635,14 @@
     control.setAttribute('aria-busy', String(working && !connected && !blocked));
     const action = working ? (networkActive(live) ? '断开' : '取消连接') : error ? '重试连接' : '开启连接';
     control.setAttribute('aria-label', t(action));
-    setStatusText('#home-action-label', t(action));
+    control.title = t(action);
+    // The snake's tail splits only for a running connection, never a blocked one.
+    control.dataset.connected = String(connected);
+    // Animate later changes only: the first live reading settles without a crawl.
+    if (desktopLive && control.dataset.motion !== 'ready') {
+      control.getBoundingClientRect?.();
+      control.dataset.motion = 'ready';
+    }
     const setupButton = $('#home-setup');
     const showSetup = first && !working;
     setupButton.hidden = !showSetup;

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.7
+
+- Replace the Home connection toggle with a compact animated TailSplit snake and
+  remove the action label below it. Keep the 56-by-44-pixel click target around
+  44-by-22-pixel artwork, accessible action names and tooltips, keyboard focus,
+  reduced-motion support and connection/cancellation guards. The head crawls
+  across the track, the tongue flicks while busy, and the tail splits only for a
+  running connection.
+
 ## 0.9.6
 
 - Refine the tray popup with the TailSplit mark and connection switch in the
