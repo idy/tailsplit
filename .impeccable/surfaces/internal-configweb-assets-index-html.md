@@ -33,7 +33,7 @@ Only the workspace or whole picker scrolls; the diagnostic terminal retains its 
 
 ### Shared Home controls and feedback
 
-Set up / Retry setup uses `mds-button mds-button--primary` with the shared 8px radius. Home's controlled switch uses `mds-switch` and `mds-switch-track`: a product 56px by 44px hit area contains the standard shared 34px by 20px track and thumb, without a local knob clone. Home and map styles use `--mds-*` tokens; `.map-host` and `.map-route` title labels use `--mds-font-heading`. Rate arrows use `mds-icon` and the vendored Up glyph, rotated 180deg for download.
+Set up / Retry setup uses `mds-button mds-button--primary` with the shared 8px radius. Home's controlled switch keeps `mds-switch` semantics but draws the TailSplit snake at 44px by 22px inside a 56px by 44px hit area, with no label below it: the head crawls on, the body follows one fixed wave, the eye opens when on, the tongue flicks while busy and the tail splits only once connected. Home and map styles use `--mds-*` tokens; `.map-host` and `.map-route` title labels use `--mds-font-heading`. Rate arrows use `mds-icon` and the vendored Up glyph, rotated 180deg for download.
 
 Setup and notice feedback uses `dataset.tone`. Neutral setup variables are scoped to `#connection-setup`; successful-notice variables are scoped to `#notice`, leaving shared notice variables unchanged elsewhere. Device approval status uses `data-tone="warn"`. Keep the main Magpie shell/components, `ui.js` dependency loader and single Form/YAML control set. Default-exit selection retains Continue setup & connect for an unready choice while `updateSelect` maintains the shared select lifecycle.
 
