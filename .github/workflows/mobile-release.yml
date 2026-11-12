@@ -110,6 +110,7 @@ jobs:
     # or use a persistent/self-hosted runner for credentialed signing.
     if: >-
       always()
+      && !cancelled()
       && github.event_name == 'workflow_dispatch'
       && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       && github.ref_protected
