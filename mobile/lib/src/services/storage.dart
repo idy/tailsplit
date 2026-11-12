@@ -10,9 +10,16 @@ import '../model/tailnet_account.dart';
 /// Identifiers shared by the app, its Packet Tunnel extension and Android
 /// service. They must match the signed entitlements.
 abstract final class AppIdentifiers {
-  static const appGroup = 'group.dev.idy.tailsplit';
-  static const packetTunnel = 'dev.idy.tailsplit.PacketTunnel';
-  static const vpnName = 'TailSplit';
+  static const channel = String.fromEnvironment(
+    'TAILSPLIT_IOS_CHANNEL',
+    defaultValue: 'app-store',
+  );
+  static const _beta = channel == 'beta';
+  static const appGroup = _beta
+      ? 'group.dev.idy.tailsplit.beta' : 'group.dev.idy.tailsplit';
+  static const packetTunnel = _beta
+      ? 'dev.idy.tailsplit.beta.PacketTunnel' : 'dev.idy.tailsplit.PacketTunnel';
+  static const vpnName = _beta ? 'TailSplit Beta' : 'TailSplit';
 }
 
 /// File locations. Private app state stays in the app's own support directory;

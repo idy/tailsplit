@@ -90,12 +90,13 @@ dart run sing_box_flutter build --target android
 ```
 
 Rebuild the core after any `pubspec.yaml` edit; CocoaPods and Gradle refuse a
-stale receipt. On iOS the Runner app and the `PacketTunnel` extension share the
-App Group `group.dev.idy.tailsplit`. `ios/configure_project.rb` recreates the
-extension target and entitlements if the Xcode project is regenerated. A real
-VPN needs a physical device and provisioning profiles with the App Group and
-Network Extension capabilities; the simulator runs the UI and Tailscale sign-in
-only.
+stale receipt. On iOS each app shares an App Group only with its own `PacketTunnel`
+extension: `group.dev.idy.tailsplit` for the store app and
+`group.dev.idy.tailsplit.beta` for TailSplit Beta. `ios/configure_project.rb`
+recreates the extension target and selects a channel's native identity if the
+Xcode project is regenerated. A real VPN needs a physical device and profiles
+with App Group and Network Extension capabilities; the simulator runs the UI and
+Tailscale sign-in only.
 
 ```bash
 flutter run
@@ -103,12 +104,17 @@ flutter run
 
 ### CI and organization publication
 
-[Mobile CI and iOS publication](docs/release.md) describes the Android/iOS build
-checks and manual iOS IPA/TestFlight workflow. Mobile distribution uses
-**TERMITOC PTE. LTD. / BGL4WMWD3W**, the LetSolo organization account, for both
-the app and Packet Tunnel extension. The required `BGL4WMWD3W_APPLE_CREDENTIALS`
-secret must be configured in this repository's `mobile-release` environment;
-LetSolo's repository secret is not automatically shared.
+[Mobile CI and iOS publication](docs/release.md) describes the Android/iOS checks
+and manual iOS release workflow. Choose `beta` (`dev.idy.tailsplit.beta`,
+TestFlight only) or `app-store` (`dev.idy.tailsplit`, TestFlight and public App
+Review), then `artifact`, `testflight` or `app-store` as the destination. The beta
+channel cannot submit to public App Review. Both channels use **TERMITOC PTE.
+LTD. / BGL4WMWD3W**, the LetSolo organization account, with separate VPN
+extensions and App Groups. `tool/build_ios_release.sh` keeps native and Dart
+identifiers aligned. The Termitoc account is stored as SOPS ciphertext in
+`credentials/apple-distribution.json.sops`. Only its dedicated decryption key,
+`TAILSPLIT_MOBILE_RELEASE_AGE_KEY`, is configured in GitHub's `mobile-release`
+environment; build jobs receive neither the age key nor Apple credentials.
 
 ### Design preview
 

@@ -3,8 +3,11 @@
 require 'xcodeproj'
 require 'json'
 
-identity = JSON.parse(File.read(File.join(__dir__, '..', 'release-identity.json')))
-raise 'Mobile releases must use the Termitoc organization' unless identity.fetch('team_id') == 'BGL4WMWD3W'
+release = JSON.parse(File.read(File.join(__dir__, '..', 'release-identity.json')))
+raise 'Mobile releases must use the Termitoc organization' unless release.fetch('team_id') == 'BGL4WMWD3W'
+channel = ARGV.fetch(0, 'app-store')
+raise 'Usage: configure_project.rb [beta|app-store]' unless ARGV.length <= 1 && %w[beta app-store].include?(channel)
+identity = release.fetch('channels').fetch(channel).merge('team_id' => release.fetch('team_id'))
 
 project = Xcodeproj::Project.open(File.join(__dir__, 'Runner.xcodeproj'))
 runner = project.targets.find { |target| target.name == 'Runner' }
@@ -41,13 +44,19 @@ project.targets.each do |target|
     configuration.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
   end
 end
+[runner, extension].each do |target|
+  target.build_configurations.each do |configuration|
+    configuration.build_settings['TAILSPLIT_APP_GROUP'] = identity.fetch('app_group')
+    configuration.build_settings['TAILSPLIT_DISPLAY_NAME'] = identity.fetch('name')
+  end
+end
 runner.build_configurations.each do |configuration|
   configuration.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'Runner/Runner.entitlements'
-  configuration.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'dev.idy.tailsplit'
+  configuration.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = identity.fetch('bundle_id')
 end
 project.targets.select { |target| target.name == 'RunnerTests' }.each do |target|
   target.build_configurations.each do |configuration|
-    configuration.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'dev.idy.tailsplit.RunnerTests'
+    configuration.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = "#{identity.fetch('bundle_id')}.RunnerTests"
   end
 end
 extension.build_configurations.each do |configuration|
@@ -56,7 +65,7 @@ extension.build_configurations.each do |configuration|
     'CODE_SIGN_ENTITLEMENTS' => 'PacketTunnel/PacketTunnel.entitlements',
     'GENERATE_INFOPLIST_FILE' => 'NO',
     'INFOPLIST_FILE' => 'PacketTunnel/Info.plist',
-    'PRODUCT_BUNDLE_IDENTIFIER' => 'dev.idy.tailsplit.PacketTunnel',
+    'PRODUCT_BUNDLE_IDENTIFIER' => identity.fetch('packet_tunnel_bundle_id'),
     'PRODUCT_NAME' => '$(TARGET_NAME)',
     'PRODUCT_MODULE_NAME' => 'PacketTunnel',
     'SWIFT_VERSION' => '5.0',
@@ -85,4 +94,4 @@ runner.build_phases.delete(embed)
 thin_index = runner.build_phases.index { |phase| phase.display_name == 'Thin Binary' }
 runner.build_phases.insert(thin_index || runner.build_phases.length, embed)
 project.save
-puts 'Configured Runner and embedded PacketTunnel.'
+puts "Configured #{identity.fetch('name')} (#{channel}) and embedded PacketTunnel."

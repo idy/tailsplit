@@ -39,6 +39,8 @@ jobs:
         run: flutter analyze --no-pub
       - name: Run Flutter tests
         run: flutter test --no-pub
+      - name: Test the beta VPN and storage identity
+        run: flutter test --no-pub --dart-define=TAILSPLIT_IOS_CHANNEL=beta test/app_identifiers_test.dart
       - name: Validate organizational release guards
         run: python3 -B -m unittest discover -s tests -p 'test_*.py'
       - name: Test native build input validation
@@ -91,7 +93,7 @@ jobs:
         run: python3 -I vendor/sing_box_flutter/tests/test_android_network_monitor.py
 
   apple:
-    name: iOS simulator and unsigned device builds
+    name: iOS simulator and both unsigned release channels
     runs-on: macos-26
     timeout-minutes: 120
     env:
@@ -132,5 +134,8 @@ jobs:
           pod install --project-directory=ios
       - name: Build simulator app
         run: flutter build ios --simulator --debug --no-codesign --no-pub
-      - name: Build unsigned device archive
-        run: flutter build ipa --release --no-codesign --no-pub
+      - name: Build both unsigned device release channels
+        run: |
+          for channel in beta app-store; do
+            bash tool/build_ios_release.sh "$channel"
+          done

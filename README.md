@@ -352,7 +352,7 @@ implements Tailscale sign-in in Dart. It has native platform controls, English
 and Chinese, and a separate mobile build workflow. iOS distribution is configured
 for the LetSolo **TERMITOC PTE. LTD.** organization; see
 [mobile CI and publication](mobile/docs/release.md) for credentials, capabilities
-and the manual IPA/TestFlight workflow. Real-device VPN and signed store
+and the dual-identity IPA/TestFlight/App Store review workflow. Real-device VPN and signed store
 publication remain separate verification steps; mobile installers are not part
 of the desktop release assets above.
 
