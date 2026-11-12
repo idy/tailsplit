@@ -101,7 +101,8 @@ through the Apple API on 2026-11-12:
 
 Both records use primary locale `en-US`. Their initial iOS draft versions are
 `0.1.0`, matching `mobile/pubspec.yaml`, with `MANUAL` release and
-`PREPARE_FOR_SUBMISSION` state. No build has been uploaded or submitted for review.
+`PREPARE_FOR_SUBMISSION` state. Creating these records does not upload a build
+or submit an App Store review.
 Screenshots, privacy information, review details and export compliance remain
 separate publication requirements.
 
@@ -112,19 +113,28 @@ Run **iOS release (Termitoc)** on the protected default branch after merging:
 | Input | Values | Default |
 | --- | --- | --- |
 | `channel` | `beta`, `app-store` | `beta` |
-| `destination` | `artifact`, `testflight`, `app-store` | `artifact` |
+| `destination` | `artifact`, `testflight`, `app-store` | `testflight` |
+| `archive_run_id` | Optional completed release run on `main` with a successful unsigned build | Empty: build a new archive |
 
 | Selection | Result |
 | --- | --- |
-| Either channel + `artifact` | Sign and verify an IPA; retain it as an Actions artifact without uploading to Apple. Use this for the first credentialed run. |
-| `beta` + `testflight` | Upload TailSplit Beta for internal TestFlight processing. |
-| `app-store` + `testflight` | Upload the store application for internal TestFlight processing. |
+| Either channel + `artifact` | Explicit signing/export check only; retain the verified IPA without uploading to Apple. |
+| `beta` + `testflight` | Upload TailSplit Beta, wait for Apple processing, add it to its internal test group, and verify readiness and membership. |
+| `app-store` + `testflight` | Upload the store app, wait for Apple processing, add it to its internal test group, and verify readiness and membership. |
 | `app-store` + `app-store` | Upload the store application, wait for processing and submit that build to public App Review. The same upload is available to internal TestFlight. |
 | `beta` + `app-store` | Reject before building or accessing credentials. The signing helper independently rejects this combination. |
 
-The TestFlight destination does not submit external beta review or assign tester
-groups. Those can be configured in App Store Connect. Public App Review uses
-Codemagic's `--app-store --platform IOS --release-type MANUAL`: Apple still has
+Each app has its own `Internal Testing` group, pinned by app ID and group UUID
+in `release-identity.json`. The TestFlight publisher verifies the group belongs
+to the selected app and is internal before uploading. It passes `--beta-group`
+to Codemagic, then independently reads the exact build's version, processing
+state, internal readiness and group membership from Apple. A successful upload
+without verified group assignment is a failed release, not a successful delivery.
+Only then is a nonsecret `testflight.json` receipt written alongside the IPA.
+
+The groups and automatic CI assignment do not invite or manage testers. Add
+people in ASC separately. External beta review is not requested by this flow.
+Public App Review uses Codemagic's `--app-store --platform IOS --release-type MANUAL`: Apple still has
 to approve the application, then the owner releases it manually in App Store
 Connect. This CI does not automatically make an approved version public. The
 beta restriction is enforced by this workflow/helper; it is not an Apple account
@@ -133,6 +143,17 @@ permission that prevents someone from submitting the beta record manually.
 Each run releases one channel. Channels have separate concurrency groups and
 artifact names; two runs of the same channel are serialized. Compilation uses
 the Actions run number for both the app and extension's build number.
+
+To retry signing or delivery without recompiling, set `archive_run_id` to the
+original release run. The source must be a completed dispatch of this workflow
+on the same repository's default branch, with a successful unsigned build for
+the selected channel. Its commit must already be an ancestor of the protected
+release revision. The workflow verifies the source job, unexpired channel/run
+artifact name, artifact owner run and source SHA before download. Signing still
+runs on a fresh runner with the current trusted helpers and the original archive
+build number. This also supports recovery when the source run's build succeeded
+but its signing job failed; arbitrary artifacts, fork/PR runs and divergent
+source revisions are rejected.
 
 For a local unsigned archive, resolve packages, build the selected Apple core
 and install pods as described in the mobile README, then run from `mobile/`:
@@ -159,8 +180,9 @@ Compilation and signing run in **separate, fresh GitHub-hosted macOS jobs**:
    All Flutter, CocoaPods, dependency and Xcode build scripts finish on this
    runner. The unsigned archive ZIP is retained for one day for transfer.
 2. `sign` starts on another VM behind the protected-default-branch and
-   `mobile-release` environment gates. It checks out only the release helper,
-   identity and SOPS ciphertext from the workflow's exact commit. It installs
+   `mobile-release` environment gates. It checks out only the signing and
+   TestFlight publisher helpers, identity and SOPS ciphertext from the workflow's
+   exact commit. It installs
    Codemagic CLI tools 0.70.2 in a fresh virtual environment and a SOPS 3.13.3
    binary verified against its pinned SHA-256. It does not restore build caches,
    install application dependencies, check out an Xcode project, invoke Flutter,
@@ -181,11 +203,17 @@ Compilation and signing run in **separate, fresh GitHub-hosted macOS jobs**:
    extension. Verify team, application identifiers, App Group, Packet Tunnel
    entitlement, distribution type and expiry. Install profiles by validated UUID
    and import certificates into a temporary keychain.
-6. Run only `xcodebuild -exportArchive` with generated options:
-   `app-store-connect`, `destination=export`, manual signing, `Apple Distribution`,
-   team `BGL4WMWD3W`, explicit profile UUIDs and no automatic version rewriting.
-   No project/scheme build, `xcode-project use-profiles`, dependency script or
-   provisioning-update flag participates.
+6. Sign embedded frameworks, executable resource bundles and dynamic libraries
+   first, without app entitlements. Then sign the PacketTunnel extension and
+   host with their own validated profiles and explicit pinned application/team,
+   App Group and Packet Tunnel entitlements. Never use deep signing to copy app
+   entitlements onto libraries. This makes the required grants available to
+   Xcode even when the source archive has never been signed.
+   Run `xcodebuild -exportArchive` with generated options: `app-store-connect`,
+   `destination=export`, manual signing, `Apple Distribution`, team `BGL4WMWD3W`,
+   explicit profile UUIDs and no automatic version rewriting. No project/scheme
+   build, `xcode-project use-profiles`, dependency script or provisioning-update
+   flag participates.
 7. Safely unpack the IPA, validate embedded profiles and both code signatures,
    and require the actual signer team to be Termitoc. Independently decode each
    bundle's signed entitlements: require the selected application/team identity,
@@ -217,10 +245,11 @@ invoke no real Apple API, signing identity or keychain operation. Local checks
 also verify native Debug/Profile/Release settings for both channels and Dart VPN
 identifiers with both compile-time definitions.
 
-Real Apple API authentication, a matching Termitoc distribution certificate and
-SOPS decryption have been verified. Signed archive export, TestFlight upload and
-App Store submission remain **unverified** on the protected release runner.
-Bundle identifiers, App Group associations and both ASC records are verified;
-the first signed release still needs to fetch/create and validate its distribution
-profiles. Physical iOS devices are required to verify VPN traffic. Android CI
-verifies debug builds; Google Play publication is not configured here.
+Real Apple API authentication, a matching Termitoc distribution certificate,
+SOPS decryption, distribution profiles, bundle identifiers, App Group associations
+and both ASC records have been verified. Live delivery is established only by a
+successful Actions run and its verified TestFlight receipt; exporting or uploading
+an IPA alone does not prove it is available to internal testers. Public App Store
+review still requires its own metadata and approval. Physical iOS devices are
+required to verify VPN traffic. Android CI verifies debug builds; Google Play
+publication is not configured here.

@@ -13,7 +13,11 @@ on:
         description: Sign only, upload to internal TestFlight, or upload and submit to App Store review
         type: choice
         options: [artifact, testflight, app-store]
-        default: artifact
+        default: testflight
+      archive_run_id:
+        description: Optional completed main-branch release run whose unsigned archive should be signed and delivered again
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -33,6 +37,7 @@ jobs:
       github.event_name == 'workflow_dispatch'
       && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       && github.ref_protected
+      && inputs.archive_run_id == ''
     runs-on: macos-26
     timeout-minutes: 150
     # No protected environment, signing tools, or secrets on this runner.
@@ -104,9 +109,12 @@ jobs:
     # A new GitHub-hosted VM is the security boundary. Never combine these jobs
     # or use a persistent/self-hosted runner for credentialed signing.
     if: >-
-      github.event_name == 'workflow_dispatch'
+      always()
+      && github.event_name == 'workflow_dispatch'
       && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       && github.ref_protected
+      && (needs.build.result == 'success'
+          || (inputs.archive_run_id != '' && needs.build.result == 'skipped'))
     runs-on: macos-26
     timeout-minutes: 90
     environment: mobile-release
@@ -125,6 +133,7 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /mobile/tool/release_ios.py
+            /mobile/tool/publish_testflight.py
             /mobile/release-identity.json
             /mobile/credentials/apple-distribution.json.sops
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -141,26 +150,61 @@ jobs:
           printf '%s  %s\n' b97c0d434aab577dc40310e8d22ff9e45eef4c80638ab978daae9b4681c59286 \
             "$RUNNER_TEMP/signing-tools/bin/sops" | shasum -a 256 --check
           chmod 700 "$RUNNER_TEMP/signing-tools/bin/sops"
-      - name: Download this run's archive without extracting it
+      - name: Resolve and download a trusted unsigned archive without extracting it
+        id: archive_input
         working-directory: ${{ runner.temp }}
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ needs.build.outputs.archive-id }}
           EXPECTED_NAME: tailsplit-ios-unsigned-${{ inputs.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          ARCHIVE_RUN_ID: ${{ inputs.archive_run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          case "$RELEASE_CHANNEL/$RELEASE_DESTINATION" in
+            beta/artifact|beta/testflight|app-store/artifact|app-store/testflight|app-store/app-store) ;;
+            *) printf 'Invalid release selection.\n' >&2; exit 1 ;;
+          esac
+          SOURCE_RUN_ID="$GITHUB_RUN_ID"
+          SOURCE_SHA="$GITHUB_SHA"
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          if [[ -n "$ARCHIVE_RUN_ID" ]]; then
+            [[ "$ARCHIVE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARCHIVE_RUN_ID" > "$RUNNER_TEMP/source-release.json"
+            jq -e --arg branch "$DEFAULT_BRANCH" --arg repo "$GITHUB_REPOSITORY" \
+              '.event == "workflow_dispatch" and .status == "completed" and .head_branch == $branch and .head_repository.full_name == $repo and .path == ".github/workflows/mobile-release.yml"' \
+              "$RUNNER_TEMP/source-release.json" > /dev/null
+            SOURCE_RUN_ID="$ARCHIVE_RUN_ID"
+            SOURCE_SHA="$(jq -r .head_sha "$RUNNER_TEMP/source-release.json")"
+            BUILD_NUMBER="$(jq -r .run_number "$RUNNER_TEMP/source-release.json")"
+            [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+            # Reuse only source commits already contained in the protected release revision.
+            gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_SHA...$GITHUB_SHA" |
+              jq -e --arg sha "$SOURCE_SHA" '(.status == "ahead" or .status == "identical") and .merge_base_commit.sha == $sha' > /dev/null
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?filter=all&per_page=100" |
+              jq -e --arg name "Build unsigned iOS archive ($RELEASE_CHANNEL, no release credentials)" \
+                'any(.[].jobs[]; .name == $name and .conclusion == "success")' > /dev/null
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" |
+              jq -e --arg pattern "^tailsplit-ios-unsigned-$RELEASE_CHANNEL-$SOURCE_RUN_ID-[1-9][0-9]*$" \
+                '[.artifacts[] | select(.expired == false and (.name | test($pattern)))] | sort_by(.created_at) | last // error("No matching unsigned archive")' \
+                > "$RUNNER_TEMP/source-artifact.json"
+            ARTIFACT_ID="$(jq -r .id "$RUNNER_TEMP/source-artifact.json")"
+            EXPECTED_NAME="$(jq -r .name "$RUNNER_TEMP/source-artifact.json")"
+          fi
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" |
-            jq -e --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" --arg name "$EXPECTED_NAME" \
+            jq -e --arg run "$SOURCE_RUN_ID" --arg sha "$SOURCE_SHA" --arg name "$EXPECTED_NAME" \
               '(.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha and .name == $name and .expired == false' > /dev/null
-          # Keep the outer Actions ZIP opaque too: release_ios validates both ZIPs
-          # before extraction, instead of letting an artifact overwrite runner files.
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/unsigned-artifact.zip"
+          # Keep both ZIP layers opaque until the release helper validates every member.
+          mkdir -m 700 "$RUNNER_TEMP/release-input"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/release-input/unsigned-artifact.zip"
+          printf 'build-number=%s\n' "$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
       - name: Export, verify organization and channel, and deliver
         working-directory: ${{ runner.temp }}
         env:
           TAILSPLIT_MOBILE_RELEASE_AGE_KEY: ${{ secrets.TAILSPLIT_MOBILE_RELEASE_AGE_KEY }}
+          ARCHIVE_BUILD_NUMBER: ${{ steps.archive_input.outputs.build-number }}
         run: |
-          args=(--channel "$RELEASE_CHANNEL")
+          args=(--channel "$RELEASE_CHANNEL" --build-number "$ARCHIVE_BUILD_NUMBER")
           case "$RELEASE_DESTINATION" in
             artifact) ;;
             testflight) args+=(--publish) ;;
@@ -168,13 +212,15 @@ jobs:
             *) printf 'Unknown release destination.\n' >&2; exit 1 ;;
           esac
           "$RUNNER_TEMP/signing-tools/bin/python3" -I -B "$GITHUB_WORKSPACE/mobile/tool/release_ios.py" \
-            --artifact "$RUNNER_TEMP/unsigned-artifact.zip" --output "$RUNNER_TEMP/verified-ipa" "${args[@]}"
-      - name: Retain the verified organization-signed IPA
+            --artifact "$RUNNER_TEMP/release-input/unsigned-artifact.zip" --output "$RUNNER_TEMP/verified-ipa" "${args[@]}"
+      - name: Retain the verified organization-signed IPA and TestFlight receipt
         # The helper copies only a verified IPA here, even if upload/review later fails.
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tailsplit-ios-${{ inputs.channel }}-termitoc-${{ github.run_number }}
-          path: ${{ runner.temp }}/verified-ipa/*.ipa
+          path: |
+            ${{ runner.temp }}/verified-ipa/*.ipa
+            ${{ runner.temp }}/verified-ipa/testflight.json
           if-no-files-found: ignore
           retention-days: 7
