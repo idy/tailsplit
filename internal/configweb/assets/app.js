@@ -2631,14 +2631,18 @@
     const control = $('#home-connect');
     control.disabled = !state.loaded || !live.desktop || (working ? $('#desktop-disconnect').disabled :
       setup?.stage === 'failed' ? $('#connection-setup-retry').disabled : $('#desktop-connect').disabled);
-    control.setAttribute('aria-checked', String(networkActive(live)));
-    control.setAttribute('aria-busy', String(working && !connected && !blocked));
+    control.setAttribute('aria-pressed', String(networkActive(live)));
+    const busy = working && !connected && !blocked;
+    control.setAttribute('aria-busy', String(busy));
+    // Spin while busy; once work ends, a running lap finishes before the snake settles.
+    if (busy) control.dataset.spinning = 'true';
+    else if (control.dataset.spinning === 'true' && !homeSnakeSpinning(control)) control.dataset.spinning = 'false';
     const action = working ? (networkActive(live) ? '断开' : '取消连接') : error ? '重试连接' : '开启连接';
     control.setAttribute('aria-label', t(action));
     control.title = t(action);
-    // The snake's tail splits only for a running connection, never a blocked one.
+    // The snake lights green only for a running connection, never a blocked one.
     control.dataset.connected = String(connected);
-    // Animate later changes only: the first live reading settles without a crawl.
+    // Animate later changes only: the first live reading settles without a turn.
     if (desktopLive && control.dataset.motion !== 'ready') {
       control.getBoundingClientRect?.();
       control.dataset.motion = 'ready';
@@ -2686,6 +2690,25 @@
       await beginConnectionSetup(id);
     } else await connectWithExit();
     renderConnectionCenter();
+  }
+  function homeSnakeSpinning(control) {
+    const animations = control.querySelector?.('.home-snake')?.getAnimations?.() || [];
+    return animations.some(item => item.animationName === 'home-snake-spin' && item.playState === 'running');
+  }
+  $('#home-connect').addEventListener('animationiteration', event => {
+    const control = $('#home-connect');
+    if (event.animationName === 'home-snake-spin' && control.getAttribute('aria-busy') !== 'true') control.dataset.spinning = 'false';
+  });
+  // The snake button matches the height of the title and description beside it,
+  // which wrap differently by state, language and window width.
+  if (window.ResizeObserver) {
+    const homeCopy = $('.home-connection-copy');
+    const homeHeader = $('.home-connection');
+    if (homeCopy && homeHeader) {
+      new window.ResizeObserver(() => {
+        if (homeCopy.offsetHeight) homeHeader.style.setProperty('--home-copy-height', `${homeCopy.offsetHeight}px`);
+      }).observe(homeCopy);
+    }
   }
   $('#home-connect').addEventListener('click', homeConnectionAction);
   $('#home-setup').addEventListener('click', homeConnectionAction);

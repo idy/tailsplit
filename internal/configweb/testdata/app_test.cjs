@@ -3793,6 +3793,19 @@ test('a delayed claim in another panel stays canceled even after the original re
   assert.equal(claimant.$('#connection-setup').hidden, true);
 });
 
+test('home snake spins while connecting and settles once running', async () => {
+  const app = await page({ desktop: true, active: true, state: 'starting', mode: 'tun', operation_id: 'spin-owner' }, '', { page: 'home' }, guidedDocument());
+  const control = app.$('#home-connect');
+  assert.equal(control.attributes.get('aria-busy'), 'true');
+  assert.equal(control.dataset.spinning, 'true');
+  Object.assign(app.snapshot, { state: 'running', backend_state: 'Running' });
+  await app.poll();
+  assert.equal(app.$('#home-status').textContent, '已连接');
+  assert.equal(control.attributes.get('aria-busy'), 'false');
+  assert.equal(control.attributes.get('aria-pressed'), 'true');
+  assert.equal(control.dataset.spinning, 'false', 'without a running lap the snake settles immediately');
+});
+
 test('restoring an old cancellation never changes a newer running session', async () => {
   const storage = new Map([['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: 'old-request', operation_id: 'old-operation' })]]);
   const app = await page({ desktop: true, active: true, state: 'running', mode: 'tun', operation_id: 'new-operation', connect_request: 'new-request', backend_state: 'Running' }, '', { page: 'home', storage }, guidedDocument());
@@ -4997,7 +5010,7 @@ for (const mode of ['global', 'split']) test(`blocked live Global remains checke
   const app = await page(snapshot, '', { page: 'home' }, initial);
   assert.equal(app.$('#home-status').textContent, '出口不可用 · 已阻断');
   assert.match(app.$('#home-description').textContent, /全局模式正在阻断流量.*手动断开会恢复系统网络/);
-  assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'true');
+  assert.equal(app.$('#home-connect').attributes.get('aria-pressed'), 'true');
   assert.equal(app.$('#home-connect').attributes.get('aria-busy'), 'false');
   assert.equal(app.$('#home-connect').attributes.get('aria-label'), '断开');
   assert.equal(app.$('#home-wires-live').children.length, 0);
@@ -5007,7 +5020,7 @@ for (const mode of ['global', 'split']) test(`blocked live Global remains checke
   }
   await app.$('#home-connect').emit('click');
   assert.equal(app.snapshot.active, false, 'checked active control explicitly disconnects when requested');
-  assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'false');
+  assert.equal(app.$('#home-connect').attributes.get('aria-pressed'), 'false');
 });
 
 test('home fans out saved destinations and only marks confirmed routes as in effect', async () => {
@@ -5255,7 +5268,7 @@ test('home Setup completes first connection in both languages and yields to the 
     await app.$('[data-page="home"]').emit('click');
     assert.equal(app.$('#home-setup').hidden, true);
     assert.equal(app.$('#home-toggle-control').hidden, false);
-    assert.equal(app.$('#home-connect').attributes.get('aria-checked'), 'true');
+    assert.equal(app.$('#home-connect').attributes.get('aria-pressed'), 'true');
   }
 });
 
