@@ -2632,7 +2632,11 @@
     control.disabled = !state.loaded || !live.desktop || (working ? $('#desktop-disconnect').disabled :
       setup?.stage === 'failed' ? $('#connection-setup-retry').disabled : $('#desktop-connect').disabled);
     control.setAttribute('aria-pressed', String(networkActive(live)));
-    control.setAttribute('aria-busy', String(working && !connected && !blocked));
+    const busy = working && !connected && !blocked;
+    control.setAttribute('aria-busy', String(busy));
+    // Spin while busy; once work ends, a running lap finishes before the snake settles.
+    if (busy) control.dataset.spinning = 'true';
+    else if (control.dataset.spinning === 'true' && !homeSnakeSpinning(control)) control.dataset.spinning = 'false';
     const action = working ? (networkActive(live) ? '断开' : '取消连接') : error ? '重试连接' : '开启连接';
     control.setAttribute('aria-label', t(action));
     control.title = t(action);
@@ -2687,6 +2691,14 @@
     } else await connectWithExit();
     renderConnectionCenter();
   }
+  function homeSnakeSpinning(control) {
+    const animations = control.querySelector?.('.home-snake')?.getAnimations?.() || [];
+    return animations.some(item => item.animationName === 'home-snake-spin' && item.playState === 'running');
+  }
+  $('#home-connect').addEventListener('animationiteration', event => {
+    const control = $('#home-connect');
+    if (event.animationName === 'home-snake-spin' && control.getAttribute('aria-busy') !== 'true') control.dataset.spinning = 'false';
+  });
   $('#home-connect').addEventListener('click', homeConnectionAction);
   $('#home-setup').addEventListener('click', homeConnectionAction);
   async function openRoutingRules() {

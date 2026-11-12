@@ -96,11 +96,15 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .home-toggle:disabled { cursor: not-allowed; opacity: .45; }
 .home-snake { display: block; width: 30px; height: 30px; filter: drop-shadow(0 0 6px var(--snake-glow)); }
 .home-toggle[aria-pressed="true"] .home-snake { transform: rotate(180deg); }
-.home-toggle[aria-busy="true"]:not([data-motion-paused="true"]) .home-snake { animation: home-snake-wait 1.4s var(--mds-ease) infinite; }
-@keyframes home-snake-wait { 50% { opacity: .45; } }
+/* While connecting the snake keeps spinning. The spin uses the separate `rotate`
+   property so it composes with the 180° turn; app.js keeps data-spinning until the
+   current lap ends, so it stops on a whole turn instead of snapping back. */
+.home-toggle[data-spinning="true"] .home-snake { animation: home-snake-spin 800ms linear infinite; }
+.home-toggle[data-spinning="true"][data-motion-paused="true"] .home-snake { animation-play-state: paused; }
+@keyframes home-snake-spin { from { rotate: 0deg; } to { rotate: 360deg; } }
 /* Motion narrates later state changes; the first live reading settles in place. */
 .home-toggle[data-motion="ready"] { transition: color var(--mds-duration), background-color var(--mds-duration); }
-.home-toggle[data-motion="ready"] .home-snake { transition: transform 480ms cubic-bezier(.6, 0, .3, 1), filter var(--mds-duration); }
+.home-toggle[data-motion="ready"] .home-snake { transition: transform 280ms cubic-bezier(.3, 0, .2, 1), filter var(--mds-duration); }
 @media (prefers-reduced-motion: reduce) {
   .home-toggle .home-snake { transition: none !important; animation: none !important; }
 }

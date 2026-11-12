@@ -3793,6 +3793,19 @@ test('a delayed claim in another panel stays canceled even after the original re
   assert.equal(claimant.$('#connection-setup').hidden, true);
 });
 
+test('home snake spins while connecting and settles once running', async () => {
+  const app = await page({ desktop: true, active: true, state: 'starting', mode: 'tun', operation_id: 'spin-owner' }, '', { page: 'home' }, guidedDocument());
+  const control = app.$('#home-connect');
+  assert.equal(control.attributes.get('aria-busy'), 'true');
+  assert.equal(control.dataset.spinning, 'true');
+  Object.assign(app.snapshot, { state: 'running', backend_state: 'Running' });
+  await app.poll();
+  assert.equal(app.$('#home-status').textContent, '已连接');
+  assert.equal(control.attributes.get('aria-busy'), 'false');
+  assert.equal(control.attributes.get('aria-pressed'), 'true');
+  assert.equal(control.dataset.spinning, 'false', 'without a running lap the snake settles immediately');
+});
+
 test('restoring an old cancellation never changes a newer running session', async () => {
   const storage = new Map([['tailsplit-setup-cancel', JSON.stringify({ token: 'fixture', request: 'old-request', operation_id: 'old-operation' })]]);
   const app = await page({ desktop: true, active: true, state: 'running', mode: 'tun', operation_id: 'new-operation', connect_request: 'new-request', backend_state: 'Running' }, '', { page: 'home', storage }, guidedDocument());
