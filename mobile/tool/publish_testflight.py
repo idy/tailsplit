@@ -170,7 +170,8 @@ def verify_group(config):
             raise PublicationError("The internal TestFlight group's app bundle does not match the channel")
 
 
-def verify_build(payload, config, build_number, version):
+def verify_build(payload, config, build_number, version, *, resume=False):
+    """Resume may accept an absent build or group, but never uncertain build metadata."""
     builds = payload.get("data")
     if not isinstance(builds, list):
         raise PublicationError("App Store Connect returned an invalid builds response")
@@ -182,24 +183,33 @@ def verify_build(payload, config, build_number, version):
     for build in builds:
         if not is_resource(build, "builds"):
             raise PublicationError("App Store Connect returned an invalid build resource")
-        if attributes(build).get("version") != build_number:
+        number = attributes(build).get("version")
+        if resume and (not isinstance(number, str) or number != build_number):
+            raise PublicationError("Existing upload query returned a missing or wrong build number; refusing another upload")
+        if number != build_number:
             continue
         prerelease = related(build, "preReleaseVersion")
-        if not is_resource(prerelease, "preReleaseVersions"):
-            continue
-        prerelease = included.get(("preReleaseVersions", prerelease["id"]))
+        prerelease = included.get(("preReleaseVersions", prerelease["id"])) if is_resource(prerelease, "preReleaseVersions") else None
         if prerelease is None:
+            if resume:
+                raise PublicationError("Existing upload has missing version metadata; refusing another upload")
             continue
         attrs = attributes(prerelease)
-        if attrs.get("version") != version or attrs.get("platform") != "IOS":
-            continue
+        if resume and any(not isinstance(attrs.get(key), str) or not attrs[key] for key in ("version", "platform")):
+            raise PublicationError("Existing upload has malformed version or platform metadata; refusing another upload")
         # ASC's app filter is authoritative when an app linkage is not expanded.
         for resource in (build, prerelease):
             app = related(resource, "app")
             if app is not None and not is_resource(app, "apps", config["app_store_id"]):
                 raise PublicationError("The matching TestFlight build belongs to a different app")
+        if attrs.get("version") != version or attrs.get("platform") != "IOS":
+            continue
         matches.append(build)
     if not matches:
+        if resume:
+            if builds:
+                raise PublicationError("Existing uploads do not match the exact iOS application version; refusing another upload")
+            return None
         raise BuildNotReady("The exact iOS build number and application version were not found in App Store Connect")
     if len(matches) != 1:
         raise PublicationError("Multiple builds match the iOS build number and application version")
@@ -218,27 +228,35 @@ def verify_build(payload, config, build_number, version):
         raise PublicationError("The build's internal TestFlight processing failed or expired")
     if (attrs.get("processingState") != "VALID" or attrs.get("expired") is not False
             or not isinstance(state, str) or state not in READY_STATES):
-        raise BuildNotReady("The uploaded build is not yet valid and ready for internal TestFlight testing")
+        raise BuildNotReady("The uploaded build is not yet valid and ready for internal TestFlight testing; retry after Apple finishes processing")
     groups = related(build, "betaGroups")
-    if not isinstance(groups, list) or not any(is_resource(group, "betaGroups", config["testflight_group_id"])
-                                             for group in groups):
+    assigned = (isinstance(groups, list)
+                and any(is_resource(group, "betaGroups", config["testflight_group_id"]) for group in groups))
+    if not resume and not assigned:
         raise BuildNotReady("The uploaded build is not assigned to the expected internal TestFlight group")
-    return {"build_id": build["id"], "processing_state": "VALID", "internal_build_state": state}
+    verified = {"build_id": build["id"], "processing_state": "VALID", "internal_build_state": state}
+    return {**verified, "group_assigned": assigned} if resume else verified
 
 
-def readback(config, build_number, version):
-    query = {"filter[app]": config["app_store_id"], "filter[version]": build_number,
-             "include": "preReleaseVersion,betaGroups,buildBetaDetail", "limit": "200"}
+def fetch_builds(config, build_number):
+    return apple_get("/v1/builds", {"filter[app]": config["app_store_id"], "filter[version]": build_number,
+                                  "include": "preReleaseVersion,betaGroups,buildBetaDetail", "limit": "200"})
+
+
+def readback(config, build_number, version, expected_build_id=None):
     for attempt in range(READBACK_ATTEMPTS):
         try:
-            return verify_build(apple_get("/v1/builds", query), config, build_number, version)
+            verified = verify_build(fetch_builds(config, build_number), config, build_number, version)
+            if expected_build_id is not None and verified["build_id"] != expected_build_id:
+                raise PublicationError("Final TestFlight readback identifies a different build than the existing upload")
+            return verified
         except BuildNotReady:
             if attempt == READBACK_ATTEMPTS - 1:
                 raise
             time.sleep(READBACK_DELAY)
 
 
-def publish(ipa, channel, build_number, version, receipt, submit_for_review=False):
+def publish(ipa, channel, build_number, version, receipt, submit_for_review=False, resume_upload=False):
     config = identity(channel)
     if submit_for_review and config["app_store"] is not True:
         raise PublicationError("App Store review requires the app-store channel; beta is TestFlight-only")
@@ -256,21 +274,32 @@ def publish(ipa, channel, build_number, version, receipt, submit_for_review=Fals
         raise PublicationError("RUNNER_TEMP must identify the trusted runner temporary directory")
     env = sanitized_env()
     verify_group(config)
+    existing = (verify_build(fetch_builds(config, build_number), config, build_number, version, resume=True)
+                if resume_upload else None)
+    resumed = existing is not None
+    target = f"{config['bundle_id']} {version} ({build_number})"
+    print(f"Resuming internal TestFlight distribution for {target}" if resumed
+          else f"Starting TestFlight upload for {target}", flush=True)
+    # In codemagic 0.70.2, skip-package-upload still validates when enabled. Apple
+    # already accepted a resumed binary; validating it again can reject duplicates.
+    upload_option = "--skip-package-upload" if resumed else "--enable-package-validation"
     command = [str(Path(sys.executable).parent / "app-store-connect"), "publish", "--path", str(ipa),
-               "--enable-package-validation", "--beta-group", config["testflight_group"]]
+               upload_option, "--beta-group", config["testflight_group"]]
     if submit_for_review:
         command += ["--app-store", "--platform", "IOS", "--release-type", "MANUAL"]
-    try:
-        subprocess.run(command, cwd=str(runner_temp), env=env, check=True, stdin=subprocess.DEVNULL,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=PUBLISH_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        # CLI logs and exception output may contain credentials or raw Apple errors.
-        raise PublicationError("TestFlight upload/distribution command failed; no success receipt was written") from None
-    verified = readback(config, build_number, version)
+    if not (resumed and existing["group_assigned"] and not submit_for_review):
+        try:
+            subprocess.run(command, cwd=str(runner_temp), env=env, check=True, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=PUBLISH_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            # CLI logs and exception output may contain credentials or raw Apple errors.
+            raise PublicationError("TestFlight upload/distribution command failed; no success receipt was written") from None
+    print(f"Verifying internal TestFlight readiness and group membership for {target}", flush=True)
+    verified = readback(config, build_number, version, existing["build_id"] if resumed else None)
     result = {"channel": channel, "app_store_id": config["app_store_id"], "bundle_id": config["bundle_id"],
               "build_number": build_number, "version": version, "platform": "IOS",
               "testflight_group_id": config["testflight_group_id"], "testflight_group": config["testflight_group"],
-              "submitted_for_review": submit_for_review, **verified}
+              "submitted_for_review": submit_for_review, "resumed_upload": resumed, **verified}
     with receipt.open("x", encoding="utf-8") as destination:
         json.dump(result, destination, indent=2, sort_keys=True)
         destination.write("\n")
@@ -285,9 +314,11 @@ def main():
     parser.add_argument("--version", required=True, help="Exact X.Y.Z application version")
     parser.add_argument("--receipt", type=Path, required=True, help="New JSON file, written only after verified distribution")
     parser.add_argument("--submit-for-review", action="store_true", help="Explicit public App Review for app-store only (manual release)")
+    parser.add_argument("--resume-upload", action="store_true", help="For a validated reused archive, resume a ready existing upload without uploading again")
     args = parser.parse_args()
     try:
-        result = publish(args.ipa, args.channel, args.build_number, args.version, args.receipt, args.submit_for_review)
+        result = publish(args.ipa, args.channel, args.build_number, args.version, args.receipt,
+                         args.submit_for_review, resume_upload=args.resume_upload)
     except PublicationError as error:
         parser.exit(1, f"Publication stopped: {error}\n")
     except OSError:

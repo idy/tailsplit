@@ -204,6 +204,7 @@ jobs:
         env:
           TAILSPLIT_MOBILE_RELEASE_AGE_KEY: ${{ secrets.TAILSPLIT_MOBILE_RELEASE_AGE_KEY }}
           ARCHIVE_BUILD_NUMBER: ${{ steps.archive_input.outputs.build-number }}
+          REUSE_ARCHIVE: ${{ inputs.archive_run_id != '' }}
         run: |
           args=(--channel "$RELEASE_CHANNEL" --build-number "$ARCHIVE_BUILD_NUMBER")
           case "$RELEASE_DESTINATION" in
@@ -212,6 +213,9 @@ jobs:
             app-store) args+=(--publish --submit-for-review) ;;
             *) printf 'Unknown release destination.\n' >&2; exit 1 ;;
           esac
+          if [[ "$REUSE_ARCHIVE" == true && "$RELEASE_DESTINATION" != artifact ]]; then
+            args+=(--resume-upload)
+          fi
           "$RUNNER_TEMP/signing-tools/bin/python3" -I -B "$GITHUB_WORKSPACE/mobile/tool/release_ios.py" \
             --artifact "$RUNNER_TEMP/release-input/unsigned-artifact.zip" --output "$RUNNER_TEMP/verified-ipa" "${args[@]}"
       - name: Retain the verified organization-signed IPA and TestFlight receipt

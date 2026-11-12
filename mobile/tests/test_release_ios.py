@@ -498,6 +498,19 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.assertTrue((self.output / "TailSplit.ipa").is_file())
         self.assert_not_uploaded()
 
+    def test_archive_retry_passes_recovery_only_to_the_testflight_publisher(self):
+        release.release(self.artifact, self.output, publish=True, channel=self.channel,
+                        build_number="38", resume_upload=True)
+        publish = next(args for args in self.command_names() if args[:2] == ("python3", "-I"))
+        self.assertIn("--resume-upload", publish)
+        self.assertEqual(publish[publish.index("--build-number") + 1], "38")
+        self.assert_credential_scopes()
+
+    def test_upload_recovery_requires_publication(self):
+        with self.assertRaisesRegex(ValueError, "requires --publish"):
+            release.release(self.artifact, self.output, channel=self.channel, resume_upload=True)
+        self.commands.assert_not_called()
+
     def test_wrong_reused_archive_build_number_stops_before_decryption(self):
         with self.assertRaisesRegex(ValueError, "build number"):
             release.release(self.artifact, self.output, channel=self.channel, build_number="39")
