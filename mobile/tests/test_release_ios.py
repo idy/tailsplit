@@ -22,7 +22,7 @@ spec.loader.exec_module(release)
 
 def profile_for(bundle, group):
     return {
-        "UUID": "11111111-1111-1111-1111-111111111111" if bundle == "dev.idy.tailsplit" else "22222222-2222-2222-2222-222222222222",
+        "UUID": "22222222-2222-2222-2222-222222222222" if bundle.endswith(".PacketTunnel") else "11111111-1111-1111-1111-111111111111",
         "TeamIdentifier": [release.TEAM],
         "ExpirationDate": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(days=30),
         "Entitlements": {
@@ -63,16 +63,37 @@ class ReleaseIdentityTests(unittest.TestCase):
     def check(self, profile):
         release.validate_profile(profile, self.bundle, self.group)
 
-    def test_pinned_organization(self):
-        self.assertEqual(release.identity()["team_id"], "BGL4WMWD3W")
+    def test_pinned_organization_and_channel_identities(self):
         project = MODULE.parent.parent / "ios/Runner.xcodeproj/project.pbxproj"
         self.assertNotIn("SV4P7RNRDK", project.read_text())
-        for key in ("bundle_id", "packet_tunnel_bundle_id", "app_group", "team_id", "organization"):
-            config = release.identity()
-            config[key] = "different"
-            with self.subTest(key=key), mock.patch.object(Path, "read_text", return_value=json.dumps(config)):
-                with self.assertRaises(ValueError):
-                    release.identity()
+        original = json.loads((MODULE.parent.parent / "release-identity.json").read_text())
+        for channel in ("beta", "app-store"):
+            self.assertEqual(release.identity(channel)["team_id"], "BGL4WMWD3W")
+            self.assertIs(release.identity(channel)["app_store"], channel == "app-store")
+            for key in ("bundle_id", "packet_tunnel_bundle_id", "app_group", "name", "app_store",
+                        "team_id", "organization", "account_type"):
+                config = copy.deepcopy(original)
+                target = config if key in ("team_id", "organization", "account_type") else config["channels"][channel]
+                target[key] = "different"
+                with self.subTest(channel=channel, key=key), mock.patch.object(Path, "read_text", return_value=json.dumps(config)):
+                    with self.assertRaises(ValueError):
+                        release.identity(channel)
+
+    def test_channels_have_distinct_bundles_and_storage(self):
+        beta, store = release.identity("beta"), release.identity("app-store")
+        for key in ("bundle_id", "packet_tunnel_bundle_id", "app_group"):
+            self.assertNotEqual(beta[key], store[key])
+        with self.assertRaises(ValueError):
+            release.identity("unknown")
+
+    def test_beta_cannot_submit_to_app_store_even_with_publish_enabled(self):
+        with self.assertRaisesRegex(ValueError, "beta is TestFlight-only"):
+            release.release(Path("unused.zip"), Path("unused"), publish=True,
+                            channel="beta", submit_for_review=True)
+
+    def test_app_review_requires_upload(self):
+        with self.assertRaisesRegex(ValueError, "requires --publish"):
+            release.release(Path("unused.zip"), Path("unused"), submit_for_review=True)
 
     def test_accepts_matching_app_store_vpn_profile(self):
         self.check(self.profile)
@@ -139,11 +160,13 @@ class ReleaseIdentityTests(unittest.TestCase):
 
 
 class ArchiveFixture(unittest.TestCase):
+    channel = "app-store"
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory(prefix=".release-test-", dir=MODULE.parent.parent)
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
-        self.config = release.identity()
+        self.config = release.identity(self.channel)
         self.archive_app = "Runner.xcarchive/Products/Applications/Runner.app"
         self.archive_extension = f"{self.archive_app}/PlugIns/PacketTunnel.appex"
         self.archive_files = {
@@ -292,9 +315,12 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.signed = {bundle: copy.deepcopy(profile["Entitlements"]) for bundle, profile in self.profiles.items()}
         self.values = {key: f"fixture-{key}" for key in (
             "issuer_id", "api_key_id", "api_private_key", "certificate_private_key")}
+        self.sops_payload = json.dumps(self.values).encode()
         self.environment = {
             "PATH": "/untrusted/build/bin", "HOME": str(self.home), "RUNNER_TEMP": str(self.root),
-            "GITHUB_RUN_NUMBER": "38", release.SECRET: json.dumps(self.values),
+            "GITHUB_RUN_NUMBER": "38", release.AGE_SECRET: "AGE-SECRET-KEY-FIXTURE",
+            "SOPS_AGE_KEY": "inherited-age-key", "SOPS_AGE_KEY_FILE": "/untrusted/key.txt",
+            "SOPS_AGE_KEY_CMD": "/untrusted/key-command",
             "APP_STORE_CONNECT_PRIVATE_KEY": "inherited-api-key", "CERTIFICATE_PRIVATE_KEY": "inherited-certificate",
             "KEYCHAIN_PASSWORD": "inherited-password", "PYTHONPATH": "/untrusted/build", "DYLD_INSERT_LIBRARIES": "/untrusted/lib",
         }
@@ -315,7 +341,10 @@ class ReleaseExecutionTests(ArchiveFixture):
         if args[:2] in self.failures:
             raise subprocess.CalledProcessError(1, args)
         stdout, stderr = b"", b""
-        if args[:2] == ("security", "default-keychain"):
+        if args[:2] == ("sops", "--decrypt"):
+            self.assertEqual(args[-1], str(release.CREDENTIALS_FILE))
+            stdout = self.sops_payload
+        elif args[:2] == ("security", "default-keychain"):
             stdout = b'"/fixture/login.keychain-db"\n'
         elif args[:2] == ("security", "cms"):
             stdout = Path(args[-1]).read_bytes()
@@ -347,8 +376,9 @@ class ReleaseExecutionTests(ArchiveFixture):
             self.assertIn(args[:2], {("keychain", "add-certificates"), ("app-store-connect", "publish"), ("codesign", "--verify")})
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr=stderr)
 
-    def execute(self, publish=True):
-        release.release(self.artifact, self.output, publish=publish)
+    def execute(self, publish=True, submit_for_review=False):
+        release.release(self.artifact, self.output, publish=publish, channel=self.channel,
+                        submit_for_review=submit_for_review)
 
     def command_names(self):
         return [(Path(call.args[0][0]).name, *call.args[0][1:]) for call in self.commands.call_args_list]
@@ -360,12 +390,14 @@ class ReleaseExecutionTests(ArchiveFixture):
             "APP_STORE_CONNECT_PRIVATE_KEY": self.values["api_private_key"],
         }
         allowed = {
+            ("sops", "--decrypt"): {"SOPS_AGE_KEY": "AGE-SECRET-KEY-FIXTURE"},
             ("app-store-connect", "fetch-signing-files"): {**api, "CERTIFICATE_PRIVATE_KEY": self.values["certificate_private_key"]},
             ("app-store-connect", "publish"): api,
             ("keychain", "initialize"): {"KEYCHAIN_PASSWORD": "fixture-keychain-password"},
             ("keychain", "add-certificates"): {"KEYCHAIN_PASSWORD": "fixture-keychain-password"},
         }
-        sensitive = set(api) | {release.SECRET, "CERTIFICATE_PRIVATE_KEY", "KEYCHAIN_PASSWORD"}
+        sensitive = set(api) | {release.AGE_SECRET, "SOPS_AGE_KEY", "SOPS_AGE_KEY_FILE", "SOPS_AGE_KEY_CMD",
+                                "CERTIFICATE_PRIVATE_KEY", "KEYCHAIN_PASSWORD"}
         for call, args in zip(self.commands.call_args_list, self.command_names()):
             env = call.kwargs["env"]
             self.assertEqual({key: env[key] for key in sensitive if key in env}, allowed.get(args[:2], {}))
@@ -405,15 +437,64 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.assertFalse(list(self.home.rglob("*.mobileprovision")))
 
     def test_publish_defaults_to_false(self):
-        release.release(self.artifact, self.output)
+        release.release(self.artifact, self.output, channel=self.channel)
         self.assert_not_uploaded()
         self.assertTrue((self.output / "TailSplit.ipa").exists())
+
+    def test_testflight_does_not_submit_to_public_review(self):
+        self.execute()
+        publish = next(args for args in self.command_names() if args[:2] == ("app-store-connect", "publish"))
+        self.assertNotIn("--app-store", publish)
+        self.assertNotIn("--testflight", publish)  # External beta review is also explicit.
+
+    def test_only_store_channel_can_submit_to_public_review(self):
+        if self.channel == "beta":
+            with self.assertRaisesRegex(ValueError, "beta is TestFlight-only"):
+                self.execute(submit_for_review=True)
+            self.commands.assert_not_called()
+        else:
+            self.execute(submit_for_review=True)
+            publish = next(args for args in self.command_names() if args[:2] == ("app-store-connect", "publish"))
+            self.assertIn("--app-store", publish)
+            self.assertEqual(publish[publish.index("--release-type") + 1], "MANUAL")
+
+    def test_archive_from_other_channel_is_rejected_before_signing(self):
+        other = "beta" if self.channel == "app-store" else "app-store"
+        with self.assertRaisesRegex(ValueError, "bundle identity"):
+            release.release(self.artifact, self.output, channel=other)
+        self.commands.assert_not_called()
 
     def test_invalid_archive_stops_before_credentials_are_used_by_any_tool(self):
         self.artifact.write_bytes(zip_bytes({"../escape": b"bad"}))
         with self.assertRaises(ValueError):
             self.execute()
         self.commands.assert_not_called()
+
+    def test_missing_ci_age_key_stops_before_decryption_or_signing(self):
+        del self.environment[release.AGE_SECRET]
+        with self.assertRaisesRegex(ValueError, release.AGE_SECRET):
+            self.execute()
+        self.commands.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_generated_age_key_file_comments_are_supported(self):
+        self.environment[release.AGE_SECRET] = "# created: fixture\n# public key: fixture\nAGE-SECRET-KEY-FIXTURE\n"
+        self.execute()
+        self.assert_credential_scopes()
+
+    def test_failed_decryption_never_opens_keychain_or_exports(self):
+        self.failures = {("sops", "--decrypt")}
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.execute()
+        self.assertEqual([args[:2] for args in self.command_names()], [("sops", "--decrypt")])
+        self.assertFalse(self.output.exists())
+
+    def test_invalid_decrypted_json_never_reaches_signing_tools(self):
+        self.sops_payload = b'{}'
+        with self.assertRaisesRegex(ValueError, "Apple credentials require"):
+            self.execute()
+        self.assertEqual([args[:2] for args in self.command_names()], [("sops", "--decrypt")])
+        self.assertFalse(self.output.exists())
 
     def test_accepts_omitted_debug_entitlement_in_profiles_and_signatures(self):
         for bundle in self.profiles:
@@ -484,6 +565,10 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.assert_not_uploaded()
 
 
+class BetaReleaseExecutionTests(ReleaseExecutionTests):
+    channel = "beta"
+
+
 class WorkflowIsolationTests(unittest.TestCase):
     def test_release_jobs_keep_build_scripts_off_the_signing_runner(self):
         workflow = (MODULE.parents[2] / ".github/workflows/mobile-release.yml").read_text()
@@ -496,8 +581,12 @@ class WorkflowIsolationTests(unittest.TestCase):
             self.assertIn("github.ref_protected", text)
             self.assertIn("github.event.repository.default_branch", text)
             self.assertIn("persist-credentials: false", text)
-        self.assertNotRegex(build, r"secrets\.|\benvironment:|BGL4WMWD3W_APPLE_CREDENTIALS|codemagic-cli-tools")
-        self.assertIn("flutter build ipa --release --no-codesign --no-pub", build)
+        self.assertNotRegex(build, r"secrets\.|\benvironment:|TAILSPLIT_MOBILE_RELEASE_AGE_KEY|codemagic-cli-tools")
+        wrapper = (MODULE.parent / "build_ios_release.sh").read_text()
+        self.assertIn('bash tool/build_ios_release.sh "$RELEASE_CHANNEL"', build)
+        self.assertIn('ruby ios/configure_project.rb "$channel"', wrapper)
+        self.assertIn("flutter build ipa --release --no-codesign --no-pub", wrapper)
+        self.assertIn('--dart-define="TAILSPLIT_IOS_CHANNEL=$channel"', wrapper)
         self.assertIn("path: ${{ runner.temp }}/unsigned.xcarchive.zip", build)
         self.assertIn("needs: build", sign)
         self.assertIn("environment: mobile-release", sign)
@@ -508,8 +597,20 @@ class WorkflowIsolationTests(unittest.TestCase):
         self.assertIn("--artifact", sign)
         self.assertIn(".workflow_run.head_sha == $sha", sign)
         self.assertIn("(.workflow_run.id | tostring) == $run", sign)
-        self.assertRegex(workflow, r"publish:\n(?:.*\n)*?        default: false")
-        self.assertEqual(workflow.count("secrets.BGL4WMWD3W_APPLE_CREDENTIALS"), 1)
+        self.assertRegex(workflow, r"destination:\n(?:.*\n)*?        default: artifact")
+        self.assertIn("options: [beta, app-store]", workflow)
+        self.assertIn("options: [artifact, testflight, app-store]", workflow)
+        self.assertIn("beta/artifact|beta/testflight|app-store/artifact|app-store/testflight|app-store/app-store)", build)
+        self.assertIn('--channel "$RELEASE_CHANNEL"', sign)
+        self.assertIn("--publish --submit-for-review", sign)
+        self.assertIn("tailsplit-ios-unsigned-${{ inputs.channel }}-", workflow)
+        self.assertIn("tailsplit-ios-${{ inputs.channel }}-termitoc-", workflow)
+        self.assertEqual(workflow.count("secrets.TAILSPLIT_MOBILE_RELEASE_AGE_KEY"), 1)
+        self.assertNotIn("secrets.BGL4WMWD3W_APPLE_CREDENTIALS", workflow)
+        self.assertIn("/mobile/credentials/apple-distribution.json.sops", sign)
+        self.assertIn("sops-v3.13.3.darwin.arm64", sign)
+        self.assertIn("b97c0d434aab577dc40310e8d22ff9e45eef4c80638ab978daae9b4681c59286", sign)
+        self.assertIn("shasum -a 256 --check", sign)
 
 
 if __name__ == "__main__":

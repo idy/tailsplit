@@ -19,12 +19,13 @@ import zipfile
 
 MOBILE = Path(__file__).resolve().parents[1]
 TEAM = "BGL4WMWD3W"
-SECRET = "BGL4WMWD3W_APPLE_CREDENTIALS"
+AGE_SECRET = "TAILSPLIT_MOBILE_RELEASE_AGE_KEY"
+CREDENTIALS_FILE = MOBILE / "credentials/apple-distribution.json.sops"
 
 
 # Tools come from the fresh signing venv or macOS, never the artifact or checkout.
 TOOLS = {name: f"/usr/bin/{name}" for name in ("security", "codesign", "xcodebuild")}
-TOOLS.update({name: str(Path(sys.executable).parent / name) for name in ("keychain", "app-store-connect")})
+TOOLS.update({name: str(Path(sys.executable).parent / name) for name in ("keychain", "app-store-connect", "sops")})
 MAX_ZIP_BYTES = 8 * 1024 ** 3
 
 
@@ -157,27 +158,46 @@ def prepare_archive(artifact, work, config, build_number):
     return archive
 
 
-def identity():
+def identity(channel="app-store"):
+    if channel not in ("beta", "app-store"):
+        raise ValueError("Choose the beta or app-store release channel")
     value = json.loads((MOBILE / "release-identity.json").read_text())
-    expected = {"team_id": TEAM, "organization": "TERMITOC PTE. LTD.",
-                "bundle_id": "dev.idy.tailsplit", "packet_tunnel_bundle_id": "dev.idy.tailsplit.PacketTunnel",
-                "app_group": "group.dev.idy.tailsplit"}
-    if any(value.get(key) != item for key, item in expected.items()):
-        raise ValueError("iOS publication requires the exact Termitoc TailSplit identity")
-    return value
+    common = {"team_id": TEAM, "organization": "TERMITOC PTE. LTD.", "account_type": "organization"}
+    bundle = "dev.idy.tailsplit.beta" if channel == "beta" else "dev.idy.tailsplit"
+    expected = {"name": "TailSplit Beta" if channel == "beta" else "TailSplit",
+                "bundle_id": bundle, "packet_tunnel_bundle_id": f"{bundle}.PacketTunnel",
+                "app_group": f"group.{bundle}", "app_store": channel == "app-store"}
+    selected = value.get("channels", {}).get(channel, {})
+    if (any(value.get(key) != item for key, item in common.items())
+            or any(selected.get(key) != item for key, item in expected.items())
+            or selected.get("app_store") is not expected["app_store"]):
+        raise ValueError("iOS publication requires the exact Termitoc TailSplit channel identity")
+    return {**common, **selected}
 
 
 def credentials(raw):
     try:
         value = json.loads(raw)
     except (TypeError, json.JSONDecodeError):
-        raise ValueError(f"Configure {SECRET} with the LetSolo organization credentials") from None
+        raise ValueError("SOPS must decrypt a valid Apple credential JSON object") from None
     fields = ("issuer_id", "api_key_id", "api_private_key", "certificate_private_key")
     if not isinstance(value, dict) or any(not isinstance(value.get(k), str) or not value[k].strip() for k in fields):
-        raise ValueError(f"{SECRET} requires: {', '.join(fields)}")
+        raise ValueError(f"Apple credentials require: {', '.join(fields)}")
     if value.get("team_id", TEAM) != TEAM:
         raise ValueError("The supplied Apple credentials identify a different team")
     return {key: value[key] for key in fields}
+
+
+def decrypt_credentials():
+    """Only SOPS receives the CI age key; plaintext stays in this process's memory."""
+    lines = [line.strip() for line in os.environ.get(AGE_SECRET, "").splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    if len(lines) != 1 or not lines[0].startswith("AGE-SECRET-KEY-"):
+        raise ValueError(f"Configure {AGE_SECRET} in the mobile-release environment")
+    key = lines[0]
+    raw = run("sops", "--decrypt", "--input-type", "json", "--output-type", "json", str(CREDENTIALS_FILE),
+              env={**sanitized_env(), "SOPS_AGE_KEY": key}, capture=True)
+    return credentials(raw)
 
 
 def validate_entitlements(entitlements, bundle_id, app_group, source):
@@ -232,23 +252,10 @@ def verify_bundle(path, bundle_id, app_group):
     validate_entitlements(entitlements, bundle_id, app_group, "Signed entitlements")
 
 
-def release(artifact, output, publish=False):
-    config = identity()
-    values = credentials(os.environ.get(SECRET))
-    env = sanitized_env()
-    api_env = {
-        **env,
-        "APP_STORE_CONNECT_ISSUER_ID": values["issuer_id"],
-        "APP_STORE_CONNECT_KEY_IDENTIFIER": values["api_key_id"],
-        "APP_STORE_CONNECT_PRIVATE_KEY": values["api_private_key"],
-        "APP_STORE_CONNECT_DISABLE_JWT_CACHE": "true",
-    }
-    signing_env = {**api_env, "CERTIFICATE_PRIVATE_KEY": values["certificate_private_key"]}
-    keychain_env = {**env, "KEYCHAIN_PASSWORD": secrets.token_urlsafe(32)}
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        for value in [*values.values(), keychain_env["KEYCHAIN_PASSWORD"]]:
-            escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-            print(f"::add-mask::{escaped}", flush=True)
+def release(artifact, output, publish=False, channel="app-store", submit_for_review=False):
+    config = identity(channel)
+    if submit_for_review and (not publish or config["app_store"] is not True):
+        raise ValueError("App Store review requires --publish and the app-store channel; beta is TestFlight-only")
     build_number = os.environ.get("GITHUB_RUN_NUMBER", "")
     if not re.fullmatch(r"[1-9][0-9]*", build_number):
         raise ValueError("A positive GitHub Actions build number is required")
@@ -256,6 +263,22 @@ def release(artifact, output, publish=False):
     with tempfile.TemporaryDirectory(prefix="tailsplit-ios-signing-", dir=os.environ["RUNNER_TEMP"]) as folder:
         work = Path(folder)
         archive = prepare_archive(artifact, work, config, build_number)
+        # Reject invalid archives before any tool receives a decryption/signing key.
+        values = decrypt_credentials()
+        env = sanitized_env()
+        api_env = {
+            **env,
+            "APP_STORE_CONNECT_ISSUER_ID": values["issuer_id"],
+            "APP_STORE_CONNECT_KEY_IDENTIFIER": values["api_key_id"],
+            "APP_STORE_CONNECT_PRIVATE_KEY": values["api_private_key"],
+            "APP_STORE_CONNECT_DISABLE_JWT_CACHE": "true",
+        }
+        signing_env = {**api_env, "CERTIFICATE_PRIVATE_KEY": values["certificate_private_key"]}
+        keychain_env = {**env, "KEYCHAIN_PASSWORD": secrets.token_urlsafe(32)}
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            for value in [*values.values(), keychain_env["KEYCHAIN_PASSWORD"]]:
+                escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print(f"::add-mask::{escaped}", flush=True)
         # Output is outside the artifact and must be new. Only a verified IPA is copied here.
         output.mkdir(mode=0o700)
         keychain = work / "release.keychain-db"
@@ -323,14 +346,15 @@ def release(artifact, output, publish=False):
             if len(extensions) != 1:
                 raise ValueError("Expected the single PacketTunnel extension")
             verify_bundle(extensions[0], bundles[1], config["app_group"])
-            print(f"Verified IPA: {config['organization']} ({TEAM}), Runner and PacketTunnel")
+            print(f"Verified IPA: {config['organization']} ({TEAM}), {channel}, Runner and PacketTunnel")
             verified = output / "TailSplit.ipa"
             shutil.copyfile(packages[0], verified)
             if publish:
-                # Upload for internal TestFlight processing. Public App Store/beta
-                # review submission remains a separate, explicit Apple action.
+                # Uploads are available to internal TestFlight testers in either
+                # channel. Only the store identity may enter public App Review.
+                review_args = ("--app-store", "--platform", "IOS", "--release-type", "MANUAL") if submit_for_review else ()
                 run("app-store-connect", "publish", "--path", str(verified),
-                    "--enable-package-validation", env=api_env)
+                    "--enable-package-validation", *review_args, env=api_env)
         finally:
             for path in installed_profiles:
                 path.unlink(missing_ok=True)
@@ -344,10 +368,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, required=True, help="Unextracted Actions artifact ZIP")
     parser.add_argument("--output", type=Path, required=True, help="New directory for the verified IPA")
-    parser.add_argument("--publish", action="store_true", help="Upload the verified IPA to App Store Connect")
+    parser.add_argument("--channel", choices=("beta", "app-store"), required=True, help="Exact application identity to sign")
+    parser.add_argument("--publish", action="store_true", help="Upload the verified IPA to App Store Connect / internal TestFlight")
+    parser.add_argument("--submit-for-review", action="store_true", help="Submit the app-store channel to App Review (manual release after approval)")
     args = parser.parse_args()
     try:
-        release(args.artifact.absolute(), args.output.absolute(), args.publish)
+        release(args.artifact.absolute(), args.output.absolute(), args.publish, args.channel, args.submit_for_review)
     except (ValueError, KeyError, OSError, zipfile.BadZipFile, ExpatError, subprocess.CalledProcessError) as error:
         # Do not include private configuration payloads or command environments.
         if isinstance(error, ValueError):

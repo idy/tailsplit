@@ -1,18 +1,25 @@
 name: iOS release (Termitoc)
+run-name: iOS ${{ inputs.channel }} → ${{ inputs.destination }} by @${{ github.actor }}
 
 on:
   workflow_dispatch:
     inputs:
-      publish:
-        description: Upload the signed IPA to Termitoc App Store Connect / internal TestFlight
-        type: boolean
-        default: false
+      channel:
+        description: App identity (beta is TestFlight-only; app-store also supports public App Review)
+        type: choice
+        options: [beta, app-store]
+        default: beta
+      destination:
+        description: Sign only, upload to internal TestFlight, or upload and submit to App Store review
+        type: choice
+        options: [artifact, testflight, app-store]
+        default: artifact
 
 permissions:
   contents: read
 
 concurrency:
-  group: tailsplit-ios-release
+  group: tailsplit-ios-release-${{ inputs.channel }}
   cancel-in-progress: false
 
 defaults:
@@ -21,7 +28,7 @@ defaults:
 
 jobs:
   build:
-    name: Build unsigned iOS archive (no release credentials)
+    name: Build unsigned iOS archive (${{ inputs.channel }}, no release credentials)
     if: >-
       github.event_name == 'workflow_dispatch'
       && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
@@ -35,9 +42,18 @@ jobs:
     env:
       LANG: en_US.UTF-8
       SINGBOX_PYTHON: python3
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+      RELEASE_DESTINATION: ${{ inputs.destination }}
     outputs:
       archive-id: ${{ steps.archive.outputs.artifact-id }}
     steps:
+      - name: Validate release selection
+        working-directory: ${{ runner.temp }}
+        run: |
+          case "$RELEASE_CHANNEL/$RELEASE_DESTINATION" in
+            beta/artifact|beta/testflight|app-store/artifact|app-store/testflight|app-store/app-store) ;;
+            *) printf 'Invalid release selection: beta is TestFlight-only.\n' >&2; exit 1 ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -57,6 +73,7 @@ jobs:
           flutter pub get --enforce-lockfile
           flutter analyze --no-pub
           flutter test --no-pub
+          flutter test --no-pub --dart-define=TAILSPLIT_IOS_CHANNEL=beta test/app_identifiers_test.dart
           python3 -B -m unittest discover -s tests -p 'test_*.py'
       - name: Build the selected Apple core
         run: >-
@@ -68,21 +85,21 @@ jobs:
           pod install --project-directory=ios
       - name: Build and package an unsigned archive
         run: |
-          flutter build ipa --release --no-codesign --no-pub --build-number="$GITHUB_RUN_NUMBER"
+          bash tool/build_ios_release.sh "$RELEASE_CHANNEL" --build-number="$GITHUB_RUN_NUMBER"
           /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent \
             build/ios/archive/Runner.xcarchive "$RUNNER_TEMP/unsigned.xcarchive.zip"
       - name: Transfer only the unsigned archive
         id: archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: tailsplit-ios-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          name: tailsplit-ios-unsigned-${{ inputs.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/unsigned.xcarchive.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
   sign:
-    name: Sign iOS with TERMITOC PTE. LTD.
+    name: Sign and deliver ${{ inputs.channel }} with TERMITOC PTE. LTD.
     needs: build
     # A new GitHub-hosted VM is the security boundary. Never combine these jobs
     # or use a persistent/self-hosted runner for credentialed signing.
@@ -91,13 +108,15 @@ jobs:
       && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       && github.ref_protected
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 90
     environment: mobile-release
     permissions:
       contents: read
       actions: read
     env:
       LANG: en_US.UTF-8
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+      RELEASE_DESTINATION: ${{ inputs.destination }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -107,6 +126,7 @@ jobs:
           sparse-checkout: |
             /mobile/tool/release_ios.py
             /mobile/release-identity.json
+            /mobile/credentials/apple-distribution.json.sops
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
@@ -115,12 +135,18 @@ jobs:
         run: |
           python3 -I -m venv "$RUNNER_TEMP/signing-tools"
           "$RUNNER_TEMP/signing-tools/bin/python3" -I -m pip install --no-cache-dir 'codemagic-cli-tools==0.70.2'
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.darwin.arm64 \
+            --output "$RUNNER_TEMP/signing-tools/bin/sops"
+          printf '%s  %s\n' b97c0d434aab577dc40310e8d22ff9e45eef4c80638ab978daae9b4681c59286 \
+            "$RUNNER_TEMP/signing-tools/bin/sops" | shasum -a 256 --check
+          chmod 700 "$RUNNER_TEMP/signing-tools/bin/sops"
       - name: Download this run's archive without extracting it
         working-directory: ${{ runner.temp }}
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ needs.build.outputs.archive-id }}
-          EXPECTED_NAME: tailsplit-ios-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          EXPECTED_NAME: tailsplit-ios-unsigned-${{ inputs.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" |
@@ -129,20 +155,26 @@ jobs:
           # Keep the outer Actions ZIP opaque too: release_ios validates both ZIPs
           # before extraction, instead of letting an artifact overwrite runner files.
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/unsigned-artifact.zip"
-      - name: Export, verify organization, and optionally publish
+      - name: Export, verify organization and channel, and deliver
         working-directory: ${{ runner.temp }}
         env:
-          BGL4WMWD3W_APPLE_CREDENTIALS: ${{ secrets.BGL4WMWD3W_APPLE_CREDENTIALS }}
-          PUBLISH_IOS: ${{ inputs.publish }}
+          TAILSPLIT_MOBILE_RELEASE_AGE_KEY: ${{ secrets.TAILSPLIT_MOBILE_RELEASE_AGE_KEY }}
         run: |
-          args=()
-          if [[ "$PUBLISH_IOS" == true ]]; then args+=(--publish); fi
+          args=(--channel "$RELEASE_CHANNEL")
+          case "$RELEASE_DESTINATION" in
+            artifact) ;;
+            testflight) args+=(--publish) ;;
+            app-store) args+=(--publish --submit-for-review) ;;
+            *) printf 'Unknown release destination.\n' >&2; exit 1 ;;
+          esac
           "$RUNNER_TEMP/signing-tools/bin/python3" -I -B "$GITHUB_WORKSPACE/mobile/tool/release_ios.py" \
             --artifact "$RUNNER_TEMP/unsigned-artifact.zip" --output "$RUNNER_TEMP/verified-ipa" "${args[@]}"
       - name: Retain the verified organization-signed IPA
+        # The helper copies only a verified IPA here, even if upload/review later fails.
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: tailsplit-ios-termitoc-${{ github.run_number }}
+          name: tailsplit-ios-${{ inputs.channel }}-termitoc-${{ github.run_number }}
           path: ${{ runner.temp }}/verified-ipa/*.ipa
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 7

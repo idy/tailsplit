@@ -6,10 +6,19 @@ command-line tools; then run `make app`. Override the executables with
 `make app GO=/path/to/go PYTHON=/path/to/python3` when needed.
 
 Developer ID signing and Apple notarization are optional operator steps. Keep
-all credential files outside the checkout. This directory contains public setup
+these desktop credential files outside the checkout. This directory contains public setup
 instructions only. `../release-identity.json` contains the public Apple team ID
 used to validate official release identities; it is not a credential. Operators
 using their own Apple team must update that public metadata in their own fork.
+
+## Mobile iOS distribution
+
+Mobile CI intentionally tracks only SOPS ciphertext in
+`mobile/credentials/apple-distribution.json.sops`, using a dedicated
+`TAILSPLIT_MOBILE_RELEASE_AGE_KEY` secret in the `mobile-release` environment.
+This is separate from the optional desktop credentials described here. See
+[mobile release setup](../mobile/docs/release.md) for its two app identities,
+credential recovery and isolated signing jobs.
 
 ## SOPS configuration
 
