@@ -86,10 +86,24 @@ certificate/private key were verified on 2026-11-12; the certificate expires on
 SOPS round-trip through the release helper passed. Private key recovery metadata
 is maintained in the Workspace signing catalog, outside the product checkout.
 
-Existing store app/extension identifiers were found under Termitoc, while no
-TailSplit App Store Connect app record was returned by the API during setup.
-Beta registration, App Group associations and app records must be completed
-before upload. Credential availability alone does not establish store readiness.
+Both apps and their PacketTunnel extension identifiers are registered under
+Termitoc. App Groups and Network Extension capabilities are enabled on all four
+identifiers. Each app/extension pair's exact App Group association was saved and
+read back from the Developer Portal.
+
+The two iOS App Store Connect records were created and independently verified
+through the Apple API on 2026-11-12:
+
+| Channel | ASC app | Apple ID | SKU |
+| --- | --- | --- | --- |
+| `app-store` | [TailSplit](https://appstoreconnect.apple.com/apps/6833766298) | `6833766298` | `dev.idy.tailsplit` |
+| `beta` | [TailSplit Beta](https://appstoreconnect.apple.com/apps/6833766631) | `6833766631` | `dev.idy.tailsplit.beta` |
+
+Both records use primary locale `en-US`. Their initial iOS draft versions are
+`0.1.0`, matching `mobile/pubspec.yaml`, with `MANUAL` release and
+`PREPARE_FOR_SUBMISSION` state. No build has been uploaded or submitted for review.
+Screenshots, privacy information, review details and export compliance remain
+separate publication requirements.
 
 ## Build, TestFlight and App Store review
 
@@ -206,6 +220,7 @@ identifiers with both compile-time definitions.
 Real Apple API authentication, a matching Termitoc distribution certificate and
 SOPS decryption have been verified. Signed archive export, TestFlight upload and
 App Store submission remain **unverified** on the protected release runner.
-Complete the remaining Apple identifiers, App Groups, profiles and app records
-before upload. Physical iOS devices are required to verify VPN traffic. Android
-CI verifies debug builds; Google Play publication is not configured here.
+Bundle identifiers, App Group associations and both ASC records are verified;
+the first signed release still needs to fetch/create and validate its distribution
+profiles. Physical iOS devices are required to verify VPN traffic. Android CI
+verifies debug builds; Google Play publication is not configured here.
