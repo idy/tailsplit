@@ -181,7 +181,8 @@ details[open] > summary > .icon { transform: rotate(90deg); }
   .map-route::before { border-color: CanvasText; }
   .map-route.tone-ok::before, .map-route.tone-warn::before { background: CanvasText; }
   .home-toggle { color: ButtonText; }
-  .home-toggle[data-connected="true"] { color: Highlight; }
+  /* Any captured session, including a blocked Global one, reads as on, not as off. */
+  .home-toggle:is([aria-pressed="true"], [data-connected="true"]) { color: Highlight; }
 }
 /* Exits read like a provider list: one card, one device per two-line row. */
 /* The page owns vertical scrolling; this card only clips its rounded edges. */
