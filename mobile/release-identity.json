@@ -8,14 +8,20 @@
       "bundle_id": "dev.idy.tailsplit.beta",
       "packet_tunnel_bundle_id": "dev.idy.tailsplit.beta.PacketTunnel",
       "app_group": "group.dev.idy.tailsplit.beta",
-      "app_store": false
+      "app_store": false,
+      "app_store_id": "6833766631",
+      "testflight_group": "Internal Testing",
+      "testflight_group_id": "4be1c696-606b-4ae9-b507-9a385956c6ca"
     },
     "app-store": {
       "name": "TailSplit",
       "bundle_id": "dev.idy.tailsplit",
       "packet_tunnel_bundle_id": "dev.idy.tailsplit.PacketTunnel",
       "app_group": "group.dev.idy.tailsplit",
-      "app_store": true
+      "app_store": true,
+      "app_store_id": "6833766298",
+      "testflight_group": "Internal Testing",
+      "testflight_group_id": "ee8bc770-f372-4c74-8700-f7035c844fc4"
     }
   }
 }

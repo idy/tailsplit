@@ -107,8 +107,10 @@ flutter run
 [Mobile CI and iOS publication](docs/release.md) describes the Android/iOS checks
 and manual iOS release workflow. Choose `beta` (`dev.idy.tailsplit.beta`,
 TestFlight only) or `app-store` (`dev.idy.tailsplit`, TestFlight and public App
-Review), then `artifact`, `testflight` or `app-store` as the destination. The beta
-channel cannot submit to public App Review. Both channels use **TERMITOC PTE.
+Review). The default `testflight` destination signs, uploads, waits for Apple
+processing and verifies assignment to that app's `Internal Testing` group.
+`artifact` explicitly skips upload; `app-store` additionally submits public App
+Review and is forbidden for beta. CI does not invite or manage testers. Both channels use **TERMITOC PTE.
 LTD. / BGL4WMWD3W**, the LetSolo organization account, with separate VPN
 extensions and App Groups. `tool/build_ios_release.sh` keeps native and Dart
 identifiers aligned. The Termitoc account is stored as SOPS ciphertext in

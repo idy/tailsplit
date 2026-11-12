@@ -71,6 +71,7 @@ class ReleaseIdentityTests(unittest.TestCase):
             self.assertEqual(release.identity(channel)["team_id"], "BGL4WMWD3W")
             self.assertIs(release.identity(channel)["app_store"], channel == "app-store")
             for key in ("bundle_id", "packet_tunnel_bundle_id", "app_group", "name", "app_store",
+                        "app_store_id", "testflight_group", "testflight_group_id",
                         "team_id", "organization", "account_type"):
                 config = copy.deepcopy(original)
                 target = config if key in ("team_id", "organization", "account_type") else config["channels"][channel]
@@ -327,6 +328,7 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.failures = set()
         self.signer = release.TEAM
         self.export_options = None
+        self.archive_signatures = {}
         stack = ExitStack()
         self.addCleanup(stack.close)
         self.commands = stack.enter_context(mock.patch.object(release.subprocess, "run", side_effect=self.command))
@@ -366,6 +368,23 @@ class ReleaseExecutionTests(ArchiveFixture):
                 files.update(bundle_files(root, bundle))
                 files[f"{root}/embedded.mobileprovision"] = plistlib.dumps(self.profiles[bundle])
             (export / "TailSplit.ipa").write_bytes(zip_bytes(files))
+        elif args[:2] == ("codesign", "--force"):
+            self.assertNotIn("--deep", args)
+            self.assertIn("--keychain", args)
+            target = Path(args[-1])
+            if target.suffix in (".app", ".appex"):
+                info = plistlib.loads((target / "Info.plist").read_bytes())
+                signed = plistlib.loads(Path(args[args.index("--entitlements") + 1]).read_bytes())
+                embedded = plistlib.loads((target / "embedded.mobileprovision").read_bytes())
+                self.assertEqual(embedded["UUID"], self.profiles[info["CFBundleIdentifier"]]["UUID"])
+                release.validate_profile(embedded, info["CFBundleIdentifier"], self.config["app_group"])
+                self.archive_signatures[info["CFBundleIdentifier"]] = signed
+            else:
+                self.assertNotIn("--entitlements", args)
+        elif args[:2] == ("python3", "-I"):
+            self.assertEqual(args[2:4], ("-B", str(MODULE.parent / "publish_testflight.py")))
+            receipt = Path(args[args.index("--receipt") + 1])
+            receipt.write_text(json.dumps({"fixture": "verified TestFlight delivery"}))
         elif args[:2] == ("codesign", "-d"):
             info = plistlib.loads((Path(args[-1]) / "Info.plist").read_bytes())
             signed = self.signed[info["CFBundleIdentifier"]]
@@ -373,7 +392,7 @@ class ReleaseExecutionTests(ArchiveFixture):
             stderr = f"Executable={args[-1]}\nTeamIdentifier={self.signer}\n".encode()
         else:
             # Any Flutter, project, shell, archive-supplied or dependency command fails.
-            self.assertIn(args[:2], {("keychain", "add-certificates"), ("app-store-connect", "publish"), ("codesign", "--verify")})
+            self.assertIn(args[:2], {("keychain", "add-certificates"), ("python3", "-I"), ("codesign", "--verify")})
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr=stderr)
 
     def execute(self, publish=True, submit_for_review=False):
@@ -392,7 +411,7 @@ class ReleaseExecutionTests(ArchiveFixture):
         allowed = {
             ("sops", "--decrypt"): {"SOPS_AGE_KEY": "AGE-SECRET-KEY-FIXTURE"},
             ("app-store-connect", "fetch-signing-files"): {**api, "CERTIFICATE_PRIVATE_KEY": self.values["certificate_private_key"]},
-            ("app-store-connect", "publish"): api,
+            ("python3", "-I"): api,
             ("keychain", "initialize"): {"KEYCHAIN_PASSWORD": "fixture-keychain-password"},
             ("keychain", "add-certificates"): {"KEYCHAIN_PASSWORD": "fixture-keychain-password"},
         }
@@ -410,7 +429,7 @@ class ReleaseExecutionTests(ArchiveFixture):
 
     def assert_not_uploaded(self):
         commands = self.command_names()
-        self.assertFalse(any(args[:2] == ("app-store-connect", "publish") for args in commands))
+        self.assertFalse(any(args[:2] == ("python3", "-I") for args in commands))
         self.assertEqual(commands[-2][:2], ("security", "default-keychain"))
         self.assertEqual(commands[-1][:2], ("keychain", "delete"))
         self.assertFalse(list(self.home.rglob("*.mobileprovision")))
@@ -426,15 +445,63 @@ class ReleaseExecutionTests(ArchiveFixture):
             "manageAppVersionAndBuildNumber": False,
         })
         commands = self.command_names()
-        publish = next(i for i, args in enumerate(commands) if args[:2] == ("app-store-connect", "publish"))
+        publish = next(i for i, args in enumerate(commands) if args[:2] == ("python3", "-I"))
         for suffix in ("Runner.app", "PacketTunnel.appex"):
             verify = next(i for i, args in enumerate(commands) if args[:2] == ("codesign", "--verify") and args[-1].endswith(suffix))
             display = next(i for i, args in enumerate(commands) if args[:2] == ("codesign", "-d") and args[-1].endswith(suffix))
             self.assertLess(verify, display)
             self.assertLess(display, publish)
-        self.assertEqual(commands[publish][2:4], ("--path", str(self.output / "TailSplit.ipa")))
+        upload = commands[publish]
+        self.assertEqual(upload[upload.index("--ipa") + 1], str(self.output / "TailSplit.ipa"))
+        self.assertEqual(upload[upload.index("--channel") + 1], self.channel)
+        self.assertEqual(upload[upload.index("--build-number") + 1], "38")
+        self.assertEqual(upload[upload.index("--version") + 1], "1.0.0")
+        self.assertEqual(upload[upload.index("--receipt") + 1], str(self.output / "testflight.json"))
+        self.assertTrue((self.output / "testflight.json").is_file())
         self.assertTrue((self.output / "TailSplit.ipa").is_file())
         self.assertFalse(list(self.home.rglob("*.mobileprovision")))
+
+    def test_archive_has_explicit_app_group_and_vpn_entitlements_before_export(self):
+        self.execute(publish=False)
+        self.assertEqual(set(self.archive_signatures), set(self.bundles.values()))
+        for bundle, entitlements in self.archive_signatures.items():
+            release.validate_entitlements(entitlements, bundle, self.config["app_group"], "Archive signing")
+            self.assertEqual(entitlements["com.apple.security.application-groups"], [self.config["app_group"]])
+        commands = self.command_names()
+        signed = [i for i, args in enumerate(commands) if args[:2] == ("codesign", "--force")]
+        export = next(i for i, args in enumerate(commands) if args[:2] == ("xcodebuild", "-exportArchive"))
+        self.assertEqual(len(signed), 2)
+        self.assertTrue(commands[signed[0]][-1].endswith("PacketTunnel.appex"))
+        self.assertTrue(commands[signed[1]][-1].endswith("Runner.app"))
+        self.assertLess(max(signed), export)
+
+    def test_embedded_code_is_signed_before_the_extension_and_host_without_app_entitlements(self):
+        framework = f"{self.archive_extension}/Frameworks/Core.framework"
+        self.archive_files.update({
+            f"{framework}/Info.plist": plistlib.dumps({"CFBundleExecutable": "Core"}),
+            f"{framework}/Core": bytes.fromhex("cffaedfe") + b"fixture framework",
+            f"{self.archive_app}/Frameworks/libSupport.dylib": bytes.fromhex("cffaedfe") + b"fixture dylib",
+        })
+        self.write_artifact()
+        self.execute(publish=False)
+        signed = [args for args in self.command_names() if args[:2] == ("codesign", "--force")]
+        self.assertEqual(len(signed), 4)
+        self.assertTrue(any(args[-1].endswith("Core.framework") for args in signed[:2]))
+        self.assertTrue(any(args[-1].endswith("libSupport.dylib") for args in signed[:2]))
+        for args in signed[:2]:
+            self.assertNotIn("--entitlements", args)
+            self.assertNotIn("--deep", args)
+
+    def test_reused_archive_keeps_its_original_build_number(self):
+        self.environment["GITHUB_RUN_NUMBER"] = "999"
+        release.release(self.artifact, self.output, channel=self.channel, build_number="38")
+        self.assertTrue((self.output / "TailSplit.ipa").is_file())
+        self.assert_not_uploaded()
+
+    def test_wrong_reused_archive_build_number_stops_before_decryption(self):
+        with self.assertRaisesRegex(ValueError, "build number"):
+            release.release(self.artifact, self.output, channel=self.channel, build_number="39")
+        self.commands.assert_not_called()
 
     def test_publish_defaults_to_false(self):
         release.release(self.artifact, self.output, channel=self.channel)
@@ -443,7 +510,7 @@ class ReleaseExecutionTests(ArchiveFixture):
 
     def test_testflight_does_not_submit_to_public_review(self):
         self.execute()
-        publish = next(args for args in self.command_names() if args[:2] == ("app-store-connect", "publish"))
+        publish = next(args for args in self.command_names() if args[:2] == ("python3", "-I"))
         self.assertNotIn("--app-store", publish)
         self.assertNotIn("--testflight", publish)  # External beta review is also explicit.
 
@@ -454,9 +521,8 @@ class ReleaseExecutionTests(ArchiveFixture):
             self.commands.assert_not_called()
         else:
             self.execute(submit_for_review=True)
-            publish = next(args for args in self.command_names() if args[:2] == ("app-store-connect", "publish"))
-            self.assertIn("--app-store", publish)
-            self.assertEqual(publish[publish.index("--release-type") + 1], "MANUAL")
+            publish = next(args for args in self.command_names() if args[:2] == ("python3", "-I"))
+            self.assertIn("--submit-for-review", publish)
 
     def test_archive_from_other_channel_is_rejected_before_signing(self):
         other = "beta" if self.channel == "app-store" else "app-store"
@@ -597,7 +663,7 @@ class WorkflowIsolationTests(unittest.TestCase):
         self.assertIn("--artifact", sign)
         self.assertIn(".workflow_run.head_sha == $sha", sign)
         self.assertIn("(.workflow_run.id | tostring) == $run", sign)
-        self.assertRegex(workflow, r"destination:\n(?:.*\n)*?        default: artifact")
+        self.assertRegex(workflow, r"destination:\n(?:.*\n)*?        default: testflight")
         self.assertIn("options: [beta, app-store]", workflow)
         self.assertIn("options: [artifact, testflight, app-store]", workflow)
         self.assertIn("beta/artifact|beta/testflight|app-store/artifact|app-store/testflight|app-store/app-store)", build)

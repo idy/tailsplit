@@ -26,6 +26,7 @@ CREDENTIALS_FILE = MOBILE / "credentials/apple-distribution.json.sops"
 # Tools come from the fresh signing venv or macOS, never the artifact or checkout.
 TOOLS = {name: f"/usr/bin/{name}" for name in ("security", "codesign", "xcodebuild")}
 TOOLS.update({name: str(Path(sys.executable).parent / name) for name in ("keychain", "app-store-connect", "sops")})
+TOOLS["python3"] = sys.executable
 MAX_ZIP_BYTES = 8 * 1024 ** 3
 
 
@@ -167,6 +168,12 @@ def identity(channel="app-store"):
     expected = {"name": "TailSplit Beta" if channel == "beta" else "TailSplit",
                 "bundle_id": bundle, "packet_tunnel_bundle_id": f"{bundle}.PacketTunnel",
                 "app_group": f"group.{bundle}", "app_store": channel == "app-store"}
+    delivery = {
+        "beta": ("6833766631", "4be1c696-606b-4ae9-b507-9a385956c6ca"),
+        "app-store": ("6833766298", "ee8bc770-f372-4c74-8700-f7035c844fc4"),
+    }
+    expected.update(app_store_id=delivery[channel][0], testflight_group_id=delivery[channel][1],
+                    testflight_group="Internal Testing")
     selected = value.get("channels", {}).get(channel, {})
     if (any(value.get(key) != item for key, item in common.items())
             or any(selected.get(key) != item for key, item in expected.items())
@@ -252,12 +259,57 @@ def verify_bundle(path, bundle_id, app_group):
     validate_entitlements(entitlements, bundle_id, app_group, "Signed entitlements")
 
 
-def release(artifact, output, publish=False, channel="app-store", submit_for_review=False):
+def sign_archive(archive, config, selected, keychain, work):
+    """Give an unsigned archive explicit entitlements before Xcode re-exports it.
+
+    Exporting a never-signed archive alone can omit its App Group/VPN grants.
+    Sign nested code first, then the extension and host with identities derived
+    only from the pinned channel and validated distribution profiles.
+    """
+    app = archive / "Products/Applications/Runner.app"
+    extension = app / "PlugIns/PacketTunnel.appex"
+    signing = ("codesign", "--force", "--sign", "Apple Distribution", "--keychain", str(keychain))
+    nested = []
+    for path in app.rglob("*"):
+        if path.is_dir() and path.suffix == ".framework":
+            nested.append(path)
+        elif path.is_dir() and path.suffix == ".bundle":
+            info = plistlib.loads((path / "Info.plist").read_bytes())
+            if "CFBundleExecutable" in info:
+                nested.append(path)
+        elif path.is_file() and path.suffix == ".dylib":
+            with path.open("rb") as binary:
+                if binary.read(4) not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+                    raise ValueError("Expected a Mach-O dynamic library")
+            nested.append(path)
+    for path in sorted(nested, key=lambda item: len(item.parts), reverse=True):
+        run(*signing, str(path))
+    for path, bundle in ((extension, config["packet_tunnel_bundle_id"]), (app, config["bundle_id"])):
+        profile_path = selected[bundle][1]
+        profile = decode_profile(profile_path)
+        entitlements = {
+            "application-identifier": f"{TEAM}.{bundle}",
+            "com.apple.developer.team-identifier": TEAM,
+            "com.apple.security.application-groups": [config["app_group"]],
+            "com.apple.developer.networking.networkextension": ["packet-tunnel-provider"],
+            "get-task-allow": False,
+        }
+        if profile["Entitlements"].get("beta-reports-active") is True:
+            entitlements["beta-reports-active"] = True
+        validate_entitlements(entitlements, bundle, config["app_group"], "Archive signing entitlements")
+        entitlement_path = work / f"{bundle}.entitlements.plist"
+        entitlement_path.write_bytes(plistlib.dumps(entitlements))
+        shutil.copyfile(profile_path, path / "embedded.mobileprovision")
+        run(*signing, "--generate-entitlement-der", "--entitlements", str(entitlement_path), str(path))
+
+
+def release(artifact, output, publish=False, channel="app-store", submit_for_review=False, build_number=None):
     config = identity(channel)
     if submit_for_review and (not publish or config["app_store"] is not True):
         raise ValueError("App Store review requires --publish and the app-store channel; beta is TestFlight-only")
-    build_number = os.environ.get("GITHUB_RUN_NUMBER", "")
-    if not re.fullmatch(r"[1-9][0-9]*", build_number):
+    if build_number is None:
+        build_number = os.environ.get("GITHUB_RUN_NUMBER", "")
+    if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]*", build_number):
         raise ValueError("A positive GitHub Actions build number is required")
     bundles = (config["bundle_id"], config["packet_tunnel_bundle_id"])
     with tempfile.TemporaryDirectory(prefix="tailsplit-ios-signing-", dir=os.environ["RUNNER_TEMP"]) as folder:
@@ -322,6 +374,7 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
                     destination.write(path.read_bytes())
             run("keychain", "add-certificates", "--path", str(keychain),
                 "--certificate", str(certificates / "*.p12"), env=keychain_env)
+            sign_archive(archive, config, selected, keychain, work)
             options = work / "ExportOptions.plist"
             options.write_bytes(plistlib.dumps({
                 "method": "app-store-connect", "destination": "export", "teamID": TEAM,
@@ -350,11 +403,12 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
             verified = output / "TailSplit.ipa"
             shutil.copyfile(packages[0], verified)
             if publish:
-                # Uploads are available to internal TestFlight testers in either
-                # channel. Only the store identity may enter public App Review.
-                review_args = ("--app-store", "--platform", "IOS", "--release-type", "MANUAL") if submit_for_review else ()
-                run("app-store-connect", "publish", "--path", str(verified),
-                    "--enable-package-validation", *review_args, env=api_env)
+                metadata = plistlib.loads((archive / "Info.plist").read_bytes())["ApplicationProperties"]
+                review_args = ("--submit-for-review",) if submit_for_review else ()
+                run("python3", "-I", "-B", str(MOBILE / "tool/publish_testflight.py"),
+                    "--ipa", str(verified), "--channel", channel, "--build-number", build_number,
+                    "--version", metadata["CFBundleShortVersionString"],
+                    "--receipt", str(output / "testflight.json"), *review_args, env=api_env)
         finally:
             for path in installed_profiles:
                 path.unlink(missing_ok=True)
@@ -369,11 +423,12 @@ def main():
     parser.add_argument("--artifact", type=Path, required=True, help="Unextracted Actions artifact ZIP")
     parser.add_argument("--output", type=Path, required=True, help="New directory for the verified IPA")
     parser.add_argument("--channel", choices=("beta", "app-store"), required=True, help="Exact application identity to sign")
-    parser.add_argument("--publish", action="store_true", help="Upload the verified IPA to App Store Connect / internal TestFlight")
+    parser.add_argument("--build-number", help="Expected archive build number (defaults to this Actions run)")
+    parser.add_argument("--publish", action="store_true", help="Upload and verify distribution to the channel's internal TestFlight group")
     parser.add_argument("--submit-for-review", action="store_true", help="Submit the app-store channel to App Review (manual release after approval)")
     args = parser.parse_args()
     try:
-        release(args.artifact.absolute(), args.output.absolute(), args.publish, args.channel, args.submit_for_review)
+        release(args.artifact.absolute(), args.output.absolute(), args.publish, args.channel, args.submit_for_review, args.build_number)
     except (ValueError, KeyError, OSError, zipfile.BadZipFile, ExpatError, subprocess.CalledProcessError) as error:
         # Do not include private configuration payloads or command environments.
         if isinstance(error, ValueError):
