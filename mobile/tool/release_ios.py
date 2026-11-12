@@ -303,10 +303,13 @@ def sign_archive(archive, config, selected, keychain, work):
         run(*signing, "--generate-entitlement-der", "--entitlements", str(entitlement_path), str(path))
 
 
-def release(artifact, output, publish=False, channel="app-store", submit_for_review=False, build_number=None):
+def release(artifact, output, publish=False, channel="app-store", submit_for_review=False,
+            build_number=None, resume_upload=False):
     config = identity(channel)
     if submit_for_review and (not publish or config["app_store"] is not True):
         raise ValueError("App Store review requires --publish and the app-store channel; beta is TestFlight-only")
+    if resume_upload and not publish:
+        raise ValueError("Upload recovery requires --publish")
     if build_number is None:
         build_number = os.environ.get("GITHUB_RUN_NUMBER", "")
     if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]*", build_number):
@@ -399,16 +402,17 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
             if len(extensions) != 1:
                 raise ValueError("Expected the single PacketTunnel extension")
             verify_bundle(extensions[0], bundles[1], config["app_group"])
-            print(f"Verified IPA: {config['organization']} ({TEAM}), {channel}, Runner and PacketTunnel")
+            print(f"Verified IPA: {config['organization']} ({TEAM}), {channel}, Runner and PacketTunnel", flush=True)
             verified = output / "TailSplit.ipa"
             shutil.copyfile(packages[0], verified)
             if publish:
                 metadata = plistlib.loads((archive / "Info.plist").read_bytes())["ApplicationProperties"]
                 review_args = ("--submit-for-review",) if submit_for_review else ()
+                recovery_args = ("--resume-upload",) if resume_upload else ()
                 run("python3", "-I", "-B", str(MOBILE / "tool/publish_testflight.py"),
                     "--ipa", str(verified), "--channel", channel, "--build-number", build_number,
                     "--version", metadata["CFBundleShortVersionString"],
-                    "--receipt", str(output / "testflight.json"), *review_args, env=api_env)
+                    "--receipt", str(output / "testflight.json"), *review_args, *recovery_args, env=api_env)
         finally:
             for path in installed_profiles:
                 path.unlink(missing_ok=True)
@@ -426,9 +430,11 @@ def main():
     parser.add_argument("--build-number", help="Expected archive build number (defaults to this Actions run)")
     parser.add_argument("--publish", action="store_true", help="Upload and verify distribution to the channel's internal TestFlight group")
     parser.add_argument("--submit-for-review", action="store_true", help="Submit the app-store channel to App Review (manual release after approval)")
+    parser.add_argument("--resume-upload", action="store_true", help="Recover an existing exact TestFlight upload during a trusted archive retry")
     args = parser.parse_args()
     try:
-        release(args.artifact.absolute(), args.output.absolute(), args.publish, args.channel, args.submit_for_review, args.build_number)
+        release(args.artifact.absolute(), args.output.absolute(), args.publish, args.channel,
+                args.submit_for_review, args.build_number, args.resume_upload)
     except (ValueError, KeyError, OSError, zipfile.BadZipFile, ExpatError, subprocess.CalledProcessError) as error:
         # Do not include private configuration payloads or command environments.
         if isinstance(error, ValueError):

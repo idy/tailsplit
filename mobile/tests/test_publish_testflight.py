@@ -39,20 +39,20 @@ def group_payload(config):
     }
 
 
-def build_payload(config, state="READY_FOR_BETA_TESTING"):
+def build_payload(config, state="READY_FOR_BETA_TESTING", number="38", version="0.9.7", build_id="build-fixture-id"):
     return {
-        "data": [{"type": "builds", "id": "build-fixture-id", "attributes": {
-            "version": "38", "processingState": "VALID", "expired": False,
+        "data": [{"type": "builds", "id": build_id, "attributes": {
+            "version": number, "processingState": "VALID", "expired": False,
         }, "relationships": {
             "preReleaseVersion": {"data": {"type": "preReleaseVersions", "id": "prerelease-fixture-id"}},
             "betaGroups": {"data": [{"type": "betaGroups", "id": config["testflight_group_id"]}]},
             "buildBetaDetail": {"data": {"type": "buildBetaDetails", "id": "detail-fixture-id"}},
             # The app is filtered by the query but is not expanded by include=.
-            "app": {"links": {"related": "https://api.appstoreconnect.apple.com/v1/builds/build-fixture-id/app"}},
+            "app": {"links": {"related": f"https://api.appstoreconnect.apple.com/v1/builds/{build_id}/app"}},
         }}],
         "included": [
             {"type": "preReleaseVersions", "id": "prerelease-fixture-id",
-             "attributes": {"version": "0.9.7", "platform": "IOS"}},
+             "attributes": {"version": version, "platform": "IOS"}},
             {"type": "buildBetaDetails", "id": "detail-fixture-id", "attributes": {"internalBuildState": state}},
             {"type": "betaGroups", "id": config["testflight_group_id"],
              "attributes": {"name": config["testflight_group"], "isInternalGroup": True}},
@@ -133,6 +133,8 @@ class TestFlightPublishingTests(unittest.TestCase):
         self.group = group_payload(self.config)
         self.build = build_payload(self.config)
         self.responses = []
+        self.expected_number = "38"
+        self.events = []
         self.environment = {
             "HOME": str(self.root / "home"), "RUNNER_TEMP": str(self.runner), "TMPDIR": str(self.runner),
             "LANG": "en_US.UTF-8", "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
@@ -147,6 +149,8 @@ class TestFlightPublishingTests(unittest.TestCase):
         }
         stack = ExitStack()
         self.addCleanup(stack.close)
+        self.stdout = io.StringIO()
+        stack.enter_context(redirect_stdout(self.stdout))
         stack.enter_context(mock.patch.object(publish.os, "environ", self.environment))
         stack.enter_context(mock.patch.object(publish, "identity", side_effect=lambda channel: IDENTITIES[channel].copy()))
         stack.enter_context(mock.patch.object(publish, "authorization", return_value="fixture-jwt"))
@@ -162,7 +166,12 @@ class TestFlightPublishingTests(unittest.TestCase):
         self.assertEqual(Path(args[0]), Path(sys.executable).parent / "app-store-connect")
         self.assertTrue(Path(args[0]).is_absolute())
         self.assertEqual(args[1:4], ["publish", "--path", str(self.ipa)])
-        self.assertIn("--enable-package-validation", args)
+        self.events.append("publish")
+        if "--skip-package-upload" in args:
+            self.assertNotIn("--enable-package-validation", args)
+            self.assertIn("existing-build", self.events)
+        else:
+            self.assertIn("--enable-package-validation", args)
         self.assertEqual(args[args.index("--beta-group") + 1], "Internal Testing")
         self.assertNotIn("--testflight", args)
         self.assertNotIn("tester", " ".join(args).lower())
@@ -195,11 +204,15 @@ class TestFlightPublishingTests(unittest.TestCase):
             self.commands.assert_not_called()
             self.assertEqual(parsed.path, "/v1/betaGroups/" + self.config["testflight_group_id"])
             self.assertEqual(urllib.parse.parse_qs(parsed.query), {"include": ["app"]})
+            self.events.append("group")
             payload = self.group
         elif parsed.path == "/v1/builds":
-            self.commands.assert_called_once()
+            if self.commands.call_count:
+                self.commands.assert_called_once()
+            self.events.append("existing-build" if not self.commands.call_count and "existing-build" not in self.events
+                               else "readback")
             self.assertEqual(urllib.parse.parse_qs(parsed.query), {
-                "filter[app]": [self.config["app_store_id"]], "filter[version]": ["38"],
+                "filter[app]": [self.config["app_store_id"]], "filter[version]": [self.expected_number],
                 "include": ["preReleaseVersion,betaGroups,buildBetaDetail"], "limit": ["200"],
             })
             payload = self.responses.pop(0) if self.responses else self.build
@@ -209,12 +222,14 @@ class TestFlightPublishingTests(unittest.TestCase):
             raise payload
         return io.BytesIO(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
 
-    def execute(self, channel="app-store", submit_for_review=False, build_number="38", version="0.9.7"):
-        return publish.publish(self.ipa, channel, build_number, version, self.receipt, submit_for_review)
+    def execute(self, channel="app-store", submit_for_review=False, build_number="38", version="0.9.7", resume_upload=False):
+        self.expected_number = build_number
+        return publish.publish(self.ipa, channel, build_number, version, self.receipt, submit_for_review,
+                               resume_upload=resume_upload)
 
-    def assert_failure(self, message):
+    def assert_failure(self, message, **kwargs):
         with self.assertRaisesRegex(publish.PublicationError, message):
-            self.execute()
+            self.execute(**kwargs)
         self.assertFalse(self.receipt.exists())
 
     def test_both_channels_upload_and_write_exact_verified_receipt(self):
@@ -230,11 +245,182 @@ class TestFlightPublishingTests(unittest.TestCase):
                     "build_number": "38", "version": "0.9.7", "platform": "IOS", "build_id": "build-fixture-id",
                     "testflight_group_id": config["testflight_group_id"], "testflight_group": "Internal Testing",
                     "processing_state": "VALID", "internal_build_state": "READY_FOR_BETA_TESTING", "submitted_for_review": False,
+                    "resumed_upload": False,
                 })
                 self.assertNotIn("fixture-api-private-key", self.receipt.read_text())
                 self.assertNotIn("--app-store", self.commands.call_args.args[0])
+                self.assertNotIn("--skip-package-upload", self.commands.call_args.args[0])
+                self.assertNotIn("existing-build", self.events)
                 self.receipt.unlink()
         self.sleep.assert_not_called()
+
+    def test_resume_exact_ready_build_without_group_skips_upload_and_validation_for_both_apps(self):
+        builds = (("beta", "1", "935c78ef-8e5e-4152-bc80-b22fa9af43d5", "READY_FOR_BETA_TESTING"),
+                  ("app-store", "2", "03b9b3d0-4a14-4e34-85af-f92fdb7b0d9a", "IN_BETA_TESTING"))
+        for channel, number, identifier, state in builds:
+            with self.subTest(channel=channel):
+                self.config = IDENTITIES[channel]
+                self.group = group_payload(self.config)
+                self.build = build_payload(self.config, state, number, "0.1.0", identifier)
+                unassigned = copy.deepcopy(self.build)
+                unassigned["data"][0]["relationships"]["betaGroups"]["data"] = []
+                self.responses = [unassigned]
+                self.commands.reset_mock()
+                self.events.clear()
+                with mock.patch("builtins.print") as progress:
+                    result = self.execute(channel, build_number=number, version="0.1.0", resume_upload=True)
+                self.assertEqual(self.events, ["group", "existing-build", "publish", "readback"])
+                self.assertIn("--skip-package-upload", self.commands.call_args.args[0])
+                self.assertNotIn("--enable-package-validation", self.commands.call_args.args[0])
+                self.assertNotIn("--app-store", self.commands.call_args.args[0])
+                self.assertIs(result["resumed_upload"], True)
+                self.assertEqual(result["build_id"], identifier)
+                self.assertEqual(json.loads(self.receipt.read_text()), result)
+                self.assertTrue(progress.call_args_list[0].args[0].startswith("Resuming"))
+                self.assertTrue(progress.call_args_list[1].args[0].startswith("Verifying"))
+                self.assertTrue(all(call.kwargs.get("flush") is True for call in progress.call_args_list))
+                self.receipt.unlink()
+        self.sleep.assert_not_called()
+
+    def test_resume_already_assigned_build_only_reads_and_writes_resumed_receipt(self):
+        result = self.execute(resume_upload=True)
+        self.commands.assert_not_called()
+        self.assertEqual(self.events, ["group", "existing-build", "readback"])
+        self.assertTrue(result["resumed_upload"])
+        self.assertEqual(result["build_id"], "build-fixture-id")
+        self.assertEqual(json.loads(self.receipt.read_text()), result)
+        self.sleep.assert_not_called()
+
+    def test_resume_already_assigned_build_still_requires_final_membership_readback(self):
+        self.responses = [copy.deepcopy(self.build)]
+        self.build["data"][0]["relationships"]["betaGroups"]["data"] = []
+        self.assert_failure("not assigned", resume_upload=True)
+        self.commands.assert_not_called()
+        self.assertEqual(self.sleep.call_count, publish.READBACK_ATTEMPTS - 1)
+
+    def test_resume_empty_query_falls_back_to_normal_validated_upload(self):
+        self.responses = [{"data": []}]
+        with mock.patch("builtins.print") as progress:
+            result = self.execute(resume_upload=True)
+        self.assertEqual(self.events, ["group", "existing-build", "publish", "readback"])
+        self.assertIs(result["resumed_upload"], False)
+        self.assertIn("--enable-package-validation", self.commands.call_args.args[0])
+        self.assertNotIn("--skip-package-upload", self.commands.call_args.args[0])
+        self.assertTrue(progress.call_args_list[0].args[0].startswith("Starting TestFlight upload"))
+        self.assertTrue(progress.call_args_list[1].args[0].startswith("Verifying"))
+        self.assertTrue(all(call.kwargs.get("flush") is True for call in progress.call_args_list))
+
+    def test_resume_rejects_wrong_build_version_platform_or_app_before_cli(self):
+        variants = []
+        for target, field, value in (("build", "version", "39"), ("prerelease", "version", "0.9.8"),
+                                     ("prerelease", "platform", "MAC_OS")):
+            payload = build_payload(self.config)
+            resource = payload["data"][0] if target == "build" else payload["included"][0]
+            resource["attributes"][field] = value
+            variants.append(payload)
+        for target in ("build", "prerelease"):
+            payload = build_payload(self.config)
+            resource = payload["data"][0] if target == "build" else payload["included"][0]
+            resource.setdefault("relationships", {})["app"] = {"data": {"type": "apps", "id": "different"}}
+            variants.append(payload)
+        for index, payload in enumerate(variants):
+            with self.subTest(index=index):
+                self.build = payload
+                self.assert_failure("wrong build|do not match|different app", resume_upload=True)
+                self.commands.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_resume_missing_or_malformed_matching_metadata_never_falls_back_to_upload(self):
+        variants = [{}, {"data": None}, {"data": [{}]}, {"data": [], "included": None}]
+        for target, field in (("build", "version"), ("prerelease", "version"), ("prerelease", "platform")):
+            payload = build_payload(self.config)
+            resource = payload["data"][0] if target == "build" else payload["included"][0]
+            del resource["attributes"][field]
+            variants.append(payload)
+        for linkage in (None, {}, {"type": "apps", "id": "wrong-type"}, {"type": "preReleaseVersions", "id": "missing"}):
+            payload = build_payload(self.config)
+            payload["data"][0]["relationships"]["preReleaseVersion"]["data"] = linkage
+            variants.append(payload)
+        payload = build_payload(self.config)
+        payload["included"] = payload["included"][1:]
+        variants.append(payload)
+        payload = build_payload(self.config)
+        payload["included"][0]["attributes"]["version"] = []
+        variants.append(payload)
+        for index, payload in enumerate(variants):
+            with self.subTest(index=index):
+                self.build = payload
+                self.assert_failure("invalid|metadata|wrong build", resume_upload=True)
+                self.commands.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_resume_ambiguous_or_paginated_existing_builds_are_rejected_before_cli(self):
+        duplicate = copy.deepcopy(self.build["data"][0])
+        duplicate["id"] = "second-matching-build"
+        self.build["data"].append(duplicate)
+        self.assert_failure("Multiple builds", resume_upload=True)
+        self.build = build_payload(self.config)
+        self.build["links"]["next"] = "https://untrusted.example/steal-token"
+        self.assert_failure("unpaginated", resume_upload=True)
+        self.commands.assert_not_called()
+
+    def test_resume_rejects_failed_processing_expired_and_not_ready_before_cli(self):
+        for field, value in (("processingState", "FAILED"), ("processingState", "INVALID"),
+                             ("processingState", "PROCESSING"), ("processingState", None),
+                             ("expired", True), ("expired", None), ("expired", 0)):
+            with self.subTest(field=field, value=value):
+                self.build = build_payload(self.config)
+                self.build["data"][0]["attributes"][field] = value
+                self.assert_failure("processing|expired|ready", resume_upload=True)
+                self.commands.assert_not_called()
+        for state in ("PROCESSING", "PROCESSING_EXCEPTION", "EXPIRED", "UNKNOWN", None, []):
+            with self.subTest(state=state):
+                self.build = build_payload(self.config, state=state)
+                self.assert_failure("processing|expired|ready", resume_upload=True)
+                self.commands.assert_not_called()
+        self.build = build_payload(self.config)
+        self.build["included"] = [resource for resource in self.build["included"] if resource["type"] != "buildBetaDetails"]
+        self.assert_failure("ready.*retry", resume_upload=True)
+        self.commands.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_resume_compliance_block_is_clear_before_cli_without_declarations(self):
+        for state in ("MISSING_EXPORT_COMPLIANCE", "IN_EXPORT_COMPLIANCE_REVIEW"):
+            with self.subTest(state=state):
+                self.build = build_payload(self.config, state=state)
+                self.assert_failure("Export compliance blocks.*App Store Connect", resume_upload=True)
+                self.commands.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_resume_still_requires_verified_internal_group_before_build_query(self):
+        self.group["data"]["attributes"]["isInternalGroup"] = False
+        self.assert_failure("must.*internal", resume_upload=True)
+        self.assertEqual(self.events, ["group"])
+        self.commands.assert_not_called()
+
+    def test_resume_still_requires_actual_membership_after_silent_cli_success(self):
+        self.build["data"][0]["relationships"]["betaGroups"]["data"] = []
+        self.assert_failure("not assigned", resume_upload=True)
+        self.assertIn("--skip-package-upload", self.commands.call_args.args[0])
+        self.assertEqual(self.events, ["group", "existing-build", "publish"] + ["readback"] * publish.READBACK_ATTEMPTS)
+        self.assertEqual(self.sleep.call_count, publish.READBACK_ATTEMPTS - 1)
+
+    def test_resume_final_readback_must_identify_the_same_existing_build(self):
+        existing = copy.deepcopy(self.build)
+        existing["data"][0]["relationships"]["betaGroups"]["data"] = []
+        self.responses = [existing]
+        self.build["data"][0]["id"] = "different-final-build"
+        self.assert_failure("different build than the existing upload", resume_upload=True)
+        self.commands.assert_called_once()
+        self.sleep.assert_not_called()
+
+    def test_resume_keeps_public_review_explicit_and_manual(self):
+        result = self.execute(resume_upload=True, submit_for_review=True)
+        command = self.commands.call_args.args[0]
+        self.assertIn("--skip-package-upload", command)
+        self.assertEqual(command[-5:], ["--app-store", "--platform", "IOS", "--release-type", "MANUAL"])
+        self.assertTrue(result["resumed_upload"])
+        self.assertTrue(result["submitted_for_review"])
 
     def test_in_beta_testing_is_also_ready(self):
         self.build = build_payload(self.config, state="IN_BETA_TESTING")
@@ -405,8 +591,9 @@ class TestFlightPublishingTests(unittest.TestCase):
         self.assertTrue(json.loads(self.receipt.read_text())["submitted_for_review"])
 
     def test_beta_public_review_is_rejected_before_network_or_upload(self):
-        with self.assertRaisesRegex(publish.PublicationError, "beta is TestFlight-only"):
-            self.execute("beta", submit_for_review=True)
+        for resume in (False, True):
+            with self.subTest(resume=resume), self.assertRaisesRegex(publish.PublicationError, "beta is TestFlight-only"):
+                self.execute("beta", submit_for_review=True, resume_upload=resume)
         self.commands.assert_not_called()
         self.opener.open.assert_not_called()
         self.assertFalse(self.receipt.exists())
@@ -488,6 +675,17 @@ class TestFlightPublishingTests(unittest.TestCase):
             publish.main()
         self.assertIn("dev.idy.tailsplit 0.9.7 (38)", output.getvalue())
         self.assertNotIn("private", output.getvalue())
+
+    def test_cli_main_resume_flag_accepts_already_distributed_build_without_cli(self):
+        args = ["publish_testflight.py", "--ipa", str(self.ipa), "--channel", "app-store", "--build-number", "38",
+                "--version", "0.9.7", "--receipt", str(self.receipt), "--resume-upload"]
+        with mock.patch.object(sys, "argv", args):
+            publish.main()
+        self.commands.assert_not_called()
+        self.assertTrue(json.loads(self.receipt.read_text())["resumed_upload"])
+        self.assertIn("Resuming internal TestFlight", self.stdout.getvalue())
+        self.assertIn("Verifying internal TestFlight", self.stdout.getvalue())
+        self.assertNotIn("fixture private CLI output", self.stdout.getvalue())
 
     def test_cli_main_sanitizes_failures(self):
         args = ["publish_testflight.py", "--ipa", str(self.ipa), "--channel", "app-store", "--build-number", "38",

@@ -103,8 +103,12 @@ Both records use primary locale `en-US`. Their initial iOS draft versions are
 `0.1.0`, matching `mobile/pubspec.yaml`, with `MANUAL` release and
 `PREPARE_FOR_SUBMISSION` state. Creating these records does not upload a build
 or submit an App Store review.
-Screenshots, privacy information, review details and export compliance remain
-separate publication requirements.
+Screenshots, privacy information and review details remain separate publication
+requirements. On 2026-11-12 the operator confirmed that TailSplit is exempt from
+providing encryption export documentation. `Runner/Info.plist` records this as
+`ITSAppUsesNonExemptEncryption=false` for future builds. The same confirmed
+declaration was applied to the first two uploaded builds in ASC, changing their
+internal state from `MISSING_EXPORT_COMPLIANCE` to `READY_FOR_BETA_TESTING`.
 
 ## Build, TestFlight and App Store review
 
@@ -154,6 +158,16 @@ runs on a fresh runner with the current trusted helpers and the original archive
 build number. This also supports recovery when the source run's build succeeded
 but its signing job failed; arbitrary artifacts, fork/PR runs and divergent
 source revisions are rejected.
+
+For a validated archive retry, the publisher also checks for an existing exact
+app/version/build-number upload before invoking Codemagic. A ready, unexpired
+build resumes group distribution with package upload and validation skipped;
+there is no second binary upload with the same build number. If it is already
+assigned, the publisher performs only the final independent readback. An empty
+Apple response permits a normal fresh upload, while ambiguous, malformed,
+expired, processing or compliance-blocked existing builds fail before retrying.
+The receipt records `resumed_upload` and the verified build ID. Fresh release
+runs continue to validate and upload their package normally.
 
 For a local unsigned archive, resolve packages, build the selected Apple core
 and install pods as described in the mobile README, then run from `mobile/`:
