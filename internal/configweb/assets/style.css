@@ -75,16 +75,20 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .danger { color: var(--mds-error); }
 /* Home explains saved routing without pretending to measure live traffic. */
 .home-page { max-width: 900px; padding-block: 36px 24px; }
-.home-connection { display: flex; align-items: center; gap: 20px; padding: 8px 4px 28px; }
-.home-connection-copy { min-width: 0; }
+/* The snake leads the status block: a fixed anchor that never moves with copy length,
+   then the title and its explanation as one tight group. First-run Set up sits under
+   the explanation, in reading order: status, why, action. */
+.home-connection { display: flex; align-items: center; gap: 16px; padding: 8px 0 28px; }
+.home-connection-copy { flex: 1 1 auto; min-width: 0; }
 .home-connection h2 { font-size: 1.5rem; font-weight: 600; line-height: 1.35; letter-spacing: -.02em; }
-.home-connection p { margin-top: 10px; max-width: 60ch; color: var(--mds-muted); overflow-wrap: anywhere; }
-.home-connection .home-setup { flex: 0 0 auto; min-height: 40px; min-width: 100px; }
+.home-connection p { margin-top: 4px; max-width: 60ch; color: var(--mds-muted); overflow-wrap: anywhere; }
+.home-connection .home-setup { margin-top: 16px; min-height: 40px; min-width: 100px; }
 .home-toggle-control { display: flex; flex: 0 0 auto; }
 /* The TailSplit snake button. Off, the mark rests in muted ink; pressing it turns
    the snake around (180°) and it lights up green once traffic is actually connected.
    Busy and blocked states keep their amber/error meaning while the snake turns. */
-.home-toggle { --snake-ink: var(--mds-faint); --snake-glow: transparent; display: grid; flex: 0 0 auto; place-items: center; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--snake-ink); cursor: pointer; }
+/* A hairline ring in the current ink marks the mark as a pressable control in every state. */
+.home-toggle { --snake-ink: var(--mds-faint); --snake-glow: transparent; display: grid; flex: 0 0 auto; place-items: center; width: 56px; height: 56px; padding: 0; border: 1px solid color-mix(in srgb, var(--snake-ink) 40%, transparent); border-radius: 50%; background: transparent; color: var(--snake-ink); cursor: pointer; }
 .home-toggle:hover:not(:disabled) { background: var(--mds-hover); }
 .home-toggle:hover:not(:disabled):not([aria-pressed="true"], [aria-busy="true"]) { --snake-ink: var(--mds-muted); }
 /* Equal specificity, so source order sets precedence: connected > busy > pressed-but-not-running. */
@@ -94,7 +98,7 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .home-toggle[data-connected="true"]:hover:not(:disabled) { background: color-mix(in srgb, var(--mds-good) 20%, transparent); }
 .home-toggle:focus-visible { outline: 2px solid var(--mds-accent-ink); outline-offset: 2px; }
 .home-toggle:disabled { cursor: not-allowed; opacity: .45; }
-.home-snake { display: block; width: 30px; height: 30px; filter: drop-shadow(0 0 6px var(--snake-glow)); }
+.home-snake { display: block; width: 32px; height: 32px; filter: drop-shadow(0 0 6px var(--snake-glow)); }
 .home-toggle[aria-pressed="true"] .home-snake { transform: rotate(180deg); }
 /* While connecting the snake keeps spinning. The spin uses the separate `rotate`
    property so it composes with the 180° turn; app.js keeps data-spinning until the
@@ -103,7 +107,7 @@ details[open] > summary > .icon { transform: rotate(90deg); }
 .home-toggle[data-spinning="true"][data-motion-paused="true"] .home-snake { animation-play-state: paused; }
 @keyframes home-snake-spin { from { rotate: 0deg; } to { rotate: 360deg; } }
 /* Motion narrates later state changes; the first live reading settles in place. */
-.home-toggle[data-motion="ready"] { transition: color var(--mds-duration), background-color var(--mds-duration); }
+.home-toggle[data-motion="ready"] { transition: color var(--mds-duration), border-color var(--mds-duration), background-color var(--mds-duration); }
 .home-toggle[data-motion="ready"] .home-snake { transition: transform 280ms cubic-bezier(.3, 0, .2, 1), filter var(--mds-duration); }
 @media (prefers-reduced-motion: reduce) {
   .home-toggle .home-snake { transition: none !important; animation: none !important; }
