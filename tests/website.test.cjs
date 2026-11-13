@@ -24,7 +24,7 @@ const filenames = {
 };
 const siteDir = path.join(__dirname, '..', 'site');
 const html = readFileSync(path.join(siteDir, 'index.html'), 'utf8');
-const commonScript = readFileSync(path.join(siteDir, 'shared', 'idy.js'), 'utf8');
+const commonScript = readFileSync(path.join(siteDir, 'shared', 'sdk', 'idy-site.min.js'), 'utf8');
 const siteScript = readFileSync(path.join(siteDir, 'script.js'), 'utf8');
 const releasesUrl = `https://github.com/idy/${slug}/releases`;
 
@@ -68,6 +68,8 @@ async function openSite(responses, { languages = ['en-US'], clipboard = true, se
   const releaseLink = target();
   const language = target();
   const theme = target();
+  language.matches = selector => selector === 'select[data-idy-language]';
+  theme.matches = selector => selector === 'select[data-idy-theme]';
   const controls = target();
   const result = target();
   const concept = target();
@@ -89,7 +91,7 @@ async function openSite(responses, { languages = ['en-US'], clipboard = true, se
     querySelectorAll(selector) {
       return ({ '[data-i18n]': translations.filter(node => node.attributes['data-i18n']),
         '[data-i18n-html]': translations.filter(node => node.attributes['data-i18n-html']),
-        '[data-i18n-aria-label]': aria, '[data-idy-language]': [language], '[data-idy-theme]': [theme],
+        '[data-i18n-aria-label]': aria, 'select[data-idy-language]': [language], 'select[data-idy-theme]': [theme],
         '[data-download]': downloads, '[data-release-link]': [releaseLink], '[data-release-status]': [status],
         '[data-copy-target]': copyButtons })[selector] || [];
     },
@@ -114,15 +116,16 @@ async function openSite(responses, { languages = ['en-US'], clipboard = true, se
     },
   });
   context.window = context;
+  context.document.defaultView = context;
   vm.createContext(context);
-  vm.runInContext(commonScript, context, { filename: 'shared/idy.js' });
+  vm.runInContext(commonScript, context, { filename: 'shared/sdk/idy-site.min.js' });
   vm.runInContext(siteScript, context, { filename: 'script.js' });
   document.dispatchEvent({ type: 'DOMContentLoaded' });
   await settle();
   return { context, document, status, downloads, releaseLink, requests, buttons, concept, result,
     copyButtons, copyStatuses, commands, copied, media, storage,
-    changeLanguage(value) { language.value = value; language.dispatchEvent({ type: 'change' }); },
-    changeTheme(value) { theme.value = value; theme.dispatchEvent({ type: 'change' }); },
+    changeLanguage(value) { language.value = value; document.dispatchEvent({ type: 'change', target: language }); },
+    changeTheme(value) { theme.value = value; document.dispatchEvent({ type: 'change', target: theme }); },
   };
 }
 

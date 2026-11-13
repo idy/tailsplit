@@ -103,6 +103,20 @@ of the desktop release assets above.
 
 </details>
 
+## Website development
+
+The static public page lives in `site/` and needs no build step. `index.html`
+loads the complete idy.dev SDK vendored in `site/shared/sdk/`, including its font
+assets and licenses. Refresh that whole directory together; do not edit bundled
+files individually. The Component Datasheet system uses self-hosted Archivo,
+a blue masthead, white/deep navy sheets, 2px corners, fine rules and no shadows.
+Local `styles.css` maps existing roles to `--idy-*` tokens while retaining the
+routing diagram, rule ledger and platform downloads.
+
+Run the website checks with `node --test tests/website.test.cjs`. Check both
+languages and themes, narrow screens, the routing controls, code copying and
+release failure/missing-asset states when changing the page.
+
 ## Community
 
 Join [IDY Community on Discord](https://discord.gg/RY7ktfh8Pr) for questions,
