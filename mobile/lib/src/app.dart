@@ -6,6 +6,7 @@ import 'l10n/strings.dart';
 import 'model/settings.dart';
 import 'state/app_controller.dart';
 import 'theme/theme.dart';
+import 'ui/native.dart' show Spinner;
 import 'ui/root_shell.dart';
 import 'ui/vpn_privacy_page.dart';
 
@@ -51,9 +52,14 @@ class TailSplitApp extends StatelessWidget {
                 GlobalCupertinoLocalizations.delegate,
                 GlobalWidgetsLocalizations.delegate,
               ],
-              home: controller.mayUseNetwork
-                  ? const RootShell()
-                  : const VpnPrivacyPage(requestConsent: true),
+              home: !controller.settingsLoaded
+                  ? const AdaptiveScaffold(
+                      key: ValueKey('app-startup'),
+                      body: Center(child: Spinner()),
+                    )
+                  : controller.mayUseNetwork
+                      ? const RootShell()
+                      : const VpnPrivacyPage(requestConsent: true),
             );
           },
         ),

@@ -29,6 +29,7 @@ class S {
   // VPN data disclosure, shown before any sign-in, refresh or connection.
   String get vpnPrivacy => _('VPN & Privacy', 'VPN 与隐私');
   String get privacyPolicy => _('Privacy Policy', '隐私政策');
+  String get tailscalePrivacyPolicy => _('Tailscale Privacy Policy', 'Tailscale 隐私政策');
   String get vpnPrivacyIntro => _(
         'TailSplit connects to your own Tailscale networks and exit nodes. Review how your information is used before continuing. No VPN starts until you choose an exit and turn on the connection.',
         'TailSplit 连接你自己的 Tailscale 网络和出口节点。继续前，请了解你的信息如何被使用。只有选择出口并打开连接开关后，才会启动 VPN。',

@@ -118,8 +118,11 @@ registration and connection metadata, exit/DNS operators, rule downloads and use
 controls, and links to the same privacy policy recorded in App Store Connect.
 **Agree and continue** must save successfully before network actions are enabled.
 Acceptance does not authorize a Tailnet or start a VPN. Existing preferences
-without the acceptance flag require this step; automatic node refresh is blocked
-until then. An existing OS tunnel can still be disconnected from this page.
+without the acceptance flag require this step. While preferences are loading,
+the app shows a neutral startup screen. Automatic node refresh is blocked until
+consent is saved; saved Tailnets then receive one background startup refresh while
+the VPN is idle, without delaying the consent button. An existing OS tunnel can
+still be disconnected from this page.
 Settings > About keeps both the disclosure and Privacy Policy available later.
 Design-preview builds use simulated data and bypass this first-use gate.
 

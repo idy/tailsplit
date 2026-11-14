@@ -12,6 +12,8 @@ import 'package:tailsplit_mobile/src/ui/exit_page.dart';
 import 'package:tailsplit_mobile/src/ui/native.dart';
 import 'package:tailsplit_mobile/src/ui/settings_page.dart';
 
+import 'multi_tailnet_test.dart' show AccountVpn;
+
 void main() {
   testWidgets('disabled older-iOS choice menu cannot open its action sheet', (tester) async {
     // The host test runner uses the package's pre-iOS-26 Flutter fallback.
@@ -165,11 +167,14 @@ void main() {
 
 Future<void> _pumpShell(WidgetTester tester) async {
   final root = Directory.systemTemp.createTempSync('tailsplit-navigation-review');
-  final controller = AppController(paths: AppPaths.at(root, root));
-  addTearDown(() {
+  final vpn = AccountVpn();
+  final controller = AppController(paths: AppPaths.at(root, root), vpn: vpn);
+  addTearDown(() async {
     controller.dispose();
+    await vpn.events.close();
     root.deleteSync(recursive: true);
   });
+  await tester.runAsync(controller.load);
   controller.settings = controller.settings.copyWith(vpnDisclosureAccepted: true);
   await tester.pumpWidget(TailSplitApp(controller: controller));
   await tester.pumpAndSettle();

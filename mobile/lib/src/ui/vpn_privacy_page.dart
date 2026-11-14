@@ -82,7 +82,7 @@ class _VpnPrivacyPageState extends State<VpnPrivacyPage> {
               ),
               NativeRow(
                 leading: const NativeRowIcon(ios: CupertinoIcons.link, android: Icons.link),
-                title: const Text('Tailscale Privacy Policy'),
+                title: Text(s.tailscalePrivacyPolicy),
                 chevron: true,
                 onTap: () => launchUrl(Uri.parse('https://tailscale.com/privacy-policy'), mode: LaunchMode.inAppBrowserView),
               ),

@@ -6,11 +6,39 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tailsplit_mobile/src/app.dart';
 import 'package:tailsplit_mobile/src/model/settings.dart';
 import 'package:tailsplit_mobile/src/services/storage.dart';
+import 'package:tailsplit_mobile/src/services/vpn.dart' show VpnConnectionState;
 import 'package:tailsplit_mobile/src/state/app_controller.dart';
+import 'package:tailsplit_mobile/src/tailscale/models.dart' show TailnetSnapshot;
+import 'package:tailsplit_mobile/src/ui/root_shell.dart';
 import 'package:tailsplit_mobile/src/ui/settings_page.dart';
 import 'package:tailsplit_mobile/src/ui/vpn_privacy_page.dart';
 
-import 'multi_tailnet_test.dart' show AccountVpn, fixture;
+import 'multi_tailnet_test.dart' show AccountVpn, fixture, snapshot;
+
+class DeferredInitVpn extends AccountVpn {
+  final initializing = Completer<void>();
+  final ready = Completer<void>();
+
+  @override
+  Future<void> initialize() {
+    if (!initializing.isCompleted) initializing.complete();
+    return ready.future;
+  }
+}
+
+Future<void> waitForApp(AppController app, bool Function() ready) async {
+  if (ready()) return;
+  final done = Completer<void>();
+  void listener() {
+    if (ready() && !done.isCompleted) done.complete();
+  }
+  app.addListener(listener);
+  try {
+    await done.future.timeout(const Duration(seconds: 3));
+  } finally {
+    app.removeListener(listener);
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -89,10 +117,94 @@ void main() {
     expect((await JsonStore.read(f.paths.settingsFile))!['vpn_disclosure_accepted'], isTrue);
   });
 
+  test('saved Tailnets refresh once after consent without waiting for the network', () async {
+    final f = await fixture();
+    final id = await f.add('a');
+    await f.app.updateSettings(f.app.settings.copyWith(vpnDisclosureAccepted: false));
+    var fetches = 0;
+    final entered = Completer<void>();
+    final response = Completer<TailnetSnapshot>();
+    addTearDown(() { if (!response.isCompleted) response.complete(snapshot('a')); });
+    f.client.fetch = (_) {
+      fetches++;
+      if (!entered.isCompleted) entered.complete();
+      return response.future;
+    };
+    final restored = await f.reload();
+    expect(fetches, 0);
+    final blocker = Directory('${f.paths.settingsFile.path}.tmp');
+    await blocker.create();
+    expect(await restored.acceptVpnDisclosure(), isFalse);
+    expect(fetches, 0, reason: 'Failed consent persistence cannot start network access.');
+    await blocker.delete();
+
+    expect(await Future.wait([
+      restored.acceptVpnDisclosure(), restored.acceptVpnDisclosure(),
+    ]).timeout(const Duration(seconds: 3)), [true, true]);
+    await entered.future.timeout(const Duration(seconds: 3));
+    expect(restored.mayUseNetwork, isTrue);
+    expect(fetches, 1);
+    expect(response.isCompleted, isFalse, reason: 'Acceptance must finish before the network response.');
+    response.complete(snapshot('a', name: 'Refreshed network'));
+    await waitForApp(restored, () => !restored.refreshing);
+    expect(restored.tailnetById(id)!.networkName, 'Refreshed network');
+    expect(await restored.acceptVpnDisclosure(), isTrue);
+    await pumpEventQueue();
+    expect(fetches, 1, reason: 'Repeated acceptance must not repeat the startup refresh.');
+  });
+
+  for (final nativeActive in [false, true]) {
+    test('consent during startup respects the final native state (active=$nativeActive)', () async {
+      final f = await fixture();
+      final id = await f.add('a');
+      await f.app.updateSettings(f.app.settings.copyWith(vpnDisclosureAccepted: false));
+      var fetches = 0;
+      f.client.fetch = (_) async { fetches++; return snapshot('a', name: 'Updated'); };
+      final vpn = DeferredInitVpn();
+      if (nativeActive) vpn.state = VpnConnectionState.connected;
+      final app = AppController(paths: f.paths, vpn: vpn, controlClient: () => f.client);
+      final loading = app.load();
+      addTearDown(() async {
+        if (!vpn.ready.isCompleted) vpn.ready.complete();
+        await loading;
+        app.dispose();
+        await vpn.events.close();
+      });
+      await vpn.initializing.future.timeout(const Duration(seconds: 3));
+      expect(app.settingsLoaded, isTrue);
+      expect(await app.acceptVpnDisclosure().timeout(const Duration(seconds: 3)), isTrue);
+      expect(fetches, 0, reason: 'Do not refresh until saved accounts and OS state are known.');
+      vpn.ready.complete();
+      await loading;
+      if (!nativeActive) await waitForApp(app, () => app.tailnetById(id)!.networkName == 'Updated');
+      await pumpEventQueue();
+      expect(fetches, nativeActive ? 0 : 1);
+      expect(vpn.starts, 0);
+      expect(vpn.stops, 0);
+    });
+  }
+
+  testWidgets('returning user never sees consent in production runApp-then-load order', (tester) async {
+    final f = await tester.runAsync(() => fixture(load: false));
+    await tester.runAsync(() => JsonStore.write(f!.paths.settingsFile,
+        const MobileSettings(vpnDisclosureAccepted: true).toJson()));
+    await tester.pumpWidget(TailSplitApp(controller: f!.app));
+    expect(find.byKey(const ValueKey('app-startup')), findsOneWidget);
+    expect(find.byType(VpnPrivacyPage), findsNothing);
+    expect(find.text('Agree and continue'), findsNothing);
+    await tester.runAsync(f.app.load);
+    await tester.pumpAndSettle();
+    expect(find.byType(RootShell), findsOneWidget);
+    expect(find.byType(VpnPrivacyPage), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant({TargetPlatform.iOS, TargetPlatform.android}));
+
   testWidgets('first launch displays disclosure before actions, and acceptance opens the app', (tester) async {
     final f = await tester.runAsync(() => fixture(load: false));
-    await tester.runAsync(() => f!.app.load());
     await tester.pumpWidget(TailSplitApp(controller: f!.app));
+    expect(find.byKey(const ValueKey('app-startup')), findsOneWidget);
+    expect(find.byType(VpnPrivacyPage), findsNothing);
+    await tester.runAsync(f.app.load);
     await tester.pumpAndSettle();
     expect(find.byType(VpnPrivacyPage), findsOneWidget);
     expect(find.text('Add Tailnet'), findsNothing);
@@ -134,6 +246,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(find.text('同意并继续'), 400);
     expect(find.text('隐私政策'), findsOneWidget);
+    expect(find.text('Tailscale 隐私政策'), findsOneWidget);
     expect(tester.takeException(), isNull);
     expect(f.app.mayUseNetwork, isFalse);
     await tester.pumpWidget(const SizedBox.shrink());

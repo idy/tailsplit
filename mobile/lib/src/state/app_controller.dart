@@ -131,6 +131,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   static const staleSnapshot = Duration(minutes: 5);
 
   MobileSettings settings = const MobileSettings();
+  bool _settingsLoaded = false;
+  bool get settingsLoaded => _settingsLoaded;
   TailnetStore _accounts = TailnetStore();
   Iterable<TailnetAccount> get tailnets => _accounts.accounts.values;
   TailnetAccount? tailnetById(String id) => _accounts.accounts[id];
@@ -272,6 +274,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   Future<void>? _settingsLoadRequest;
+  bool _startupComplete = false;
+  bool _initialRefreshStarted = false;
 
   Future<void> _loadSettings() async {
     try {
@@ -279,6 +283,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       if (saved != null) settings = MobileSettings.fromJson(saved);
     } catch (error) {
       _log('warn', 'Saved settings could not be read; defaults are used (${describeFailure(error)}).');
+    } finally {
+      _settingsLoaded = true;
+      notifyListeners();
     }
   }
 
@@ -324,9 +331,20 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     WidgetsBinding.instance.addObserver(this);
     _observing = true;
+    _startupComplete = true;
     notifyListeners();
-    // A saved netmap can be days old; update it quietly while idle.
-    if (tailnets.isNotEmpty && !active) unawaited(refreshAll(silent: true));
+    _refreshAfterConsent();
+  }
+
+  /// Startup and first acceptance share one refresh, after accounts and native
+  /// status are known. Never wait for network access to leave the consent page.
+  void _refreshAfterConsent() {
+    if (_disposed || isPreview || !_startupComplete || !mayUseNetwork ||
+        _initialRefreshStarted || active || tailnets.isEmpty) {
+      return;
+    }
+    _initialRefreshStarted = true;
+    unawaited(refreshAll(silent: true));
   }
 
   Future<void> _loadPreview() async {
@@ -385,6 +403,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         pickerRequested = true;
     }
     if (active) _runningTailnetId = selectedTailnetId;
+    _settingsLoaded = true;
     notifyListeners();
   }
 
@@ -1260,6 +1279,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     settings = next;
     if (problem == AppProblem.storage && !_accountStoreUnreadable) _clearProblem();
     notifyListeners();
+    _refreshAfterConsent();
     return true;
   }
 
