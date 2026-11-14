@@ -131,6 +131,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   static const staleSnapshot = Duration(minutes: 5);
 
   MobileSettings settings = const MobileSettings();
+  bool _settingsLoaded = false;
+  bool get settingsLoaded => _settingsLoaded;
   TailnetStore _accounts = TailnetStore();
   Iterable<TailnetAccount> get tailnets => _accounts.accounts.values;
   TailnetAccount? tailnetById(String id) => _accounts.accounts[id];
@@ -229,6 +231,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool _tunnelObservedActive = false;
 
   bool get isPreview => previewMode;
+  bool get mayUseNetwork => isPreview || settings.vpnDisclosureAccepted;
   bool get connected => vpnState == VpnConnectionState.connected;
   bool get active =>
       vpnState == VpnConnectionState.connected ||
@@ -238,7 +241,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       vpnState == VpnConnectionState.connecting ||
       vpnState == VpnConnectionState.disconnecting;
   bool get busy => removing || signIn != SignInPhase.idle;
-  bool get canConnect => exit?.hasNode == true && !busy &&
+  bool get canConnect => mayUseNetwork && exit?.hasNode == true && !busy &&
       !_accountStoreUnreadable && !_shutdownUnconfirmed && !_nativeStartPending && _stopRequest == null;
   bool get canRetryDisconnect => !busy && _stopRequest == null;
   bool get hasAuthUrl => _authUrl != null || (isPreview && signIn == SignInPhase.browser);
@@ -270,14 +273,25 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
-  Future<void> load() async {
-    if (isPreview) return _loadPreview();
+  Future<void>? _settingsLoadRequest;
+  bool _startupComplete = false;
+  bool _initialRefreshStarted = false;
+
+  Future<void> _loadSettings() async {
     try {
       final saved = await JsonStore.read(_paths.settingsFile);
       if (saved != null) settings = MobileSettings.fromJson(saved);
     } catch (error) {
       _log('warn', 'Saved settings could not be read; defaults are used (${describeFailure(error)}).');
+    } finally {
+      _settingsLoaded = true;
+      notifyListeners();
     }
+  }
+
+  Future<void> load() async {
+    if (isPreview) return _loadPreview();
+    await (_settingsLoadRequest = _loadSettings());
     try {
       // Existence is authoritative, including an empty or damaged store. Never
       // fall back to stale legacy data after accounts have been removed.
@@ -317,9 +331,20 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
     WidgetsBinding.instance.addObserver(this);
     _observing = true;
+    _startupComplete = true;
     notifyListeners();
-    // A saved netmap can be days old; update it quietly while idle.
-    if (tailnets.isNotEmpty && !active) unawaited(refreshAll(silent: true));
+    _refreshAfterConsent();
+  }
+
+  /// Startup and first acceptance share one refresh, after accounts and native
+  /// status are known. Never wait for network access to leave the consent page.
+  void _refreshAfterConsent() {
+    if (_disposed || isPreview || !_startupComplete || !mayUseNetwork ||
+        _initialRefreshStarted || active || tailnets.isEmpty) {
+      return;
+    }
+    _initialRefreshStarted = true;
+    unawaited(refreshAll(silent: true));
   }
 
   Future<void> _loadPreview() async {
@@ -378,6 +403,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         pickerRequested = true;
     }
     if (active) _runningTailnetId = selectedTailnetId;
+    _settingsLoaded = true;
     notifyListeners();
   }
 
@@ -466,7 +492,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// A null target adds an independent account; an ID reauthenticates exactly
   /// that account. Adding never stops or changes an already selected exit.
   Future<void> signInExit({String? tailnetId, bool allowProtectionGap = false}) async {
-    if (busy || _accountStoreUnreadable) return;
+    if (!mayUseNetwork || busy || _accountStoreUnreadable) return;
     final previous = tailnetId == null ? null : tailnetById(tailnetId);
     if (tailnetId != null && previous == null) return;
     final mustStop = previous != null && _mayOwnNative(previous.id);
@@ -679,7 +705,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<bool> refresh({bool silent = false, String? tailnetId}) async {
     final id = tailnetId ?? selectedTailnetId;
     final current = id == null ? null : tailnetById(id);
-    if (current == null || isRefreshingTailnet(current.id) || busy) return false;
+    if (!mayUseNetwork || current == null || isRefreshingTailnet(current.id) || busy) return false;
     final epoch = _accountEpoch(current.id);
     bool cancelled() => !_accountCurrent(current.id, epoch);
     _refreshingAccounts.add(current.id);
@@ -1221,7 +1247,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> reconnect({bool allowProtectionGap = false}) async {
-    if (_reconnecting) return;
+    if (!mayUseNetwork || _reconnecting) return;
     if (reconnectRequiresConsent && !allowProtectionGap) {
       // Keep the current Global tunnel alive until the user confirms a gap.
       needsReconnect = true;
@@ -1242,6 +1268,20 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // ── Settings ───────────────────────────────────────────────────────────
+
+  /// Persist consent before exposing network actions. Wait for startup so a
+  /// slow settings read cannot overwrite a first-launch acceptance.
+  Future<bool> acceptVpnDisclosure() async {
+    await _settingsLoadRequest;
+    if (_disposed) return false;
+    final next = settings.copyWith(vpnDisclosureAccepted: true);
+    if (!isPreview && !await _writeSettings(next)) return false;
+    settings = next;
+    if (problem == AppProblem.storage && !_accountStoreUnreadable) _clearProblem();
+    notifyListeners();
+    _refreshAfterConsent();
+    return true;
+  }
 
   /// Saves immediately. Apply-now changes reconnect Split after shutdown;
   /// Global and other connection settings wait for an explicit Reconnect.
@@ -1278,7 +1318,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   /// Downloads the current rule list again. A failure keeps the saved copy.
   Future<void> updateRules() async {
     final url = _ruleUrl;
-    if (url == null || rulesUpdating) return;
+    if (!mayUseNetwork || url == null || rulesUpdating) return;
     rulesUpdating = true;
     rulesUpdateError = null;
     notifyListeners();
