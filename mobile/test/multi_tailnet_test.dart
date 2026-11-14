@@ -74,7 +74,8 @@ class Fixture {
 
   Future<void> initialize() async {
     await app.load();
-    app.settings = const MobileSettings(source: RuleSource.none);
+    app.settings = const MobileSettings(source: RuleSource.none, vpnDisclosureAccepted: true);
+    await app.retrySave();
   }
 
   Future<String> add(String network, {String? name}) async {

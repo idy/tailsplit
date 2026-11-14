@@ -100,6 +100,7 @@ Future<(AppController, FakeVpn, Directory)> _controller({
     controlClient: client ?? FakeClient.new,
     ruleDownload: download,
   );
+  app.settings = app.settings.copyWith(vpnDisclosureAccepted: true);
   return (app, vpn, root);
 }
 
@@ -254,7 +255,7 @@ void main() {
           await vpn.statuses.close();
           await root.delete(recursive: true);
         });
-        app.settings = const MobileSettings(source: RuleSource.none);
+        app.settings = app.settings.copyWith(source: RuleSource.none);
         final profile = ExitProfile(
           identity: await TailscaleIdentity.generate(hostname: 'phone'),
           snapshot: _snapshot([_peer('tokyo')]),
@@ -287,7 +288,7 @@ void main() {
         await vpn.statuses.close();
         await root.delete(recursive: true);
       });
-      app.settings = const MobileSettings(source: RuleSource.none);
+      app.settings = app.settings.copyWith(source: RuleSource.none);
       app.exit = ExitProfile(identity: identity, snapshot: snapshot,
           nodeId: 'id-tokyo', nodeName: 'tokyo', nodeAddress: '100.64.0.9');
       await _savedState(root, app.exit!, 'logged-out');
@@ -315,7 +316,7 @@ void main() {
         await vpn.statuses.close();
         await root.delete(recursive: true);
       });
-      app.settings = const MobileSettings(source: RuleSource.none);
+      app.settings = app.settings.copyWith(source: RuleSource.none);
       app.exit = ExitProfile(
         identity: await TailscaleIdentity.generate(hostname: 'phone'),
         snapshot: _snapshot([_peer('tokyo')], keyExpiry: DateTime.utc(2020)),
@@ -336,7 +337,7 @@ void main() {
         await vpn.statuses.close();
         await root.delete(recursive: true);
       });
-      app.settings = const MobileSettings(source: RuleSource.none);
+      app.settings = app.settings.copyWith(source: RuleSource.none);
       app.exit = ExitProfile(
         identity: await TailscaleIdentity.generate(hostname: 'phone'),
         snapshot: _snapshot([_peer('tokyo')], keyExpiry: DateTime.utc(2020)),
@@ -354,7 +355,7 @@ void main() {
       final (app, vpn, _) = await _controller(
         client: () => FakeClient(snapshot: _snapshot([_peer('tokyo', online: false)])),
       );
-      app.settings = const MobileSettings(source: RuleSource.none);
+      app.settings = app.settings.copyWith(source: RuleSource.none);
       app.exit = ExitProfile(
         identity: await TailscaleIdentity.generate(hostname: 'phone'),
         snapshot: stale,
@@ -371,7 +372,7 @@ void main() {
 
     test('refuses a node no longer offered as an exit', () async {
       final (app, vpn, _) = await _controller(client: () => FakeClient(snapshot: _snapshot([_peer('fra')])));
-      app.settings = const MobileSettings(source: RuleSource.none);
+      app.settings = app.settings.copyWith(source: RuleSource.none);
       app.exit = ExitProfile(
         identity: await TailscaleIdentity.generate(hostname: 'phone'),
         nodeId: 'id-tokyo',

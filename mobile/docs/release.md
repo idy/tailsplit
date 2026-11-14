@@ -110,6 +110,69 @@ providing encryption export documentation. `Runner/Info.plist` records this as
 declaration was applied to the first two uploaded builds in ASC, changing their
 internal state from `MISSING_EXPORT_COMPLIANCE` to `READY_FOR_BETA_TESTING`.
 
+## First-use VPN privacy disclosure
+
+Production builds show a bundled English/Simplified Chinese **VPN & Privacy**
+page before the normal interface. It explains local storage, Tailscale device
+registration and connection metadata, exit/DNS operators, rule downloads and user
+controls, and links to the same privacy policy recorded in App Store Connect.
+**Agree and continue** must save successfully before network actions are enabled.
+Acceptance does not authorize a Tailnet or start a VPN. Existing preferences
+without the acceptance flag require this step; automatic node refresh is blocked
+until then. An existing OS tunnel can still be disconnected from this page.
+Settings > About keeps both the disclosure and Privacy Policy available later.
+Design-preview builds use simulated data and bypass this first-use gate.
+
+This addresses observable gaps against App Review Guidelines 5.1.1(i) and 5.4;
+it does not establish the reason for a particular App Review rejection.
+
+## Resubmitting the initial store version after rejection
+
+If the initial store version is rejected before first release, keep its marketing
+version (`0.1.0`) and upload a new build. The release workflow sets the app and
+extension build numbers from its new Actions run number; do not reuse an archive
+that predates the reviewed source change.
+
+1. Read the actual App Review message under the store app's **App Review** page,
+   **In Progress > Resolve**. Public review-submission status APIs do not provide
+   its message body. Resolve every cited issue and obtain an independent source
+   review before release. A privacy change alone cannot prove every issue resolved.
+2. Check the reviewer can test the VPN on a physical device. The interface can
+   open without an account, but VPN testing still requires a usable Tailscale
+   account, authorized Tailnet and reachable approved exit node. UI captures with
+   simulated data do not provide that access. Put valid review-access instructions
+   or approved credentials in App Review Information, never in Git or public logs.
+3. Merge the reviewed PR and wait for the mobile checks. Build and upload only the
+   store channel from protected `main`, without submitting yet:
+
+   ```bash
+   gh workflow run mobile-release.yml --repo idy/tailsplit --ref main \
+     -f channel=app-store -f destination=testflight
+   ```
+
+   Omit `archive_run_id` to compile the new source. Record the run ID, source SHA,
+   run number and verified `testflight.json` receipt. The `mobile-release`
+   environment already supplies `TAILSPLIT_MOBILE_RELEASE_AGE_KEY`; do not replace
+   it with the desktop key or unrelated injected Apple credentials.
+4. Once the exact new `0.1.0` build is `VALID` and export-compliance ready, open
+   **Resolve > Edit** for the rejected app-version item. Select the new build,
+   update Notes for Review to describe the first-use privacy page and changes
+   addressing Apple's actual message, and save any other required metadata.
+   Keep the existing confirmed export declaration and **Manual release** choice.
+   Click **Add for Review**, then **Resubmit to App Review** on the submission page.
+   Do not remove the rejected item as a workaround; Apple does not let a removed
+   item be added back to that same submission.
+5. Read back the app version's selected build and the review submission/item
+   states from ASC. Record the new submission time and confirm `WAITING_FOR_REVIEW`
+   or `IN_REVIEW`. A TestFlight-ready build, successful CLI exit, or a receipt's
+   requested `submitted_for_review` flag does not independently confirm submission.
+
+The workflow's `destination=app-store` also requests public review during upload.
+For an existing **Unresolved Issues** submission, the upload-only path above lets
+an operator edit and resubmit the rejected item in Apple's documented order.
+See [Apple's unresolved-issues instructions](https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/manage-a-submission-with-unresolved-issues).
+Do not dispatch or submit the separate Beta app as part of store recovery.
+
 ## Build, TestFlight and App Store review
 
 Run **iOS release (Termitoc)** on the protected default branch after merging:

@@ -13,6 +13,7 @@ import 'common.dart';
 import 'editors.dart';
 import 'exit_page.dart' show ChoiceMenu;
 import 'native.dart';
+import 'vpn_privacy_page.dart';
 
 /// Settings save immediately. While connected, connection settings wait for
 /// Reconnect; the routing mode reconnects at once, like the desktop shortcut.
@@ -407,6 +408,18 @@ class _AboutSection extends StatelessWidget {
           leading: const NativeRowIcon(ios: CupertinoIcons.gear_alt, android: Icons.settings_outlined),
           title: Text(s.coreVersion),
           value: app.coreVersion.isEmpty ? s.unavailable : app.coreVersion,
+        ),
+        NativeRow(
+          leading: const NativeRowIcon(ios: CupertinoIcons.hand_raised, android: Icons.privacy_tip_outlined),
+          title: Text(s.vpnPrivacy),
+          chevron: true,
+          onTap: () => pushPage<void>(context, (_) => const VpnPrivacyPage()),
+        ),
+        NativeRow(
+          leading: const NativeRowIcon(ios: CupertinoIcons.doc_text, android: Icons.policy_outlined),
+          title: Text(s.privacyPolicy),
+          chevron: true,
+          onTap: () => launchUrl(privacyPolicyUrl, mode: LaunchMode.inAppBrowserView),
         ),
         NativeRow(
           leading: const NativeRowIcon(ios: CupertinoIcons.link, android: Icons.code),

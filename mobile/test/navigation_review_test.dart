@@ -170,6 +170,7 @@ Future<void> _pumpShell(WidgetTester tester) async {
     controller.dispose();
     root.deleteSync(recursive: true);
   });
+  controller.settings = controller.settings.copyWith(vpnDisclosureAccepted: true);
   await tester.pumpWidget(TailSplitApp(controller: controller));
   await tester.pumpAndSettle();
 }

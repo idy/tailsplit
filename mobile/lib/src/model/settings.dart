@@ -29,6 +29,7 @@ class MobileSettings {
     this.mtu = 1400,
     this.logLevel = LogLevel.info,
     this.language = AppLanguage.system,
+    this.vpnDisclosureAccepted = false,
   });
 
   static const defaultProxyDomains = [
@@ -64,6 +65,9 @@ class MobileSettings {
   final LogLevel logLevel;
   final AppLanguage language;
 
+  /// Explicit acceptance of the VPN data disclosure; older installs must opt in.
+  final bool vpnDisclosureAccepted;
+
   MobileSettings copyWith({
     RoutingMode? mode,
     RuleSource? source,
@@ -80,6 +84,7 @@ class MobileSettings {
     int? mtu,
     LogLevel? logLevel,
     AppLanguage? language,
+    bool? vpnDisclosureAccepted,
   }) =>
       MobileSettings(
         mode: mode ?? this.mode,
@@ -97,6 +102,7 @@ class MobileSettings {
         mtu: mtu ?? this.mtu,
         logLevel: logLevel ?? this.logLevel,
         language: language ?? this.language,
+        vpnDisclosureAccepted: vpnDisclosureAccepted ?? this.vpnDisclosureAccepted,
       );
 
   /// True when [other] would produce a different VPN configuration.
@@ -140,6 +146,7 @@ class MobileSettings {
         'mtu': mtu,
         'log_level': logLevel.name,
         'language': language.name,
+        'vpn_disclosure_accepted': vpnDisclosureAccepted,
       };
 
   static const minMtu = 1280;
@@ -174,6 +181,7 @@ class MobileSettings {
       mtu: mtu is num ? mtu.toInt().clamp(minMtu, maxMtu) : d.mtu,
       logLevel: pick(LogLevel.values, json['log_level'], d.logLevel),
       language: pick(AppLanguage.values, json['language'], d.language),
+      vpnDisclosureAccepted: flag(json['vpn_disclosure_accepted'], false),
     );
   }
 }

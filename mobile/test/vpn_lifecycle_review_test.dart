@@ -106,7 +106,7 @@ Future<({AppController app, ControlledVpn vpn, LifecycleClient client, Directory
   if (restoredConnection) vpn.state = VpnConnectionState.connected;
   final app = AppController(paths: AppPaths.at(root, root), vpn: vpn, controlClient: () => client,
       nativeCommandTimeout: const Duration(milliseconds: 100));
-  app.settings = MobileSettings(source: RuleSource.none, mode: mode);
+  app.settings = MobileSettings(source: RuleSource.none, mode: mode, vpnDisclosureAccepted: true);
   app.exit = ExitProfile(identity: await TailscaleIdentity.generate(hostname: 'phone'),
       snapshot: snapshot, nodeId: node.stableId, nodeName: node.name, nodeAddress: node.addresses.first);
   addTearDown(() async {

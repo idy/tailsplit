@@ -26,6 +26,48 @@ class S {
   String get tabLogs => _('Logs', '日志');
   String get tabSettings => _('Settings', '设置');
 
+  // VPN data disclosure, shown before any sign-in, refresh or connection.
+  String get vpnPrivacy => _('VPN & Privacy', 'VPN 与隐私');
+  String get privacyPolicy => _('Privacy Policy', '隐私政策');
+  String get vpnPrivacyIntro => _(
+        'TailSplit connects to your own Tailscale networks and exit nodes. Review how your information is used before continuing. No VPN starts until you choose an exit and turn on the connection.',
+        'TailSplit 连接你自己的 Tailscale 网络和出口节点。继续前，请了解你的信息如何被使用。只有选择出口并打开连接开关后，才会启动 VPN。',
+      );
+  String get privacyLocalTitle => _('On your device', '保存在设备上');
+  String get privacyLocalBody => _(
+        'Device private keys, signed-in networks, selected exits, settings and cached rules stay in the app’s private storage. Connection logs are kept locally and may contain network names, addresses and DNS or routing details. Logs are only shared when you choose to copy and send them.',
+        '设备私钥、已登录网络、所选出口、设置和规则缓存保存在 App 的私有存储中。连接日志保存在本机，可能包含网络名称、地址以及 DNS 或路由详情。只有你主动复制并发送日志时，日志才会被分享。',
+      );
+  String get privacyServicesTitle => _('Tailscale and your network', 'Tailscale 与你的网络');
+  String get privacyServicesBody => _(
+        'Authorizing a Tailnet sends public device identifiers and keys, hostname and operating-system information to Tailscale to register this device and discover peers. Coordination and relay services may receive your IP address and connection diagnostics to establish connections. Your Tailnet administrator can see the registered device. These services follow their own privacy policies.',
+        '授权 Tailnet 时，会向 Tailscale 发送设备公开标识和公钥、主机名及操作系统信息，用于注册设备和发现其他节点。协调及中继服务可能接收你的 IP 地址和连接诊断信息，以建立连接。Tailnet 管理员可查看已注册设备。这些服务遵循各自的隐私政策。',
+      );
+  String get privacyTrafficTitle => _('Traffic and downloads', '流量与下载');
+  String get privacyTrafficBody => _(
+        'Your selected exit node, DNS resolver and destination services process traffic according to your routing settings. Rule-list providers receive download requests and your IP address. TailSplit does not provide public VPN servers. The developer does not receive your private device keys or VPN traffic, and does not sell your data or use it for advertising or tracking. There are no ads or developer-operated analytics.',
+        '你选择的出口节点、DNS 解析服务及目标服务会按照路由设置处理流量。规则列表提供方会接收下载请求及你的 IP 地址。TailSplit 不提供公共 VPN 服务器。开发者不会接收你的设备私钥或 VPN 流量，不出售你的数据，也不将其用于广告或追踪。App 不含广告或开发者运营的分析服务。',
+      );
+  String get privacyControlsTitle => _('Your controls', '你的控制权');
+  String get privacyControlsBody => _(
+        'You choose which networks to authorize, where traffic goes and when to connect or disconnect. Clear logs or sign out of a Tailnet to remove its local data. Device records held by Tailscale must be removed separately in its admin console. Read the full Privacy Policy for retention, third-party services and contact details.',
+        '你可以选择授权的网络、流量去向，以及连接和断开的时机。清空日志或退出 Tailnet 可移除对应的本机数据。Tailscale 保留的设备记录需在其管理后台另行移除。保留期限、第三方服务及联系方式详见完整隐私政策。',
+      );
+  String get agreeAndContinue => _('Agree and continue', '同意并继续');
+  String get disconnectVpn => _('Disconnect VPN', '断开 VPN');
+  String get existingVpnNotice => _(
+        'A VPN is already active on this device. You can stop it without accepting this disclosure.',
+        '此设备已有正在运行的 VPN。你无需同意此说明即可将其断开。',
+      );
+  String get privacyAgreement => _(
+        'By continuing, you agree to the data processing described above and in the Privacy Policy.',
+        '继续即表示你同意上述说明及隐私政策所述的数据处理方式。',
+      );
+  String get privacySaveFailed => _(
+        'Your choice could not be saved. Check available device storage and try again.',
+        '无法保存你的选择。请检查设备可用存储空间后重试。',
+      );
+
   // Connection
   String get connection => _('Connection', '连接');
   String get connected => _('Connected', '已连接');

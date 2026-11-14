@@ -7,6 +7,7 @@ import 'model/settings.dart';
 import 'state/app_controller.dart';
 import 'theme/theme.dart';
 import 'ui/root_shell.dart';
+import 'ui/vpn_privacy_page.dart';
 
 /// Makes the controller available to every page and rebuilds on change.
 class AppScope extends InheritedNotifier<AppController> {
@@ -50,7 +51,9 @@ class TailSplitApp extends StatelessWidget {
                 GlobalCupertinoLocalizations.delegate,
                 GlobalWidgetsLocalizations.delegate,
               ],
-              home: const RootShell(),
+              home: controller.mayUseNetwork
+                  ? const RootShell()
+                  : const VpnPrivacyPage(requestConsent: true),
             );
           },
         ),
