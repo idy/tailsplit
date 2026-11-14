@@ -114,9 +114,14 @@ Dir.mktmpdir('sing box pod contract ') do |directory|
   phase = shared.script_phases.first
   target = host.join('build products')
   FileUtils.mkdir_p(target.join('sing_box_flutter_capabilities.bundle'))
-  raise 'Manifest copy failed' unless system({ 'TARGET_BUILD_DIR' => target.to_s }, '/bin/sh', '-c', phase[:script] || phase['script'])
+  # Archive builds can isolate TARGET_BUILD_DIR from the resource bundle target.
+  # Only the shared BUILT_PRODUCTS_DIR contains the bundle that CocoaPods copies.
+  phase_env = { 'BUILT_PRODUCTS_DIR' => target.to_s, 'TARGET_BUILD_DIR' => host.join('uninstalled pod product').to_s }
+  outputs = phase[:output_files] || phase['output_files']
+  raise 'Wrong manifest output declaration' unless outputs == ['$(BUILT_PRODUCTS_DIR)/sing_box_flutter_capabilities.bundle/core-capabilities.json']
+  raise 'Manifest copy failed' unless system(phase_env, '/bin/sh', '-c', phase[:script] || phase['script'])
   raise 'Wrong bundled manifest' unless target.join('sing_box_flutter_capabilities.bundle/core-capabilities.json').read == manifest.read
-  run_phase = -> { system({ 'TARGET_BUILD_DIR' => target.to_s }, '/bin/sh', '-c', phase[:script] || phase['script'], out: File::NULL, err: File::NULL) }
+  run_phase = -> { system(phase_env, '/bin/sh', '-c', phase[:script] || phase['script'], out: File::NULL, err: File::NULL) }
   # Xcode links the framework chosen at pod install. A newer valid receipt for
   # another artifact of the same profile still needs pod install.
   rebuilt = base.join('apple-rebuilt/Libbox.xcframework')
@@ -159,17 +164,17 @@ Dir.mktmpdir('sing box pod contract ') do |directory|
   stale_metadata['identity']['mobile_sources'][key] = '0' * 64
   metadata.write(JSON.generate(stale_metadata))
   rejected.call
-  raise 'Cached phase accepted stale recipe' if system({ 'TARGET_BUILD_DIR' => target.to_s }, '/bin/sh', '-c', phase[:script] || phase['script'], out: File::NULL, err: File::NULL)
+  raise 'Cached phase accepted stale recipe' if run_phase.call
   metadata.write(original_metadata)
   # Old Pods may keep pointing at the previous profile after a successful core build.
   current_fingerprint = receipt['fingerprint']
   receipt['fingerprint'] = 'b' * 64
   save_receipt.call
-  raise 'Stale CocoaPods profile accepted' if system({ 'TARGET_BUILD_DIR' => target.to_s }, '/bin/sh', '-c', phase[:script] || phase['script'], out: File::NULL, err: File::NULL)
+  raise 'Stale CocoaPods profile accepted' if run_phase.call
   receipt['fingerprint'] = current_fingerprint
   save_receipt.call
   pubspec.write(pubspec.read + "# a profile edit during app build\n")
-  raise 'Changed pubspec accepted by cached Pods' if system({ 'TARGET_BUILD_DIR' => target.to_s }, '/bin/sh', '-c', phase[:script] || phase['script'], out: File::NULL, err: File::NULL)
+  raise 'Changed pubspec accepted by cached Pods' if run_phase.call
   pubspec.write("name: fixture\nsing_box_flutter:\n  core: {}\n")
 
   # A device-only artifact installs, but its build phase rejects simulator use.

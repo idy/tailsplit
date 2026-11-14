@@ -93,12 +93,15 @@ jobs:
           bash tool/build_ios_release.sh "$RELEASE_CHANNEL" --build-number="$GITHUB_RUN_NUMBER"
           /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent \
             build/ios/archive/Runner.xcarchive "$RUNNER_TEMP/unsigned.xcarchive.zip"
-      - name: Transfer only the unsigned archive
+          cp .dart_tool/sing_box_flutter/native.json "$RUNNER_TEMP/native-core-receipt.json"
+      - name: Transfer only the unsigned archive and core receipt
         id: archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tailsplit-ios-unsigned-${{ inputs.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/unsigned.xcarchive.zip
+          path: |
+            ${{ runner.temp }}/unsigned.xcarchive.zip
+            ${{ runner.temp }}/native-core-receipt.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
@@ -227,5 +230,7 @@ jobs:
           path: |
             ${{ runner.temp }}/verified-ipa/*.ipa
             ${{ runner.temp }}/verified-ipa/testflight.json
+            ${{ runner.temp }}/verified-ipa/native-core-receipt.json
+            ${{ runner.temp }}/verified-ipa/core-capabilities-verification.json
           if-no-files-found: ignore
           retention-days: 7

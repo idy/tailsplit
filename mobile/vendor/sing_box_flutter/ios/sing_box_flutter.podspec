@@ -168,14 +168,15 @@ Install the native Libbox.xcframework artifact before running pod install.
     shared.source_files = 'Classes/Shared/**/*.swift'
     privacy = 'sing_box_flutter/Sources/sing_box_flutter/PrivacyInfo.xcprivacy'
     if selectable
-      # The bundle target creates the directory first; this pod target depends on it.
+      # BUILT_PRODUCTS_DIR resolves the bundle target's product even when archive
+      # intermediates are isolated per TARGET_NAME by the host Podfile.
       # Do not list the fallback JSON here: two producers of the same output race.
       shared.resource_bundles = { 'sing_box_flutter_capabilities' => [privacy] }
       shared.script_phase = {
         :name => 'Install selected core capabilities',
         :execution_position => :before_compile,
         :input_files => [capabilities_path, *recipe_input_files],
-        :output_files => ['$(TARGET_BUILD_DIR)/sing_box_flutter_capabilities.bundle/core-capabilities.json'],
+        :output_files => ['$(BUILT_PRODUCTS_DIR)/sing_box_flutter_capabilities.bundle/core-capabilities.json'],
         :script => profile_guard + <<-SCRIPT
 set -eu
 source_manifest=#{Shellwords.escape(capabilities_path)}
@@ -185,7 +186,7 @@ if [ "$actual_hash" != #{Shellwords.escape(capabilities_sha256)} ]; then
   printf 'Selected core capabilities changed; rebuild the native core and run pod install.\\n' >&2
   exit 1
 fi
-/usr/bin/ditto "$source_manifest" "${TARGET_BUILD_DIR}/sing_box_flutter_capabilities.bundle/core-capabilities.json"
+/usr/bin/ditto "$source_manifest" "${BUILT_PRODUCTS_DIR}/sing_box_flutter_capabilities.bundle/core-capabilities.json"
         SCRIPT
       }
     else

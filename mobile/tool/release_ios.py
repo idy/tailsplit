@@ -2,6 +2,7 @@
 """Sign a transferred unsigned archive on a fresh runner, verify it, and optionally upload."""
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,63 @@ TOOLS = {name: f"/usr/bin/{name}" for name in ("security", "codesign", "xcodebui
 TOOLS.update({name: str(Path(sys.executable).parent / name) for name in ("keychain", "app-store-connect", "sops")})
 TOOLS["python3"] = sys.executable
 MAX_ZIP_BYTES = 8 * 1024 ** 3
+CORE_RECEIPT = "native-core-receipt.json"
+CAPABILITIES = "sing_box_flutter_capabilities.bundle/core-capabilities.json"
+CAPABILITY_RESOURCES = (CAPABILITIES, f"PlugIns/PacketTunnel.appex/{CAPABILITIES}")
+
+
+def core_receipt(path):
+    """Read only the receipt's identity and Apple digest; never follow its paths."""
+    try:
+        receipt = json.loads(path.read_bytes())
+        digest = receipt["artifacts"]["apple"]["capabilities_sha256"]
+        if (receipt["schema"] != 1 or not isinstance(receipt["version"], str) or not receipt["version"]
+                or not re.fullmatch(r"[0-9a-f]{64}", receipt["fingerprint"])
+                or not isinstance(receipt["features"], dict)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError("Missing or invalid Apple native core receipt") from None
+    return receipt
+
+
+def verify_capabilities(read_resource, receipt):
+    """Require both runtime lookup paths to contain the exact receipt manifest."""
+    expected = receipt["artifacts"]["apple"]["capabilities_sha256"]
+    hashes = {}
+    for relative in CAPABILITY_RESOURCES:
+        try:
+            data = read_resource(relative)
+        except (OSError, KeyError):
+            raise ValueError(f"Missing packaged core capabilities: {relative}") from None
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != expected:
+            raise ValueError(f"Packaged core capabilities SHA-256 differs from receipt: {relative}")
+        try:
+            manifest = json.loads(data)
+            if not isinstance(manifest, dict) or any(
+                    manifest.get(key) != receipt[key] for key in ("schema", "version", "fingerprint", "features")):
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise ValueError(f"Packaged core capabilities identity differs from receipt: {relative}") from None
+        hashes[relative] = digest
+    return {"capabilities_sha256": expected, "resources": hashes,
+            "version": receipt["version"], "fingerprint": receipt["fingerprint"]}
+
+
+def verify_packaged_capabilities(package, receipt):
+    """Shared unsigned archive / IPA gate. IPA reads fixed paths without extracting."""
+    if package.suffix == ".xcarchive":
+        app = package / "Products/Applications/Runner.app"
+        return verify_capabilities(lambda relative: (app / relative).read_bytes(), receipt)
+    if package.suffix == ".ipa":
+        with zipfile.ZipFile(package) as archive:
+            # Reject duplicate runtime resources rather than let ZIP ordering choose.
+            for relative in CAPABILITY_RESOURCES:
+                if archive.namelist().count(f"Payload/Runner.app/{relative}") > 1:
+                    raise ValueError("Duplicate packaged core capabilities")
+            return verify_capabilities(lambda relative: archive.read(f"Payload/Runner.app/{relative}"), receipt)
+    raise ValueError("Capabilities verification requires an .xcarchive or .ipa")
 
 
 def sanitized_env():
@@ -114,9 +172,10 @@ def bundle_info(path, bundle_id, build_number):
 
 def prepare_archive(artifact, work, config, build_number):
     transfer = work / "transfer"
-    extract_zip(artifact, transfer, {"unsigned.xcarchive.zip"})
-    if sorted(path.name for path in transfer.iterdir()) != ["unsigned.xcarchive.zip"]:
-        raise ValueError("Expected exactly one transferred archive ZIP")
+    extract_zip(artifact, transfer, {"unsigned.xcarchive.zip", CORE_RECEIPT})
+    if sorted(path.name for path in transfer.iterdir()) != sorted(["unsigned.xcarchive.zip", CORE_RECEIPT]):
+        raise ValueError("Expected exactly one transferred archive ZIP and native core receipt")
+    receipt = core_receipt(transfer / CORE_RECEIPT)
     unpacked = work / "unsigned"
     extract_zip(transfer / "unsigned.xcarchive.zip", unpacked, {"Runner.xcarchive"})
     archive = unpacked / "Runner.xcarchive"
@@ -143,6 +202,7 @@ def prepare_archive(artifact, work, config, build_number):
                 validate_executable(path, embedded_info)
             elif path.suffix == ".framework":
                 raise ValueError("Framework is missing its executable")
+    verify_packaged_capabilities(archive, receipt)
     # Reconstruct rather than trust ApplicationPath, IconPaths, SchemeName, etc.
     metadata = {
         "ArchiveVersion": 2, "Name": "Runner", "SchemeName": "Runner",
@@ -318,6 +378,8 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
     with tempfile.TemporaryDirectory(prefix="tailsplit-ios-signing-", dir=os.environ["RUNNER_TEMP"]) as folder:
         work = Path(folder)
         archive = prepare_archive(artifact, work, config, build_number)
+        receipt = core_receipt(work / "transfer" / CORE_RECEIPT)
+        archive_capabilities = verify_packaged_capabilities(archive, receipt)
         # Reject invalid archives before any tool receives a decryption/signing key.
         values = decrypt_credentials()
         env = sanitized_env()
@@ -402,9 +464,14 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
             if len(extensions) != 1:
                 raise ValueError("Expected the single PacketTunnel extension")
             verify_bundle(extensions[0], bundles[1], config["app_group"])
+            ipa_capabilities = verify_capabilities(lambda relative: (app / relative).read_bytes(), receipt)
             print(f"Verified IPA: {config['organization']} ({TEAM}), {channel}, Runner and PacketTunnel", flush=True)
             verified = output / "TailSplit.ipa"
             shutil.copyfile(packages[0], verified)
+            (output / CORE_RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+            (output / "core-capabilities-verification.json").write_text(json.dumps({
+                "archive": archive_capabilities, "ipa": ipa_capabilities,
+            }, indent=2) + "\n")
             if publish:
                 metadata = plistlib.loads((archive / "Info.plist").read_bytes())["ApplicationProperties"]
                 review_args = ("--submit-for-review",) if submit_for_review else ()
@@ -424,15 +491,31 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact", type=Path, required=True, help="Unextracted Actions artifact ZIP")
-    parser.add_argument("--output", type=Path, required=True, help="New directory for the verified IPA")
-    parser.add_argument("--channel", choices=("beta", "app-store"), required=True, help="Exact application identity to sign")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--artifact", type=Path, help="Unextracted Actions artifact ZIP")
+    source.add_argument("--verify-capabilities", type=Path, help="Check an unsigned .xcarchive or .ipa without signing or uploading")
+    parser.add_argument("--core-receipt", type=Path, help="Native core receipt for standalone capabilities verification")
+    parser.add_argument("--capabilities-report", type=Path, help="Write a standalone capabilities verification JSON report")
+    parser.add_argument("--output", type=Path, help="New directory for the verified IPA")
+    parser.add_argument("--channel", choices=("beta", "app-store"), help="Exact application identity to sign")
     parser.add_argument("--build-number", help="Expected archive build number (defaults to this Actions run)")
     parser.add_argument("--publish", action="store_true", help="Upload and verify distribution to the channel's internal TestFlight group")
     parser.add_argument("--submit-for-review", action="store_true", help="Submit the app-store channel to App Review (manual release after approval)")
     parser.add_argument("--resume-upload", action="store_true", help="Recover an existing exact TestFlight upload during a trusted archive retry")
     args = parser.parse_args()
+    if args.verify_capabilities:
+        if not args.core_receipt or args.publish or args.submit_for_review or args.resume_upload or args.output or args.channel:
+            parser.error("--verify-capabilities requires --core-receipt and cannot sign or publish")
+    elif not args.output or not args.channel or args.core_receipt or args.capabilities_report:
+        parser.error("--artifact requires --output and --channel; standalone receipt/report flags require --verify-capabilities")
     try:
+        if args.verify_capabilities:
+            report = verify_packaged_capabilities(args.verify_capabilities, core_receipt(args.core_receipt))
+            encoded = json.dumps(report, indent=2) + "\n"
+            if args.capabilities_report:
+                args.capabilities_report.write_text(encoded)
+            print(encoded, end="")
+            return
         release(args.artifact.absolute(), args.output.absolute(), args.publish, args.channel,
                 args.submit_for_review, args.build_number, args.resume_upload)
     except (ValueError, KeyError, OSError, zipfile.BadZipFile, ExpatError, subprocess.CalledProcessError) as error:
