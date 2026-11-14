@@ -138,4 +138,19 @@ jobs:
         run: |
           for channel in beta app-store; do
             bash tool/build_ios_release.sh "$channel"
+            evidence="$RUNNER_TEMP/ios-archives/$channel"
+            mkdir -p "$evidence"
+            cp build/ios/archive/core-capabilities-verification.json "$evidence/"
+            cp .dart_tool/sing_box_flutter/native.json "$evidence/native-core-receipt.json"
+            /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent \
+              build/ios/archive/Runner.xcarchive "$evidence/unsigned.xcarchive.zip"
           done
+      - name: Retain both checked unsigned archives and capabilities evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tailsplit-ios-ci-archives-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-archives/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3

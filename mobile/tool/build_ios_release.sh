@@ -13,3 +13,7 @@ cd "$(dirname "$0")/.."
 ruby ios/configure_project.rb "$channel"
 flutter build ipa --release --no-codesign --no-pub \
   --dart-define="TAILSPLIT_IOS_CHANNEL=$channel" "$@"
+python3 -I -B tool/release_ios.py \
+  --verify-capabilities build/ios/archive/Runner.xcarchive \
+  --core-receipt .dart_tool/sing_box_flutter/native.json \
+  --capabilities-report build/ios/archive/core-capabilities-verification.json

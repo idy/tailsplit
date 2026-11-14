@@ -74,6 +74,27 @@ It requires Java and skips locally when unavailable; CI sets
 Native Go regressions cover cancellation, log containment and interface handover.
 These checks do not substitute for device traffic verification.
 
+## iOS archive capabilities packaging
+
+The selected-core copy phase writes `core-capabilities.json` through
+`BUILT_PRODUCTS_DIR`, including its declared output. The host's Podfile isolates
+`UNINSTALLED_PRODUCTS_DIR` per target to prevent Plugin/PacketTunnel product
+collisions. During archive, `TARGET_BUILD_DIR` consequently names the pod target's
+private intermediates rather than the resource bundle target's product. Copying
+there produced an unused bundle while both shipped bundles lacked the JSON;
+`CoreCapabilities.load()` then failed with `core_mismatch` before VPN permission.
+`BUILT_PRODUCTS_DIR` resolves the shared bundle product in archive and Debug.
+The Podfile isolation and native runtime behavior remain unchanged.
+
+The podspec contract executes the copy with different product directories.
+TailSplit's release wrapper and isolated signing helper additionally require the
+host and PacketTunnel JSON bytes to match the Apple core receipt's
+`capabilities_sha256` and manifest identity, before signing and after IPA export.
+Mobile CI runs this gate on both real unsigned channel archives and retains the
+archives, receipt and hash reports. Physical-device VPN verification still needs
+a usable Tailnet and reachable exit node. This vendor fix should be proposed to
+`idy/sing-box-flutter` separately; no upstream notification is part of this patch.
+
 ## Native tool hardening
 
 TailSplit's production CI builds its selected cores from pinned source on fresh

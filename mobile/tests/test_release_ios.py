@@ -1,6 +1,7 @@
 from contextlib import ExitStack
 import copy
 import datetime as dt
+import hashlib
 import importlib.util
 import io
 import json
@@ -43,6 +44,16 @@ def zip_bytes(files):
     return data.getvalue()
 
 
+CAPABILITIES_BYTES = json.dumps({
+    "schema": 1, "version": "1.14.4", "fingerprint": "a" * 64,
+    "features": {"inbounds": ["tun"]},
+}).encode()
+RECEIPT = {
+    **json.loads(CAPABILITIES_BYTES),
+    "artifacts": {"apple": {"capabilities_sha256": hashlib.sha256(CAPABILITIES_BYTES).hexdigest()}},
+}
+
+
 def bundle_files(root, bundle):
     executable = "PacketTunnel" if root.endswith(".appex") else "Runner"
     return {
@@ -51,6 +62,8 @@ def bundle_files(root, bundle):
             "CFBundleShortVersionString": "1.0.0", "CFBundleExecutable": executable,
         }),
         f"{root}/{executable}": bytes.fromhex("cffaedfe") + b"mock Mach-O",
+        f"{root}/{release.CAPABILITIES}": CAPABILITIES_BYTES,
+        f"{root}/sing_box_flutter_capabilities.bundle/Info.plist": plistlib.dumps({"CFBundlePackageType": "BNDL"}),
     }
 
 
@@ -179,12 +192,91 @@ class ArchiveFixture(unittest.TestCase):
             **bundle_files(self.archive_extension, self.config["packet_tunnel_bundle_id"]),
         }
         self.artifact = self.root / "artifact.zip"
+        self.receipt = copy.deepcopy(RECEIPT)
 
     def write_artifact(self):
-        self.artifact.write_bytes(zip_bytes({"unsigned.xcarchive.zip": zip_bytes(self.archive_files)}))
+        self.artifact.write_bytes(zip_bytes({
+            "unsigned.xcarchive.zip": zip_bytes(self.archive_files),
+            release.CORE_RECEIPT: json.dumps(self.receipt).encode(),
+        }))
 
 
 class ArchiveTests(ArchiveFixture):
+    def test_archive_without_core_receipt_is_rejected(self):
+        self.artifact.write_bytes(zip_bytes({"unsigned.xcarchive.zip": zip_bytes(self.archive_files)}))
+        with self.assertRaisesRegex(ValueError, "core receipt"):
+            release.prepare_archive(self.artifact, self.root, self.config, "38")
+
+    def test_missing_host_or_extension_capabilities_are_rejected(self):
+        for index, root in enumerate((self.archive_app, self.archive_extension)):
+            with self.subTest(root=root):
+                resource = f"{root}/{release.CAPABILITIES}"
+                original = self.archive_files.pop(resource)
+                self.write_artifact()
+                work = self.root / f"missing-{index}"
+                work.mkdir()
+                with self.assertRaisesRegex(ValueError, "Missing packaged core capabilities"):
+                    release.prepare_archive(self.artifact, work, self.config, "38")
+                self.archive_files[resource] = original
+
+    def test_changed_host_or_extension_capabilities_are_rejected(self):
+        for index, root in enumerate((self.archive_app, self.archive_extension)):
+            with self.subTest(root=root):
+                resource = f"{root}/{release.CAPABILITIES}"
+                self.archive_files[resource] = CAPABILITIES_BYTES + b"\n"
+                self.write_artifact()
+                work = self.root / f"changed-{index}"
+                work.mkdir()
+                with self.assertRaisesRegex(ValueError, "SHA-256 differs from receipt"):
+                    release.prepare_archive(self.artifact, work, self.config, "38")
+                self.archive_files[resource] = CAPABILITIES_BYTES
+
+    def test_receipt_hash_or_manifest_identity_mismatch_is_rejected(self):
+        for index, mutation in enumerate((
+                lambda receipt: receipt["artifacts"]["apple"].update(capabilities_sha256="0" * 64),
+                lambda receipt: receipt.update(fingerprint="b" * 64),
+                lambda receipt: receipt.update(version="1.0.0"),
+                lambda receipt: receipt.update(features={}),
+        )):
+            with self.subTest(index=index):
+                self.receipt = copy.deepcopy(RECEIPT)
+                mutation(self.receipt)
+                self.write_artifact()
+                work = self.root / f"receipt-{index}"
+                work.mkdir()
+                with self.assertRaisesRegex(ValueError, "differs from receipt"):
+                    release.prepare_archive(self.artifact, work, self.config, "38")
+
+    def test_standalone_archive_and_ipa_use_the_same_resource_checks(self):
+        self.write_artifact()
+        archive = release.prepare_archive(self.artifact, self.root, self.config, "38")
+        expected = release.verify_packaged_capabilities(archive, self.receipt)
+        ipa = self.root / "TailSplit.ipa"
+        files = {name.replace("Runner.xcarchive/Products/Applications/", "Payload/"): data
+                 for name, data in self.archive_files.items() if name.startswith(self.archive_app + "/")}
+        ipa.write_bytes(zip_bytes(files))
+        self.assertEqual(release.verify_packaged_capabilities(ipa, self.receipt), expected)
+        for root in ("Payload/Runner.app", "Payload/Runner.app/PlugIns/PacketTunnel.appex"):
+            name = f"{root}/{release.CAPABILITIES}"
+            original = files.pop(name)
+            ipa.write_bytes(zip_bytes(files))
+            with self.assertRaisesRegex(ValueError, "Missing packaged core capabilities"):
+                release.verify_packaged_capabilities(ipa, self.receipt)
+            files[name] = b"{}"
+            ipa.write_bytes(zip_bytes(files))
+            with self.assertRaisesRegex(ValueError, "SHA-256 differs from receipt"):
+                release.verify_packaged_capabilities(ipa, self.receipt)
+            files[name] = original
+
+    def test_invalid_receipt_fails_closed(self):
+        path = self.root / release.CORE_RECEIPT
+        for value in (None, [], {}, {**RECEIPT, "fingerprint": None},
+                      {**RECEIPT, "artifacts": {"apple": {"capabilities_sha256": "invalid"}}}):
+            with self.subTest(value=value):
+                path.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, "invalid Apple native core receipt"):
+                    release.core_receipt(path)
+
     def test_archive_metadata_cannot_redirect_export(self):
         self.write_artifact()
         archive = release.prepare_archive(self.artifact, self.root, self.config, "38")
@@ -329,6 +421,7 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.signer = release.TEAM
         self.export_options = None
         self.archive_signatures = {}
+        self.mutate_export = lambda files: None
         stack = ExitStack()
         self.addCleanup(stack.close)
         self.commands = stack.enter_context(mock.patch.object(release.subprocess, "run", side_effect=self.command))
@@ -367,6 +460,7 @@ class ReleaseExecutionTests(ArchiveFixture):
             for root, bundle in self.bundles.items():
                 files.update(bundle_files(root, bundle))
                 files[f"{root}/embedded.mobileprovision"] = plistlib.dumps(self.profiles[bundle])
+            self.mutate_export(files)
             (export / "TailSplit.ipa").write_bytes(zip_bytes(files))
         elif args[:2] == ("codesign", "--force"):
             self.assertNotIn("--deep", args)
@@ -435,6 +529,41 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.assertFalse(list(self.home.rglob("*.mobileprovision")))
         self.assert_credential_scopes()
 
+    def test_missing_or_changed_archive_capabilities_stop_before_decryption(self):
+        for index, (root, content) in enumerate((
+                (self.archive_app, None), (self.archive_extension, None),
+                (self.archive_app, b"{}"), (self.archive_extension, b"{}"))):
+            with self.subTest(root=root, content=content):
+                name = f"{root}/{release.CAPABILITIES}"
+                original = self.archive_files.pop(name)
+                if content is not None:
+                    self.archive_files[name] = content
+                self.write_artifact()
+                with self.assertRaises(ValueError):
+                    self.execute()
+                self.commands.assert_not_called()
+                self.assertFalse(self.output.exists())
+                self.archive_files[name] = original
+
+    def test_missing_or_changed_export_capabilities_stop_before_copy_and_upload(self):
+        for index, (root, content) in enumerate((
+                (self.app, None), (self.extension, None),
+                (self.app, b"{}"), (self.extension, b"{}"))):
+            with self.subTest(root=root, content=content):
+                name = f"{root}/{release.CAPABILITIES}"
+                def mutate(files):
+                    if content is None:
+                        files.pop(name)
+                    else:
+                        files[name] = content
+                self.mutate_export = mutate
+                self.output = self.root / f"rejected-export-{index}"
+                self.commands.reset_mock()
+                with self.assertRaises(ValueError):
+                    self.execute()
+                self.assert_not_uploaded()
+                self.assertEqual(list(self.output.iterdir()), [])
+
     def test_release_exports_without_building_and_verifies_both_bundles_before_upload(self):
         self.execute()
         self.assert_credential_scopes()
@@ -459,6 +588,10 @@ class ReleaseExecutionTests(ArchiveFixture):
         self.assertEqual(upload[upload.index("--receipt") + 1], str(self.output / "testflight.json"))
         self.assertTrue((self.output / "testflight.json").is_file())
         self.assertTrue((self.output / "TailSplit.ipa").is_file())
+        report = json.loads((self.output / "core-capabilities-verification.json").read_text())
+        self.assertEqual(report["archive"], report["ipa"])
+        self.assertEqual(set(report["ipa"]["resources"]), set(release.CAPABILITY_RESOURCES))
+        self.assertEqual(json.loads((self.output / release.CORE_RECEIPT).read_text()), self.receipt)
         self.assertFalse(list(self.home.rglob("*.mobileprovision")))
 
     def test_archive_has_explicit_app_group_and_vpn_entitlements_before_export(self):
@@ -666,7 +799,10 @@ class WorkflowIsolationTests(unittest.TestCase):
         self.assertIn('ruby ios/configure_project.rb "$channel"', wrapper)
         self.assertIn("flutter build ipa --release --no-codesign --no-pub", wrapper)
         self.assertIn('--dart-define="TAILSPLIT_IOS_CHANNEL=$channel"', wrapper)
-        self.assertIn("path: ${{ runner.temp }}/unsigned.xcarchive.zip", build)
+        self.assertIn("${{ runner.temp }}/unsigned.xcarchive.zip", build)
+        self.assertIn("${{ runner.temp }}/native-core-receipt.json", build)
+        self.assertIn("--verify-capabilities build/ios/archive/Runner.xcarchive", wrapper)
+        self.assertIn("--core-receipt .dart_tool/sing_box_flutter/native.json", wrapper)
         self.assertIn("needs: build", sign)
         self.assertIn("environment: mobile-release", sign)
         self.assertIn("ref: ${{ github.sha }}", sign)

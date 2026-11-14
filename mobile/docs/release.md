@@ -10,7 +10,13 @@ capabilities. Pull requests do not receive signing credentials or publish apps.
 The Dart identity test runs with both the default store identity and the beta
 compile-time definition. The host and PacketTunnel subspecs keep distinct
 archive-intermediate directories so their identically named frameworks and
-resource bundles do not collide.
+resource bundles do not collide. Every unsigned archive must contain
+`sing_box_flutter_capabilities.bundle/core-capabilities.json` in both `Runner.app`
+and `PlugIns/PacketTunnel.appex`; each file's SHA-256 must equal the selected Apple
+core receipt's `capabilities_sha256`, and its schema/version/fingerprint/features
+must match that receipt. Missing or changed resources fail the build. Mobile CI
+retains both channel archives, their receipts and verification reports for three
+days. These are packaging checks; VPN traffic still requires a physical device.
 
 Android uses SDK 36, JDK 17, NDK 28.0.13004108 for the core and NDK
 28.2.13676358 for Flutter packaging. Apple jobs use macOS 26, Flutter 3.47.2,
@@ -258,7 +264,9 @@ Compilation and signing run in **separate, fresh GitHub-hosted macOS jobs**:
    tests packages, builds the selected native core, installs CocoaPods, and runs
    the channel wrapper with `flutter build ipa --release --no-codesign --no-pub`.
    All Flutter, CocoaPods, dependency and Xcode build scripts finish on this
-   runner. The unsigned archive ZIP is retained for one day for transfer.
+   runner. The wrapper validates both packaged capabilities resources against
+   `.dart_tool/sing_box_flutter/native.json`. The unsigned archive ZIP and that
+   receipt (as `native-core-receipt.json`) are retained for one day for transfer.
 2. `sign` starts on another VM behind the protected-default-branch and
    `mobile-release` environment gates. It checks out only the signing and
    TestFlight publisher helpers, identity and SOPS ciphertext from the workflow's
@@ -269,8 +277,9 @@ Compilation and signing run in **separate, fresh GitHub-hosted macOS jobs**:
    or build a project. Never combine these jobs or use a persistent signing runner.
 3. The signing job fetches the raw Actions artifact ZIP by artifact ID, verifies
    its run, commit and channel-specific name, and leaves it unextracted. The
-   helper validates the outer ZIP and its single `unsigned.xcarchive.zip` before
-   copying regular files into new private directories. It rejects links, special
+   helper validates the outer ZIP and its exact `unsigned.xcarchive.zip` and
+   `native-core-receipt.json` inputs before copying regular files into new private
+   directories. It rejects links, special
    files, absolute/traversing paths, duplicate and case/Unicode-aliased names,
    file/directory conflicts and oversized contents. Artifact data cannot
    overwrite the helper, tools, home directory or runner command files.
@@ -279,6 +288,10 @@ Compilation and signing run in **separate, fresh GitHub-hosted macOS jobs**:
    with the fixed `Applications/Runner.app` path. Reject unexpected archive
    products and nested apps/extensions. No archive-supplied script or executable
    is run, and framework executable paths must stay within their bundles.
+   Before decrypting credentials, require both capabilities JSON files to match
+   the transferred core receipt's Apple digest and manifest identity. Receipt
+   paths never select files or tools on the signing runner. The receipt shares the
+   trusted build artifact's provenance; it is not an independent binary attestation.
 5. Fetch/create exact App Store signing profiles for the selected app and
    extension. Verify team, application identifiers, App Group, Packet Tunnel
    entitlement, distribution type and expiry. Install profiles by validated UUID
@@ -298,7 +311,9 @@ Compilation and signing run in **separate, fresh GitHub-hosted macOS jobs**:
    and require the actual signer team to be Termitoc. Independently decode each
    bundle's signed entitlements: require the selected application/team identity,
    App Group and Packet Tunnel capability, and reject debug-enabled signatures.
-   Only then copy the IPA to the output directory and optionally upload/submit it.
+   Recheck both capabilities JSON files against the same receipt after export.
+   Only then copy the IPA, core receipt and `core-capabilities-verification.json`
+   to the output directory and optionally upload/submit it.
 8. Remove installed profiles and restore/delete the temporary keychain during
    cleanup. The ephemeral VM discards its remaining temporary files. Verified
    IPAs are retained for seven days, including when later upload/review fails;
@@ -312,6 +327,20 @@ Commands use trusted absolute tool paths outside artifact contents. The workflow
 still trusts GitHub-hosted runners, the protected release helper, pinned signing
 tools and Apple's export/verification tools. Signing does not establish that
 compiled app code is benign; source/dependency review remains necessary.
+
+An existing archive transferred without a core receipt fails validation; build
+fresh source rather than reuse an archive from before this packaging guard.
+For a standalone packaging check (no credentials, signing or upload):
+
+```bash
+python3 -I -B tool/release_ios.py \
+  --verify-capabilities build/ios/archive/Runner.xcarchive \
+  --core-receipt .dart_tool/sing_box_flutter/native.json
+```
+
+The same command accepts an exported `.ipa` and its retained
+`native-core-receipt.json`. It checks the two exact runtime resource paths and
+prints their hashes. The wrapper writes this report under `build/ios/archive/`.
 
 Missing or mismatched inputs fail the release. The unsigned transfer artifact is
 never uploaded to Apple. Only the verified IPA is retained as a signed artifact.
