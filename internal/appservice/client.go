@@ -60,6 +60,28 @@ func probe(ctx context.Context, path string, expectedUID string) (Info, error) {
 	return info, nil
 }
 
+// CheckInstalled verifies that launchd activated the matching root service and
+// that it can answer the registered desktop user's hello. Installer must run
+// this as that user; a job registration alone does not establish readiness.
+func CheckInstalled(ctx context.Context, executable string) error {
+	return checkInstalled(ctx, executable, SocketPath, "0")
+}
+
+func checkInstalled(ctx context.Context, executable, socket, expectedUID string) error {
+	expected, err := executableID(executable)
+	if err != nil {
+		return err
+	}
+	info, err := probe(ctx, socket, expectedUID)
+	if err != nil {
+		return fmt.Errorf("network service is not ready: %w", err)
+	}
+	if info.BuildID != expected {
+		return errors.New("the installed network service does not match this helper")
+	}
+	return nil
+}
+
 func packagePath(executable, name string) string {
 	return filepath.Join(filepath.Dir(executable), "..", "Resources", name)
 }

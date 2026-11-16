@@ -41,3 +41,16 @@ while /bin/launchctl print system/im.lbv.tailsplit.helper >/dev/null 2>&1; do
   fi
   /bin/sleep 1
 done
+
+# launchd refuses to replace a control socket left by another desktop user
+# (activation error 122). A receipt and registered job can therefore look valid
+# while every helper launch fails. After the previous job has fully stopped,
+# remove only our fixed Unix socket; never follow a link or remove other data.
+socket="/var/run/im.lbv.tailsplit.sock"
+if [ -L "$socket" ] || { [ -e "$socket" ] && [ ! -S "$socket" ]; }; then
+  echo "TailSplit's control socket path is not a Unix socket; it has not been removed." >&2
+  exit 1
+fi
+if [ -S "$socket" ]; then
+  /bin/rm "$socket"
+fi

@@ -185,8 +185,12 @@ listeners. **System routing** captures system traffic when `tun.enabled` is set.
 Both modes create a DNS TUN and require the privileged network service:
 Windows Setup installs it; macOS requests administrator approval when an explicit
 Add exit, Sign in or connection needs to install or update the bundled service.
-After installation, the original action continues; signing in still leaves traffic
-disconnected. The app shows the system-installer wait separately from Tailscale
+After installation, macOS Installer verifies that the matching service answers
+an authenticated readiness check before reporting success, then the original
+action continues; signing in still leaves traffic disconnected. Reinstallation
+removes a leftover Unix control socket only after the previous service has fully
+stopped, including a socket left by another desktop user. Unexpected files or
+links at that path stop installation without removal. The app shows the system-installer wait separately from Tailscale
 authorization. Source-built macOS device login can run locally when neither the service nor a bundled installer exists; an existing or mismatched service must still be repaired. On Windows, a missing service directs users to rerun TailSplit Setup instead of promising an in-app installation.
 
 ## Updates and device-state migration

@@ -10,6 +10,7 @@ import "C"
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"syscall"
@@ -22,7 +23,7 @@ func activatedListener() (net.Listener, error) {
 	var descriptors *C.int
 	var count C.size_t
 	if result := C.launch_activate_socket(name, &descriptors, &count); result != 0 {
-		return nil, syscall.Errno(result)
+		return nil, fmt.Errorf("activate launchd Control socket: %w", syscall.Errno(result))
 	}
 	defer C.free(unsafe.Pointer(descriptors))
 	fds := unsafe.Slice(descriptors, int(count))

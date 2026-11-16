@@ -76,3 +76,16 @@ until /bin/launchctl bootstrap system "$plist"; do
   /bin/sleep 1
 done
 /bin/launchctl print system/im.lbv.tailsplit.helper >/dev/null
+
+# bootstrap/print can succeed while socket activation fails in the helper.
+# Use the app's authenticated hello as the registered user and require the
+# installed code hash, without starting a TUN or touching saved device state.
+attempt=0
+until "$helper" service-check --uid "$owner_uid" --gid "$owner_gid"; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 10 ]; then
+    echo "TailSplit's network service did not become ready; see $support/service.log." >&2
+    exit 1
+  fi
+  /bin/sleep 1
+done

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.9
+
+- Fix macOS network-service installation when a control socket left by another
+  desktop user prevents the service from starting. Remove only the leftover Unix
+  socket after the previous service has fully stopped; preserve configuration
+  and device sign-in, and reject unexpected files or links at the socket path.
+- Require the installed service to answer an authenticated readiness check with
+  the matching helper build before macOS Installer reports success. Include
+  socket-activation context in service startup errors.
+
 ## 0.9.8
 
 - Replace the Home connection switch with a raised round TailSplit snake button.
