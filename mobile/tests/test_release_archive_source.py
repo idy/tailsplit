@@ -42,6 +42,8 @@ if route is None or arguments != route['arguments']:
     raise SystemExit('Unexpected mocked gh invocation')
 if route.get('zip'):
     sys.stdout.buffer.write(Path(os.environ['GH_FIXTURE_ZIP']).read_bytes())
+elif route.get('raw') is not None:
+    sys.stdout.write(route['raw'])
 else:
     json.dump(route['payload'], sys.stdout)
 """
@@ -205,7 +207,8 @@ class ReleaseArchiveSourceTests(unittest.TestCase):
         shell = textwrap.dedent(step[1].split("        run: |\n", 1)[1])
         name = "tailsplit-ios-beta-termitoc-38"
         owner = {"name": name, "expired": False, "workflow_run": {"id": 123, "head_sha": SOURCE_SHA}}
-        for index, variant in enumerate(("valid", "absent", "wrong-run", "wrong-sha", "expired", "wrong-name")):
+        for index, variant in enumerate(("valid", "absent", "wrong-run", "wrong-sha", "expired", "wrong-name",
+                                         "failed-sign", "skipped-sign", "no-output", "other-attempt", "other-job", "wrong-output-id")):
             with self.subTest(variant=variant):
                 case = self.root / f"prior-{index}"
                 case.mkdir()
@@ -225,20 +228,43 @@ class ReleaseArchiveSourceTests(unittest.TestCase):
                     {"id": 700, "name": name, "expired": False, "created_at": "2026-11-20T00:00:00Z"}]})
                 route(f"repos/{REPOSITORY}/actions/artifacts/700", actual)
                 route(f"repos/{REPOSITORY}/actions/artifacts/700/zip", zip_download=True)
+                from test_release_producer import producer_fixture
+                sign_job, sign_log, _ = producer_fixture()
+                if variant == "failed-sign":
+                    sign_job["conclusion"] = "failure"
+                elif variant == "skipped-sign":
+                    sign_job["conclusion"] = "skipped"
+                elif variant == "no-output":
+                    sign_log = sign_log[:sign_log.index("2026-11-20T01:02:05")]
+                elif variant == "other-attempt":
+                    sign_job["run_attempt"] = 1
+                elif variant == "other-job":
+                    sign_job["name"] = "Build unsigned iOS archive (beta, no release credentials)"
+                elif variant == "wrong-output-id":
+                    sign_log = sign_log.replace("ID is 700", "ID is 701")
+                route(f"repos/{REPOSITORY}/actions/runs/123/attempts/2/jobs?per_page=100", [{"jobs": [sign_job]}])
+                routes[f"repos/{REPOSITORY}/actions/runs/123/attempts/2/jobs?per_page=100"]["arguments"] = [
+                    "api", "--paginate", "--slurp", f"repos/{REPOSITORY}/actions/runs/123/attempts/2/jobs?per_page=100"]
+                route(f"repos/{REPOSITORY}/actions/jobs/800", sign_job)
+                log_endpoint = f"repos/{REPOSITORY}/actions/jobs/800/logs"
+                routes[log_endpoint] = {"arguments": ["api", "--allow-escape-sequences", log_endpoint], "raw": sign_log}
                 routes_path = case / "routes.json"
                 routes_path.write_text(json.dumps(routes))
                 log = case / "calls.jsonl"
                 env = {**self.environment, "RUNNER_TEMP": str(case), "SOURCE_RUN_ID": "123", "SOURCE_SHA": SOURCE_SHA,
-                       "SOURCE_RUN_NUMBER": "38", "GH_FIXTURE_ROUTES": str(routes_path), "GH_FIXTURE_LOG": str(log),
+                       "SOURCE_RUN_NUMBER": "38", "SOURCE_ATTEMPT": "2", "GITHUB_WORKSPACE": str(WORKFLOW.parents[2]),
+                       "GH_FIXTURE_ROUTES": str(routes_path), "GH_FIXTURE_LOG": str(log),
                        "GH_FIXTURE_ZIP": str(self.zip)}
                 result = subprocess.run([BASH, "-e", "-o", "pipefail", "-c", shell], cwd=case, env=env, capture_output=True)
-                self.assertEqual(result.returncode == 0, variant in ("valid", "absent"), result.stderr)
+                rejected_metadata = variant in ("wrong-run", "wrong-sha", "expired", "wrong-name")
+                self.assertEqual(result.returncode == 0, not rejected_metadata, result.stderr)
                 evidence = case / "prior-release.zip"
                 self.assertEqual(evidence.exists(), variant == "valid")
                 if evidence.exists():
                     self.assertEqual(evidence.read_bytes(), ZIP_BYTES)
                 if variant != "valid":
-                    self.assertNotIn("/zip", log.read_text())
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertFalse(any(call[-1].endswith("/zip") for call in calls))
 
     def test_reuse_preserves_source_number_and_selects_latest_unexpired_channel_artifact(self):
         for channel in ("beta", "app-store"):

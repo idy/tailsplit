@@ -151,6 +151,7 @@ jobs:
           sparse-checkout: |
             /mobile/tool/release_ios.py
             /mobile/tool/publish_testflight.py
+            /mobile/tool/verify_release_producer.py
             /mobile/release-identity.json
             /mobile/credentials/apple-distribution.json.sops
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -227,6 +228,11 @@ jobs:
           printf 'build-number=%s\n' "$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
           printf 'source-run-id=%s\nsource-sha=%s\n' "$SOURCE_RUN_ID" "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           if [[ -n "$ARCHIVE_RUN_ID" ]]; then
+            PREFIX="tailsplit-ios-unsigned-$RELEASE_CHANNEL-$SOURCE_RUN_ID-"
+            SOURCE_ATTEMPT="${EXPECTED_NAME#"$PREFIX"}"
+            SOURCE_ATTEMPT="${SOURCE_ATTEMPT%%-build-*}"
+            [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
+            printf 'source-attempt=%s\n' "$SOURCE_ATTEMPT" >> "$GITHUB_OUTPUT"
             printf 'source-run-number=%s\n' "$(jq -r .run_number "$RUNNER_TEMP/source-release.json")" >> "$GITHUB_OUTPUT"
             if [[ ! "$EXPECTED_NAME" =~ -build- ]]; then
               printf 'legacy-source=true\n' >> "$GITHUB_OUTPUT"
@@ -240,6 +246,7 @@ jobs:
           SOURCE_RUN_ID: ${{ steps.archive_input.outputs.source-run-id }}
           SOURCE_SHA: ${{ steps.archive_input.outputs.source-sha }}
           SOURCE_RUN_NUMBER: ${{ steps.archive_input.outputs.source-run-number }}
+          SOURCE_ATTEMPT: ${{ steps.archive_input.outputs.source-attempt }}
         run: |
           # A separate signed artifact from the verified original build run is
           # the authority for prior upload identity, never the unsigned ZIP.
@@ -255,6 +262,30 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID" |
             jq -e --arg run "$SOURCE_RUN_ID" --arg sha "$SOURCE_SHA" --arg name "$NAME" \
               '(.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha and .name == $name and .expired == false' > /dev/null
+          # Only the protected sign job's exact upload ID can attest this receipt.
+          # Build jobs share the run/SHA and can also write artifact names.
+          SIGN_JOB="Sign and deliver $RELEASE_CHANNEL with TERMITOC PTE. LTD."
+          if ! gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_ATTEMPT/jobs?per_page=100" > "$RUNNER_TEMP/prior-sign-jobs.json"; then
+            exit 0
+          fi
+          JOB_ID="$(jq -r --arg name "$SIGN_JOB" --arg attempt "$SOURCE_ATTEMPT" \
+            '[.[].jobs[] | select(.name == $name and (.run_attempt | tostring) == $attempt)] | if length == 1 then .[0].id else empty end' \
+            "$RUNNER_TEMP/prior-sign-jobs.json")"
+          [[ "$JOB_ID" =~ ^[1-9][0-9]*$ ]] || exit 0
+          if ! gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID" > "$RUNNER_TEMP/prior-sign-job.json"; then
+            exit 0
+          fi
+          # Keep raw logs in runner scratch only. They are parsed as data, never
+          # printed or executed; gh may otherwise refuse log escape characters.
+          if ! gh api --allow-escape-sequences "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID/logs" > "$RUNNER_TEMP/prior-sign-job.log"; then
+            exit 0
+          fi
+          if ! python3 -I -B "$GITHUB_WORKSPACE/mobile/tool/verify_release_producer.py" \
+            --job "$RUNNER_TEMP/prior-sign-job.json" --log "$RUNNER_TEMP/prior-sign-job.log" \
+            --run-id "$SOURCE_RUN_ID" --attempt "$SOURCE_ATTEMPT" --sha "$SOURCE_SHA" \
+            --channel "$RELEASE_CHANNEL" --job-id "$JOB_ID" --artifact-id "$ID" --artifact-name "$NAME"; then
+            exit 0 # No trusted evidence: an existing Apple build fails closed.
+          fi
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > "$RUNNER_TEMP/prior-release.zip"
       - name: Export, verify organization and channel, and deliver
         working-directory: ${{ runner.temp }}

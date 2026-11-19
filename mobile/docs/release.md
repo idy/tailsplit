@@ -252,7 +252,17 @@ the selected archive uploads normally. An existing build can skip upload or be
 distributed only when the original source run's independently downloaded signed
 artifact has a successful TestFlight receipt attesting that exact Apple build ID.
 The workflow verifies the signed artifact's owner run, source SHA and channel
-name separately from the unsigned archive. New receipts also record the SHA-256
+name separately from the unsigned archive. These run fields alone do not prove
+which job produced it: the unsigned build runner can also upload artifacts.
+Recover the original attempt from the selected unsigned artifact name, locate
+that attempt's fixed protected signing job, require the job and fixed retention
+step to complete successfully, and parse that job's raw log within the upload
+step's timestamps. Only the pinned upload action's successful upload record for
+the exact candidate artifact ID/name establishes producer identity. A successful
+step with no files, skipped/failed job, other job/attempt, different ID, or missing
+logs supplies no evidence. It cannot authorize resuming an existing Apple build;
+when Apple has no matching upload, normal upload of the selected archive remains
+available. New receipts also record the SHA-256
 of the original `unsigned.xcarchive.zip`; the signing helper requires that digest
 to match the selected source archive. Re-signing an IPA does not establish the
 identity of an earlier Apple upload.
