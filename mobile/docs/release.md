@@ -190,6 +190,7 @@ Run **iOS release (Termitoc)** on the protected default branch after merging:
 | --- | --- | --- |
 | `channel` | `beta`, `app-store` | `beta` |
 | `destination` | `artifact`, `testflight`, `app-store` | `testflight` |
+| `build_number` | Optional positive integer for a fresh archive; must be unused for the selected app/version | Empty: Actions run number |
 | `archive_run_id` | Optional completed release run on `main` with a successful unsigned build | Empty: build a new archive |
 
 | Selection | Result |
@@ -218,7 +219,20 @@ permission that prevents someone from submitting the beta record manually.
 
 Each run releases one channel. Channels have separate concurrency groups and
 artifact names; two runs of the same channel are serialized. Compilation uses
-the Actions run number for both the app and extension's build number.
+`build_number` when explicitly supplied, otherwise the Actions run number, for
+both the app and extension. For example, to align Beta with an existing store
+build after verifying Beta has no build 9:
+
+```bash
+gh workflow run mobile-release.yml --repo idy/tailsplit --ref main \
+  -f channel=beta -f destination=testflight -f build_number=9
+```
+
+The Actions run number and signed artifact name remain workflow identifiers,
+not proof of the app's build number. Read the verified IPA and TestFlight receipt.
+Unsigned artifact names bind the actual build number to the source run. Retries
+recover this number from the verified artifact name (legacy artifacts use their
+source run number). `build_number` and `archive_run_id` cannot be combined.
 
 To retry signing or delivery without recompiling, set `archive_run_id` to the
 original release run. The source must be a completed dispatch of this workflow

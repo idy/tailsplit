@@ -156,6 +156,31 @@ class ReleaseArchiveSourceTests(unittest.TestCase):
                 self.assertEqual(len(self.calls), 2)
                 self.assertEqual(self.calls[0], ["api", f"repos/{REPOSITORY}/actions/artifacts/501"])
 
+    def test_fresh_explicit_build_number_survives_archive_selection(self):
+        self.configure(reuse=False)
+        self.environment["FRESH_BUILD_NUMBER"] = "9"
+        self.environment["EXPECTED_NAME"] += "-build-9"
+        self.artifact_owner["name"] = self.environment["EXPECTED_NAME"]
+        self.assert_downloaded(self.execute(), "9")
+
+    def test_reuse_recovers_explicit_number_from_verified_artifact_name(self):
+        self.artifacts["artifacts"][1]["name"] += "-build-9"
+        self.artifact_owner["name"] += "-build-9"
+        self.assert_downloaded(self.execute(), "9")
+
+    def test_reuse_rejects_requested_fresh_number_before_github_request(self):
+        self.environment["REQUESTED_BUILD_NUMBER"] = "9"
+        self.assert_rejected()
+        self.assertEqual(self.calls, [])
+
+    def test_fresh_rejects_invalid_explicit_number_before_github_request(self):
+        for value in ("0", "09", "-1", "9; false", "9\n"):
+            with self.subTest(value=value):
+                self.configure(reuse=False)
+                self.environment["FRESH_BUILD_NUMBER"] = value
+                self.assert_rejected()
+                self.assertEqual(self.calls, [])
+
     def test_reuse_preserves_source_number_and_selects_latest_unexpired_channel_artifact(self):
         for channel in ("beta", "app-store"):
             with self.subTest(channel=channel):
