@@ -15,7 +15,7 @@ on:
         options: [artifact, testflight, app-store]
         default: testflight
       build_number:
-        description: Optional positive build number for a fresh archive (defaults to this Actions run number)
+        description: Optional 1-18 digit positive build number for a fresh archive (defaults to this Actions run number)
         type: string
         default: ''
       archive_run_id:
@@ -68,7 +68,7 @@ jobs:
             *) printf 'Invalid release selection: beta is TestFlight-only.\n' >&2; exit 1 ;;
           esac
           BUILD_NUMBER="${REQUESTED_BUILD_NUMBER:-$GITHUB_RUN_NUMBER}"
-          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,17}$ ]] || exit 1
           printf 'build-number=%s\n' "$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -186,7 +186,7 @@ jobs:
           SOURCE_RUN_ID="$GITHUB_RUN_ID"
           SOURCE_SHA="$GITHUB_SHA"
           BUILD_NUMBER="${FRESH_BUILD_NUMBER:-$GITHUB_RUN_NUMBER}"
-          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,17}$ ]] || exit 1
           if [[ -n "$ARCHIVE_RUN_ID" ]]; then
             # Never relabel a reused archive with a requested fresh build number.
             [[ -z "${REQUESTED_BUILD_NUMBER:-}" ]] || exit 1
@@ -198,7 +198,7 @@ jobs:
             SOURCE_RUN_ID="$ARCHIVE_RUN_ID"
             SOURCE_SHA="$(jq -r .head_sha "$RUNNER_TEMP/source-release.json")"
             BUILD_NUMBER="$(jq -r .run_number "$RUNNER_TEMP/source-release.json")"
-            [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,17}$ ]] || exit 1
             # Reuse only source commits already contained in the protected release revision.
             gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_SHA...$GITHUB_SHA" |
               jq -e --arg sha "$SOURCE_SHA" '(.status == "ahead" or .status == "identical") and .merge_base_commit.sha == $sha' > /dev/null
@@ -206,14 +206,14 @@ jobs:
               jq -e --arg name "Build unsigned iOS archive ($RELEASE_CHANNEL, no release credentials)" \
                 'any(.[].jobs[]; .name == $name and .conclusion == "success")' > /dev/null
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" |
-              jq -e --arg pattern "^tailsplit-ios-unsigned-$RELEASE_CHANNEL-$SOURCE_RUN_ID-[1-9][0-9]*(-build-[1-9][0-9]*)?$" \
+              jq -e --arg pattern "^tailsplit-ios-unsigned-$RELEASE_CHANNEL-$SOURCE_RUN_ID-[1-9][0-9]*(-build-[1-9][0-9]{0,17})?$" \
                 '[.artifacts[] | select(.expired == false and (.name | test($pattern)))] | sort_by(.created_at) | last // error("No matching unsigned archive")' \
                 > "$RUNNER_TEMP/source-artifact.json"
             ARTIFACT_ID="$(jq -r .id "$RUNNER_TEMP/source-artifact.json")"
             EXPECTED_NAME="$(jq -r .name "$RUNNER_TEMP/source-artifact.json")"
             # New artifacts bind the actual compile-time number to their verified
             # run/name; older artifacts used the source Actions run number.
-            if [[ "$EXPECTED_NAME" =~ -build-([1-9][0-9]*)$ ]]; then
+            if [[ "$EXPECTED_NAME" =~ -build-([1-9][0-9]{0,17})$ ]]; then
               BUILD_NUMBER="${BASH_REMATCH[1]}"
             fi
           fi
@@ -225,12 +225,44 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/release-input"
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/release-input/unsigned-artifact.zip"
           printf 'build-number=%s\n' "$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          printf 'source-run-id=%s\nsource-sha=%s\n' "$SOURCE_RUN_ID" "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          if [[ -n "$ARCHIVE_RUN_ID" ]]; then
+            printf 'source-run-number=%s\n' "$(jq -r .run_number "$RUNNER_TEMP/source-release.json")" >> "$GITHUB_OUTPUT"
+            if [[ ! "$EXPECTED_NAME" =~ -build- ]]; then
+              printf 'legacy-source=true\n' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - name: Download original source-run upload evidence when retained
+        if: ${{ inputs.archive_run_id != '' && inputs.destination != 'artifact' }}
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ steps.archive_input.outputs.source-run-id }}
+          SOURCE_SHA: ${{ steps.archive_input.outputs.source-sha }}
+          SOURCE_RUN_NUMBER: ${{ steps.archive_input.outputs.source-run-number }}
+        run: |
+          # A separate signed artifact from the verified original build run is
+          # the authority for prior upload identity, never the unsigned ZIP.
+          NAME="tailsplit-ios-$RELEASE_CHANNEL-termitoc-$SOURCE_RUN_NUMBER"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" |
+            jq --arg name "$NAME" '[.artifacts[] | select(.name == $name and .expired == false)] | sort_by(.created_at) | last // empty' \
+            > "$RUNNER_TEMP/prior-artifact.json"
+          if [[ ! -s "$RUNNER_TEMP/prior-artifact.json" ]]; then
+            exit 0 # No evidence: an existing ASC build will fail closed.
+          fi
+          ID="$(jq -r .id "$RUNNER_TEMP/prior-artifact.json")"
+          [[ "$ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID" |
+            jq -e --arg run "$SOURCE_RUN_ID" --arg sha "$SOURCE_SHA" --arg name "$NAME" \
+              '(.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha and .name == $name and .expired == false' > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > "$RUNNER_TEMP/prior-release.zip"
       - name: Export, verify organization and channel, and deliver
         working-directory: ${{ runner.temp }}
         env:
           TAILSPLIT_MOBILE_RELEASE_AGE_KEY: ${{ secrets.TAILSPLIT_MOBILE_RELEASE_AGE_KEY }}
           ARCHIVE_BUILD_NUMBER: ${{ steps.archive_input.outputs.build-number }}
           REUSE_ARCHIVE: ${{ inputs.archive_run_id != '' }}
+          LEGACY_SOURCE: ${{ steps.archive_input.outputs.legacy-source }}
         run: |
           args=(--channel "$RELEASE_CHANNEL" --build-number "$ARCHIVE_BUILD_NUMBER")
           case "$RELEASE_DESTINATION" in
@@ -241,6 +273,12 @@ jobs:
           esac
           if [[ "$REUSE_ARCHIVE" == true && "$RELEASE_DESTINATION" != artifact ]]; then
             args+=(--resume-upload)
+            if [[ -f "$RUNNER_TEMP/prior-release.zip" ]]; then
+              args+=(--prior-release-artifact "$RUNNER_TEMP/prior-release.zip")
+              if [[ "$LEGACY_SOURCE" == true ]]; then
+                args+=(--legacy-upload-evidence)
+              fi
+            fi
           fi
           "$RUNNER_TEMP/signing-tools/bin/python3" -I -B "$GITHUB_WORKSPACE/mobile/tool/release_ios.py" \
             --artifact "$RUNNER_TEMP/release-input/unsigned-artifact.zip" --output "$RUNNER_TEMP/verified-ipa" "${args[@]}"

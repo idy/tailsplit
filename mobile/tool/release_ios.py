@@ -363,22 +363,51 @@ def sign_archive(archive, config, selected, keychain, work):
         run(*signing, "--generate-entitlement-der", "--entitlements", str(entitlement_path), str(path))
 
 
+def prior_upload_evidence(artifact, archive_sha256, legacy=False):
+    """Read only the receipt from a workflow-verified source run's signed artifact.
+
+    This ZIP is downloaded separately by trusted workflow code, never taken from
+    the unsigned archive. Legacy receipts can only be used with legacy source
+    artifacts, whose number was fixed to that same run's default number.
+    """
+    with zipfile.ZipFile(artifact) as package:
+        entries = [entry for entry in package.infolist() if entry.filename == "testflight.json"]
+        if not entries:
+            return None  # Signing-only/failed-upload run: no upload was attested.
+        if len(entries) != 1 or entries[0].file_size > 64 * 1024:
+            raise ValueError("Invalid source upload receipt")
+        value = json.loads(package.read(entries[0]))
+    if not isinstance(value, dict):
+        raise ValueError("Invalid source upload receipt")
+    digest = value.get("archive_sha256")
+    if digest != archive_sha256 and not (legacy and digest is None):
+        raise ValueError("Source upload receipt does not identify the selected archive")
+    return value
+
+
 def release(artifact, output, publish=False, channel="app-store", submit_for_review=False,
-            build_number=None, resume_upload=False):
+            build_number=None, resume_upload=False, prior_release_artifact=None, legacy_upload_evidence=False):
     config = identity(channel)
     if submit_for_review and (not publish or config["app_store"] is not True):
         raise ValueError("App Store review requires --publish and the app-store channel; beta is TestFlight-only")
     if resume_upload and not publish:
         raise ValueError("Upload recovery requires --publish")
+    if (prior_release_artifact or legacy_upload_evidence) and not resume_upload:
+        raise ValueError("Prior upload evidence requires archive recovery")
     if build_number is None:
         build_number = os.environ.get("GITHUB_RUN_NUMBER", "")
-    if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]*", build_number):
-        raise ValueError("A positive GitHub Actions build number is required")
+    if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", build_number):
+        raise ValueError("A positive iOS build number of at most 18 digits is required")
     bundles = (config["bundle_id"], config["packet_tunnel_bundle_id"])
     with tempfile.TemporaryDirectory(prefix="tailsplit-ios-signing-", dir=os.environ["RUNNER_TEMP"]) as folder:
         work = Path(folder)
         archive = prepare_archive(artifact, work, config, build_number)
+        metadata = plistlib.loads((archive / "Info.plist").read_bytes())["ApplicationProperties"]
+        archive_version = metadata["CFBundleShortVersionString"]
         receipt = core_receipt(work / "transfer" / CORE_RECEIPT)
+        archive_sha256 = hashlib.sha256((work / "transfer/unsigned.xcarchive.zip").read_bytes()).hexdigest()
+        prior = (prior_upload_evidence(prior_release_artifact, archive_sha256, legacy_upload_evidence)
+                 if prior_release_artifact else None)
         archive_capabilities = verify_packaged_capabilities(archive, receipt)
         # Reject invalid archives before any tool receives a decryption/signing key.
         values = decrypt_credentials()
@@ -459,10 +488,14 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
             if len(apps) != 1:
                 raise ValueError("Expected one application in the exported IPA")
             app = apps[0]
+            if bundle_info(app, bundles[0], build_number)["CFBundleShortVersionString"] != archive_version:
+                raise ValueError("Exported app version differs from the selected archive")
             verify_bundle(app, bundles[0], config["app_group"])
             extensions = list((app / "PlugIns").glob("*.appex"))
             if len(extensions) != 1:
                 raise ValueError("Expected the single PacketTunnel extension")
+            if bundle_info(extensions[0], bundles[1], build_number)["CFBundleShortVersionString"] != archive_version:
+                raise ValueError("Exported extension version differs from the selected archive")
             verify_bundle(extensions[0], bundles[1], config["app_group"])
             ipa_capabilities = verify_capabilities(lambda relative: (app / relative).read_bytes(), receipt)
             print(f"Verified IPA: {config['organization']} ({TEAM}), {channel}, Runner and PacketTunnel", flush=True)
@@ -473,12 +506,15 @@ def release(artifact, output, publish=False, channel="app-store", submit_for_rev
                 "archive": archive_capabilities, "ipa": ipa_capabilities,
             }, indent=2) + "\n")
             if publish:
-                metadata = plistlib.loads((archive / "Info.plist").read_bytes())["ApplicationProperties"]
                 review_args = ("--submit-for-review",) if submit_for_review else ()
                 recovery_args = ("--resume-upload",) if resume_upload else ()
+                if prior is not None:
+                    evidence = work / "prior-upload.json"
+                    evidence.write_text(json.dumps(prior))
+                    recovery_args += ("--upload-evidence", str(evidence))
                 run("python3", "-I", "-B", str(MOBILE / "tool/publish_testflight.py"),
                     "--ipa", str(verified), "--channel", channel, "--build-number", build_number,
-                    "--version", metadata["CFBundleShortVersionString"],
+                    "--version", metadata["CFBundleShortVersionString"], "--archive-sha256", archive_sha256,
                     "--receipt", str(output / "testflight.json"), *review_args, *recovery_args, env=api_env)
         finally:
             for path in installed_profiles:
@@ -502,9 +538,11 @@ def main():
     parser.add_argument("--publish", action="store_true", help="Upload and verify distribution to the channel's internal TestFlight group")
     parser.add_argument("--submit-for-review", action="store_true", help="Submit the app-store channel to App Review (manual release after approval)")
     parser.add_argument("--resume-upload", action="store_true", help="Recover an existing exact TestFlight upload during a trusted archive retry")
+    parser.add_argument("--prior-release-artifact", type=Path, help="Workflow-verified original source run's signed artifact ZIP")
+    parser.add_argument("--legacy-upload-evidence", action="store_true", help="Source archive predates explicit build numbers")
     args = parser.parse_args()
     if args.verify_capabilities:
-        if not args.core_receipt or args.publish or args.submit_for_review or args.resume_upload or args.output or args.channel:
+        if not args.core_receipt or args.publish or args.submit_for_review or args.resume_upload or args.output or args.channel or args.prior_release_artifact or args.legacy_upload_evidence:
             parser.error("--verify-capabilities requires --core-receipt and cannot sign or publish")
     elif not args.output or not args.channel or args.core_receipt or args.capabilities_report:
         parser.error("--artifact requires --output and --channel; standalone receipt/report flags require --verify-capabilities")
@@ -517,7 +555,8 @@ def main():
             print(encoded, end="")
             return
         release(args.artifact.absolute(), args.output.absolute(), args.publish, args.channel,
-                args.submit_for_review, args.build_number, args.resume_upload)
+                args.submit_for_review, args.build_number, args.resume_upload,
+                args.prior_release_artifact, args.legacy_upload_evidence)
     except (ValueError, KeyError, OSError, zipfile.BadZipFile, ExpatError, subprocess.CalledProcessError) as error:
         # Do not include private configuration payloads or command environments.
         if isinstance(error, ValueError):
