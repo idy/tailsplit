@@ -28,6 +28,16 @@ own authorized Tailscale device.
 - **Choose your mode.** Use rule-based routing for selected destinations, or
   Global mode to send all captured traffic through one exit.
 
+## Screenshots
+
+TailSplit for macOS, shown in English with simulated data.
+
+![TailSplit Home showing two Tailscale exits and a direct route](docs/images/desktop-home-en.png)
+
+| Exit node picker | Routing rules |
+| --- | --- |
+| [![TailSplit exit node picker showing online and offline nodes with Ping controls](docs/images/desktop-exit-picker-en.png)](docs/images/desktop-exit-picker-en.png) | [![TailSplit routing settings showing the routing mode, default exit, and domain rules](docs/images/desktop-routing-rules-en.png)](docs/images/desktop-routing-rules-en.png) |
+
 ## Get started
 
 Download the latest package from [GitHub Releases](https://github.com/idy/tailsplit/releases/latest):
