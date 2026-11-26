@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -107,6 +108,89 @@ type ruleTransportFunc func(*http.Request) (*http.Response, error)
 
 func (f ruleTransportFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestBuiltinRulesBootstrapFromMirror(t *testing.T) {
+	const mirrorList = "[AutoProxy 0.2.9]\n||mirror.example\n@@||safe.mirror.example\n"
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+		err    error
+	}{
+		{name: "connection reset", err: errors.New("connection reset")},
+		{name: "HTTP failure", status: http.StatusBadGateway},
+		{name: "invalid list", status: http.StatusOK, body: "<html>unavailable</html>"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requests []string
+			client := &http.Client{Transport: ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+				source := request.URL.String()
+				requests = append(requests, source)
+				switch source {
+				case domainrules.DefaultRulesURL:
+					if test.err != nil {
+						return nil, test.err
+					}
+					return &http.Response{StatusCode: test.status, Body: io.NopCloser(strings.NewReader(test.body))}, nil
+				case builtinRulesMirrorURL:
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(mirrorList))}, nil
+				default:
+					return nil, errors.New("unexpected rule source")
+				}
+			})}
+			config := Config{StateDir: filepath.Join(t.TempDir(), "state"), Rules: RulesConfig{GFWList: "builtin"}}
+			if err := EnsureRules(t.Context(), config, client); err != nil {
+				t.Fatal(err)
+			}
+			canonical := config
+			canonical.Rules.GFWList = domainrules.DefaultRulesURL
+			cached, err := os.ReadFile(RulesCachePath(canonical))
+			if err != nil || string(cached) != mirrorList {
+				t.Fatal("the mirror did not fill the canonical builtin cache:", err)
+			}
+			if err := EnsureRules(t.Context(), config, client); err != nil {
+				t.Fatal("the next connection did not reuse the mirror cache:", err)
+			}
+			if want := []string{domainrules.DefaultRulesURL, builtinRulesMirrorURL}; !slices.Equal(requests, want) {
+				t.Fatalf("requested %v, want %v", requests, want)
+			}
+		})
+	}
+}
+
+func TestRuleRefreshMirrorFailureRetainsCacheAndSkipsExplicitURLs(t *testing.T) {
+	for _, source := range []string{"builtin", domainrules.DefaultRulesURL, "https://rules.example/subscription"} {
+		t.Run(source, func(t *testing.T) {
+			config := Config{StateDir: filepath.Join(t.TempDir(), "state"), Rules: RulesConfig{GFWList: source}}
+			if err := privateState(config.StateDir); err != nil {
+				t.Fatal(err)
+			}
+			cache := RulesCachePath(config)
+			const original = "original.example\n"
+			if err := os.WriteFile(cache, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var requests []string
+			client := &http.Client{Transport: ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+				requests = append(requests, request.URL.String())
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("<html>unavailable</html>"))}, nil
+			})}
+			if _, err := RefreshRules(t.Context(), config, client); err == nil {
+				t.Fatal("accepted an invalid response")
+			}
+			want := []string{rulesSubscriptionSource(source)}
+			if source == "builtin" {
+				want = append(want, builtinRulesMirrorURL)
+			}
+			if !slices.Equal(requests, want) {
+				t.Fatalf("requested %v, want %v", requests, want)
+			}
+			if cached, err := os.ReadFile(cache); err != nil || string(cached) != original {
+				t.Fatal("failed refresh replaced the working rule cache:", err)
+			}
+		})
+	}
 }
 
 func TestRuleCacheDownloadsOnceAndWorksOffline(t *testing.T) {
@@ -336,6 +420,9 @@ func TestRuleDownloadHonorsCancellation(t *testing.T) {
 	transport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = transport })
 	http.DefaultTransport = ruleTransportFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == builtinRulesMirrorURL {
+			t.Error("contacted the builtin mirror after cancellation")
+		}
 		return nil, request.Context().Err()
 	})
 	config, err := loadTestConfig(t, "tailscale:\n  exit_node: 100.64.0.10\nrules:\n  gfwlist: builtin\nstate_dir: ./state\n")

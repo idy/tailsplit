@@ -225,12 +225,16 @@ func checkDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, user *windows.SID,
 			return errors.New("private storage grants access outside the current user, SYSTEM and administrators")
 		}
 		if sid.Equals(user) {
+			access := ace.Mask
+			if access&windows.GENERIC_ALL != 0 {
+				access |= fileAllAccess
+			}
 			if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 {
-				userAccess |= ace.Mask
+				userAccess |= access
 			}
 			const inherit = windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
 			if ace.Header.AceFlags&inherit == inherit && ace.Header.AceFlags&windows.NO_PROPAGATE_INHERIT_ACE == 0 {
-				inheritedAccess |= ace.Mask
+				inheritedAccess |= access
 			}
 		}
 	}
