@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/idy/tailsplit"
+	"github.com/sagernet/tailscale/ipn/store"
+	"github.com/sagernet/tailscale/types/logger"
 )
 
 // Included by the native CI TestWindows filter on both architectures. It uses
@@ -91,5 +93,36 @@ func TestWindowsUnusedPrimaryMigrationAndLogoutAuthority(t *testing.T) {
 	}
 	if _, err := os.Stat(serviceState); !os.IsNotExist(err) {
 		t.Fatal("logged-out primary was restored from a stale copy", err)
+	}
+}
+
+func TestWindowsServiceReopensTailscaleStateAfterLoginWrite(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "service")
+	const user = "fixture-user"
+	config := newExitConfig(t)
+	if err := prepareNewExitRuntime(base, user, config, Files{}); err != nil {
+		t.Fatal(err)
+	}
+	config.StateDir = runtimeUserDirectory(base, user)
+	path := filepath.Join(config.ExitStateDir(config.Focus), "tailscaled.state")
+	state, err := store.NewFileStore(logger.Discard, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteState("fixture", []byte("isolated-ci-state")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareRuntimeUser(base, user, Files{Rules: []byte("fixture.example\n")}); err != nil {
+		t.Fatal("could not prepare a connection after the state store wrote its state:", err)
+	}
+	if err := claimLogoutExit(config); err != nil {
+		t.Fatal("could not prepare device logout:", err)
+	}
+	reopened, err := store.NewFileStore(logger.Discard, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := reopened.ReadState("fixture"); err != nil || string(data) != "isolated-ci-state" {
+		t.Fatal("saved device state was not preserved:", err)
 	}
 }
