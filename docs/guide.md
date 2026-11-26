@@ -430,6 +430,8 @@ Remote lists, including builtin rules, are downloaded and validated on first use
 then atomically cached under `<state_dir>`. Each subscription has a separate
 cache, so checking an unsaved source cannot replace another source's rules.
 Later checks and connections reuse the matching cache, including offline.
+If GitHub's copy of the builtin list cannot be downloaded or validated, TailSplit
+tries the GFWList project's jsDelivr mirror within the same download deadline.
 Compatibility rules supplement application domains missing from the selected
 list, without requiring a refresh.
 

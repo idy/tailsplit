@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.10
+
+- Fix Windows network-service state validation after Tailscale login so saved
+  exits can reconnect or be removed with their existing device state.
+- Try the GFWList project's jsDelivr mirror when the builtin rule download from
+  GitHub fails or returns an invalid list. A validated mirror response fills
+  the usual cache.
+
 ## 0.9.9
 
 - Fix macOS network-service installation when a control socket left by another

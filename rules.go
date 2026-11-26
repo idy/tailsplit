@@ -16,6 +16,8 @@ import (
 	"github.com/idy/tailsplit/internal/domainrules"
 )
 
+const builtinRulesMirrorURL = "https://testingcf.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt"
+
 func rulesSubscriptionSource(source string) string {
 	if source == "builtin" {
 		return domainrules.DefaultRulesURL
@@ -107,10 +109,7 @@ func EnsureRules(ctx context.Context, config Config, client *http.Client) error 
 // RefreshRules updates only the validated rule-list cache. Running flows, login
 // state and fake-IP mappings are untouched; restart to load the new policy.
 func RefreshRules(ctx context.Context, config Config, client *http.Client) (domainrules.RulesInfo, error) {
-	source := config.Rules.GFWList
-	if source == "builtin" {
-		source = domainrules.DefaultRulesURL
-	}
+	source := rulesSubscriptionSource(config.Rules.GFWList)
 	parsed, err := url.Parse(source)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
 		return domainrules.RulesInfo{}, errors.New("rules refresh requires builtin or an HTTPS rule-list URL")
@@ -127,29 +126,22 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
-	if err != nil {
-		return domainrules.RulesInfo{}, err
+	primaryCtx, cancelPrimary := ctx, func() {}
+	builtin := config.Rules.GFWList == "builtin"
+	if builtin {
+		primaryCtx, cancelPrimary = context.WithTimeout(ctx, 15*time.Second)
 	}
-	response, err := copyClient.Do(request)
+	data, info, err := downloadRuleList(primaryCtx, &copyClient, source)
+	cancelPrimary()
 	if err != nil {
-		// A URL may include signed query parameters. Do not echo it in errors.
-		if ctx.Err() != nil {
-			return domainrules.RulesInfo{}, fmt.Errorf("rule list download failed; existing cache retained: %w", ctx.Err())
+		if !builtin || ctx.Err() != nil {
+			return domainrules.RulesInfo{}, err
 		}
-		return domainrules.RulesInfo{}, errors.New("rule list download failed; existing cache retained")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return domainrules.RulesInfo{}, fmt.Errorf("rule list returned HTTP %d; existing cache retained", response.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
-	if err != nil {
-		return domainrules.RulesInfo{}, err
-	}
-	projection, err := domainrules.ProjectActiveRules(data)
-	if err != nil {
-		return domainrules.RulesInfo{}, fmt.Errorf("invalid rule list; existing cache retained: %w", err)
+		primaryErr := err
+		data, info, err = downloadRuleList(ctx, &copyClient, builtinRulesMirrorURL)
+		if err != nil {
+			return domainrules.RulesInfo{}, errors.Join(primaryErr, fmt.Errorf("builtin rule-list mirror: %w", err))
+		}
 	}
 	if err := privateState(config.StateDir); err != nil {
 		return domainrules.RulesInfo{}, err
@@ -177,9 +169,37 @@ func RefreshRules(ctx context.Context, config Config, client *http.Client) (doma
 	installed, err := commitRuleCache(file.Name(), RulesCachePath(config))
 	if err != nil {
 		if installed {
-			return projection.Info, errors.New("rules installed but directory durability could not be confirmed")
+			return info, errors.New("rules installed but directory durability could not be confirmed")
 		}
 		return domainrules.RulesInfo{}, err
 	}
-	return projection.Info, nil
+	return info, nil
+}
+
+func downloadRuleList(ctx context.Context, client *http.Client, source string) ([]byte, domainrules.RulesInfo, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return nil, domainrules.RulesInfo{}, err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		// A URL may include signed query parameters. Do not echo it in errors.
+		if ctx.Err() != nil {
+			return nil, domainrules.RulesInfo{}, fmt.Errorf("rule list download failed; existing cache retained: %w", ctx.Err())
+		}
+		return nil, domainrules.RulesInfo{}, errors.New("rule list download failed; existing cache retained")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, domainrules.RulesInfo{}, fmt.Errorf("rule list returned HTTP %d; existing cache retained", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
+	if err != nil {
+		return nil, domainrules.RulesInfo{}, err
+	}
+	projection, err := domainrules.ProjectActiveRules(data)
+	if err != nil {
+		return nil, domainrules.RulesInfo{}, fmt.Errorf("invalid rule list; existing cache retained: %w", err)
+	}
+	return data, projection.Info, nil
 }

@@ -128,6 +128,33 @@ func TestWindowsPrivateStateRejectsFile(t *testing.T) {
 	}
 }
 
+func TestWindowsPrivateDescriptorAcceptsEquivalentFullControl(t *testing.T) {
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, sddl string
+		directory  bool
+		root       bool
+	}{
+		{"Tailscale directory", "O:SYD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)", true, true},
+		{"split directory grant", "O:SYD:P(A;;FA;;;SY)(A;OICIIO;GA;;;SY)", true, true},
+		{"inherited service file", "O:BAG:SYD:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)", false, false},
+		{"protected Tailscale file", "O:BAG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor, err := windows.SecurityDescriptorFromString(test.sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := checkDescriptor(descriptor, system, test.directory, test.root); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestWindowsPrivateDescriptorRejectsUnsafeACLs(t *testing.T) {
 	user, err := currentUserSID()
 	if err != nil {
@@ -140,7 +167,8 @@ func TestWindowsPrivateDescriptorRejectsUnsafeACLs(t *testing.T) {
 		"inherited root":        owner + "D:" + grant,
 		"no DACL":               owner,
 		"empty DACL":            owner + "D:P",
-		"public child grant":    owner + "D:P" + grant + "(A;OICIIO;FR;;;WD)",
+		"public child grant":    owner + "D:P" + grant + "(A;OICIIO;GA;;;WD)",
+		"inherit-only user":     owner + "D:P(A;OICIIO;GA;;;" + user.String() + ")",
 		"noninheritable user":   owner + "D:P(A;;FA;;;" + user.String() + ")",
 		"one-level inheritance": owner + "D:P(A;OICINP;FA;;;" + user.String() + ")",
 	} {
