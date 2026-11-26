@@ -42,6 +42,8 @@ if route is None or arguments != route['arguments']:
     raise SystemExit('Unexpected mocked gh invocation')
 if route.get('zip'):
     sys.stdout.buffer.write(Path(os.environ['GH_FIXTURE_ZIP']).read_bytes())
+elif route.get('raw') is not None:
+    sys.stdout.write(route['raw'])
 else:
     json.dump(route['payload'], sys.stdout)
 """
@@ -143,7 +145,9 @@ class ReleaseArchiveSourceTests(unittest.TestCase):
 
     def assert_downloaded(self, result, number):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.output, f"build-number={number}\n")
+        values = dict(line.split("=", 1) for line in self.output.splitlines())
+        self.assertEqual(values["build-number"], number)
+        self.assertEqual(values["source-run-id"], "123" if self.environment["ARCHIVE_RUN_ID"] else self.environment["GITHUB_RUN_ID"])
         self.assertEqual(self.download.read_bytes(), ZIP_BYTES)
         self.assertEqual(list(self.download.parent.iterdir()), [self.download])
         self.assertEqual(self.calls[-1], ["api", f"repos/{REPOSITORY}/actions/artifacts/{self.download_id}/zip"])
@@ -155,6 +159,112 @@ class ReleaseArchiveSourceTests(unittest.TestCase):
                 self.assert_downloaded(self.execute(), "78")
                 self.assertEqual(len(self.calls), 2)
                 self.assertEqual(self.calls[0], ["api", f"repos/{REPOSITORY}/actions/artifacts/501"])
+
+    def test_fresh_explicit_build_number_survives_archive_selection(self):
+        self.configure(reuse=False)
+        self.environment["FRESH_BUILD_NUMBER"] = "9"
+        self.environment["EXPECTED_NAME"] += "-build-9"
+        self.artifact_owner["name"] = self.environment["EXPECTED_NAME"]
+        self.assert_downloaded(self.execute(), "9")
+
+    def test_reuse_recovers_explicit_number_from_verified_artifact_name(self):
+        self.artifacts["artifacts"][1]["name"] += "-build-9"
+        self.artifact_owner["name"] += "-build-9"
+        self.assert_downloaded(self.execute(), "9")
+
+    def test_reuse_rejects_requested_fresh_number_before_github_request(self):
+        self.environment["REQUESTED_BUILD_NUMBER"] = "9"
+        self.assert_rejected()
+        self.assertEqual(self.calls, [])
+
+    def test_fresh_rejects_invalid_explicit_number_before_github_request(self):
+        for value in ("0", "09", "-1", "9; false", "9\n", "9" * 19):
+            with self.subTest(value=value):
+                self.configure(reuse=False)
+                self.environment["FRESH_BUILD_NUMBER"] = value
+                self.assert_rejected()
+                self.assertEqual(self.calls, [])
+
+    def test_selection_shell_enforces_apple_length_limit_without_numeric_conversion(self):
+        match = re.search(r"(?ms)^        id: selection\n(.*?)(?=^      - )", WORKFLOW.read_text())
+        script = textwrap.dedent(match[1].split("        run: |\n", 1)[1])
+        for number, valid in (("9", True), ("9" * 18, True), ("9" * 19, False)):
+            with self.subTest(number=number):
+                output = self.root / "selection-output"
+                output.write_text("")
+                env = {"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": str(output), "GITHUB_RUN_NUMBER": "10",
+                       "REQUESTED_BUILD_NUMBER": number, "RELEASE_CHANNEL": "beta", "RELEASE_DESTINATION": "testflight"}
+                result = subprocess.run([BASH, "-e", "-o", "pipefail", "-c", script], env=env, capture_output=True)
+                self.assertEqual(result.returncode == 0, valid)
+                self.assertEqual(output.read_text(), f"build-number={number}\n" if valid else "")
+        self.configure(reuse=False)
+        self.environment["FRESH_BUILD_NUMBER"] = "9" * 18
+        self.assert_downloaded(self.execute(), "9" * 18)
+
+    def test_prior_upload_evidence_download_is_bound_to_original_run_and_source(self):
+        step = re.search(r"(?ms)^      - name: Download original source-run upload evidence when retained\n(.*?)(?=^      - )",
+                         WORKFLOW.read_text())
+        shell = textwrap.dedent(step[1].split("        run: |\n", 1)[1])
+        name = "tailsplit-ios-beta-termitoc-38"
+        owner = {"name": name, "expired": False, "workflow_run": {"id": 123, "head_sha": SOURCE_SHA}}
+        for index, variant in enumerate(("valid", "absent", "wrong-run", "wrong-sha", "expired", "wrong-name",
+                                         "failed-sign", "skipped-sign", "no-output", "other-attempt", "other-job", "wrong-output-id")):
+            with self.subTest(variant=variant):
+                case = self.root / f"prior-{index}"
+                case.mkdir()
+                actual = copy.deepcopy(owner)
+                if variant == "wrong-run":
+                    actual["workflow_run"]["id"] = 456  # B's upload cannot attest A.
+                elif variant == "wrong-sha":
+                    actual["workflow_run"]["head_sha"] = CURRENT_SHA
+                elif variant == "expired":
+                    actual["expired"] = True
+                elif variant == "wrong-name":
+                    actual["name"] = "tailsplit-ios-app-store-termitoc-38"
+                routes = {}
+                def route(endpoint, payload=None, zip_download=False):
+                    routes[endpoint] = {"arguments": ["api", endpoint], "payload": payload, "zip": zip_download}
+                route(f"repos/{REPOSITORY}/actions/runs/123/artifacts?per_page=100", {"artifacts": [] if variant == "absent" else [
+                    {"id": 700, "name": name, "expired": False, "created_at": "2026-11-20T00:00:00Z"}]})
+                route(f"repos/{REPOSITORY}/actions/artifacts/700", actual)
+                route(f"repos/{REPOSITORY}/actions/artifacts/700/zip", zip_download=True)
+                from test_release_producer import producer_fixture
+                sign_job, sign_log, _ = producer_fixture()
+                if variant == "failed-sign":
+                    sign_job["conclusion"] = "failure"
+                elif variant == "skipped-sign":
+                    sign_job["conclusion"] = "skipped"
+                elif variant == "no-output":
+                    sign_log = sign_log[:sign_log.index("2026-11-20T01:02:05")]
+                elif variant == "other-attempt":
+                    sign_job["run_attempt"] = 1
+                elif variant == "other-job":
+                    sign_job["name"] = "Build unsigned iOS archive (beta, no release credentials)"
+                elif variant == "wrong-output-id":
+                    sign_log = sign_log.replace("ID is 700", "ID is 701")
+                route(f"repos/{REPOSITORY}/actions/runs/123/attempts/2/jobs?per_page=100", [{"jobs": [sign_job]}])
+                routes[f"repos/{REPOSITORY}/actions/runs/123/attempts/2/jobs?per_page=100"]["arguments"] = [
+                    "api", "--paginate", "--slurp", f"repos/{REPOSITORY}/actions/runs/123/attempts/2/jobs?per_page=100"]
+                route(f"repos/{REPOSITORY}/actions/jobs/800", sign_job)
+                log_endpoint = f"repos/{REPOSITORY}/actions/jobs/800/logs"
+                routes[log_endpoint] = {"arguments": ["api", "--allow-escape-sequences", log_endpoint], "raw": sign_log}
+                routes_path = case / "routes.json"
+                routes_path.write_text(json.dumps(routes))
+                log = case / "calls.jsonl"
+                env = {**self.environment, "RUNNER_TEMP": str(case), "SOURCE_RUN_ID": "123", "SOURCE_SHA": SOURCE_SHA,
+                       "SOURCE_RUN_NUMBER": "38", "SOURCE_ATTEMPT": "2", "GITHUB_WORKSPACE": str(WORKFLOW.parents[2]),
+                       "GH_FIXTURE_ROUTES": str(routes_path), "GH_FIXTURE_LOG": str(log),
+                       "GH_FIXTURE_ZIP": str(self.zip)}
+                result = subprocess.run([BASH, "-e", "-o", "pipefail", "-c", shell], cwd=case, env=env, capture_output=True)
+                rejected_metadata = variant in ("wrong-run", "wrong-sha", "expired", "wrong-name")
+                self.assertEqual(result.returncode == 0, not rejected_metadata, result.stderr)
+                evidence = case / "prior-release.zip"
+                self.assertEqual(evidence.exists(), variant == "valid")
+                if evidence.exists():
+                    self.assertEqual(evidence.read_bytes(), ZIP_BYTES)
+                if variant != "valid":
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertFalse(any(call[-1].endswith("/zip") for call in calls))
 
     def test_reuse_preserves_source_number_and_selects_latest_unexpired_channel_artifact(self):
         for channel in ("beta", "app-store"):

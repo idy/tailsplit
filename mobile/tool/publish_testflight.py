@@ -256,14 +256,31 @@ def readback(config, build_number, version, expected_build_id=None):
             time.sleep(READBACK_DELAY)
 
 
-def publish(ipa, channel, build_number, version, receipt, submit_for_review=False, resume_upload=False):
+def verify_upload_evidence(path, config, build_number, version, build_id, archive_sha256):
+    """Only a trusted original source-run receipt can authorize skipping upload."""
+    try:
+        value = json.loads(Path(path).read_bytes()) if path else None
+    except (OSError, ValueError, TypeError):
+        value = None
+    expected = {"app_store_id": config["app_store_id"], "bundle_id": config["bundle_id"],
+                "build_number": build_number, "version": version, "platform": "IOS", "build_id": build_id}
+    if not isinstance(value, dict) or any(value.get(key) != item for key, item in expected.items()):
+        raise PublicationError("Existing upload has no matching trusted source upload evidence; refusing to claim or distribute it")
+    if value.get("archive_sha256") not in (None, archive_sha256):
+        raise PublicationError("Existing upload evidence identifies a different source archive")
+
+
+def publish(ipa, channel, build_number, version, receipt, submit_for_review=False, resume_upload=False,
+            archive_sha256=None, upload_evidence=None):
     config = identity(channel)
     if submit_for_review and config["app_store"] is not True:
         raise PublicationError("App Store review requires the app-store channel; beta is TestFlight-only")
-    if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]*", build_number):
+    if not isinstance(build_number, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", build_number):
         raise PublicationError("A positive integer build number is required")
     if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise PublicationError("The application version must be X.Y.Z")
+    if archive_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", archive_sha256):
+        raise PublicationError("Invalid source archive SHA-256")
     ipa, receipt = Path(ipa).absolute(), Path(receipt).absolute()
     if not stat.S_ISREG(ipa.lstat().st_mode) or ipa.suffix != ".ipa":
         raise PublicationError("Expected the verified regular IPA file")
@@ -277,6 +294,8 @@ def publish(ipa, channel, build_number, version, receipt, submit_for_review=Fals
     existing = (verify_build(fetch_builds(config, build_number), config, build_number, version, resume=True)
                 if resume_upload else None)
     resumed = existing is not None
+    if resumed:
+        verify_upload_evidence(upload_evidence, config, build_number, version, existing["build_id"], archive_sha256)
     target = f"{config['bundle_id']} {version} ({build_number})"
     print(f"Resuming internal TestFlight distribution for {target}" if resumed
           else f"Starting TestFlight upload for {target}", flush=True)
@@ -300,6 +319,8 @@ def publish(ipa, channel, build_number, version, receipt, submit_for_review=Fals
               "build_number": build_number, "version": version, "platform": "IOS",
               "testflight_group_id": config["testflight_group_id"], "testflight_group": config["testflight_group"],
               "submitted_for_review": submit_for_review, "resumed_upload": resumed, **verified}
+    if archive_sha256 is not None:
+        result["archive_sha256"] = archive_sha256
     with receipt.open("x", encoding="utf-8") as destination:
         json.dump(result, destination, indent=2, sort_keys=True)
         destination.write("\n")
@@ -315,10 +336,13 @@ def main():
     parser.add_argument("--receipt", type=Path, required=True, help="New JSON file, written only after verified distribution")
     parser.add_argument("--submit-for-review", action="store_true", help="Explicit public App Review for app-store only (manual release)")
     parser.add_argument("--resume-upload", action="store_true", help="For a validated reused archive, resume a ready existing upload without uploading again")
+    parser.add_argument("--archive-sha256", help="Selected unsigned archive digest, recorded after actual upload")
+    parser.add_argument("--upload-evidence", type=Path, help="Trusted original source-run upload receipt, validated by signing helper")
     args = parser.parse_args()
     try:
         result = publish(args.ipa, args.channel, args.build_number, args.version, args.receipt,
-                         args.submit_for_review, resume_upload=args.resume_upload)
+                         args.submit_for_review, resume_upload=args.resume_upload,
+                         archive_sha256=args.archive_sha256, upload_evidence=args.upload_evidence)
     except PublicationError as error:
         parser.exit(1, f"Publication stopped: {error}\n")
     except OSError:

@@ -564,6 +564,71 @@ class ReleaseExecutionTests(ArchiveFixture):
                 self.assert_not_uploaded()
                 self.assertEqual(list(self.output.iterdir()), [])
 
+    def test_actual_export_version_and_number_must_match_selected_archive(self):
+        cases = (("38", "39", "1.0.0", "1.0.0"), ("39", "38", "1.0.0", "1.0.0"),
+                 ("39", "39", "1.0.0", "1.0.0"), ("38", "38", "1.0.1", "1.0.0"),
+                 ("38", "38", "1.0.0", "1.0.1"), ("38", "38", "1.0.1", "1.0.1"))
+        for index, (host, extension, host_version, extension_version) in enumerate(cases):
+            with self.subTest(host=host, extension=extension, versions=(host_version, extension_version)):
+                def mutate(files):
+                    for root, number, version in ((self.app, host, host_version),
+                                                  (self.extension, extension, extension_version)):
+                        key = f"{root}/Info.plist"
+                        info = plistlib.loads(files[key])
+                        info.update(CFBundleVersion=number, CFBundleShortVersionString=version)
+                        files[key] = plistlib.dumps(info)
+                self.mutate_export = mutate
+                self.output = self.root / f"wrong-version-{index}"
+                self.commands.reset_mock()
+                with self.assertRaises(ValueError):
+                    self.execute()
+                self.assert_not_uploaded()
+                self.assertFalse((self.output / "TailSplit.ipa").exists())
+
+    def test_source_upload_receipt_requires_archive_digest_except_trusted_legacy_source(self):
+        prior = self.root / "source-signed.zip"
+        digest = "a" * 64
+        for recorded, legacy, accepted in ((digest, False, True), ("b" * 64, False, False),
+                                            (None, False, False), (None, True, True), ("b" * 64, True, False)):
+            with self.subTest(recorded=recorded, legacy=legacy):
+                evidence = {"build_id": "original-upload"}
+                if recorded is not None:
+                    evidence["archive_sha256"] = recorded
+                prior.write_bytes(zip_bytes({"testflight.json": json.dumps(evidence).encode()}))
+                if accepted:
+                    self.assertEqual(release.prior_upload_evidence(prior, digest, legacy), evidence)
+                else:
+                    with self.assertRaisesRegex(ValueError, "selected archive"):
+                        release.prior_upload_evidence(prior, digest, legacy)
+        prior.write_bytes(zip_bytes({"TailSplit.ipa": b"signing only"}))
+        self.assertIsNone(release.prior_upload_evidence(prior, digest))
+
+    def test_source_archive_and_prior_receipt_are_forwarded_to_publisher(self):
+        with zipfile.ZipFile(self.artifact) as package:
+            import hashlib
+            digest = hashlib.sha256(package.read("unsigned.xcarchive.zip")).hexdigest()
+        prior = self.root / "source-signed.zip"
+        original = {"archive_sha256": digest, "build_id": "original-upload"}
+        prior.write_bytes(zip_bytes({"testflight.json": json.dumps(original).encode()}))
+        captured = {}
+        command = self.command
+        def observe(args, **kwargs):
+            if Path(args[0]).name == "python3":
+                captured["digest"] = args[args.index("--archive-sha256") + 1]
+                evidence = Path(args[args.index("--upload-evidence") + 1])
+                captured["receipt"] = json.loads(evidence.read_bytes())
+            return command(args, **kwargs)
+        self.commands.side_effect = observe
+        release.release(self.artifact, self.output, channel=self.channel, publish=True, resume_upload=True,
+                        prior_release_artifact=prior)
+        self.assertEqual(captured, {"digest": digest, "receipt": original})
+        self.assert_credential_scopes()
+
+    def test_build_number_19_digits_fails_before_decryption(self):
+        with self.assertRaises(ValueError):
+            release.release(self.artifact, self.output, channel=self.channel, build_number="9" * 19)
+        self.commands.assert_not_called()
+
     def test_release_exports_without_building_and_verifies_both_bundles_before_upload(self):
         self.execute()
         self.assert_credential_scopes()

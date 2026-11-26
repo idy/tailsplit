@@ -138,8 +138,9 @@ it does not establish the reason for a particular App Review rejection.
 ## Resubmitting the initial store version after rejection
 
 If the initial store version is rejected before first release, keep its marketing
-version (`0.1.0`) and upload a new build. The release workflow sets the app and
-extension build numbers from its new Actions run number; do not reuse an archive
+version (`0.1.0`) and upload a new build. By default the release workflow sets the
+app and extension build numbers from its new Actions run number; an explicit
+`build_number` can align independent channels after checking availability. Do not reuse an archive
 that predates the reviewed source change.
 
 1. Read the actual App Review message under the store app's **App Review** page,
@@ -190,6 +191,7 @@ Run **iOS release (Termitoc)** on the protected default branch after merging:
 | --- | --- | --- |
 | `channel` | `beta`, `app-store` | `beta` |
 | `destination` | `artifact`, `testflight`, `app-store` | `testflight` |
+| `build_number` | Optional 1–18 digit positive integer for a fresh archive; must be unused for the selected app/version | Empty: Actions run number |
 | `archive_run_id` | Optional completed release run on `main` with a successful unsigned build | Empty: build a new archive |
 
 | Selection | Result |
@@ -218,7 +220,20 @@ permission that prevents someone from submitting the beta record manually.
 
 Each run releases one channel. Channels have separate concurrency groups and
 artifact names; two runs of the same channel are serialized. Compilation uses
-the Actions run number for both the app and extension's build number.
+`build_number` when explicitly supplied, otherwise the Actions run number, for
+both the app and extension. For example, to align Beta with an existing store
+build after verifying Beta has no build 9:
+
+```bash
+gh workflow run mobile-release.yml --repo idy/tailsplit --ref main \
+  -f channel=beta -f destination=testflight -f build_number=9
+```
+
+The Actions run number and signed artifact name remain workflow identifiers,
+not proof of the app's build number. Read the verified IPA and TestFlight receipt.
+Unsigned artifact names bind the actual build number to the source run. Retries
+recover this number from the verified artifact name (legacy artifacts use their
+source run number). `build_number` and `archive_run_id` cannot be combined.
 
 To retry signing or delivery without recompiling, set `archive_run_id` to the
 original release run. The source must be a completed dispatch of this workflow
@@ -231,15 +246,44 @@ build number. This also supports recovery when the source run's build succeeded
 but its signing job failed; arbitrary artifacts, fork/PR runs and divergent
 source revisions are rejected.
 
-For a validated archive retry, the publisher also checks for an existing exact
-app/version/build-number upload before invoking Codemagic. A ready, unexpired
-build resumes group distribution with package upload and validation skipped;
-there is no second binary upload with the same build number. If it is already
-assigned, the publisher performs only the final independent readback. An empty
-Apple response permits a normal fresh upload, while ambiguous, malformed,
-expired, processing or compliance-blocked existing builds fail before retrying.
-The receipt records `resumed_upload` and the verified build ID. Fresh release
-runs continue to validate and upload their package normally.
+For a validated archive retry, the publisher checks for an existing exact
+app/version/build-number upload before invoking Codemagic. If no upload exists,
+the selected archive uploads normally. An existing build can skip upload or be
+distributed only when the original source run's independently downloaded signed
+artifact has a successful TestFlight receipt attesting that exact Apple build ID.
+The workflow verifies the signed artifact's owner run, source SHA and channel
+name separately from the unsigned archive. These run fields alone do not prove
+which job produced it: the unsigned build runner can also upload artifacts.
+Recover the original attempt from the selected unsigned artifact name, locate
+that attempt's fixed protected signing job, require the job and fixed retention
+step to complete successfully, and parse that job's raw log within the upload
+step's timestamps. Only the pinned upload action's successful upload record for
+the exact candidate artifact ID/name establishes producer identity. A successful
+step with no files, skipped/failed job, other job/attempt, different ID, or missing
+logs supplies no evidence. It cannot authorize resuming an existing Apple build;
+when Apple has no matching upload, normal upload of the selected archive remains
+available. New receipts also record the SHA-256
+of the original `unsigned.xcarchive.zip`; the signing helper requires that digest
+to match the selected source archive. Re-signing an IPA does not establish the
+identity of an earlier Apple upload.
+
+Legacy default-number archives may use their original source run's legacy upload
+receipt without an archive digest, because those runs fixed the archive number
+to the same source run number. This exception is unavailable to explicit-number
+artifacts. Missing/expired signed artifacts, absent upload receipts, different
+archive digests or different Apple build IDs fail closed when an upload already
+exists: no distribution, skip-upload command or success receipt. In particular,
+a signing-only run A cannot claim run B's same-number upload, including when an
+explicit number collides with another run's default number. Keep the original
+signed artifact while retry recovery may be needed; the seven-day retention
+bounds automated recovery.
+
+With this source evidence, a ready, unexpired build resumes group distribution
+with package upload and validation skipped; if already assigned, only final
+independent readback is needed. Ambiguous, malformed, expired, processing or
+compliance-blocked builds fail before retrying. Receipts record `resumed_upload`,
+the verified build ID and source archive digest. Fresh releases continue to
+validate and upload their actual package normally.
 
 For a local unsigned archive, resolve packages, build the selected Apple core
 and install pods as described in the mobile README, then run from `mobile/`:
@@ -307,7 +351,9 @@ Compilation and signing run in **separate, fresh GitHub-hosted macOS jobs**:
    explicit profile UUIDs and no automatic version rewriting. No project/scheme
    build, `xcode-project use-profiles`, dependency script or provisioning-update
    flag participates.
-7. Safely unpack the IPA, validate embedded profiles and both code signatures,
+7. Safely unpack the IPA and read both bundles' actual build numbers and
+   marketing versions against the selected build and archive host version before
+   copying or publishing. Validate embedded profiles and both code signatures,
    and require the actual signer team to be Termitoc. Independently decode each
    bundle's signed entitlements: require the selected application/team identity,
    App Group and Packet Tunnel capability, and reject debug-enabled signatures.

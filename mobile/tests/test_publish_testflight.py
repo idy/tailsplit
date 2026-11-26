@@ -222,10 +222,18 @@ class TestFlightPublishingTests(unittest.TestCase):
             raise payload
         return io.BytesIO(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
 
-    def execute(self, channel="app-store", submit_for_review=False, build_number="38", version="0.9.7", resume_upload=False):
+    def evidence(self, channel="app-store", number="38", version="0.9.7", build_id="build-fixture-id"):
+        path = self.root / "original-source-receipt.json"
+        config = IDENTITIES[channel]
+        path.write_text(json.dumps({"app_store_id": config["app_store_id"], "bundle_id": config["bundle_id"],
+                                   "build_number": number, "version": version, "platform": "IOS", "build_id": build_id}))
+        return path
+
+    def execute(self, channel="app-store", submit_for_review=False, build_number="38", version="0.9.7", resume_upload=False,
+                upload_evidence=None, archive_sha256=None):
         self.expected_number = build_number
         return publish.publish(self.ipa, channel, build_number, version, self.receipt, submit_for_review,
-                               resume_upload=resume_upload)
+                               resume_upload=resume_upload, upload_evidence=upload_evidence, archive_sha256=archive_sha256)
 
     def assert_failure(self, message, **kwargs):
         with self.assertRaisesRegex(publish.PublicationError, message):
@@ -254,6 +262,49 @@ class TestFlightPublishingTests(unittest.TestCase):
                 self.receipt.unlink()
         self.sleep.assert_not_called()
 
+    def test_other_source_same_number_cannot_be_claimed_or_distributed(self):
+        # A signs only with explicit9. B subsequently uploads9, either explicitly
+        # or because its default run number is9. Retrying A must not claim B.
+        for b_selection in ("explicit", "default"):
+            for assigned in (False, True):
+                with self.subTest(b_selection=b_selection, assigned=assigned):
+                    self.config = IDENTITIES["beta"]
+                    self.group = group_payload(self.config)
+                    self.build = build_payload(self.config, number="9", version="0.1.0", build_id="uploaded-by-B")
+                    if not assigned:
+                        self.build["data"][0]["relationships"]["betaGroups"]["data"] = []
+                    self.ipa.write_bytes(b"newly-signed IPA from A, not B")
+                    self.assert_failure("trusted source upload evidence", channel="beta", build_number="9",
+                                        version="0.1.0", resume_upload=True)
+                    self.commands.assert_not_called()
+                    # Even an A receipt must attest this exact Apple build ID.
+                    evidence = self.evidence("beta", "9", "0.1.0", "uploaded-by-A")
+                    self.assert_failure("trusted source upload evidence", channel="beta", build_number="9",
+                                        version="0.1.0", resume_upload=True, upload_evidence=evidence)
+                    self.commands.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_source_digest_is_retained_and_mismatching_evidence_is_rejected(self):
+        digest = "a" * 64
+        result = self.execute(archive_sha256=digest)
+        self.assertEqual(result["archive_sha256"], digest)
+        self.receipt.unlink()
+        self.commands.reset_mock()
+        evidence = self.evidence()
+        prior = json.loads(evidence.read_text())
+        prior["archive_sha256"] = "b" * 64
+        evidence.write_text(json.dumps(prior))
+        self.assert_failure("different source archive", resume_upload=True,
+                            upload_evidence=evidence, archive_sha256=digest)
+        self.commands.assert_not_called()
+
+    def test_publisher_rejects_19_digit_build_number_before_apple(self):
+        self.assert_failure("positive integer", build_number="9" * 19)
+        self.opener.open.assert_not_called()
+        self.expected_number = "9" * 18
+        self.build = build_payload(self.config, number=self.expected_number)
+        self.execute(build_number=self.expected_number)
+
     def test_resume_exact_ready_build_without_group_skips_upload_and_validation_for_both_apps(self):
         builds = (("beta", "1", "935c78ef-8e5e-4152-bc80-b22fa9af43d5", "READY_FOR_BETA_TESTING"),
                   ("app-store", "2", "03b9b3d0-4a14-4e34-85af-f92fdb7b0d9a", "IN_BETA_TESTING"))
@@ -268,7 +319,8 @@ class TestFlightPublishingTests(unittest.TestCase):
                 self.commands.reset_mock()
                 self.events.clear()
                 with mock.patch("builtins.print") as progress:
-                    result = self.execute(channel, build_number=number, version="0.1.0", resume_upload=True)
+                    result = self.execute(channel, build_number=number, version="0.1.0", resume_upload=True,
+                                          upload_evidence=self.evidence(channel, number, "0.1.0", identifier))
                 self.assertEqual(self.events, ["group", "existing-build", "publish", "readback"])
                 self.assertIn("--skip-package-upload", self.commands.call_args.args[0])
                 self.assertNotIn("--enable-package-validation", self.commands.call_args.args[0])
@@ -283,7 +335,7 @@ class TestFlightPublishingTests(unittest.TestCase):
         self.sleep.assert_not_called()
 
     def test_resume_already_assigned_build_only_reads_and_writes_resumed_receipt(self):
-        result = self.execute(resume_upload=True)
+        result = self.execute(resume_upload=True, upload_evidence=self.evidence())
         self.commands.assert_not_called()
         self.assertEqual(self.events, ["group", "existing-build", "readback"])
         self.assertTrue(result["resumed_upload"])
@@ -294,7 +346,7 @@ class TestFlightPublishingTests(unittest.TestCase):
     def test_resume_already_assigned_build_still_requires_final_membership_readback(self):
         self.responses = [copy.deepcopy(self.build)]
         self.build["data"][0]["relationships"]["betaGroups"]["data"] = []
-        self.assert_failure("not assigned", resume_upload=True)
+        self.assert_failure("not assigned", resume_upload=True, upload_evidence=self.evidence())
         self.commands.assert_not_called()
         self.assertEqual(self.sleep.call_count, publish.READBACK_ATTEMPTS - 1)
 
@@ -400,7 +452,7 @@ class TestFlightPublishingTests(unittest.TestCase):
 
     def test_resume_still_requires_actual_membership_after_silent_cli_success(self):
         self.build["data"][0]["relationships"]["betaGroups"]["data"] = []
-        self.assert_failure("not assigned", resume_upload=True)
+        self.assert_failure("not assigned", resume_upload=True, upload_evidence=self.evidence())
         self.assertIn("--skip-package-upload", self.commands.call_args.args[0])
         self.assertEqual(self.events, ["group", "existing-build", "publish"] + ["readback"] * publish.READBACK_ATTEMPTS)
         self.assertEqual(self.sleep.call_count, publish.READBACK_ATTEMPTS - 1)
@@ -410,12 +462,12 @@ class TestFlightPublishingTests(unittest.TestCase):
         existing["data"][0]["relationships"]["betaGroups"]["data"] = []
         self.responses = [existing]
         self.build["data"][0]["id"] = "different-final-build"
-        self.assert_failure("different build than the existing upload", resume_upload=True)
+        self.assert_failure("different build than the existing upload", resume_upload=True, upload_evidence=self.evidence())
         self.commands.assert_called_once()
         self.sleep.assert_not_called()
 
     def test_resume_keeps_public_review_explicit_and_manual(self):
-        result = self.execute(resume_upload=True, submit_for_review=True)
+        result = self.execute(resume_upload=True, submit_for_review=True, upload_evidence=self.evidence())
         command = self.commands.call_args.args[0]
         self.assertIn("--skip-package-upload", command)
         self.assertEqual(command[-5:], ["--app-store", "--platform", "IOS", "--release-type", "MANUAL"])
@@ -678,7 +730,8 @@ class TestFlightPublishingTests(unittest.TestCase):
 
     def test_cli_main_resume_flag_accepts_already_distributed_build_without_cli(self):
         args = ["publish_testflight.py", "--ipa", str(self.ipa), "--channel", "app-store", "--build-number", "38",
-                "--version", "0.9.7", "--receipt", str(self.receipt), "--resume-upload"]
+                "--version", "0.9.7", "--receipt", str(self.receipt), "--resume-upload",
+                "--upload-evidence", str(self.evidence())]
         with mock.patch.object(sys, "argv", args):
             publish.main()
         self.commands.assert_not_called()
